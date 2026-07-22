@@ -199,6 +199,192 @@ body,
   display: none !important;
 }
 
+.board-icon-btn {
+  position: absolute;
+  top: 1.35rem;
+  right: 1.35rem;
+  z-index: 12;
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.55rem 0.8rem 0.55rem 0.65rem;
+  border: 1px solid var(--line);
+  background: rgba(8, 12, 18, 0.72);
+  color: var(--text);
+  cursor: pointer;
+  line-height: 1;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.board-icon-svg {
+  width: 1.05rem;
+  height: 1.05rem;
+  flex-shrink: 0;
+  opacity: 0.9;
+}
+
+.board-icon-label {
+  font-family: var(--font-display);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+}
+
+.board-icon-btn:hover {
+  border-color: var(--accent);
+  background: rgba(255, 59, 46, 0.18);
+  color: #fff;
+}
+
+.board-icon-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.board-panel {
+  width: min(100%, 22rem);
+}
+
+.board-source {
+  font-size: 0.85rem !important;
+  opacity: 0.75;
+  margin-bottom: 0.75rem !important;
+}
+
+.board-list {
+  list-style: none;
+  margin: 0 0 1.25rem;
+  padding: 0;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.board-list li {
+  display: grid;
+  grid-template-columns: 2.2rem 1fr auto;
+  gap: 0.55rem;
+  align-items: center;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-family: var(--font-ui);
+  font-size: 0.95rem;
+}
+
+.board-list li .rank {
+  font-family: var(--font-display);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  opacity: 0.7;
+}
+
+.board-list li .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.board-list li .time {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
+.board-list li.top1 {
+  border-color: rgba(255, 200, 87, 0.7);
+  background: rgba(255, 200, 87, 0.12);
+}
+
+.board-list li.top2 {
+  border-color: rgba(200, 210, 220, 0.45);
+  background: rgba(200, 210, 220, 0.08);
+}
+
+.board-list li.top3 {
+  border-color: rgba(205, 127, 50, 0.55);
+  background: rgba(205, 127, 50, 0.1);
+}
+
+.board-list li.empty {
+  opacity: 0.45;
+  justify-content: center;
+  display: block;
+  text-align: center;
+}
+
+.finish-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: min(100%, 20rem);
+}
+
+.finish-stat {
+  margin-bottom: 0.45rem !important;
+}
+
+.finish-stat + .finish-stat {
+  margin-bottom: 1.15rem !important;
+}
+
+.name-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  align-items: stretch;
+  margin: 0 0 0.85rem;
+  width: 100%;
+}
+
+.name-entry.hidden {
+  display: none !important;
+}
+
+.name-entry-label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+
+.name-entry input {
+  width: 100%;
+  box-sizing: border-box;
+  appearance: none;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 1rem;
+  padding: 0.75rem 0.85rem;
+  outline: none;
+  text-align: center;
+}
+
+.name-entry input:focus {
+  border-color: #ffc857;
+}
+
+.name-entry button,
+.finish-actions button {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding-left: 1rem;
+  padding-right: 1rem;
+  letter-spacing: 0.18em;
+}
+
+.finish-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  align-items: stretch;
+  width: 100%;
+}
+
 #player-tags {
   position: fixed;
   inset: 0;
@@ -276,11 +462,15 @@ body,
 }
 
 .btn-ghost {
-  margin-top: 0.75rem;
   background: transparent;
   border: 1px solid var(--line);
   box-shadow: none;
   color: var(--text);
+}
+
+#pause .btn-ghost {
+  margin-top: 0.75rem;
+  width: min(100%, 16rem);
 }
 
 .btn-ghost:hover {
@@ -370,32 +560,6 @@ button:hover {
 
 button:active {
   transform: translateY(1px) scale(0.99);
-}
-
-.controls {
-  margin-top: 1.5rem;
-  color: var(--muted);
-  font-size: 0.95rem;
-}
-
-.controls.hint {
-  margin-top: 0.55rem;
-  font-size: 0.85rem;
-  color: var(--accent-soft);
-}
-
-kbd {
-  display: inline-block;
-  min-width: 1.5rem;
-  padding: 0.1rem 0.35rem;
-  margin: 0 0.1rem;
-  border: 1px solid var(--line);
-  border-bottom-width: 2px;
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.04);
-  font-family: var(--font-display);
-  font-size: 0.72rem;
-  color: var(--text);
 }
 
 @media (max-width: 640px) {

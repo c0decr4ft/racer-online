@@ -5,6 +5,14 @@ import { Input } from "./input";
 import { Vehicle, RivalAI } from "./vehicle";
 import { NetClient, RemotePlayer } from "./net/client";
 import type { PlayerPose } from "./net/protocol";
+import {
+  boardSourceLabel,
+  fetchLeaderboard,
+  formatBoardTime,
+  submitScore,
+  wouldQualify,
+  type LeaderboardEntry,
+} from "./net/leaderboard";
 
 function formatTime(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "--:--.---";
@@ -74,7 +82,14 @@ export class Game {
     position: document.getElementById("position"),
     netStatus: document.getElementById("net-status")!,
     wrongWay: document.getElementById("wrong-way")!,
+    leaderboard: document.getElementById("leaderboard")!,
+    boardList: document.getElementById("board-list")!,
+    boardSource: document.getElementById("board-source")!,
+    nameEntry: document.getElementById("name-entry")!,
+    driverName: document.getElementById("driver-name") as HTMLInputElement,
   };
+
+  private pendingFinishMs = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     // Cap DPR for stable FPS on retina displays
@@ -120,12 +135,79 @@ export class Game {
       this.clearRemotes();
       this.setAiVisible(true);
       this.el.netStatus.classList.add("hidden");
+      this.el.leaderboard.classList.add("hidden");
       this.startRace();
     };
     document.getElementById("restart-btn")!.onclick = () => this.startRace();
     document.getElementById("resume-btn")!.onclick = () => this.resume();
     document.getElementById("pause-restart-btn")!.onclick = () => this.startRace();
+    document.getElementById("pause-home-btn")!.onclick = () => this.goHome();
+    document.getElementById("finish-home-btn")!.onclick = () => this.goHome();
     this.el.pauseBtn.onclick = () => this.pause();
+
+    document.getElementById("home-board-btn")!.onclick = () => this.openLeaderboard();
+    document.getElementById("board-close-btn")!.onclick = () => {
+      this.el.leaderboard.classList.add("hidden");
+    };
+    document.getElementById("submit-score-btn")!.onclick = () => void this.saveDriverScore();
+    this.el.driverName.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") void this.saveDriverScore();
+    });
+  }
+
+  private goHome() {
+    this.running = false;
+    this.finished = false;
+    this.paused = false;
+    this.pauseTotal = 0;
+    this.pauseBegan = 0;
+    this.input.clearDriveKeys();
+    this.el.pause.classList.add("hidden");
+    this.el.finish.classList.add("hidden");
+    this.el.pauseBtn.classList.add("hidden");
+    this.el.wrongWay.classList.add("hidden");
+    this.el.nameEntry.classList.add("hidden");
+    this.el.leaderboard.classList.add("hidden");
+    this.el.overlay.classList.remove("hidden");
+    this.setAiVisible(true);
+  }
+
+  private renderBoardList(entries: LeaderboardEntry[]) {
+    if (!entries.length) {
+      this.el.boardList.innerHTML = `<li class="empty">No times yet — be the first</li>`;
+      return;
+    }
+    this.el.boardList.innerHTML = entries
+      .map((e, i) => {
+        const cls = i === 0 ? "top1" : i === 1 ? "top2" : i === 2 ? "top3" : "";
+        return `<li class="${cls}"><span class="rank">${i + 1}</span><span class="name">${escapeHtml(e.name)}</span><span class="time">${formatBoardTime(e.timeMs)}</span></li>`;
+      })
+      .join("");
+  }
+
+  private async openLeaderboard() {
+    this.el.leaderboard.classList.remove("hidden");
+    this.el.boardSource.textContent = "Loading…";
+    this.el.boardList.innerHTML = "";
+    const { entries, source } = await fetchLeaderboard();
+    this.el.boardSource.textContent = boardSourceLabel(source);
+    this.renderBoardList(entries);
+  }
+
+  private async saveDriverScore() {
+    const name = this.el.driverName.value.trim();
+    if (!name) {
+      this.el.driverName.focus();
+      return;
+    }
+    const btn = document.getElementById("submit-score-btn") as HTMLButtonElement;
+    btn.disabled = true;
+    const { entries, source } = await submitScore(name, this.pendingFinishMs, this.bestLap);
+    this.el.nameEntry.classList.add("hidden");
+    btn.disabled = false;
+    this.el.leaderboard.classList.remove("hidden");
+    this.el.boardSource.textContent = boardSourceLabel(source, true);
+    this.renderBoardList(entries);
   }
 
   private onNetWelcome(_id: string, room: string, players: PlayerPose[], you: PlayerPose) {
@@ -244,6 +326,8 @@ export class Game {
     this.el.overlay.classList.add("hidden");
     this.el.finish.classList.add("hidden");
     this.el.pause.classList.add("hidden");
+    this.el.leaderboard.classList.add("hidden");
+    this.el.nameEntry.classList.add("hidden");
     this.el.pauseBtn.classList.remove("hidden");
     this.finished = false;
     this.paused = false;
@@ -559,9 +643,20 @@ export class Game {
     this.el.wrongWay.classList.add("hidden");
     this.el.pause.classList.add("hidden");
     this.el.pauseBtn.classList.add("hidden");
-    this.el.finalTime.textContent = formatTime(this.raceNow() - this.raceStart);
+    this.pendingFinishMs = this.raceNow() - this.raceStart;
+    this.el.finalTime.textContent = formatTime(this.pendingFinishMs);
     this.el.finalBest.textContent = formatTime(this.bestLap);
+    this.el.nameEntry.classList.add("hidden");
+    this.el.driverName.value = "";
     this.el.finish.classList.remove("hidden");
+    void this.checkLeaderboardQualify();
+  }
+
+  private async checkLeaderboardQualify() {
+    const qualifies = await wouldQualify(this.pendingFinishMs);
+    if (!qualifies) return;
+    this.el.nameEntry.classList.remove("hidden");
+    this.el.driverName.focus();
   }
 
   private updateHud() {
@@ -628,4 +723,12 @@ export class Game {
     this.camLook.lerp(look, dt <= 0 ? 1 : 1 - Math.exp(-8 * dt));
     this.camera.lookAt(this.camLook);
   }
+}
+
+function escapeHtml(s: string) {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }

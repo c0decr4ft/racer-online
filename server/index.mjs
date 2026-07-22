@@ -1,16 +1,52 @@
 import { WebSocketServer } from "ws";
 import { createServer } from "node:http";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const PORT = Number(process.env.PORT || 8787);
 const NET_TICK_MS = 50; // 20 Hz
 const MAX_PLAYERS = 8;
 const PLAYER_COLORS = [0xe4eaf2, 0xe23b2e, 0x2a66f0, 0xf0c020, 0x1dbf6a, 0xb44dff, 0xff6b9d, 0x00d4ff];
+const LEADERBOARD_PATH = join(dirname(fileURLToPath(import.meta.url)), "leaderboard.json");
+const MAX_BOARD = 10;
 
 /** @typedef {{ id: string, name: string, color: number, x: number, z: number, h: number, s: number, g: string, lap: number }} Pose */
 /** @typedef {{ id: string, name: string, color: number, room: string, ws: import('ws').WebSocket, pose: Pose, lastPoseAt: number }} Client */
+/** @typedef {{ name: string, timeMs: number, bestLapMs?: number, at: number }} BoardEntry */
 
 /** @type {Map<string, Map<string, Client>>} */
 const rooms = new Map();
+
+/** @returns {BoardEntry[]} */
+function loadBoard() {
+  try {
+    if (!existsSync(LEADERBOARD_PATH)) return [];
+    const raw = JSON.parse(readFileSync(LEADERBOARD_PATH, "utf8"));
+    return Array.isArray(raw) ? raw : [];
+  } catch {
+    return [];
+  }
+}
+
+/** @param {BoardEntry[]} entries */
+function saveBoard(entries) {
+  writeFileSync(LEADERBOARD_PATH, JSON.stringify(entries, null, 2));
+}
+
+/** @param {BoardEntry[]} entries */
+function sortBoard(entries) {
+  return [...entries]
+    .filter((e) => e && Number.isFinite(e.timeMs) && e.timeMs > 0)
+    .sort((a, b) => a.timeMs - b.timeMs)
+    .slice(0, MAX_BOARD);
+}
+
+function cors(res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
 
 /** @param {import('ws').WebSocket} ws @param {object} msg */
 function send(ws, msg) {
@@ -47,11 +83,50 @@ function ensureRoom(name) {
   return rooms.get(name);
 }
 
-const httpServer = createServer((req, res) => {
-  res.writeHead(200, {
-    "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "*",
-  });
+const httpServer = createServer(async (req, res) => {
+  cors(res);
+  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  if (url.pathname === "/api/leaderboard" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true, entries: sortBoard(loadBoard()) }));
+    return;
+  }
+
+  if (url.pathname === "/api/leaderboard" && req.method === "POST") {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    try {
+      const data = JSON.parse(body || "{}");
+      const entry = {
+        name: String(data.name || "RACER").trim().slice(0, 16) || "RACER",
+        timeMs: Math.round(Number(data.timeMs)),
+        bestLapMs: data.bestLapMs != null ? Math.round(Number(data.bestLapMs)) : undefined,
+        at: Date.now(),
+      };
+      if (!Number.isFinite(entry.timeMs) || entry.timeMs <= 0) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "bad time" }));
+        return;
+      }
+      const next = sortBoard([...loadBoard(), entry]);
+      saveBoard(next);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, entries: next }));
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "bad json" }));
+    }
+    return;
+  }
+
+  res.writeHead(200, { "Content-Type": "application/json" });
   const stats = [...rooms.entries()].map(([name, map]) => ({ room: name, players: map.size }));
   res.end(JSON.stringify({ ok: true, rooms: stats }));
 });
@@ -154,5 +229,5 @@ setInterval(() => {
 }, NET_TICK_MS);
 
 httpServer.listen(PORT, () => {
-  console.log(`Racer Online multiplayer :${PORT} @ ${1000 / NET_TICK_MS}Hz (max ${MAX_PLAYERS}/room)`);
+  console.log(`Racer Online :${PORT} (WS + /api/leaderboard)`);
 });

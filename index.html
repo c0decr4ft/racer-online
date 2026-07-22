@@ -55,6 +55,12 @@
       </div>
 
       <div id="overlay" class="overlay">
+        <button id="home-board-btn" class="board-icon-btn" type="button" aria-label="Leaderboard">
+          <svg class="board-icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 20h14v-1.5H5V20zm2.5-4h2V10h-2v6zm3.5 0h2V7h-2v9zm3.5 0h2V12h-2v4z" fill="currentColor"/>
+          </svg>
+          <span class="board-icon-label">BOARD</span>
+        </button>
         <div class="overlay-inner">
           <p class="eyebrow">READY TO RACE</p>
           <h1>RACER<br /><span>ONLINE</span></h1>
@@ -63,13 +69,16 @@
           <div class="menu-actions">
             <button id="start-btn" type="button">START RACE</button>
           </div>
+        </div>
+      </div>
 
-          <p class="controls">
-            <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> drive ·
-            <kbd>↑</kbd><kbd>↓</kbd> shift · <kbd>1</kbd>–<kbd>5</kbd> gear · <kbd>R</kbd> reverse ·
-            <kbd>SPACE</kbd> brake · <kbd>Esc</kbd> pause · <kbd>⌫</kbd> reset
-          </p>
-          <p class="controls hint">1st = launch only · shift 2–5 for top speed · wrong gear lugs or redlines</p>
+      <div id="leaderboard" class="overlay hidden">
+        <div class="overlay-inner board-panel">
+          <p class="eyebrow">WORLDWIDE</p>
+          <h1>TOP 10</h1>
+          <p id="board-source" class="tagline board-source">Loading…</p>
+          <ol id="board-list" class="board-list"></ol>
+          <button id="board-close-btn" type="button">BACK</button>
         </div>
       </div>
 
@@ -80,16 +89,25 @@
           <p class="tagline">Race frozen · press Esc to resume</p>
           <button id="resume-btn" type="button">RESUME</button>
           <button id="pause-restart-btn" class="btn-ghost" type="button">RESTART</button>
+          <button id="pause-home-btn" class="btn-ghost" type="button">HOME</button>
         </div>
       </div>
 
       <div id="finish" class="overlay hidden">
-        <div class="overlay-inner">
+        <div class="overlay-inner finish-panel">
           <p class="eyebrow">SESSION COMPLETE</p>
           <h1>FINISH</h1>
-          <p class="tagline">Total <span id="final-time">0:00.000</span></p>
-          <p class="tagline">Best lap <span id="final-best">--:--.---</span></p>
-          <button id="restart-btn" type="button">RACE AGAIN</button>
+          <p class="tagline finish-stat">Total <span id="final-time">0:00.000</span></p>
+          <p class="tagline finish-stat">Best lap <span id="final-best">--:--.---</span></p>
+          <div id="name-entry" class="name-entry hidden">
+            <p class="name-entry-label">Top 10 time — enter your driver name</p>
+            <input id="driver-name" type="text" maxlength="16" placeholder="Driver name" autocomplete="nickname" />
+            <button id="submit-score-btn" type="button">SAVE TO BOARD</button>
+          </div>
+          <div class="finish-actions">
+            <button id="restart-btn" type="button">RACE AGAIN</button>
+            <button id="finish-home-btn" class="btn-ghost" type="button">HOME</button>
+          </div>
         </div>
       </div>
     </div>
