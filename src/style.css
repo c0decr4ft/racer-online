@@ -252,33 +252,6 @@ body,
   margin-bottom: 0.5rem;
 }
 
-.online-form {
-  display: flex;
-  flex-direction: column;
-  gap: 0.55rem;
-  width: min(100%, 18rem);
-  margin: 0.75rem auto 0.25rem;
-}
-
-.online-form.hidden {
-  display: none;
-}
-
-.online-form input {
-  appearance: none;
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--text);
-  font-family: var(--font-ui);
-  font-size: 1rem;
-  padding: 0.7rem 0.85rem;
-  outline: none;
-}
-
-.online-form input:focus {
-  border-color: var(--accent);
-}
-
 .pause-btn {
   appearance: none;
   border: 1px solid var(--line);

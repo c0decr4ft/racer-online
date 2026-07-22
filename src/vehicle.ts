@@ -13,20 +13,25 @@ export type VehicleState = {
 /**
  * Real-car style progressive gears:
  * 1st = launch only (strong pull, low ceiling). Each upshift unlocks top speed.
- * Wrong gear hurts — lug below pullFrom, choke near redline.
+ * Wrong gear hurts — lug below pullFrom, rev limiter pins speed at each gear's max.
+ *
+ * NOTE: DRAG must stay small relative to engine force. A large quadratic drag
+ * previously capped EVERY gear at ~60 km/h, making shifts feel like they did
+ * nothing. The per-gear rev limiter (not drag) is the intended speed cap.
  */
 const GEAR_STATS: Record<Exclude<Gear, "N">, { max: number; accel: number; pullFrom: number }> = {
-  R: { max: 12, accel: 0.65, pullFrom: 0 },
-  1: { max: 12, accel: 1.9, pullFrom: 0 }, // ~43 km/h — launch only
-  2: { max: 26, accel: 1.55, pullFrom: 8 }, // ~94 km/h
-  3: { max: 44, accel: 1.4, pullFrom: 18 }, // ~158 km/h
-  4: { max: 64, accel: 1.28, pullFrom: 32 }, // ~230 km/h
-  5: { max: 88, accel: 1.15, pullFrom: 48 }, // ~317 km/h
+  R: { max: 11, accel: 1.5, pullFrom: 0 }, // ~40 km/h backing up
+  1: { max: 15.5, accel: 2.2, pullFrom: 0 }, // ~56 km/h — launch only
+  2: { max: 31, accel: 1.6, pullFrom: 7 }, // ~112 km/h
+  3: { max: 48, accel: 1.2, pullFrom: 16 }, // ~173 km/h
+  4: { max: 66, accel: 0.95, pullFrom: 28 }, // ~238 km/h
+  5: { max: 86, accel: 0.75, pullFrom: 42 }, // ~310 km/h
 };
 
 const BRAKE = 62;
-const DRAG = 0.16;
+const DRAG = 0.002;
 const ROLL = 1.1;
+const ENGINE_BRAKE = 0.4;
 const MAX_STEER = 0.68;
 const STEER_SPEED = 4.0;
 const SHIFT_COOLDOWN = 0.1;
@@ -68,8 +73,9 @@ export class Vehicle {
 
   setGear(gear: Gear) {
     if (this.shiftTimer > 0 && gear === this.state.gear) return;
-    if (gear === "R" && this.state.speed > 6) return;
-    if (gear !== "R" && gear !== "N" && this.state.speed < -6) return;
+    // Reverse only near standstill; forward gears only when not rolling backward
+    if (gear === "R" && this.state.speed > 2) return;
+    if (gear !== "R" && gear !== "N" && this.state.speed < -2) return;
     if (gear !== this.state.gear) {
       this.state.gear = gear;
       this.shiftTimer = SHIFT_COOLDOWN;
@@ -100,28 +106,27 @@ export class Vehicle {
       const stats = GEAR_STATS[gear];
       const forward = gear !== "R";
       const absSpeed = Math.abs(s.speed);
+      const cap = stats.max * this.powerMul;
 
-      if (input.throttle > 0) {
+      if (input.throttle > 0 && absSpeed < cap) {
+        // Lug when the gear is too high for current speed (weak, chuggy pull)
         const belowBand = absSpeed < stats.pullFrom;
-        const overRev = absSpeed > stats.max * 0.9;
-        // Lug in too-high gear; choke hard near redline in too-low gear
         const lug = belowBand
-          ? THREE.MathUtils.clamp(absSpeed / Math.max(1, stats.pullFrom), 0.06, 0.38)
+          ? THREE.MathUtils.clamp(absSpeed / Math.max(1, stats.pullFrom), 0.08, 0.35)
           : 1;
-        const choke = overRev ? THREE.MathUtils.clamp(1 - (absSpeed / stats.max - 0.9) * 8, 0.08, 0.35) : 1;
-        const headroom = Math.max(0.06, 1 - absSpeed / (stats.max * this.powerMul));
+        // Power softens near redline; the hard cut below is the rev limiter
+        const nearLimit = absSpeed / cap;
+        const taper = nearLimit > 0.85 ? Math.max(0.55, 1 - (nearLimit - 0.85) * 3) : 1;
         // 1st gets extra launch punch from standstill
-        const launch = gear === 1 && absSpeed < 4 ? 1.25 : 1;
-        const force =
-          ACCEL_BASE *
-          stats.accel *
-          this.powerMul *
-          input.throttle *
-          lug *
-          choke *
-          launch *
-          (0.45 + headroom * 0.55);
+        const launch = gear === 1 && absSpeed < 5 ? 1.3 : 1;
+        const force = ACCEL_BASE * stats.accel * this.powerMul * input.throttle * lug * taper * launch;
         s.speed += (forward ? 1 : -1) * force * dt;
+        // Rev limiter cut: engine never powers past the gear ceiling
+        if (forward) s.speed = Math.min(s.speed, cap);
+        else s.speed = Math.max(s.speed, -cap);
+      } else if (input.throttle === 0 && absSpeed > 0.5) {
+        // Engine braking when coasting in gear
+        s.speed -= Math.sign(s.speed) * ENGINE_BRAKE * absSpeed * dt;
       }
 
       if (input.brake > 0) {
@@ -132,9 +137,14 @@ export class Vehicle {
         }
       }
 
-      const cap = stats.max * this.powerMul;
-      if (forward && s.speed > cap) s.speed = THREE.MathUtils.lerp(s.speed, cap, 0.18);
-      if (!forward && s.speed < -stats.max) s.speed = THREE.MathUtils.lerp(s.speed, -stats.max, 0.18);
+      // Rev limiter: hard per-gear ceiling. Holding throttle in a low gear pins
+      // speed here (engine choke); after a downshift, speed bleeds down to it.
+      if (forward && s.speed > cap) {
+        s.speed = Math.max(cap, s.speed - (30 + (s.speed - cap) * 2.5) * dt);
+      }
+      if (!forward && s.speed < -stats.max) {
+        s.speed = Math.min(-stats.max, s.speed + (30 + (-stats.max - s.speed) * 2.5) * dt);
+      }
     }
 
     const drag = DRAG * s.speed * Math.abs(s.speed);
@@ -168,10 +178,10 @@ export class Vehicle {
     const kmh = this.kmh;
     // Shift ~85% into each gear's band (matches GEAR_STATS max * 3.6)
     let next: Gear = 1;
-    if (kmh < 36) next = 1;
-    else if (kmh < 80) next = 2;
-    else if (kmh < 135) next = 3;
-    else if (kmh < 200) next = 4;
+    if (kmh < 47) next = 1;
+    else if (kmh < 95) next = 2;
+    else if (kmh < 147) next = 3;
+    else if (kmh < 202) next = 4;
     else next = 5;
     if (next !== this.state.gear) {
       this.state.gear = next;

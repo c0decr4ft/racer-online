@@ -13,45 +13,48 @@ function yawFromTangent(tangent: THREE.Vector3) {
 }
 
 /**
- * Hand-designed closed circuit (~200x140 footprint), raced counter-clockwise
+ * Hand-designed closed circuit (~200x130 footprint), raced counter-clockwise
  * on the map (+X right, +Z up). Flow, starting at SF on the bottom straight:
  *  - long main straight heading +X (SF line + gantry)
- *  - T1: fast sweeping left onto the right side
- *  - short run north with a slight approach kink
+ *  - T1: fast sweeping 90° left up the right side
+ *  - flat-out run north into heavy braking
  *  - T2: 180° hairpin at top-right
- *  - flowing downhill right-hander through the infield
- *  - long climbing right sweeper up to the top arc
- *  - fast top-left sweeper down the far side
- *  - left-right chicane on the left descent
- *  - smooth final left onto the main straight
- * Control points are well spaced (~14-20 apart) so the CatmullRom loop stays
- * smooth and the road never self-overlaps (min corner radius ≈ 13).
+ *  - short drop, then a flowing 90° right into the infield
+ *  - climbing 90° right-hander that opens onto the top
+ *  - long fast left sweeper arcing over the top and down the far side
+ *  - right-left chicane on the left descent
+ *  - wide final left onto the main straight
+ * Corners are built from tangent-continuous arcs sampled every ~8-16 units,
+ * so the CatmullRom loop stays smooth: min corner radius ≈ 13.5, min
+ * self-clearance ≈ 37 — the 14-wide road (and its runoff) never overlaps.
  */
 function buildCircuitPoints(): THREE.Vector3[] {
   const raw: [number, number][] = [
-    // main straight (heading +X), SF at first point
-    [-10, -58], [10, -58], [30, -58], [50, -58],
-    // T1: fast sweeping left up the right side
-    [68, -54], [82, -42], [88, -24],
-    // run north, slight kink into hairpin approach
-    [88, -6], [82, 12],
-    // T2: hairpin (180° left)
-    [78, 24], [76, 42], [63, 49], [50, 42], [48, 26],
-    // downhill run + right sweep into the infield (heading -X)
-    [46, 12], [38, 0], [24, -8], [8, -8],
-    // long climbing right-hander
-    [-6, -2], [-16, 10], [-24, 24],
-    // sweep up to the top arc (heading -X)
-    [-32, 38], [-44, 52], [-60, 60], [-74, 60],
-    // top-left sweeper turning south
-    [-86, 52], [-93, 38],
-    // chicane on the left descent (right-left flick)
-    [-96, 24], [-86, 10], [-96, -6], [-94, -22],
-    // final smooth left onto the main straight
-    [-88, -38], [-80, -50], [-70, -58],
-    [-50, -58], [-30, -58],
+    // main straight (heading +X), SF line at the first point
+    [-10, -58], [10, -58], [30, -58], [46, -58],
+    // T1: sweeping left, r=30
+    [58, -58], [67.3, -56.5], [75.6, -52.3], [82.3, -45.6], [86.5, -37.3], [88, -28],
+    // run north
+    [88, -8], [88, 10],
+    // T2: hairpin, r=20 around (68, 26)
+    [88, 26], [86.5, 33.7], [82.1, 40.1], [75.7, 44.5], [68, 46],
+    [60.3, 44.5], [53.9, 40.1], [49.5, 33.7], [48, 26],
+    // short drop, then 90° right into the infield, r=20
+    [48, 18], [48, 10], [47, 3.8], [44.2, -1.8], [39.8, -6.2], [34.2, -9], [28, -10],
+    // infield run west
+    [16, -10], [8, -10],
+    // climbing 90° right, r=22
+    [1.2, -8.9], [-4.9, -5.8], [-9.8, -0.9], [-12.9, 5.2], [-14, 12],
+    // long left sweeper over the top, r=42 around (-56, 12)
+    [-15.8, 24.3], [-21.2, 35.5], [-29.6, 44.6], [-40.3, 50.9], [-52.3, 53.8],
+    [-64.7, 53.1], [-76.4, 48.7], [-86.2, 41.2], [-93.4, 31.1], [-97.4, 19.3],
+    // right-left chicane on the descent
+    [-98, 7], [-94, -3], [-92, -13], [-93.5, -23],
+    // wide final left onto the main straight, r=24
+    [-94, -34], [-92.2, -43.2], [-87, -51], [-79.2, -56.2], [-70, -58],
+    [-56, -58], [-44, -58], [-32, -58],
   ];
-  // Stretch to ~200x140 world units
+  // Stretch to the full ~200x130 world footprint
   return raw.map(([x, z]) => new THREE.Vector3(x * 1.07, 0, z * 1.15));
 }
 
@@ -137,7 +140,7 @@ export function createTrack(): TrackData {
   const half = width / 2;
 
   const pts = buildCircuitPoints();
-  const path = new THREE.CatmullRomCurve3(pts, true, "catmullrom", 0.35);
+  const path = new THREE.CatmullRomCurve3(pts, true, "catmullrom", 0.5);
 
   // Bright map-style grass
   const ground = new THREE.Mesh(
@@ -247,7 +250,7 @@ export function createTrack(): TrackData {
     // lower infield (between infield leg and main straight)
     [10, -35, 0.85], [30, -30, 0.8], [-15, -30, 0.9], [40, -42, 0.75],
     // upper infield
-    [5, 48, 0.85], [-5, 12, 0.75],
+    [5, 48, 0.85], [8, 10, 0.75],
     // perimeter
     [-122, -52], [-126, 55], [-92, 88], [-42, 94], [20, 94],
     [72, 88], [116, 58], [122, -12], [112, -52], [62, -92],
