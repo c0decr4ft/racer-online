@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RACER ONLINE</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@500;600;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="game"></canvas>
+      <div id="player-tags"></div>
+
+      <div id="hud">
+        <div class="hud-top">
+          <div class="brand">RACER<span>ONLINE</span></div>
+          <div id="net-status" class="net-status hidden">OFFLINE</div>
+          <div class="pos-block">
+            <div class="label">POS</div>
+            <div id="position">1/6</div>
+          </div>
+          <div class="lap-block">
+            <div class="label">LAP</div>
+            <div id="lap">1<span>/3</span></div>
+          </div>
+          <div class="time-block">
+            <div class="label">TIME</div>
+            <div id="time">0:00.000</div>
+          </div>
+          <button id="pause-btn" class="pause-btn hidden" type="button" aria-label="Pause">❚❚</button>
+        </div>
+
+        <div class="hud-bottom">
+          <div class="speed-block">
+            <div id="speed">0</div>
+            <div class="unit">KM/H</div>
+          </div>
+          <div class="gear-block">
+            <div class="label">GEAR</div>
+            <div id="gear">N</div>
+          </div>
+          <div class="best-block">
+            <div class="label">BEST</div>
+            <div id="best">--:--.---</div>
+          </div>
+        </div>
+
+        <div id="wrong-way" class="wrong-way hidden" aria-live="assertive">WRONG WAY</div>
+      </div>
+
+      <div id="overlay" class="overlay">
+        <div class="overlay-inner">
+          <p class="eyebrow">READY TO RACE</p>
+          <h1>RACER<br /><span>ONLINE</span></h1>
+          <p class="tagline">GT coupe · race AI rivals on the circuit</p>
+
+          <div class="menu-actions">
+            <button id="start-btn" type="button">START RACE</button>
+          </div>
+
+          <p class="controls">
+            <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> drive ·
+            <kbd>1</kbd>–<kbd>5</kbd> shift · <kbd>R</kbd> reverse ·
+            <kbd>SPACE</kbd> brake · <kbd>Esc</kbd> pause · <kbd>⌫</kbd> reset
+          </p>
+          <p class="controls hint">1st = launch only · shift 2–5 for top speed · wrong gear lugs or redlines</p>
+        </div>
+      </div>
+
+      <div id="pause" class="overlay hidden">
+        <div class="overlay-inner">
+          <p class="eyebrow">PAUSED</p>
+          <h1>HOLD</h1>
+          <p class="tagline">Race frozen · press Esc to resume</p>
+          <button id="resume-btn" type="button">RESUME</button>
+          <button id="pause-restart-btn" class="btn-ghost" type="button">RESTART</button>
+        </div>
+      </div>
+
+      <div id="finish" class="overlay hidden">
+        <div class="overlay-inner">
+          <p class="eyebrow">SESSION COMPLETE</p>
+          <h1>FINISH</h1>
+          <p class="tagline">Total <span id="final-time">0:00.000</span></p>
+          <p class="tagline">Best lap <span id="final-best">--:--.---</span></p>
+          <button id="restart-btn" type="button">RACE AGAIN</button>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
