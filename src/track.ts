@@ -12,8 +12,108 @@ function yawFromTangent(tangent: THREE.Vector3) {
   return Math.atan2(tangent.x, tangent.z);
 }
 
+/** Deterministic 0..1 hash from integer coords (stable tree scatter). */
+function hash2(ix: number, iz: number) {
+  let n = Math.imul(ix | 0, 374761393) ^ Math.imul(iz | 0, 668265263);
+  n = Math.imul(n ^ (n >>> 13), 1274126177);
+  return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
+}
+
+const TREE_TRUNK = new THREE.MeshStandardMaterial({ color: 0x5a3a22, roughness: 0.9 });
+const TREE_CANOPY = [
+  new THREE.MeshStandardMaterial({ color: 0x2a8a32, roughness: 0.9 }),
+  new THREE.MeshStandardMaterial({ color: 0x247a2c, roughness: 0.92 }),
+  new THREE.MeshStandardMaterial({ color: 0x33963a, roughness: 0.88 }),
+];
+
+function addTree(group: THREE.Group, x: number, z: number, scale = 1) {
+  const tree = new THREE.Group();
+  const trunk = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.22 * scale, 0.3 * scale, 1.2 * scale, 6),
+    TREE_TRUNK,
+  );
+  trunk.position.y = 0.6 * scale;
+  tree.add(trunk);
+
+  const jitter = hash2(Math.round(x * 10), Math.round(z * 10));
+  const canopy = new THREE.Mesh(
+    new THREE.SphereGeometry(1.35 * scale + jitter * 0.35, 8, 8),
+    TREE_CANOPY[Math.floor(jitter * TREE_CANOPY.length) % TREE_CANOPY.length],
+  );
+  canopy.position.y = 2.0 * scale;
+  canopy.castShadow = true;
+  tree.add(canopy);
+  tree.position.set(x, 0, z);
+  group.add(tree);
+}
+
 /**
- * Hand-designed closed circuit (~200x130 footprint), raced counter-clockwise
+ * Dense forest on the grass: keep clear of asphalt + runoff (half+4.8) plus a
+ * small canopy margin so trunks never sit on the driving surface.
+ */
+function plantForest(group: THREE.Group, path: THREE.CatmullRomCurve3, roadHalf: number) {
+  const clear = roadHalf + 4.8 + 2.2; // outside runoff + canopy radius
+  const samples: THREE.Vector3[] = [];
+  // Dense enough for the ~710m circuit (incl. western lobe) so asphalt stays clear
+  const sampleN = 800;
+  for (let i = 0; i < sampleN; i++) samples.push(path.getPointAt(i / sampleN));
+
+  const minDistToPath = (x: number, z: number) => {
+    let best = Infinity;
+    for (const p of samples) {
+      const d = (p.x - x) * (p.x - x) + (p.z - z) * (p.z - z);
+      if (d < best) best = d;
+    }
+    return Math.sqrt(best);
+  };
+
+  let planted = 0;
+  const tryPlant = (x: number, z: number, scale: number) => {
+    if (Math.abs(x) > 162 || Math.abs(z) > 162) return;
+    if (minDistToPath(x, z) < clear) return;
+    addTree(group, x, z, scale);
+    planted += 1;
+  };
+
+  // 1) Rings along the circuit — dense belts outside + safe infield offsets
+  const ringOffsets = [
+    -16, -20, -25, -31, -38, -46, -56, -68, -82, -98, -116, -136,
+    16, 20, 25, 31, 38, 48, 60,
+  ];
+  const ringSteps = 280;
+  for (const offset of ringOffsets) {
+    for (let i = 0; i < ringSteps; i++) {
+      const t = i / ringSteps;
+      const p = path.getPointAt(t);
+      const tan = path.getTangentAt(t).normalize();
+      const n = new THREE.Vector3(-tan.z, 0, tan.x);
+      const h = hash2(i, Math.round(offset * 10));
+      if (h < 0.18) continue; // thin randomly so rings aren't a perfect fence
+      const lat = offset + (h - 0.5) * 3.2;
+      const along = (hash2(Math.round(offset * 7), i) - 0.5) * 2.4;
+      const x = p.x + n.x * lat + tan.x * along;
+      const z = p.z + n.z * lat + tan.z * along;
+      tryPlant(x, z, 0.65 + h * 0.7);
+    }
+  }
+
+  // 2) Fill the whole green plane with a jittered grid (skips road corridor)
+  const step = 5.2;
+  for (let ix = -160; ix <= 160; ix += step) {
+    for (let iz = -160; iz <= 160; iz += step) {
+      const h = hash2(Math.round(ix * 3), Math.round(iz * 3));
+      if (h < 0.12) continue;
+      const x = ix + (h - 0.5) * 4.2;
+      const z = iz + (hash2(Math.round(iz * 5), Math.round(ix * 5)) - 0.5) * 4.2;
+      tryPlant(x, z, 0.55 + h * 0.85);
+    }
+  }
+
+  return planted;
+}
+
+/**
+ * Hand-designed closed circuit (~200x130 + western lobe), raced counter-clockwise
  * on the map (+X right, +Z up). Flow, starting at SF on the bottom straight:
  *  - long main straight heading +X (SF line + gantry)
  *  - T1: fast sweeping 90° left up the right side
@@ -22,11 +122,11 @@ function yawFromTangent(tangent: THREE.Vector3) {
  *  - short drop, then a flowing 90° right into the infield
  *  - climbing 90° right-hander that opens onto the top
  *  - long fast left sweeper arcing over the top and down the far side
- *  - right-left chicane on the left descent
- *  - wide final left onto the main straight
+ *  - western sweep add-on: peels out past the old chicane (~x=-122) then
+ *    arcs back onto the main straight (keeps SF at t≈0)
  * Corners are built from tangent-continuous arcs sampled every ~8-16 units,
  * so the CatmullRom loop stays smooth: min corner radius ≈ 13.5, min
- * self-clearance ≈ 37 — the 14-wide road (and its runoff) never overlaps.
+ * self-clearance ≈ 30 — the 14-wide road (and its runoff) never overlaps.
  */
 function buildCircuitPoints(): THREE.Vector3[] {
   const raw: [number, number][] = [
@@ -48,13 +148,14 @@ function buildCircuitPoints(): THREE.Vector3[] {
     // long left sweeper over the top, r=42 around (-56, 12)
     [-15.8, 24.3], [-21.2, 35.5], [-29.6, 44.6], [-40.3, 50.9], [-52.3, 53.8],
     [-64.7, 53.1], [-76.4, 48.7], [-86.2, 41.2], [-93.4, 31.1], [-97.4, 19.3],
-    // right-left chicane on the descent
-    [-98, 7], [-94, -3], [-92, -13], [-93.5, -23],
-    // wide final left onto the main straight, r=24
-    [-94, -34], [-92.2, -43.2], [-87, -51], [-79.2, -56.2], [-70, -58],
+    // western sweep add-on (replaces old descent chicane): outward lobe then
+    // ease back onto the main straight at [-70, -58]
+    [-98, 14], [-100, 6], [-104, -2], [-110, -10], [-116, -18], [-120, -28],
+    [-122, -38], [-118, -48], [-110, -54], [-98, -57], [-86, -58], [-76, -58],
+    [-70, -58],
     [-56, -58], [-44, -58], [-32, -58],
   ];
-  // Stretch to the full ~200x130 world footprint
+  // Stretch to the full ~200x130 world footprint (lobe reaches ~x=-131 scaled)
   return raw.map(([x, z]) => new THREE.Vector3(x * 1.07, 0, z * 1.15));
 }
 
@@ -90,50 +191,6 @@ function buildRibbon(
   return geo;
 }
 
-function addTree(group: THREE.Group, x: number, z: number, scale = 1) {
-  const treeGreen = new THREE.MeshStandardMaterial({ color: 0x2a8a32, roughness: 0.9 });
-  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5a3a22, roughness: 0.9 });
-  const tree = new THREE.Group();
-  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.22 * scale, 0.3 * scale, 1.2 * scale, 6), trunkMat);
-  trunk.position.y = 0.6 * scale;
-  tree.add(trunk);
-  const canopy = new THREE.Mesh(
-    new THREE.SphereGeometry(1.35 * scale + Math.random() * 0.35, 8, 8),
-    treeGreen,
-  );
-  canopy.position.y = 2.0 * scale;
-  canopy.castShadow = true;
-  tree.add(canopy);
-  tree.position.set(x, 0, z);
-  group.add(tree);
-}
-
-function addBuilding(
-  group: THREE.Group,
-  x: number,
-  z: number,
-  w: number,
-  d: number,
-  h: number,
-  rot: number,
-  roofColor = 0x8a9098,
-) {
-  const bldgMat = new THREE.MeshStandardMaterial({ color: 0xe8ecf0, roughness: 0.82 });
-  const roofMat = new THREE.MeshStandardMaterial({ color: roofColor, roughness: 0.7 });
-  const b = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), bldgMat);
-  body.position.y = h / 2;
-  body.castShadow = true;
-  body.receiveShadow = true;
-  b.add(body);
-  const roof = new THREE.Mesh(new THREE.BoxGeometry(w * 1.08, 0.22, d * 1.08), roofMat);
-  roof.position.y = h + 0.1;
-  b.add(roof);
-  b.position.set(x, 0, z);
-  b.rotation.y = rot;
-  group.add(b);
-}
-
 export function createTrack(): TrackData {
   const group = new THREE.Group();
   const width = 14;
@@ -154,7 +211,7 @@ export function createTrack(): TrackData {
 
   // Tan sand / gravel runoff
   const runoff = new THREE.Mesh(
-    buildRibbon(path, half + 4.8, -0.02, 560),
+    buildRibbon(path, half + 4.8, -0.02, 600),
     new THREE.MeshStandardMaterial({ color: 0xd4b896, roughness: 1, metalness: 0 }),
   );
   runoff.receiveShadow = true;
@@ -162,7 +219,7 @@ export function createTrack(): TrackData {
 
   // Medium-gray asphalt
   const road = new THREE.Mesh(
-    buildRibbon(path, half, 0.035, 560),
+    buildRibbon(path, half, 0.035, 600),
     new THREE.MeshStandardMaterial({ color: 0x9aa0a8, roughness: 0.92, metalness: 0.04 }),
   );
   road.receiveShadow = true;
@@ -229,67 +286,8 @@ export function createTrack(): TrackData {
   gantry.add(beam);
   group.add(gantry);
 
-  // Pond in the upper infield, framed by the climbing sweep and the hairpin
-  const waterMat = new THREE.MeshStandardMaterial({
-    color: 0x3a9fd8,
-    metalness: 0.3,
-    roughness: 0.25,
-    transparent: true,
-    opacity: 0.92,
-  });
-  const pond = new THREE.Mesh(new THREE.CircleGeometry(1, 7), waterMat);
-  pond.rotation.x = -Math.PI / 2;
-  pond.position.set(12, 0.02, 28);
-  pond.scale.set(9, 7, 1);
-  group.add(pond);
-
-  // Trees — around pond, infield clusters, outer perimeter
-  const treeSpots: [number, number, number?][] = [
-    // around pond
-    [4, 34], [22, 22], [20, 36], [2, 20],
-    // lower infield (between infield leg and main straight)
-    [10, -35, 0.85], [30, -30, 0.8], [-15, -30, 0.9], [40, -42, 0.75],
-    // upper infield
-    [5, 48, 0.85], [8, 10, 0.75],
-    // perimeter
-    [-122, -52], [-126, 55], [-92, 88], [-42, 94], [20, 94],
-    [72, 88], [116, 58], [122, -12], [112, -52], [62, -92],
-    [2, -94], [-48, -92], [-96, -80],
-  ];
-  for (const [x, z, s] of treeSpots) {
-    addTree(group, x + (Math.random() - 0.5) * 4, z + (Math.random() - 0.5) * 4, s ?? 1);
-    if (Math.random() > 0.45) {
-      addTree(group, x + (Math.random() - 0.5) * 8, z + (Math.random() - 0.5) * 8, 0.7 + Math.random() * 0.4);
-    }
-  }
-
-  // Pit building south of SF straight + small buildings outside the loop
-  addBuilding(group, 8, -84, 22, 5.5, 2.4, 0, 0x6a7078); // long pit / garage
-  addBuilding(group, -62, -86, 6, 4, 2.0, 0.15);
-  addBuilding(group, 72, -84, 5, 4, 1.8, -0.2);
-  addBuilding(group, 116, 22, 5.5, 4, 2.0, 0.6);
-  addBuilding(group, -124, 12, 5, 4, 1.9, -0.5);
-  addBuilding(group, -18, 92, 4.5, 3.5, 1.7, 0.3);
-
-  // Small parked cars near the pit and right-side buildings
-  const parkColors = [0xe23b2e, 0xf0c020, 0x2a66f0, 0xe8ecf0, 0x888888];
-  for (const [x, z, rot, ci] of [
-    [112, 34, 0.4, 0],
-    [118, 38, 0.5, 1],
-    [114, 44, 0.3, 3],
-    [-8, -90, 0.1, 0],
-    [0, -91, -0.2, 1],
-    [26, -90, 0.15, 2],
-  ] as const) {
-    const car = new THREE.Mesh(
-      new THREE.BoxGeometry(1.6, 0.55, 3.2),
-      new THREE.MeshStandardMaterial({ color: parkColors[ci], metalness: 0.4, roughness: 0.5 }),
-    );
-    car.position.set(x, 0.35, z);
-    car.rotation.y = rot;
-    car.castShadow = true;
-    group.add(car);
-  }
+  // Dense forest on the grass — clear of asphalt / runoff / walls
+  plantForest(group, path, half);
 
   const heading = yawFromTangent(startTan);
 

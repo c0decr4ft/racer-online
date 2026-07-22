@@ -5,15 +5,6 @@ import { Input } from "./input";
 import { Vehicle, RivalAI } from "./vehicle";
 import { NetClient, RemotePlayer } from "./net/client";
 import type { PlayerPose } from "./net/protocol";
-import {
-  boardSourceLabel,
-  fetchLeaderboard,
-  formatBoardTime,
-  sanitizeDriverName,
-  submitScore,
-  wouldQualify,
-  type LeaderboardEntry,
-} from "./net/leaderboard";
 
 function formatTime(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "--:--.---";
@@ -35,26 +26,29 @@ const COUNTDOWN_STEP_MS = 1000;
  * clear of barriers. Each rival re-traces center+normal*offset densely.
  *
  * Pace tiers by spawn order (rivals = slots 1–5): higher t = further ahead.
- * Skill is a narrow band around 1.0 so the pack races with the player
- * (same GEAR_STATS / powerMul=1) — mild front/mid/back, not runaway/crawl.
+ * Skill + mild powerMul → cruise ~200–250 (fast but playable pack).
  */
 const GRID = [
   { offset: -2.55, t: 0.0, skill: 1.0 }, // player (unused by RivalAI)
-  { offset: 2.35, t: 0.01, skill: 1.12 }, // back — still quick
-  { offset: -1.15, t: 0.018, skill: 1.20 }, // back — packs hot
-  { offset: 0.85, t: 0.026, skill: 1.28 }, // mid — committed pace
-  { offset: -2.75, t: 0.034, skill: 1.36 }, // front — pushes hard
-  { offset: 2.6, t: 0.042, skill: 1.45 }, // front — pace setter
+  { offset: 2.35, t: 0.01, skill: 1.55 }, // back
+  { offset: -1.15, t: 0.018, skill: 1.72 }, // back
+  { offset: 0.85, t: 0.026, skill: 1.92 }, // mid
+  { offset: -2.75, t: 0.034, skill: 2.12 }, // front
+  { offset: 2.6, t: 0.042, skill: 2.35 }, // front — pace setter
 ];
 
 export class Game {
   renderer: THREE.WebGLRenderer;
   scene = new THREE.Scene();
   camera: THREE.PerspectiveCamera;
+  /** Roof-mounted look-behind cam for the always-on rearview inset. */
+  private rearCamera: THREE.PerspectiveCamera;
   input = new Input();
   track = createTrack();
   player!: Vehicle;
   rivals: RivalAI[] = [];
+  /** Show picture-in-picture rearview while driving (hidden on pause/home/finish). */
+  private wantRearview = false;
 
   running = false;
   finished = false;
@@ -104,17 +98,19 @@ export class Game {
     wrongWay: document.getElementById("wrong-way")!,
     bestFlash: document.getElementById("best-flash")!,
     bestFlashTime: document.getElementById("best-flash-time")!,
-    leaderboard: document.getElementById("leaderboard")!,
-    boardList: document.getElementById("board-list")!,
-    boardSource: document.getElementById("board-source")!,
-    nameEntry: document.getElementById("name-entry")!,
-    driverName: document.getElementById("driver-name") as HTMLInputElement,
     countdown: document.getElementById("countdown")!,
+    rearview: document.getElementById("rearview-frame")!,
+    minimap: document.getElementById("minimap") as HTMLCanvasElement,
   };
 
   private pendingFinishMs = 0;
-  private scoreSaveInFlight = false;
   private bestFlashUntil = 0;
+
+  /** Cached centerline samples for the 2D minimap (rebuilt if path changes). */
+  private minimapPath: THREE.CatmullRomCurve3 | null = null;
+  private minimapPts: { x: number; z: number }[] = [];
+  private minimapBounds = { cx: 0, cz: 0, span: 1 };
+  private minimapCtx: CanvasRenderingContext2D | null = null;
 
   /** Grid hold: -1 idle, 0..3 = 3/2/1/GO. Cars frozen until GO releases. */
   private countdownIndex = -1;
@@ -136,6 +132,7 @@ export class Game {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     this.camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 700);
+    this.rearCamera = new THREE.PerspectiveCamera(70, 1.6, 0.2, 400);
     this.scene.background = new THREE.Color(0x87a0bc);
     this.scene.fog = new THREE.Fog(0x87a0bc, 160, 520);
 
@@ -164,7 +161,6 @@ export class Game {
       this.clearRemotes();
       this.setAiVisible(true);
       this.el.netStatus.classList.add("hidden");
-      this.el.leaderboard.classList.add("hidden");
       this.startRace(false);
     };
     document.getElementById("test-drive-btn")!.onclick = () => {
@@ -173,7 +169,6 @@ export class Game {
       this.clearRemotes();
       this.setAiVisible(true);
       this.el.netStatus.classList.add("hidden");
-      this.el.leaderboard.classList.add("hidden");
       this.startRace(true);
     };
     document.getElementById("restart-btn")!.onclick = () => this.startRace(false);
@@ -182,22 +177,6 @@ export class Game {
     document.getElementById("pause-home-btn")!.onclick = () => this.goHome();
     document.getElementById("finish-home-btn")!.onclick = () => this.goHome();
     this.el.pauseBtn.onclick = () => this.pause();
-
-    document.getElementById("home-board-btn")!.onclick = () => this.openLeaderboard();
-    document.getElementById("board-close-btn")!.onclick = () => {
-      this.el.leaderboard.classList.add("hidden");
-    };
-    document.getElementById("submit-score-btn")!.onclick = () => void this.saveDriverScore();
-    this.el.driverName.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") void this.saveDriverScore();
-    });
-    this.el.driverName.addEventListener("input", () => {
-      const cleaned = this.el.driverName.value
-        .normalize("NFKC")
-        .replace(/[^\p{L}\p{N} _]/gu, "")
-        .slice(0, 10);
-      if (cleaned !== this.el.driverName.value) this.el.driverName.value = cleaned;
-    });
   }
 
   private goHome() {
@@ -215,55 +194,10 @@ export class Game {
     this.el.pauseBtn.classList.add("hidden");
     this.el.wrongWay.classList.add("hidden");
     this.el.bestFlash.classList.add("hidden");
-    this.el.nameEntry.classList.add("hidden");
-    this.el.leaderboard.classList.add("hidden");
+    this.el.minimap.classList.add("hidden");
+    this.el.rearview.classList.add("hidden");
     this.el.overlay.classList.remove("hidden");
     this.setAiVisible(true);
-  }
-
-  private renderBoardList(entries: LeaderboardEntry[]) {
-    if (!entries.length) {
-      this.el.boardList.innerHTML = `<li class="empty">No times yet — be the first</li>`;
-      return;
-    }
-    this.el.boardList.innerHTML = entries
-      .map((e, i) => {
-        const cls = i === 0 ? "top1" : i === 1 ? "top2" : i === 2 ? "top3" : "";
-        return `<li class="${cls}"><span class="rank">${i + 1}</span><span class="name">${escapeHtml(e.name)}</span><span class="time">${formatBoardTime(e.timeMs)}</span></li>`;
-      })
-      .join("");
-  }
-
-  private async openLeaderboard() {
-    this.el.leaderboard.classList.remove("hidden");
-    this.el.boardSource.textContent = "Loading…";
-    this.el.boardList.innerHTML = "";
-    const { entries, source } = await fetchLeaderboard();
-    this.el.boardSource.textContent = boardSourceLabel(source);
-    this.renderBoardList(entries);
-  }
-
-  private async saveDriverScore() {
-    if (this.scoreSaveInFlight) return;
-    if (!this.el.driverName.value.trim()) {
-      this.el.driverName.focus();
-      return;
-    }
-    const name = sanitizeDriverName(this.el.driverName.value);
-    this.el.driverName.value = name;
-    const btn = document.getElementById("submit-score-btn") as HTMLButtonElement;
-    this.scoreSaveInFlight = true;
-    btn.disabled = true;
-    try {
-      const { entries, source } = await submitScore(name, this.pendingFinishMs, this.bestLap);
-      this.el.nameEntry.classList.add("hidden");
-      this.el.leaderboard.classList.remove("hidden");
-      this.el.boardSource.textContent = boardSourceLabel(source, true);
-      this.renderBoardList(entries);
-    } finally {
-      this.scoreSaveInFlight = false;
-      btn.disabled = false;
-    }
   }
 
   private onNetWelcome(_id: string, room: string, players: PlayerPose[], you: PlayerPose) {
@@ -384,8 +318,6 @@ export class Game {
     this.el.overlay.classList.add("hidden");
     this.el.finish.classList.add("hidden");
     this.el.pause.classList.add("hidden");
-    this.el.leaderboard.classList.add("hidden");
-    this.el.nameEntry.classList.add("hidden");
     this.el.bestFlash.classList.add("hidden");
     this.el.pauseBtn.classList.remove("hidden");
     this.el.finishEyebrow.textContent = "SESSION COMPLETE";
@@ -563,6 +495,7 @@ export class Game {
     }
 
     const inputPeek = this.input.getState();
+    this.wantRearview = this.running && !this.paused && !this.finished;
     if (inputPeek.pause) {
       if (this.paused) this.resume();
       else if (this.running && !this.finished) this.pause();
@@ -635,7 +568,70 @@ export class Game {
       this.updateCamera(dt);
     }
 
+    this.renderViews();
+  }
+
+  /** Main chase cam + always-on bottom-right rearview mirror inset while driving. */
+  private renderViews() {
+    const w = innerWidth;
+    const h = innerHeight;
+    this.renderer.setScissorTest(false);
+    this.renderer.setViewport(0, 0, w, h);
+    this.renderer.autoClear = true;
     this.renderer.render(this.scene, this.camera);
+
+    if (!this.wantRearview || !this.player) {
+      this.el.rearview.classList.add("hidden");
+      return;
+    }
+
+    // Bottom-right corner — mirrors minimap’s bottom inset, opposite side
+    const mw = Math.floor(Math.min(260, w * 0.22));
+    const mh = Math.floor(mw * 0.52);
+    const rightPad = Math.floor(Math.min(22, w * 0.02));
+    const bottomPad = Math.floor(Math.min(118, h * 0.155)); // clear speed HUD
+    const mx = w - mw - rightPad;
+    const my = bottomPad; // WebGL origin is bottom-left
+
+    this.updateRearCamera();
+    this.rearCamera.aspect = mw / mh;
+    this.rearCamera.updateProjectionMatrix();
+
+    this.renderer.autoClear = false;
+    this.renderer.clearDepth();
+    this.renderer.setScissorTest(true);
+    this.renderer.setScissor(mx, my, mw, mh);
+    this.renderer.setViewport(mx, my, mw, mh);
+    this.renderer.render(this.scene, this.rearCamera);
+    this.renderer.setScissorTest(false);
+    this.renderer.setViewport(0, 0, w, h);
+    this.renderer.autoClear = true;
+
+    const frame = this.el.rearview;
+    frame.classList.remove("hidden");
+    frame.style.width = `${mw}px`;
+    frame.style.height = `${mh}px`;
+    frame.style.left = `${mx}px`;
+    frame.style.top = `${h - mh - bottomPad}px`;
+    frame.style.right = "auto";
+    frame.style.bottom = "auto";
+  }
+
+  /** Look behind the car from just above the roof. */
+  private updateRearCamera() {
+    const s = this.player.state;
+    const hx = Math.sin(s.heading);
+    const hz = Math.cos(s.heading);
+    this.rearCamera.position.set(
+      s.position.x - hx * 0.35,
+      1.95,
+      s.position.z - hz * 0.35,
+    );
+    this.rearCamera.lookAt(
+      s.position.x - hx * 28,
+      1.1,
+      s.position.z - hz * 28,
+    );
   }
 
   /** Track edges are invisible walls: clamp lateral position at the edge and
@@ -820,11 +816,10 @@ export class Game {
     this.el.wrongWay.classList.add("hidden");
     this.el.pause.classList.add("hidden");
     this.el.pauseBtn.classList.add("hidden");
+    this.el.minimap.classList.add("hidden");
     this.pendingFinishMs = this.raceNow() - this.raceStart;
     this.el.finalTime.textContent = formatTime(this.pendingFinishMs);
     this.el.finalBest.textContent = formatTime(this.bestLap);
-    this.el.nameEntry.classList.add("hidden");
-    this.el.driverName.value = "";
 
     const place = this.playerFinishPlace();
     const field = this.online ? this.remotes.size + 1 : this.rivals.length + 1;
@@ -838,7 +833,6 @@ export class Game {
     }
 
     this.el.finish.classList.remove("hidden");
-    void this.checkLeaderboardQualify();
   }
 
   /**
@@ -860,13 +854,6 @@ export class Game {
     return 1 + this.rivals.filter((r) => r.raceDone).length;
   }
 
-  private async checkLeaderboardQualify() {
-    const qualifies = await wouldQualify(this.pendingFinishMs);
-    if (!qualifies) return;
-    this.el.nameEntry.classList.remove("hidden");
-    this.el.driverName.focus();
-  }
-
   private updateHud() {
     this.el.speed.textContent = String(Math.round(this.player.kmh));
     this.el.gear.textContent = this.player.gearLabel;
@@ -879,6 +866,7 @@ export class Game {
           : this.raceNow() - this.raceStart;
     this.el.time.textContent = formatTime(clockMs);
     this.updateBestFlash();
+    this.updateMinimap();
 
     if (this.el.position) {
       // Finished AI sit at race distance; otherwise laps + track fraction.
@@ -901,6 +889,116 @@ export class Game {
         this.el.position.textContent = `${place}/${this.rivals.length + 1}`;
       }
     }
+  }
+
+  /** Sample live track path into 2D bounds — stays correct if the circuit changes. */
+  private ensureMinimapTrack() {
+    const path = this.track.path;
+    if (this.minimapPath === path && this.minimapPts.length > 0) return;
+    this.minimapPath = path;
+    const n = 256;
+    const pts: { x: number; z: number }[] = [];
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (let i = 0; i < n; i++) {
+      const p = path.getPointAt(i / n);
+      pts.push({ x: p.x, z: p.z });
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.z < minZ) minZ = p.z;
+      if (p.z > maxZ) maxZ = p.z;
+    }
+    // Close the loop
+    const first = pts[0];
+    pts.push({ x: first.x, z: first.z });
+    this.minimapPts = pts;
+    const pad = 8;
+    this.minimapBounds = {
+      cx: (minX + maxX) * 0.5,
+      cz: (minZ + maxZ) * 0.5,
+      span: Math.max(maxX - minX, maxZ - minZ, 1) + pad * 2,
+    };
+  }
+
+  private worldToMinimap(x: number, z: number, w: number, h: number): [number, number] {
+    const { cx, cz, span } = this.minimapBounds;
+    const inset = 10;
+    const scale = (Math.min(w, h) - inset * 2) / span;
+    return [w * 0.5 + (x - cx) * scale, h * 0.5 + (z - cz) * scale];
+  }
+
+  private hexCss(color: number): string {
+    return `#${color.toString(16).padStart(6, "0")}`;
+  }
+
+  /** Bottom-left track map: course outline + player + rivals (race & Test Drive). */
+  private updateMinimap() {
+    const canvas = this.el.minimap;
+    if (!canvas) return;
+    if (!this.running || this.finished) {
+      canvas.classList.add("hidden");
+      return;
+    }
+    canvas.classList.remove("hidden");
+    this.ensureMinimapTrack();
+
+    const dpr = Math.min(devicePixelRatio, 2);
+    const cssW = canvas.clientWidth || 148;
+    const cssH = canvas.clientHeight || 148;
+    const w = Math.round(cssW * dpr);
+    const h = Math.round(cssH * dpr);
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+
+    if (!this.minimapCtx) this.minimapCtx = canvas.getContext("2d");
+    const ctx = this.minimapCtx;
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = "rgba(8, 12, 20, 0.55)";
+    ctx.fillRect(0, 0, w, h);
+
+    // Course outline
+    ctx.beginPath();
+    for (let i = 0; i < this.minimapPts.length; i++) {
+      const p = this.minimapPts[i];
+      const [mx, my] = this.worldToMinimap(p.x, p.z, w, h);
+      if (i === 0) ctx.moveTo(mx, my);
+      else ctx.lineTo(mx, my);
+    }
+    ctx.strokeStyle = "rgba(242, 245, 250, 0.55)";
+    ctx.lineWidth = 2 * dpr;
+    ctx.lineJoin = "round";
+    ctx.stroke();
+
+    const drawDot = (x: number, z: number, fill: string, r: number) => {
+      const [mx, my] = this.worldToMinimap(x, z, w, h);
+      ctx.beginPath();
+      ctx.arc(mx, my, r * dpr, 0, Math.PI * 2);
+      ctx.fillStyle = fill;
+      ctx.fill();
+    };
+
+    if (this.online) {
+      for (const remote of this.remotes.values()) {
+        drawDot(remote.mesh.position.x, remote.mesh.position.z, "#7ec8ff", 3.2);
+      }
+    } else {
+      this.rivals.forEach((r, i) => {
+        const color = CAR_PALETTE.rivals[i] ?? 0xe23b2e;
+        const pos = r.vehicle.state.position;
+        drawDot(pos.x, pos.z, this.hexCss(color), 3.2);
+      });
+    }
+
+    // Player on top — bright accent so it reads clearly
+    const pp = this.player.state.position;
+    drawDot(pp.x, pp.z, "#ffffff", 4.2);
+    drawDot(pp.x, pp.z, "#ff3b2e", 2.6);
   }
 
   private snapCamera() {
@@ -940,12 +1038,4 @@ export class Game {
     this.camLook.lerp(look, dt <= 0 ? 1 : 1 - Math.exp(-8 * dt));
     this.camera.lookAt(this.camLook);
   }
-}
-
-function escapeHtml(s: string) {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }

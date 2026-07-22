@@ -28,7 +28,7 @@ export class Input {
 
   constructor() {
     window.addEventListener("keydown", (e) => {
-      // Let leaderboard / form fields receive digits, R/N, Backspace, Space, etc.
+      // Let form fields receive digits, R/N, Backspace, Space, etc.
       if (isTypingTarget(e.target)) return;
 
       this.keys.add(e.code);
