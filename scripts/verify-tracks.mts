@@ -12,7 +12,8 @@ import { TRACKS } from "../src/trackDefs.ts";
 
 const SAMPLES = 720;
 const ROAD_WIDTH = 14;
-const MIN_CLEARANCE = ROAD_WIDTH + 2; // centerlines must stay ≥ this apart for non-adjacent parts
+const MIN_CLEARANCE = 30; // centerlines: keep ≳30m between non-adjacent parts (road 14m)
+const MIN_RADIUS = 13.5; // corner radii ≳13.5 so a 14m road never folds onto itself
 const ADJACENT_SKIP = Math.floor(SAMPLES * 0.08); // ignore nearby samples along path (~8% of loop)
 const JOIN_TANGENT_MAX_DEG = 12;
 const KINK_TURN_DEG = 28; // sharp local heading change over a short window
@@ -107,6 +108,24 @@ function analyze(id: string, points: readonly (readonly [number, number])[]) {
   }
   kinks.sort((a, b) => b.deg - a.deg);
 
+  // Min local radius of curvature
+  let minR = Infinity;
+  let minRAt: { i: number; x: number; z: number } | null = null;
+  for (let i = 0; i < SAMPLES; i++) {
+    const t = i / SAMPLES;
+    const ta = path.getTangentAt(t).normalize();
+    const tb = path.getTangentAt(((i + 1) % SAMPLES) / SAMPLES).normalize();
+    const ds = dist(samples[i]!, samples[(i + 1) % SAMPLES]!);
+    const dAng = Math.acos(Math.max(-1, Math.min(1, ta.dot(tb))));
+    if (ds > 1e-6) {
+      const R = 1 / (dAng / ds);
+      if (R < minR) {
+        minR = R;
+        minRAt = { i, x: samples[i]!.x, z: samples[i]!.z };
+      }
+    }
+  }
+
   // Control-point spacing (very tight clusters can cause wiggles)
   const cpGaps: number[] = [];
   for (let i = 0; i < points.length; i++) {
@@ -123,6 +142,8 @@ function analyze(id: string, points: readonly (readonly [number, number])[]) {
     crossSample: crosses.slice(0, 5),
     minClear,
     clearAt,
+    minR,
+    minRAt,
     joinDeg,
     kinkCount: kinks.length,
     topKinks: kinks.slice(0, 5),
@@ -131,11 +152,12 @@ function analyze(id: string, points: readonly (readonly [number, number])[]) {
     ok:
       crosses.length === 0 &&
       minClear >= MIN_CLEARANCE &&
+      minR >= MIN_RADIUS &&
       joinDeg <= JOIN_TANGENT_MAX_DEG,
   };
 }
 
-const ROAD_NOTE = `road=${ROAD_WIDTH}m, minClear≥${MIN_CLEARANCE}m, join≤${JOIN_TANGENT_MAX_DEG}°, kink≥${KINK_TURN_DEG}°`;
+const ROAD_NOTE = `road=${ROAD_WIDTH}m, minClear≥${MIN_CLEARANCE}m, minR≥${MIN_RADIUS}m, join≤${JOIN_TANGENT_MAX_DEG}°, kink≥${KINK_TURN_DEG}°`;
 console.log(`verify-tracks (${SAMPLES} samples, ${ROAD_NOTE})\n`);
 
 let fail = 0;
@@ -146,7 +168,7 @@ for (const t of TRACKS) {
   console.log(
     `${status}  ${r.id}  len=${r.length.toFixed(0)}m  ctrl=${r.nCtrl}  ` +
       `crosses=${r.crosses}  minClear=${r.minClear.toFixed(1)}m  ` +
-      `join=${r.joinDeg.toFixed(1)}°  kinks=${r.kinkCount}  ` +
+      `minR=${r.minR.toFixed(1)}m  join=${r.joinDeg.toFixed(1)}°  kinks=${r.kinkCount}  ` +
       `cpGap=${r.minCpGap.toFixed(1)}–${r.maxCpGap.toFixed(1)}`,
   );
   if (r.crossSample.length) {
@@ -157,6 +179,11 @@ for (const t of TRACKS) {
   if (r.minClear < MIN_CLEARANCE && r.clearAt) {
     console.log(
       `       near-overlap samples ${r.clearAt.i}/${r.clearAt.j} d=${r.minClear.toFixed(1)}m`,
+    );
+  }
+  if (r.minR < MIN_RADIUS && r.minRAt) {
+    console.log(
+      `       tight radius ${r.minR.toFixed(1)}m @ (${r.minRAt.x.toFixed(0)}, ${r.minRAt.z.toFixed(0)})`,
     );
   }
   if (r.topKinks.length) {

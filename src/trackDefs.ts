@@ -14,7 +14,10 @@ export type TrackDef = {
   points: readonly (readonly [number, number])[];
 };
 
-/** Original circuit — western lobe + main straight (~710m). */
+/**
+ * Original circuit — eastern hairpin + western lobe + SF straight (~707m).
+ * West lobe uses a single smooth sweep (no S-wobble) so corner radii stay ≳13.5.
+ */
 const FOREST_LOOP_RAW: readonly (readonly [number, number])[] = [
   [-10, -58],
   [10, -58],
@@ -59,22 +62,18 @@ const FOREST_LOOP_RAW: readonly (readonly [number, number])[] = [
   [-64.7, 53.1],
   [-76.4, 48.7],
   [-86.2, 41.2],
-  [-93.4, 31.1],
-  [-97.4, 19.3],
-  [-98, 14],
-  [-100, 6],
-  [-104, -2],
-  [-110, -10],
-  [-116, -18],
-  [-120, -28],
-  [-122, -38],
-  [-118, -48],
-  [-110, -54],
-  [-98, -57],
-  [-86, -58],
+  // Smooth western lobe (was a tight S-wobble around x≈-105)
+  [-93, 30],
+  [-98, 16],
+  [-104, 2],
+  [-112, -12],
+  [-118, -26],
+  [-120, -40],
+  [-114, -50],
+  [-102, -56],
+  [-90, -58],
   [-76, -58],
-  [-70, -58],
-  [-56, -58],
+  [-60, -58],
   [-44, -58],
   [-32, -58],
 ];
@@ -186,8 +185,9 @@ const MEADOW_SWEEP = scalePts(
 );
 
 /**
- * Canyon Cut — angular stepped circuit with western inset (~736m).
- * SF on south straight; SW corner settles onto z=-55 before the loop join.
+ * Canyon Cut — angular stadium with a purposeful western hairpin (~682m).
+ * Replaces the old reverse-fold western inset (R≈5m spaghetti). SF on south
+ * straight; approach stays eastbound onto z=-55 so the join has matching tangents.
  */
 const CANYON_CUT = scalePts(
   [
@@ -204,26 +204,17 @@ const CANYON_CUT = scalePts(
     [30, 58],
     [-5, 60],
     [-35, 52],
-    [-50, 35],
-    [-52, 10],
-    [-48, -8],
-    [-62, -20],
-    [-82, -18],
-    [-98, -2],
-    [-102, 20],
-    [-95, 40],
-    [-110, 50],
-    [-126, 40],
-    [-134, 18],
-    [-132, -8],
-    [-122, -28],
-    [-112, -42],
-    [-102, -50],
-    [-90, -54],
+    [-55, 38],
+    [-72, 22],
+    [-88, 5],
+    [-100, -12],
+    [-105, -30],
+    [-98, -45],
+    [-90, -52],
     [-80, -55],
   ],
-  1.05,
-  1.1,
+  1.35,
+  1.4,
 );
 
 /**
