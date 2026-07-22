@@ -2,6 +2,10 @@
  * Named closed-circuit control points (XZ meters). First point ≈ start/finish;
  * CatmullRom closed=true closes the loop. Keep self-clearance ≳30m and corner
  * radii ≳13.5 so a 14m road never overlaps.
+ *
+ * SF join rule: put start/finish on a straight (or gentle curve) with several
+ * evenly spaced control points wrapping the loop so Catmull-Rom tangents match
+ * entering/leaving t≈0 — no reverse-bump or kink at the join.
  */
 export type TrackDef = {
   id: string;
@@ -84,74 +88,72 @@ function scalePts(
 }
 
 /**
- * Harbor Circuit — long east–west oval with a southern dock chicane (~725m).
+ * Harbor Circuit — long east–west oval with a mid-south dock chicane (~755m).
+ * SF sits mid-south going east; chicane is east of SF so the loop join stays smooth.
  */
 const HARBOR_CIRCUIT = scalePts(
   [
-    [-95, -42],
-    [-60, -42],
-    [-20, -42],
-    [20, -42],
-    [55, -42],
-    [78, -40],
-    [95, -32],
-    [104, -18],
-    [106, 0],
-    [104, 18],
-    [95, 32],
-    [78, 40],
-    [55, 42],
-    [20, 42],
-    [-20, 42],
-    [-55, 42],
+    [-45, -46],
+    [-15, -46],
+    [15, -46],
+    [40, -50],
+    [58, -56],
+    [78, -54],
+    [95, -46],
+    [118, -38],
+    [138, -24],
+    [148, -6],
+    [148, 12],
+    [138, 28],
+    [118, 40],
+    [92, 46],
+    [60, 48],
+    [25, 48],
+    [-10, 48],
+    [-45, 46],
     [-78, 40],
-    [-95, 32],
-    [-104, 18],
-    [-106, 0],
-    [-104, -18],
-    [-100, -30],
-    [-92, -38],
-    [-85, -44],
-    [-78, -48],
-    [-70, -46],
-    [-65, -42],
+    [-108, 26],
+    [-128, 8],
+    [-132, -10],
+    [-120, -28],
+    [-95, -40],
+    [-70, -44],
   ],
+  1.15,
   1.2,
-  1.25,
 );
 
 /**
- * Summit Pass — elongated paperclip with twin hairpins + east kink (~700m).
+ * Summit Pass — elongated paperclip with twin hairpins + soft east bulge (~693m).
+ * SF mid east straight northbound; south hairpin feeds onto that straight before wrap.
  */
 const SUMMIT_PASS = scalePts(
   [
-    [55, -95],
-    [55, -55],
-    [55, -25],
-    [62, -10],
-    [70, 5],
-    [62, 20],
-    [55, 40],
-    [55, 65],
-    [45, 82],
-    [22, 95],
-    [-5, 98],
-    [-32, 92],
-    [-50, 75],
-    [-58, 55],
-    [-58, 20],
-    [-58, -20],
-    [-58, -55],
-    [-58, -75],
-    [-48, -95],
-    [-22, -108],
-    [5, -112],
-    [32, -105],
-    [50, -90],
-    [55, -75],
+    [50, -45],
+    [50, -20],
+    [50, 5],
+    [54, 28],
+    [58, 48],
+    [54, 68],
+    [42, 88],
+    [22, 102],
+    [0, 108],
+    [-22, 102],
+    [-40, 85],
+    [-48, 60],
+    [-50, 32],
+    [-50, 5],
+    [-50, -22],
+    [-50, -48],
+    [-44, -72],
+    [-28, -92],
+    [-4, -102],
+    [20, -98],
+    [38, -82],
+    [48, -62],
   ],
-  1.12,
-  1.12,
+  1.3,
+  1.3,
 );
 
 /**
@@ -184,13 +186,15 @@ const MEADOW_SWEEP = scalePts(
 );
 
 /**
- * Canyon Cut — angular stepped circuit with western inset (~740m).
+ * Canyon Cut — angular stepped circuit with western inset (~736m).
+ * SF on south straight; SW corner settles onto z=-55 before the loop join.
  */
 const CANYON_CUT = scalePts(
   [
-    [-90, -55],
+    [-70, -55],
     [-40, -55],
-    [10, -55],
+    [-10, -55],
+    [20, -55],
     [50, -52],
     [72, -40],
     [80, -20],
@@ -202,18 +206,21 @@ const CANYON_CUT = scalePts(
     [-35, 52],
     [-50, 35],
     [-52, 10],
-    [-45, -10],
-    [-60, -20],
-    [-80, -15],
-    [-95, 0],
-    [-100, 22],
-    [-92, 42],
+    [-48, -8],
+    [-62, -20],
+    [-82, -18],
+    [-98, -2],
+    [-102, 20],
+    [-95, 40],
     [-110, 50],
-    [-125, 38],
-    [-132, 15],
-    [-130, -10],
-    [-118, -35],
-    [-95, -50],
+    [-126, 40],
+    [-134, 18],
+    [-132, -8],
+    [-122, -28],
+    [-112, -42],
+    [-102, -50],
+    [-90, -54],
+    [-80, -55],
   ],
   1.05,
   1.1,

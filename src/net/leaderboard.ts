@@ -318,31 +318,3 @@ export function getLocalDriverName(): string | null {
     return null;
   }
 }
-
-export function rankForDriver(entries: LeaderboardEntry[], name: string): number | null {
-  const key = sanitizeDriverName(name).trim().toLowerCase();
-  if (!key) return null;
-  let best: number | null = null;
-  for (let i = 0; i < entries.length; i++) {
-    if (entries[i]!.name.trim().toLowerCase() === key) {
-      const place = i + 1;
-      if (best == null || place < best) best = place;
-    }
-  }
-  return best;
-}
-
-/** Best place across every track board — homepage rank badge. */
-export async function bestRankAcrossTracks(name: string): Promise<number | null> {
-  let best: number | null = null;
-  for (const t of TRACKS) {
-    try {
-      const { entries } = await fetchLeaderboard(t.id);
-      const rank = rankForDriver(entries, name);
-      if (rank != null && (best == null || rank < best)) best = rank;
-    } catch {
-      /* skip */
-    }
-  }
-  return best;
-}

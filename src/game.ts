@@ -16,11 +16,9 @@ import { Vehicle, RivalAI } from "./vehicle";
 import { NetClient, RemotePlayer } from "./net/client";
 import type { PlayerPose } from "./net/protocol";
 import {
-  bestRankAcrossTracks,
   boardSourceLabel,
   fetchLeaderboard,
   formatBoardTime,
-  getLocalDriverName,
   sanitizeDriverName,
   saveLocalDriverName,
   submitScore,
@@ -137,7 +135,6 @@ export class Game {
     leaderboard: document.getElementById("leaderboard")!,
     boardList: document.getElementById("board-list")!,
     boardSource: document.getElementById("board-source")!,
-    homeRank: document.getElementById("home-rank")!,
     nameEntry: document.getElementById("name-entry")!,
     driverName: document.getElementById("driver-name") as HTMLInputElement,
     countdown: document.getElementById("countdown")!,
@@ -224,7 +221,6 @@ export class Game {
     this.spawnVehicles();
     this.snapCamera();
     this.bindUi();
-    void this.refreshHomeRank();
 
     addEventListener("resize", () => this.onResize());
     this.renderer.setAnimationLoop(() => this.frame());
@@ -269,7 +265,6 @@ export class Game {
     document.getElementById("board-close-btn")!.onclick = () => {
       this.el.leaderboard.classList.add("hidden");
       this.audio.playMenuMusic();
-      void this.refreshHomeRank();
     };
     this.el.overlay.addEventListener("pointerdown", () => {
       void this.unlockAndMaybeMenuMusic();
@@ -450,32 +445,6 @@ export class Game {
     this.setAiVisible(true);
     this.audio.playMenuMusic();
     this.syncMuteBtn();
-    void this.refreshHomeRank();
-  }
-
-  /** Show this player's best top-10 place across all courses. */
-  private applyHomeRankNumber(rank: number | null) {
-    if (rank == null) {
-      this.el.homeRank.textContent = "";
-      this.el.homeRank.classList.add("hidden");
-      return;
-    }
-    this.el.homeRank.textContent = String(rank);
-    this.el.homeRank.classList.remove("hidden");
-  }
-
-  private async refreshHomeRank() {
-    const name = getLocalDriverName();
-    if (!name) {
-      this.applyHomeRankNumber(null);
-      return;
-    }
-    try {
-      const rank = await bestRankAcrossTracks(name);
-      this.applyHomeRankNumber(rank);
-    } catch {
-      this.applyHomeRankNumber(null);
-    }
   }
 
   private renderBoardList(entries: LeaderboardEntry[]) {
@@ -500,7 +469,6 @@ export class Game {
     this.el.boardList.innerHTML = "";
     this.renderBoardTrackPicker();
     await this.loadBoardForTrack(this.boardTrackId);
-    void this.refreshHomeRank();
   }
 
   private renderBoardTrackPicker() {
@@ -546,7 +514,6 @@ export class Game {
       this.renderBoardTrackPicker();
       this.el.boardSource.textContent = boardSourceLabel(source, true);
       this.renderBoardList(entries);
-      void this.refreshHomeRank();
     } finally {
       this.scoreSaveInFlight = false;
       btn.disabled = false;
