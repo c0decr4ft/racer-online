@@ -35,16 +35,16 @@ const COUNTDOWN_STEP_MS = 1000;
  * clear of barriers. Each rival re-traces center+normal*offset densely.
  *
  * Pace tiers by spawn order (rivals = slots 1–5): higher t = further ahead.
- * Front 2 (high t) hot / mid 1 / back 2 (low t) slow — pack strings out;
- * overall floor/ceiling bumped vs prior mid≈1.06 / hot≈1.66–1.78 / slow≈0.72–0.82.
+ * Skill is a narrow band around 1.0 so the pack races with the player
+ * (same GEAR_STATS / powerMul=1) — mild front/mid/back, not runaway/crawl.
  */
 const GRID = [
   { offset: -2.55, t: 0.0, skill: 1.0 }, // player (unused by RivalAI)
-  { offset: 2.35, t: 0.01, skill: 0.88 }, // back — near player, drifts back
-  { offset: -1.15, t: 0.018, skill: 0.98 }, // back — second backmarker
-  { offset: 0.85, t: 0.026, skill: 1.22 }, // mid — packs with the player
-  { offset: -2.75, t: 0.034, skill: 1.82 }, // front — second string
-  { offset: 2.6, t: 0.042, skill: 1.94 }, // front — pace setter (furthest ahead)
+  { offset: 2.35, t: 0.01, skill: 1.12 }, // back — still quick
+  { offset: -1.15, t: 0.018, skill: 1.20 }, // back — packs hot
+  { offset: 0.85, t: 0.026, skill: 1.28 }, // mid — committed pace
+  { offset: -2.75, t: 0.034, skill: 1.36 }, // front — pushes hard
+  { offset: 2.6, t: 0.042, skill: 1.45 }, // front — pace setter
 ];
 
 export class Game {
@@ -96,6 +96,9 @@ export class Game {
     pauseBtn: document.getElementById("pause-btn")!,
     finalTime: document.getElementById("final-time")!,
     finalBest: document.getElementById("final-best")!,
+    finishEyebrow: document.getElementById("finish-eyebrow")!,
+    finishTitle: document.getElementById("finish-title")!,
+    finalPlace: document.getElementById("final-place")!,
     position: document.getElementById("position"),
     netStatus: document.getElementById("net-status")!,
     wrongWay: document.getElementById("wrong-way")!,
@@ -385,6 +388,9 @@ export class Game {
     this.el.nameEntry.classList.add("hidden");
     this.el.bestFlash.classList.add("hidden");
     this.el.pauseBtn.classList.remove("hidden");
+    this.el.finishEyebrow.textContent = "SESSION COMPLETE";
+    this.el.finishTitle.textContent = "FINISH";
+    this.el.finalPlace.textContent = "1/6";
     this.finished = false;
     this.paused = false;
     this.running = true;
@@ -587,6 +593,12 @@ export class Game {
           const cars = [this.player, ...this.rivals.map((r) => r.vehicle)];
           this.rivals.forEach((r) => r.update(dt, this.track.path, playerT, now * 0.001, cars));
           this.rivals.forEach((r) => this.keepOnTrack(r.vehicle));
+          // Race mode: AI that complete TOTAL_LAPS finish ahead; practice never ends for them
+          if (!this.practice) {
+            for (const r of this.rivals) {
+              if (!r.raceDone && r.laps >= TOTAL_LAPS) r.markRaceDone();
+            }
+          }
           this.resolveCollisions();
         } else {
           this.net.maybeSendPose(dt, {
@@ -813,8 +825,39 @@ export class Game {
     this.el.finalBest.textContent = formatTime(this.bestLap);
     this.el.nameEntry.classList.add("hidden");
     this.el.driverName.value = "";
+
+    const place = this.playerFinishPlace();
+    const field = this.online ? this.remotes.size + 1 : this.rivals.length + 1;
+    this.el.finalPlace.textContent = `${place}/${field}`;
+    if (place === 1) {
+      this.el.finishEyebrow.textContent = "RACE WINNER";
+      this.el.finishTitle.textContent = "YOU WIN";
+    } else {
+      this.el.finishEyebrow.textContent = "RACE COMPLETE";
+      this.el.finishTitle.textContent = `P${place}`;
+    }
+
     this.el.finish.classList.remove("hidden");
     void this.checkLeaderboardQualify();
+  }
+
+  /**
+   * Place when the player completes TOTAL_LAPS.
+   * Offline: 1 + AI that already finished 3 laps. Online: live progress rank.
+   */
+  private playerFinishPlace(): number {
+    if (this.online) {
+      const playerProgress = this.lap - 1 + this.raceProgress(this.player);
+      let place = 1;
+      for (const remote of this.remotes.values()) {
+        const rt = this.projectSticky(remote, remote.mesh.position).t;
+        const rp = (remote.lap ?? 1) - 1 + rt;
+        if (rp > playerProgress + 0.002) place += 1;
+      }
+      return place;
+    }
+    // Finished AI count as ahead; unfinished pack is behind the player
+    return 1 + this.rivals.filter((r) => r.raceDone).length;
   }
 
   private async checkLeaderboardQualify() {
@@ -838,8 +881,8 @@ export class Game {
     this.updateBestFlash();
 
     if (this.el.position) {
-      // Total progress = completed laps + track fraction, so a car a lap
-      // ahead ranks ahead even when its current-lap t is smaller
+      // Finished AI sit at race distance; otherwise laps + track fraction.
+      // Player: completed laps = lap - 1.
       const playerProgress = this.lap - 1 + this.raceProgress(this.player);
       let place = 1;
       if (this.online) {
@@ -852,7 +895,8 @@ export class Game {
         this.el.position.textContent = `${place}/${total}`;
       } else {
         for (const r of this.rivals) {
-          if (r.progress > playerProgress + 0.002) place += 1;
+          const rp = r.raceDone ? TOTAL_LAPS + 0.001 : r.progress;
+          if (rp > playerProgress + 0.002) place += 1;
         }
         this.el.position.textContent = `${place}/${this.rivals.length + 1}`;
       }

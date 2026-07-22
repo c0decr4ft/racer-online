@@ -18,7 +18,7 @@ export type VehicleState = {
 };
 
 /**
- * Real-car style progressive gears:
+ * Real-car style progressive gears (shared by player + AI — same ceilings):
  * 1st = launch only (strong pull, low ceiling). Each upshift unlocks top speed.
  * Wrong gear hurts — lug below pullFrom, rev limiter pins speed at each gear's max.
  *
@@ -26,7 +26,7 @@ export type VehicleState = {
  * previously capped EVERY gear at ~60 km/h, making shifts feel like they did
  * nothing. The per-gear rev limiter (not drag) is the intended speed cap.
  */
-const GEAR_STATS: Record<Exclude<Gear, "N">, { max: number; accel: number; pullFrom: number }> = {
+export const GEAR_STATS: Record<Exclude<Gear, "N">, { max: number; accel: number; pullFrom: number }> = {
   R: { max: 11, accel: 1.5, pullFrom: 0 }, // ~40 km/h backing up
   1: { max: 15.5, accel: 2.2, pullFrom: 0 }, // ~56 km/h — launch only
   2: { max: 31, accel: 1.6, pullFrom: 7 }, // ~112 km/h
@@ -34,6 +34,11 @@ const GEAR_STATS: Record<Exclude<Gear, "N">, { max: number; accel: number; pullF
   4: { max: 66, accel: 0.95, pullFrom: 28 }, // ~238 km/h
   5: { max: 86, accel: 0.75, pullFrom: 42 }, // ~310 km/h
 };
+
+/** Gear ceiling in km/h — identical for player and AI. */
+export function gearMaxKmh(gear: Exclude<Gear, "N" | "R">): number {
+  return GEAR_STATS[gear].max * 3.6;
+}
 
 const BRAKE = 62;
 const DRAG = 0.002;
@@ -51,7 +56,7 @@ export class Vehicle {
   mesh: THREE.Group;
   private manual: boolean;
   private shiftTimer = 0;
-  /** Extra drive multiplier (AI boost / catch-up). */
+  /** Drive multiplier — must stay 1 for fair AI (same gear ceilings as player). */
   powerMul = 1;
 
   constructor(mesh: THREE.Group, position: THREE.Vector3, heading: number, manual = false) {
@@ -188,21 +193,44 @@ export class Vehicle {
     this.animateWheels(dt);
   }
 
-  autoShift(dt: number) {
-    this.shiftTimer = Math.max(0, this.shiftTimer - dt);
+  /**
+   * AI gear selection using the same GEAR_STATS / setGear path as the player.
+   * Commit to 4–5 on open / fast sections; 2nd only for hairpins / launch.
+   */
+  aiShift(opts: { maxKappa: number; nearKappa: number; turnAngle: number; cornerKmh: number }) {
     if (this.shiftTimer > 0) return;
+
     const kmh = this.kmh;
-    // Shift ~85% into each gear's band (matches GEAR_STATS max * 3.6)
-    let next: Gear = 1;
-    if (kmh < 47) next = 1;
-    else if (kmh < 95) next = 2;
-    else if (kmh < 147) next = 3;
-    else if (kmh < 202) next = 4;
-    else next = 5;
-    if (next !== this.state.gear) {
-      this.state.gear = next;
-      this.shiftTimer = SHIFT_COOLDOWN * 0.4;
+    const peakKappa = Math.max(opts.maxKappa, opts.nearKappa);
+    const tightTurn =
+      peakKappa > 0.024 ||
+      opts.turnAngle > 0.82 ||
+      (opts.cornerKmh < 95 && opts.turnAngle > 0.5 && peakKappa > 0.016);
+    const openFast =
+      peakKappa < 0.011 && opts.turnAngle < 0.35 && opts.cornerKmh > gearMaxKmh(3);
+
+    let next: Exclude<Gear, "N" | "R"> = 3;
+    if (kmh < 42) {
+      next = 1;
+    } else if (kmh < 72 || tightTurn) {
+      // 2nd for launch pull-through and hairpins (gear 2 ceiling ~112)
+      next = 2;
+    } else if (openFast && kmh > gearMaxKmh(3) * 0.78) {
+      // Long/open sections — unlock 4th early, then 5th once rolling
+      next = kmh > gearMaxKmh(4) * 0.72 ? 5 : 4;
+    } else if (!tightTurn && kmh > gearMaxKmh(3) * 0.9) {
+      // Past 3rd ceiling anywhere that's not a hairpin — stay in 4th
+      next = 4;
+    } else {
+      next = 3;
     }
+
+    // Don't upshift into a lug band (same pullFrom limits the player feels)
+    while (next > 1 && kmh < GEAR_STATS[next].pullFrom * 3.6 * 0.92) {
+      next = (next - 1) as 1 | 2 | 3 | 4 | 5;
+    }
+
+    if (next !== this.state.gear) this.setGear(next);
   }
 
   /** Re-sync mesh after external position/speed changes (collisions). */
@@ -269,6 +297,8 @@ export class RivalAI {
   vehicle: Vehicle;
   /** Completed laps — only after mid-lap progress gates then SF wrap. */
   laps = 0;
+  /** True after completing the race distance (race mode only). */
+  raceDone = false;
   /** Fixed lateral racing line (m from centerline) — never changes mid-race. */
   private laneOffset: number;
   private skill: number;
@@ -295,10 +325,10 @@ export class RivalAI {
     this.vehicle = vehicle;
     this.laneOffset = THREE.MathUtils.clamp(laneOffset, -MAX_LANE_OFFSET, MAX_LANE_OFFSET);
     this.skill = skill;
-    // Tier aggression: back≈1.15–1.19, mid≈1.28, front≈1.51–1.56
-    this.aggression = 0.82 + skill * 0.38;
+    // Commit hard — pack runs near WOT; hotter slots push even more
+    this.aggression = Math.min(1.12, 0.96 + skill * 0.1);
     // Deterministic — same groove / look-ahead every race for this slot
-    this.lookAheadBias = 0.84 + (gridIndex % 5) * 0.03 + skill * 0.07;
+    this.lookAheadBias = 0.92 + (gridIndex % 5) * 0.03 + skill * 0.035;
   }
 
   /** Total race progress (laps + track fraction) for standings. */
@@ -318,6 +348,12 @@ export class RivalAI {
     this.gates.reset();
     this.stuckTimer = 0;
     this.raceAge = 0;
+    this.raceDone = false;
+  }
+
+  /** Mark as finished — coasts out of the way; no more lap scoring. */
+  markRaceDone() {
+    this.raceDone = true;
   }
 
   /** Build / reuse this car's invisible offset line from the track centerline. */
@@ -337,8 +373,8 @@ export class RivalAI {
     neighbors: Vehicle[] = [],
   ) {
     this.raceAge += dt;
-    // Soft launch: ~5s ramp, cubed so early frames stay gentle into T1
-    const launch = Math.min(1, this.raceAge / 5.0);
+    // Soft launch: ~3.2s ramp — snappier so pack feels fast off the line
+    const launch = Math.min(1, this.raceAge / 3.2);
     const launchEase = launch * launch * launch;
 
     const line = this.ensureLine(path);
@@ -350,12 +386,18 @@ export class RivalAI {
         : projectOnTrackNear(path, pos, prevT).t;
     this.lastT = bestT;
 
-    if (prevT != null) {
+    if (prevT != null && !this.raceDone) {
       this.gates.update(prevT, bestT);
       if (prevT > 0.85 && bestT < 0.15 && this.gates.readyForFinish) {
         this.laps += 1;
         this.gates.reset();
       }
+    }
+
+    // Finished race cars: soft coast along their line so they clear the pack
+    if (this.raceDone) {
+      this.coastFinished(dt, line, bestT);
+      return;
     }
 
     const absSpeed = Math.abs(this.vehicle.state.speed);
@@ -394,8 +436,6 @@ export class RivalAI {
       return;
     }
 
-    this.vehicle.autoShift(dt);
-
     // Wrong-way after a hit: rotate toward race direction
     if (Math.abs(facingErr) > Math.PI * 0.55) {
       this.vehicle.state.heading += Math.sign(facingErr) * Math.min(Math.abs(facingErr), 3.2 * dt);
@@ -410,15 +450,28 @@ export class RivalAI {
     // Curvature on the re-traced line (rad/m) — detects smooth T1, not just kinks
     const { maxKappa, nearKappa, turnAngle } = line.curvatureAhead(bestT, Math.max(lookDist, 42));
     const kmh = this.vehicle.kmh;
-    // Straight-line cruise by skill: back≈166, mid≈170, front≈178
-    // (gear 3 base ceiling is ~173 km/h; powerMul raises AI rev limit past that)
-    const cruiseKmh = 155 + this.skill * 12;
-    // Target corner speed from kappa: v ≈ sqrt(a / κ), a≈11.5 m/s² —
-    // still brakes for bends, but carries more speed than the old ~9 m/s² target
+    // Target corner speed from kappa: higher a → carry more mid-corner pace
     const peakKappa = Math.max(maxKappa, nearKappa, 1e-4);
-    const cornerKmh = Math.sqrt(11.5 / peakKappa) * 3.6;
+    const cornerKmh = Math.sqrt(15.5 / peakKappa) * 3.6;
+
+    // Same GEAR_STATS ceilings as the player — pace comes from committing to 4th/5th.
+    const g3 = gearMaxKmh(3);
+    const g4 = gearMaxKmh(4);
+    const g5 = gearMaxKmh(5);
+    const openStraight = peakKappa < 0.011 && turnAngle < 0.35 && cornerKmh > g3;
+    let cruiseKmh: number;
+    if (openStraight) {
+      // Skill ~1.12–1.45 → deep 4th / early 5th (~235–265)
+      cruiseKmh = Math.min(g5 - 45, g4 - 8 + this.skill * 22);
+    } else {
+      // Default race pace: push past 3rd into 4th (~195–215)
+      cruiseKmh = Math.min(g4 - 22, 168 + this.skill * 32);
+    }
     // On open track hold cruise; in bends the corner target wins
     const targetKmh = Math.min(cruiseKmh, cornerKmh);
+
+    // Fair gears only — shift after we know curvature / corner target
+    this.vehicle.aiShift({ maxKappa, nearKappa, turnAngle, cornerKmh });
 
     // --- Primary steer: pure pursuit on THIS car's re-traced groove ---
     const nearDist = THREE.MathUtils.clamp(lookDist * 0.32, 8, 22);
@@ -496,62 +549,84 @@ export class RivalAI {
     );
     const cornering = Math.abs(headingError);
 
-    // Brake for curvature EARLY — old metric never fired on smooth T1.
-    // Absolute kappa thresholds only fire when actually overspeed for the
-    // upcoming bend / cruise — otherwise mild kinks capped AI well below ~170.
+    // Brake for curvature EARLY — but only when truly overspeed for a real bend.
+    // Mild kinks no longer pin the pack well below cruise.
     let brake = avoidBrake;
     const overspeed = kmh - targetKmh;
-    if (overspeed > 8 && turnAngle > 0.25) {
-      brake = Math.max(brake, THREE.MathUtils.clamp(0.25 + overspeed / 55, 0.25, 0.95));
+    if (overspeed > 12 && turnAngle > 0.32) {
+      brake = Math.max(brake, THREE.MathUtils.clamp(0.2 + overspeed / 65, 0.2, 0.9));
     }
-    if (nearKappa > 0.012 && overspeed > 5) brake = Math.max(brake, 0.3 + nearKappa * 18);
-    if (maxKappa > 0.018 && overspeed > 8) brake = Math.max(brake, 0.35 + maxKappa * 16);
-    if (turnAngle > 0.55 && overspeed > 5) brake = Math.max(brake, 0.4 + Math.min(0.45, turnAngle * 0.35));
-    if (cornering > 0.4 && kmh > 70 && overspeed > 0) brake = Math.max(brake, 0.38);
-    if (cornering > 0.7 && kmh > 55) brake = Math.max(brake, 0.7);
-    if (Math.abs(laneErr) > 1.8 && kmh > 65) {
-      brake = Math.max(brake, 0.2 + Math.min(0.4, (Math.abs(laneErr) - 1.8) * 0.2));
+    if (nearKappa > 0.015 && overspeed > 10) brake = Math.max(brake, 0.28 + nearKappa * 14);
+    if (maxKappa > 0.022 && overspeed > 12) brake = Math.max(brake, 0.32 + maxKappa * 14);
+    if (turnAngle > 0.65 && overspeed > 8) brake = Math.max(brake, 0.38 + Math.min(0.4, turnAngle * 0.3));
+    if (cornering > 0.5 && kmh > 85 && overspeed > 4) brake = Math.max(brake, 0.32);
+    if (cornering > 0.85 && kmh > 70) brake = Math.max(brake, 0.62);
+    if (Math.abs(laneErr) > 2.0 && kmh > 80) {
+      brake = Math.max(brake, 0.18 + Math.min(0.35, (Math.abs(laneErr) - 2.0) * 0.18));
     }
-    // Soft launch into first bend: insist on braking if still winding up and bend ahead
-    if (launchEase < 0.7 && turnAngle > 0.35 && kmh > 55) {
-      brake = Math.max(brake, 0.45);
+    // Soft launch into first bend: still scrub if winding up into a real turn
+    if (launchEase < 0.55 && turnAngle > 0.45 && kmh > 70) {
+      brake = Math.max(brake, 0.38);
     }
     // Higher skill = carry more speed into bends
-    brake = Math.min(1, brake * (1.18 - this.skill * 0.18));
+    brake = Math.min(1, brake * (1.08 - this.skill * 0.14));
 
-    let throttle = this.aggression * avoidLift * (0.28 + 0.72 * launchEase);
-    if (kmh < 35) throttle *= 0.5 + 0.5 * (kmh / 35);
+    let throttle = this.aggression * avoidLift * (0.42 + 0.58 * launchEase);
+    if (kmh < 35) throttle *= 0.55 + 0.45 * (kmh / 35);
     // Hold cruise / don't full-throttle when overspeed for bend or top-end
-    if (overspeed > 2) throttle *= THREE.MathUtils.clamp(1 - overspeed / 45, 0.05, 1);
-    // On open track, taper onto cruise so they settle near ~170 instead of runaway
-    if (cornerKmh > cruiseKmh && kmh > cruiseKmh - 12) {
-      throttle *= THREE.MathUtils.clamp((cruiseKmh + 6 - kmh) / 18, 0.12, 1);
+    if (overspeed > 4) throttle *= THREE.MathUtils.clamp(1 - overspeed / 55, 0.08, 1);
+    // On open track, ease onto cruise late so they keep climbing in-gear
+    if (cornerKmh > cruiseKmh && kmh > cruiseKmh - 18) {
+      throttle *= THREE.MathUtils.clamp((cruiseKmh + 10 - kmh) / 22, 0.18, 1);
     }
-    if (brake > 0.35) throttle *= 0.08;
-    else if (cornering > 0.35) throttle *= 0.5;
-    else if (maxKappa > 0.015 && overspeed > 0) throttle *= 0.68;
-    if (Math.abs(laneErr) > 1.5) throttle *= 0.78;
+    if (brake > 0.4) throttle *= 0.1;
+    else if (cornering > 0.45) throttle *= 0.62;
+    else if (maxKappa > 0.018 && overspeed > 2) throttle *= 0.78;
+    if (Math.abs(laneErr) > 1.8) throttle *= 0.85;
 
     let gap = bestT - playerT;
     if (gap > 0.5) gap -= 1;
     if (gap < -0.5) gap += 1;
-    // Accel pull by tier: back≈1.22–1.25, mid≈1.34, front≈1.55–1.59 — enough to hit cruise
-    const paceMul = 0.92 + this.skill * 0.34;
-    // Soft rubber-band only — don't re-pack the field around the player
+    // Same gear ceilings as the player — modest skill pace nudge only if needed.
+    // Skill + rubber-band tweak throttle; tiny powerMul keeps hot slots looking fast.
+    this.vehicle.powerMul = 1 + Math.max(0, this.skill - 1.1) * 0.06;
     if (gap < -0.10) {
-      this.vehicle.powerMul = paceMul + (0.025 + Math.min(0.08, -gap * 0.45)) * launchEase;
-      throttle = Math.min(1, throttle + 0.06 * launchEase);
-    } else if (gap > 0.28) {
-      this.vehicle.powerMul = paceMul * 0.95;
-      throttle *= 0.92;
-    } else {
-      this.vehicle.powerMul = paceMul;
+      throttle = Math.min(1, throttle + (0.06 + Math.min(0.1, -gap * 0.4)) * launchEase);
+    } else if (gap > 0.32) {
+      throttle *= 0.94;
     }
 
     this.vehicle.update(dt, {
       throttle,
       brake,
       steer,
+      reset: false,
+      pause: false,
+      gear: null,
+      shiftDelta: 0,
+    });
+  }
+
+  /** Slow cruise along the groove after finishing — clears racing lines. */
+  private coastFinished(dt: number, line: OffsetRacingLine, bestT: number) {
+    const pos = this.vehicle.state.position;
+    line.sampleAhead(bestT, 18, this._far, this._tan);
+    const desired = Math.atan2(this._far.x - pos.x, this._far.z - pos.z);
+    let headingError = desired - this.vehicle.state.heading;
+    while (headingError > Math.PI) headingError -= Math.PI * 2;
+    while (headingError < -Math.PI) headingError += Math.PI * 2;
+    const kmh = this.vehicle.kmh;
+    const cruise = 48;
+    let throttle = kmh < cruise - 4 ? 0.35 : 0.08;
+    let brake = kmh > cruise + 8 ? 0.35 : 0;
+    this.vehicle.powerMul = 1;
+    if (this.vehicle.state.gear !== 2 && this.vehicle.state.gear !== 1) {
+      this.vehicle.setGear(2);
+    }
+    this.vehicle.update(dt, {
+      throttle,
+      brake,
+      steer: THREE.MathUtils.clamp(headingError * 2.2, -1, 1),
       reset: false,
       pause: false,
       gear: null,

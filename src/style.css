@@ -420,7 +420,7 @@ body,
   margin-bottom: 0.45rem !important;
 }
 
-.finish-stat + .finish-stat {
+.finish-panel > .finish-stat:last-of-type {
   margin-bottom: 1.15rem !important;
 }
 
