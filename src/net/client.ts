@@ -29,6 +29,11 @@ export class RemotePlayer {
     this.push(pose, performance.now());
   }
 
+  /** Latest reported lap (current lap number, 1-based like the local HUD). */
+  get lap(): number | undefined {
+    return this.to?.pose.lap;
+  }
+
   push(pose: PlayerPose, at = performance.now()) {
     this.name = pose.name;
     this.label.textContent = pose.name;

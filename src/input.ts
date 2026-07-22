@@ -7,6 +7,8 @@ export type InputState = {
   reset: boolean;
   pause: boolean;
   gear: Gear | null;
+  /** Sequential shift request: +1 = up, -1 = down. Consumed once per frame. */
+  shiftDelta: -1 | 0 | 1;
 };
 
 export class Input {
@@ -14,6 +16,7 @@ export class Input {
   resetPressed = false;
   pausePressed = false;
   private gearPress: Gear | null = null;
+  private shiftPress: -1 | 0 | 1 = 0;
 
   constructor() {
     window.addEventListener("keydown", (e) => {
@@ -50,6 +53,9 @@ export class Input {
         e.preventDefault();
       }
 
+      if (e.code === "ArrowUp" && !e.repeat) this.shiftPress = 1;
+      if (e.code === "ArrowDown" && !e.repeat) this.shiftPress = -1;
+
       if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(e.code)) {
         e.preventDefault();
       }
@@ -61,14 +67,15 @@ export class Input {
 
   /** Clear held drive keys so resume doesn't surge. */
   clearDriveKeys() {
-    for (const code of ["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"]) {
+    for (const code of ["KeyW", "KeyA", "KeyS", "KeyD", "ArrowLeft", "ArrowRight", "Space"]) {
       this.keys.delete(code);
     }
   }
 
   getState(): InputState {
-    const up = this.keys.has("KeyW") || this.keys.has("ArrowUp");
-    const down = this.keys.has("KeyS") || this.keys.has("ArrowDown");
+    // ArrowUp/ArrowDown are dedicated to sequential shifting (not throttle/brake)
+    const up = this.keys.has("KeyW");
+    const down = this.keys.has("KeyS");
     const left = this.keys.has("KeyA") || this.keys.has("ArrowLeft");
     const right = this.keys.has("KeyD") || this.keys.has("ArrowRight");
     const space = this.keys.has("Space");
@@ -79,6 +86,8 @@ export class Input {
     this.pausePressed = false;
     const gear = this.gearPress;
     this.gearPress = null;
+    const shiftDelta = this.shiftPress;
+    this.shiftPress = 0;
 
     return {
       throttle: up ? 1 : 0,
@@ -90,6 +99,7 @@ export class Input {
       reset,
       pause,
       gear,
+      shiftDelta,
     };
   }
 }

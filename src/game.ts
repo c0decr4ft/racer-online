@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { createCar, CAR_PALETTE } from "./car";
-import { createTrack, projectOnTrack } from "./track";
+import { createTrack, projectOnTrack, projectOnTrackNear } from "./track";
 import { Input } from "./input";
 import { Vehicle, RivalAI } from "./vehicle";
 import { NetClient, RemotePlayer } from "./net/client";
@@ -55,6 +55,9 @@ export class Game {
   private lastFrame = performance.now();
   private camPos = new THREE.Vector3();
   private camLook = new THREE.Vector3();
+  /** Last known track-t per vehicle/remote — keeps projection sticky so it
+   *  never snaps to a different section of the circuit that passes nearby. */
+  private stickyT = new WeakMap<object, number>();
 
   private el = {
     speed: document.getElementById("speed")!,
@@ -259,7 +262,8 @@ export class Game {
     const { pos: spawn, heading } = this.spawnPose(startT, offset);
 
     this.player.reset(spawn, heading);
-    this.lastT = projectOnTrack(this.track.path, this.player.state.position).t;
+    this.resetSticky(this.player);
+    this.lastT = this.projectSticky(this.player, this.player.state.position).t;
     // Already on SF facing race direction — first forward wrap completes lap 1
     this.crossedOnce = true;
     this.el.wrongWay.classList.add("hidden");
@@ -270,6 +274,8 @@ export class Game {
         const slot = GRID[i + 1] ?? GRID[GRID.length - 1];
         const { pos, heading: h } = this.spawnPose(slot.t, slot.offset);
         r.vehicle.reset(pos, h);
+        this.resetSticky(r.vehicle);
+        r.resetProgress();
       });
     }
 
@@ -300,6 +306,22 @@ export class Game {
     this.lastFrame = performance.now();
     this.input.clearDriveKeys();
     this.renderer.domElement.focus({ preventScroll: true });
+  }
+
+  /** Sticky track projection: global search only on first use (spawn/reset),
+   *  then a narrow window around the last known t. */
+  private projectSticky(key: object, position: THREE.Vector3) {
+    const prev = this.stickyT.get(key);
+    const proj =
+      prev === undefined
+        ? projectOnTrack(this.track.path, position)
+        : projectOnTrackNear(this.track.path, position, prev);
+    this.stickyT.set(key, proj.t);
+    return proj;
+  }
+
+  private resetSticky(key: object) {
+    this.stickyT.delete(key);
   }
 
   private raceNow() {
@@ -333,7 +355,8 @@ export class Game {
       const input = inputPeek;
       if (input.reset) {
         this.player.reset(this.track.startPosition.clone(), this.track.startHeading);
-        this.lastT = projectOnTrack(this.track.path, this.player.state.position).t;
+        this.resetSticky(this.player);
+        this.lastT = this.projectSticky(this.player, this.player.state.position).t;
         this.el.wrongWay.classList.add("hidden");
         this.snapCamera();
       }
@@ -341,8 +364,9 @@ export class Game {
       this.keepOnTrack(this.player);
 
       if (!this.online) {
-        const playerT = projectOnTrack(this.track.path, this.player.state.position).t;
-        this.rivals.forEach((r) => r.update(dt, this.track.path, playerT, now * 0.001));
+        const playerT = this.projectSticky(this.player, this.player.state.position).t;
+        const cars = [this.player, ...this.rivals.map((r) => r.vehicle)];
+        this.rivals.forEach((r) => r.update(dt, this.track.path, playerT, now * 0.001, cars));
         this.rivals.forEach((r) => this.keepOnTrack(r.vehicle));
         this.resolveCollisions();
       } else {
@@ -382,29 +406,33 @@ export class Game {
     this.renderer.render(this.scene, this.camera);
   }
 
+  /** Track edges are invisible walls: clamp lateral position at the edge and
+   *  scrub only the velocity component pressing into the wall, so the car
+   *  slides along it instead of bouncing or teleporting. */
   private keepOnTrack(v: Vehicle) {
-    const { distanceFromCenter, point, tangent } = projectOnTrack(this.track.path, v.state.position);
-    const half = this.track.width / 2;
-    const soft = half * 0.85;
-    const hard = half + 2.5;
-    const normal = new THREE.Vector3(-tangent.z, 0, tangent.x);
+    const proj = this.projectSticky(v, v.state.position);
+    const wall = this.track.width / 2 - 0.55;
+    const d = proj.distanceFromCenter;
+    if (Math.abs(d) <= wall) return;
 
-    if (Math.abs(distanceFromCenter) > hard) {
-      v.state.position.copy(point).addScaledVector(normal, Math.sign(distanceFromCenter || 1) * half * 0.5);
-      v.state.heading = Math.atan2(tangent.x, tangent.z);
-      v.state.speed *= 0.45;
-      v.state.steerAngle = 0;
-    } else if (Math.abs(distanceFromCenter) > soft) {
-      const push = (Math.abs(distanceFromCenter) - soft) * 0.06;
-      v.state.position.addScaledVector(normal, -Math.sign(distanceFromCenter) * push);
-      v.state.speed *= 0.99;
+    const side = Math.sign(d);
+    const normal = new THREE.Vector3(-proj.tangent.z, 0, proj.tangent.x);
+    // Remove only the lateral excess — tangential motion is untouched
+    v.state.position.addScaledVector(normal, side * wall - d);
+
+    const s = v.state;
+    const intoWall = (Math.sin(s.heading) * normal.x + Math.cos(s.heading) * normal.z) * side;
+    if (s.speed * intoWall > 0) {
+      s.speed *= 1 - intoWall * intoWall;
     }
+    v.syncCollision();
   }
 
-  /** Solid car bodies — push apart + dump relative speed so cars don't phase through. */
+  /** Solid car bodies — separate overlap (capped per frame) and cancel only
+   *  the closing velocity along the contact normal. No bounce, no fling. */
   private resolveCollisions() {
     const all = [this.player, ...this.rivals.map((r) => r.vehicle)];
-    const radius = 2.35;
+    const radius = 1.7;
     for (let i = 0; i < all.length; i++) {
       for (let j = i + 1; j < all.length; j++) {
         this.bumpVehicles(all[i], all[j], radius);
@@ -413,7 +441,8 @@ export class Game {
   }
 
   private resolveRemoteCollisions() {
-    const radius = 2.35;
+    const radius = 1.7;
+    const maxSep = 0.5;
     for (const remote of this.remotes.values()) {
       const dx = remote.mesh.position.x - this.player.state.position.x;
       const dz = remote.mesh.position.z - this.player.state.position.z;
@@ -422,13 +451,14 @@ export class Game {
       if (dist >= min || dist < 0.001) continue;
       const nx = dx / dist;
       const nz = dz / dist;
-      const overlap = min - dist;
       // Local player only — remotes are remote-authoritative for their own pose
-      this.player.state.position.x -= nx * overlap * 0.95;
-      this.player.state.position.z -= nz * overlap * 0.95;
-      const along = this.player.state.speed * (Math.sin(this.player.state.heading) * nx + Math.cos(this.player.state.heading) * nz);
-      if (along > 0) this.player.state.speed -= along * 0.55;
-      this.player.state.speed *= 0.92;
+      const sep = Math.min(min - dist, maxSep);
+      this.player.state.position.x -= nx * sep;
+      this.player.state.position.z -= nz * sep;
+      const s = this.player.state;
+      const into = Math.sin(s.heading) * nx + Math.cos(s.heading) * nz;
+      // Scrub only the component driving into the other car (wall-style)
+      if (s.speed * into > 0) s.speed *= 1 - into * into;
       this.player.syncCollision();
     }
   }
@@ -442,32 +472,38 @@ export class Game {
 
     const nx = dx / dist;
     const nz = dz / dist;
-    const overlap = min - dist;
-
-    a.state.position.x -= nx * overlap * 0.5;
-    a.state.position.z -= nz * overlap * 0.5;
-    b.state.position.x += nx * overlap * 0.5;
-    b.state.position.z += nz * overlap * 0.5;
+    // Separate overlap symmetrically, capped so a deep overlap can never
+    // launch a car across the map in a single frame
+    const push = Math.min(min - dist, 0.5) * 0.5;
+    a.state.position.x -= nx * push;
+    a.state.position.z -= nz * push;
+    b.state.position.x += nx * push;
+    b.state.position.z += nz * push;
 
     const va = a.state.speed;
     const vb = b.state.speed;
-    const ax = Math.sin(a.state.heading);
-    const az = Math.cos(a.state.heading);
-    const bx = Math.sin(b.state.heading);
-    const bz = Math.cos(b.state.heading);
-    const rel = (va * ax - vb * bx) * nx + (va * az - vb * bz) * nz;
+    const aIn = Math.sin(a.state.heading) * nx + Math.cos(a.state.heading) * nz;
+    const bIn = Math.sin(b.state.heading) * nx + Math.cos(b.state.heading) * nz;
+    const pA = va * aIn; // a's velocity toward b
+    const pB = -vb * bIn; // b's velocity toward a
+    const rel = pA + pB; // closing speed along the normal
     if (rel > 0) {
-      a.state.speed -= rel * 0.45;
-      b.state.speed += rel * 0.45;
+      // Cancel just the closing component, split by contribution — the car
+      // driving in loses its closing speed, the other car is never flung
+      const total = Math.max(0, pA) + Math.max(0, pB);
+      if (total > 1e-4) {
+        const shareA = (rel * Math.max(0, pA)) / total;
+        const shareB = (rel * Math.max(0, pB)) / total;
+        a.state.speed -= shareA * aIn;
+        b.state.speed += shareB * bIn;
+      }
     }
-    a.state.speed *= 0.94;
-    b.state.speed *= 0.94;
     a.syncCollision();
     b.syncCollision();
   }
 
   private raceProgress(v: Vehicle) {
-    return projectOnTrack(this.track.path, v.state.position).t;
+    return this.projectSticky(v, v.state.position).t;
   }
 
   private trackAlign(heading: number, tangent: THREE.Vector3) {
@@ -481,7 +517,7 @@ export class Game {
   }
 
   private updateLaps() {
-    const { t, tangent } = projectOnTrack(this.track.path, this.player.state.position);
+    const { t, tangent } = this.projectSticky(this.player, this.player.state.position);
     const speed = this.player.state.speed;
     const align = this.trackAlign(this.player.state.heading, tangent);
     // Travel direction along the path (reverse gear / negative speed flips)
@@ -534,18 +570,21 @@ export class Game {
     this.el.time.textContent = formatTime(this.raceNow() - this.raceStart);
 
     if (this.el.position) {
-      const playerT = this.raceProgress(this.player);
+      // Total progress = completed laps + track fraction, so a car a lap
+      // ahead ranks ahead even when its current-lap t is smaller
+      const playerProgress = this.lap - 1 + this.raceProgress(this.player);
       let place = 1;
       if (this.online) {
         const total = this.remotes.size + 1;
         for (const remote of this.remotes.values()) {
-          const rt = projectOnTrack(this.track.path, remote.mesh.position).t;
-          if (rt > playerT + 0.002) place += 1;
+          const rt = this.projectSticky(remote, remote.mesh.position).t;
+          const rp = (remote.lap ?? 1) - 1 + rt;
+          if (rp > playerProgress + 0.002) place += 1;
         }
         this.el.position.textContent = `${place}/${total}`;
       } else {
         for (const r of this.rivals) {
-          if (this.raceProgress(r.vehicle) > playerT + 0.002) place += 1;
+          if (r.progress > playerProgress + 0.002) place += 1;
         }
         this.el.position.textContent = `${place}/${this.rivals.length + 1}`;
       }

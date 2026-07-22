@@ -302,29 +302,23 @@ export function createTrack(): TrackData {
   };
 }
 
-export function projectOnTrack(
+export type TrackProjection = {
+  t: number;
+  point: THREE.Vector3;
+  distanceFromCenter: number;
+  tangent: THREE.Vector3;
+};
+
+function finishProjection(
   path: THREE.CatmullRomCurve3,
   position: THREE.Vector3,
-  samples = 220,
-) {
-  let bestT = 0;
-  let bestDist = Infinity;
-  let bestPoint = new THREE.Vector3();
-
-  for (let i = 0; i < samples; i++) {
-    const t = i / samples;
-    const p = path.getPointAt(t);
-    const d = p.distanceToSquared(position);
-    if (d < bestDist) {
-      bestDist = d;
-      bestT = t;
-      bestPoint.copy(p);
-    }
-  }
-
-  const step = 1 / samples;
+  bestT: number,
+  bestDist: number,
+  bestPoint: THREE.Vector3,
+  refineStep: number,
+): TrackProjection {
   for (let k = -6; k <= 6; k++) {
-    const t = (bestT + k * step * 0.2 + 1) % 1;
+    const t = (bestT + k * refineStep * 0.2 + 1) % 1;
     const p = path.getPointAt(t);
     const d = p.distanceToSquared(position);
     if (d < bestDist) {
@@ -338,4 +332,58 @@ export function projectOnTrack(
   const normal = new THREE.Vector3(-tangent.z, 0, tangent.x);
   const distanceFromCenter = position.clone().sub(bestPoint).dot(normal);
   return { t: bestT, point: bestPoint, distanceFromCenter, tangent };
+}
+
+/** Global nearest-point search. Only safe for spawn/reset: on a circuit whose
+ *  sections pass near each other it can snap to the wrong part of the track.
+ *  During racing use projectOnTrackNear with the vehicle's last known t. */
+export function projectOnTrack(
+  path: THREE.CatmullRomCurve3,
+  position: THREE.Vector3,
+  samples = 220,
+): TrackProjection {
+  let bestT = 0;
+  let bestDist = Infinity;
+  const bestPoint = new THREE.Vector3();
+
+  for (let i = 0; i < samples; i++) {
+    const t = i / samples;
+    const p = path.getPointAt(t);
+    const d = p.distanceToSquared(position);
+    if (d < bestDist) {
+      bestDist = d;
+      bestT = t;
+      bestPoint.copy(p);
+    }
+  }
+
+  return finishProjection(path, position, bestT, bestDist, bestPoint, 1 / samples);
+}
+
+/** Sticky projection: search only a window of the path around tHint so the
+ *  result can never jump to a distant section of the circuit. */
+export function projectOnTrackNear(
+  path: THREE.CatmullRomCurve3,
+  position: THREE.Vector3,
+  tHint: number,
+  window = 0.05,
+  samples = 48,
+): TrackProjection {
+  let bestT = tHint;
+  let bestDist = Infinity;
+  const bestPoint = new THREE.Vector3();
+  const step = (2 * window) / samples;
+
+  for (let i = 0; i <= samples; i++) {
+    const t = (tHint - window + i * step + 1) % 1;
+    const p = path.getPointAt(t);
+    const d = p.distanceToSquared(position);
+    if (d < bestDist) {
+      bestDist = d;
+      bestT = t;
+      bestPoint.copy(p);
+    }
+  }
+
+  return finishProjection(path, position, bestT, bestDist, bestPoint, step);
 }

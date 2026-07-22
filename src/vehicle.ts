@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { Gear, InputState } from "./input";
+import { projectOnTrack, projectOnTrackNear } from "./track";
 
 export type VehicleState = {
   position: THREE.Vector3;
@@ -36,6 +37,8 @@ const MAX_STEER = 0.68;
 const STEER_SPEED = 4.0;
 const SHIFT_COOLDOWN = 0.1;
 const ACCEL_BASE = 46;
+
+const GEAR_SEQUENCE: Gear[] = ["R", "N", 1, 2, 3, 4, 5];
 
 export class Vehicle {
   state: VehicleState;
@@ -88,6 +91,13 @@ export class Vehicle {
 
     if (this.manual && input.gear != null) {
       this.setGear(input.gear);
+    }
+
+    if (this.manual && input.shiftDelta !== 0) {
+      const idx = GEAR_SEQUENCE.indexOf(s.gear) + input.shiftDelta;
+      if (idx >= 0 && idx < GEAR_SEQUENCE.length) {
+        this.setGear(GEAR_SEQUENCE[idx]);
+      }
     }
 
     if (this.manual && s.gear === "N" && input.throttle > 0 && input.brake === 0) {
@@ -227,10 +237,16 @@ export class Vehicle {
 /** Competitive AI: curvature braking, racing line, catch-up. */
 export class RivalAI {
   vehicle: Vehicle;
+  /** Completed laps — forward SF crossings minus backward ones. */
+  laps = 0;
   private baseOffset: number;
   private skill: number;
   private aggression: number;
   private linePhase: number;
+  /** Sticky track progress — avoids snapping to a nearby wrong section. */
+  private lastT: number | null = null;
+  private stuckTimer = 0;
+  private recoverTimer = 0;
 
   constructor(vehicle: Vehicle, offset: number, skill: number) {
     this.vehicle = vehicle;
@@ -240,20 +256,39 @@ export class RivalAI {
     this.linePhase = Math.random() * Math.PI * 2;
   }
 
-  update(dt: number, path: THREE.CatmullRomCurve3, playerT: number, time: number) {
-    this.vehicle.autoShift(dt);
+  /** Total race progress (laps + track fraction) for standings. */
+  get progress() {
+    return this.laps + (this.lastT ?? 0);
+  }
 
+  /** Call after teleporting/resetting the vehicle (fresh global projection). */
+  resetProgress() {
+    this.lastT = null;
+    this.laps = 0;
+    this.stuckTimer = 0;
+    this.recoverTimer = 0;
+  }
+
+  update(
+    dt: number,
+    path: THREE.CatmullRomCurve3,
+    playerT: number,
+    time: number,
+    neighbors: Vehicle[] = [],
+  ) {
     const pos = this.vehicle.state.position;
-    let bestT = 0;
-    let bestD = Infinity;
-    const samples = 180;
-    for (let i = 0; i < samples; i++) {
-      const t = i / samples;
-      const d = path.getPointAt(t).distanceToSquared(pos);
-      if (d < bestD) {
-        bestD = d;
-        bestT = t;
-      }
+    const prevT = this.lastT;
+    const bestT =
+      prevT == null
+        ? projectOnTrack(path, pos).t
+        : projectOnTrackNear(path, pos, prevT).t;
+    this.lastT = bestT;
+
+    // One-shot lap counting on start/finish wrap (mirrors player logic);
+    // backward wraps subtract so a shove across the line can't double-count
+    if (prevT != null) {
+      if (prevT > 0.85 && bestT < 0.15) this.laps += 1;
+      else if (prevT < 0.15 && bestT > 0.85) this.laps -= 1;
     }
 
     const pathLen = path.getLength();
@@ -265,11 +300,31 @@ export class RivalAI {
     const pathTan = path.getTangentAt(bestT).normalize();
     const pathHeading = Math.atan2(pathTan.x, pathTan.z);
 
-    // If facing more than ~90° off race direction, snap toward path heading
-    // (prevents wrong-way / reverse progress after collisions or bad steers)
     let facingErr = pathHeading - this.vehicle.state.heading;
     while (facingErr > Math.PI) facingErr -= Math.PI * 2;
     while (facingErr < -Math.PI) facingErr += Math.PI * 2;
+
+    // Wedged (near-zero speed for a while): back out gently, rotating the
+    // nose toward the race direction, then resume normal driving
+    if (Math.abs(this.vehicle.state.speed) < 2) this.stuckTimer += dt;
+    else this.stuckTimer = 0;
+    if (this.recoverTimer <= 0 && this.stuckTimer > 2) {
+      this.recoverTimer = 1.4;
+      this.stuckTimer = 0;
+    }
+    if (this.recoverTimer > 0) {
+      this.recoverTimer -= dt;
+      this.vehicle.setGear("R");
+      // Reverse flips turn response, so negative gain still aims at the path
+      const steer = THREE.MathUtils.clamp(-facingErr * 1.5, -1, 1);
+      this.vehicle.update(dt, { throttle: 0.7, brake: 0, steer, reset: false, pause: false, gear: null, shiftDelta: 0 });
+      return;
+    }
+
+    this.vehicle.autoShift(dt);
+
+    // If facing more than ~90° off race direction, snap toward path heading
+    // (prevents wrong-way / reverse progress after collisions or bad steers)
     if (Math.abs(facingErr) > Math.PI * 0.55) {
       this.vehicle.state.heading += Math.sign(facingErr) * Math.min(Math.abs(facingErr), 2.8 * dt);
       if (this.vehicle.state.speed < 0) this.vehicle.state.speed = Math.abs(this.vehicle.state.speed) * 0.3;
@@ -284,9 +339,11 @@ export class RivalAI {
       maxBend = Math.max(maxBend, 1 - Math.max(-1, Math.min(1, tanA.dot(tanB))));
     }
 
-    const weave = Math.sin(time * 0.7 + this.linePhase) * 0.6;
-    const cornerCut = -Math.sign(this.baseOffset || 1) * maxBend * 2.2 * this.skill;
-    const lineOffset = THREE.MathUtils.clamp(this.baseOffset * 0.35 + weave + cornerCut, -5.5, 5.5);
+    // Persistent per-rival line (no corner-cut toward the apex — that made
+    // every AI converge and wedge on the inside of each curve). Kept well
+    // inside the 7-unit half-width so the line never grazes the wall.
+    const weave = Math.sin(time * 0.7 + this.linePhase) * 0.35;
+    const lineOffset = THREE.MathUtils.clamp(this.baseOffset * 2.4 + weave, -3, 3);
 
     // Steer primarily by path tangent (race direction). Pure point-pursuit was
     // unstable from lateral offset and flipped cars the wrong way on the circuit.
@@ -305,9 +362,29 @@ export class RivalAI {
     while (headingError > Math.PI) headingError -= Math.PI * 2;
     while (headingError < -Math.PI) headingError += Math.PI * 2;
 
+    // Neighbor avoidance: if a car sits close ahead, steer around it and lift
+    // slightly so rivals fan out instead of stacking nose-to-tail in corners
+    let avoidSteer = 0;
+    let avoidLift = 1;
+    const fwdX = Math.sin(this.vehicle.state.heading);
+    const fwdZ = Math.cos(this.vehicle.state.heading);
+    for (const other of neighbors) {
+      if (other === this.vehicle) continue;
+      const dx = other.state.position.x - pos.x;
+      const dz = other.state.position.z - pos.z;
+      const ahead = dx * fwdX + dz * fwdZ;
+      if (ahead < 0.5 || ahead > 6) continue;
+      const lateral = dx * fwdZ - dz * fwdX; // + means other is to the left
+      if (Math.abs(lateral) > 3.2) continue;
+      const urgency = 1 - ahead / 6;
+      // Steer toward whichever side the other car is NOT on
+      avoidSteer += (lateral >= 0 ? -1 : 1) * urgency * 0.8;
+      avoidLift = Math.min(avoidLift, 1 - urgency * 0.45);
+    }
+
     // Positive steer increases heading (same convention as player A = +1)
     const steerGain = 2.4 + this.skill * 0.7;
-    const steer = THREE.MathUtils.clamp(headingError * steerGain, -1, 1);
+    const steer = THREE.MathUtils.clamp(headingError * steerGain + avoidSteer, -1, 1);
     const cornering = Math.abs(headingError);
 
     const bendThreat = maxBend * (0.7 + this.vehicle.kmh / 220);
@@ -317,7 +394,7 @@ export class RivalAI {
     if (cornering > 0.85 && this.vehicle.kmh > 70) brake = Math.max(brake, 0.75);
     brake = Math.min(1, brake * (1.15 - this.skill * 0.15));
 
-    let throttle = this.aggression;
+    let throttle = this.aggression * avoidLift;
     if (brake > 0.4) throttle *= 0.15;
     else if (cornering > 0.4) throttle *= 0.55;
     else if (bendThreat > 0.05) throttle *= 0.75;
@@ -335,6 +412,6 @@ export class RivalAI {
       this.vehicle.powerMul = 0.98 + this.skill * 0.08;
     }
 
-    this.vehicle.update(dt, { throttle, brake, steer, reset: false, pause: false, gear: null });
+    this.vehicle.update(dt, { throttle, brake, steer, reset: false, pause: false, gear: null, shiftDelta: 0 });
   }
 }
