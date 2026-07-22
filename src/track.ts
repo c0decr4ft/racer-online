@@ -1,6 +1,16 @@
 import * as THREE from "three";
+import {
+  DEFAULT_TRACK_ID,
+  getTrackDef,
+  type TrackDef,
+} from "./trackDefs";
+
+export type { TrackDef };
+export { TRACKS, DEFAULT_TRACK_ID, getTrackDef, randomTrackId, isTrackId } from "./trackDefs";
 
 export type TrackData = {
+  id: string;
+  name: string;
   group: THREE.Group;
   path: THREE.CatmullRomCurve3;
   startPosition: THREE.Vector3;
@@ -36,9 +46,9 @@ type TreePose = { x: number; z: number; scale: number; jitter: number };
  * chunks cut draw calls; frustum culling drops off-screen chunks.
  */
 function plantForest(group: THREE.Group, path: THREE.CatmullRomCurve3, roadHalf: number) {
-  const clear = roadHalf + 4.8 + 2.2; // outside runoff + canopy radius
+  const clear = roadHalf + 4.8 + 2.2; // ~14m outside centerline for 14m road
+  const bounds = pathBounds(path);
   const samples: THREE.Vector3[] = [];
-  // Dense enough for the ~710m circuit (incl. western lobe) so asphalt stays clear
   const sampleN = 800;
   for (let i = 0; i < sampleN; i++) samples.push(path.getPointAt(i / sampleN));
 
@@ -53,7 +63,7 @@ function plantForest(group: THREE.Group, path: THREE.CatmullRomCurve3, roadHalf:
 
   const poses: TreePose[] = [];
   const tryPlant = (x: number, z: number, scale: number) => {
-    if (Math.abs(x) > 162 || Math.abs(z) > 162) return;
+    if (x < bounds.minX || x > bounds.maxX || z < bounds.minZ || z > bounds.maxZ) return;
     if (minDistToPath(x, z) < clear) return;
     poses.push({
       x,
@@ -87,10 +97,10 @@ function plantForest(group: THREE.Group, path: THREE.CatmullRomCurve3, roadHalf:
     }
   }
 
-  // 2) Fill the whole green plane with a jittered grid (skips road corridor)
+  // 2) Fill the green plane with a jittered grid (skips road corridor)
   const step = 5.2;
-  for (let ix = -160; ix <= 160; ix += step) {
-    for (let iz = -160; iz <= 160; iz += step) {
+  for (let ix = bounds.minX; ix <= bounds.maxX; ix += step) {
+    for (let iz = bounds.minZ; iz <= bounds.maxZ; iz += step) {
       const h = hash2(Math.round(ix * 3), Math.round(iz * 3));
       if (h < 0.12) continue;
       const x = ix + (h - 0.5) * 4.2;
@@ -102,9 +112,11 @@ function plantForest(group: THREE.Group, path: THREE.CatmullRomCurve3, roadHalf:
   // Spatial chunks so frustum culling can drop off-screen forest
   const CELL = 68;
   const buckets = new Map<string, TreePose[]>();
+  const originX = bounds.minX - 10;
+  const originZ = bounds.minZ - 10;
   for (const pose of poses) {
-    const cx = Math.floor((pose.x + 170) / CELL);
-    const cz = Math.floor((pose.z + 170) / CELL);
+    const cx = Math.floor((pose.x - originX) / CELL);
+    const cz = Math.floor((pose.z - originZ) / CELL);
     const key = `${cx},${cz}`;
     let list = buckets.get(key);
     if (!list) {
@@ -172,51 +184,35 @@ function plantForest(group: THREE.Group, path: THREE.CatmullRomCurve3, roadHalf:
   return poses.length;
 }
 
-/**
- * Hand-designed closed circuit (~200x130 + western lobe), raced counter-clockwise
- * on the map (+X right, +Z up). Flow, starting at SF on the bottom straight:
- *  - long main straight heading +X (SF line + gantry)
- *  - T1: fast sweeping 90° left up the right side
- *  - flat-out run north into heavy braking
- *  - T2: 180° hairpin at top-right
- *  - short drop, then a flowing 90° right into the infield
- *  - climbing 90° right-hander that opens onto the top
- *  - long fast left sweeper arcing over the top and down the far side
- *  - western sweep add-on: peels out past the old chicane (~x=-122) then
- *    arcs back onto the main straight (keeps SF at t≈0)
- * Corners are built from tangent-continuous arcs sampled every ~8-16 units,
- * so the CatmullRom loop stays smooth: min corner radius ≈ 13.5, min
- * self-clearance ≈ 30 — the 14-wide road (and its runoff) never overlaps.
- */
-function buildCircuitPoints(): THREE.Vector3[] {
-  const raw: [number, number][] = [
-    // main straight (heading +X), SF line at the first point
-    [-10, -58], [10, -58], [30, -58], [46, -58],
-    // T1: sweeping left, r=30
-    [58, -58], [67.3, -56.5], [75.6, -52.3], [82.3, -45.6], [86.5, -37.3], [88, -28],
-    // run north
-    [88, -8], [88, 10],
-    // T2: hairpin, r=20 around (68, 26)
-    [88, 26], [86.5, 33.7], [82.1, 40.1], [75.7, 44.5], [68, 46],
-    [60.3, 44.5], [53.9, 40.1], [49.5, 33.7], [48, 26],
-    // short drop, then 90° right into the infield, r=20
-    [48, 18], [48, 10], [47, 3.8], [44.2, -1.8], [39.8, -6.2], [34.2, -9], [28, -10],
-    // infield run west
-    [16, -10], [8, -10],
-    // climbing 90° right, r=22
-    [1.2, -8.9], [-4.9, -5.8], [-9.8, -0.9], [-12.9, 5.2], [-14, 12],
-    // long left sweeper over the top, r=42 around (-56, 12)
-    [-15.8, 24.3], [-21.2, 35.5], [-29.6, 44.6], [-40.3, 50.9], [-52.3, 53.8],
-    [-64.7, 53.1], [-76.4, 48.7], [-86.2, 41.2], [-93.4, 31.1], [-97.4, 19.3],
-    // western sweep add-on (replaces old descent chicane): outward lobe then
-    // ease back onto the main straight at [-70, -58]
-    [-98, 14], [-100, 6], [-104, -2], [-110, -10], [-116, -18], [-120, -28],
-    [-122, -38], [-118, -48], [-110, -54], [-98, -57], [-86, -58], [-76, -58],
-    [-70, -58],
-    [-56, -58], [-44, -58], [-32, -58],
-  ];
-  // Stretch to the full ~200x130 world footprint (lobe reaches ~x=-131 scaled)
-  return raw.map(([x, z]) => new THREE.Vector3(x * 1.07, 0, z * 1.15));
+function pointsFromDef(def: TrackDef): THREE.Vector3[] {
+  return def.points.map(([x, z]) => new THREE.Vector3(x, 0, z));
+}
+
+/** World AABB pad used for grass / forest planting. */
+function pathBounds(path: THREE.CatmullRomCurve3) {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  const n = 120;
+  for (let i = 0; i < n; i++) {
+    const p = path.getPointAt(i / n);
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.z < minZ) minZ = p.z;
+    if (p.z > maxZ) maxZ = p.z;
+  }
+  const pad = 55;
+  return {
+    minX: minX - pad,
+    maxX: maxX + pad,
+    minZ: minZ - pad,
+    maxZ: maxZ + pad,
+    cx: (minX + maxX) * 0.5,
+    cz: (minZ + maxZ) * 0.5,
+    spanX: maxX - minX + pad * 2,
+    spanZ: maxZ - minZ + pad * 2,
+  };
 }
 
 function buildRibbon(
@@ -252,21 +248,24 @@ function buildRibbon(
   return geo;
 }
 
-export function createTrack(): TrackData {
+/** Build a full track scene from a named path definition. */
+export function createTrack(trackId: string = DEFAULT_TRACK_ID): TrackData {
+  const def = getTrackDef(trackId);
   const group = new THREE.Group();
   const width = 14;
   const half = width / 2;
 
-  const pts = buildCircuitPoints();
+  const pts = pointsFromDef(def);
   const path = new THREE.CatmullRomCurve3(pts, true, "catmullrom", 0.5);
+  const bounds = pathBounds(path);
 
-  // Bright map-style grass
+  // Bright map-style grass sized to this circuit
   const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(340, 340),
+    new THREE.PlaneGeometry(bounds.spanX, bounds.spanZ),
     new THREE.MeshStandardMaterial({ color: 0x4aa83a, roughness: 1 }),
   );
   ground.rotation.x = -Math.PI / 2;
-  ground.position.y = -0.12;
+  ground.position.set(bounds.cx, -0.12, bounds.cz);
   ground.receiveShadow = true;
   group.add(ground);
 
@@ -366,12 +365,34 @@ export function createTrack(): TrackData {
   const heading = yawFromTangent(startTan);
 
   return {
+    id: def.id,
+    name: def.name,
     group,
     path,
     startPosition: startP.clone().addScaledVector(startN, -2.8),
     startHeading: heading,
     width,
   };
+}
+
+/** Remove a track group from the scene and free GPU resources (not shared tree mats). */
+export function disposeTrack(track: TrackData) {
+  track.group.removeFromParent();
+  const geos = new Set<THREE.BufferGeometry>();
+  const mats = new Set<THREE.Material>();
+  track.group.traverse((obj) => {
+    const mesh = obj as THREE.Mesh & THREE.InstancedMesh;
+    if (!mesh.isMesh && !mesh.isInstancedMesh) return;
+    if (mesh.geometry) geos.add(mesh.geometry);
+    const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    for (const mat of list) {
+      if (!mat) continue;
+      if (mat === TREE_TRUNK || TREE_CANOPY.includes(mat as THREE.MeshStandardMaterial)) continue;
+      mats.add(mat);
+    }
+  });
+  for (const g of geos) g.dispose();
+  for (const m of mats) m.dispose();
 }
 
 export type TrackProjection = {

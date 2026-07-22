@@ -12,6 +12,16 @@ const LEADERBOARD_PATH = join(dirname(fileURLToPath(import.meta.url)), "leaderbo
 const MAX_BOARD = 10;
 const NAME_MAX = 10;
 
+const TRACK_IDS = [
+  "forest-loop",
+  "harbor-circuit",
+  "summit-pass",
+  "meadow-sweep",
+  "canyon-cut",
+  "twin-lakes",
+];
+const DEFAULT_TRACK_ID = TRACK_IDS[0];
+
 /** Letters, digits, space, underscore — trim, strip control/weird chars, cap length. */
 function sanitizeDriverName(raw) {
   const cleaned = String(raw ?? "")
@@ -24,27 +34,61 @@ function sanitizeDriverName(raw) {
   return cleaned || "RACER";
 }
 
+function normalizeTrackId(raw) {
+  const id = String(raw ?? "").trim();
+  return TRACK_IDS.includes(id) ? id : DEFAULT_TRACK_ID;
+}
+
 /** @typedef {{ id: string, name: string, color: number, x: number, z: number, h: number, s: number, g: string, lap: number }} Pose */
 /** @typedef {{ id: string, name: string, color: number, room: string, ws: import('ws').WebSocket, pose: Pose, lastPoseAt: number }} Client */
-/** @typedef {{ name: string, timeMs: number, bestLapMs?: number, at: number }} BoardEntry */
+/** @typedef {{ name: string, timeMs: number, bestLapMs?: number, at: number, trackId?: string }} BoardEntry */
+/** @typedef {Record<string, BoardEntry[]>} BoardStore */
 
 /** @type {Map<string, Map<string, Client>>} */
 const rooms = new Map();
 
-/** @returns {BoardEntry[]} */
-function loadBoard() {
+/** @returns {BoardStore} */
+function emptyStore() {
+  /** @type {BoardStore} */
+  const store = {};
+  for (const id of TRACK_IDS) store[id] = [];
+  return store;
+}
+
+/** @returns {BoardStore} */
+function loadStore() {
   try {
-    if (!existsSync(LEADERBOARD_PATH)) return [];
+    if (!existsSync(LEADERBOARD_PATH)) return emptyStore();
     const raw = JSON.parse(readFileSync(LEADERBOARD_PATH, "utf8"));
-    return Array.isArray(raw) ? raw : [];
+    const store = emptyStore();
+    if (Array.isArray(raw)) {
+      store[DEFAULT_TRACK_ID] = sortBoard(raw, DEFAULT_TRACK_ID);
+      return store;
+    }
+    if (raw && typeof raw === "object") {
+      if (raw.byTrack && typeof raw.byTrack === "object") {
+        for (const [id, list] of Object.entries(raw.byTrack)) {
+          const tid = normalizeTrackId(id);
+          if (Array.isArray(list)) store[tid] = sortBoard(list, tid);
+        }
+        return store;
+      }
+      if (Array.isArray(raw.entries)) {
+        store[DEFAULT_TRACK_ID] = sortBoard(raw.entries, DEFAULT_TRACK_ID);
+      }
+    }
+    return store;
   } catch {
-    return [];
+    return emptyStore();
   }
 }
 
-/** @param {BoardEntry[]} entries */
-function saveBoard(entries) {
-  writeFileSync(LEADERBOARD_PATH, JSON.stringify(entries, null, 2));
+/** @param {BoardStore} store */
+function saveStore(store) {
+  /** @type {BoardStore} */
+  const byTrack = {};
+  for (const id of TRACK_IDS) byTrack[id] = sortBoard(store[id] || [], id);
+  writeFileSync(LEADERBOARD_PATH, JSON.stringify({ byTrack }, null, 2));
 }
 
 const TIME_EPS_MS = 15;
@@ -55,8 +99,9 @@ function sameRun(a, b) {
   return Math.abs(a.timeMs - b.timeMs) <= TIME_EPS_MS;
 }
 
-/** @param {BoardEntry[]} entries */
-function sortBoard(entries) {
+/** @param {BoardEntry[]} entries @param {string} [trackId] */
+function sortBoard(entries, trackId) {
+  const tid = trackId ? normalizeTrackId(trackId) : undefined;
   const cleaned = [...entries]
     .filter((e) => e && Number.isFinite(e.timeMs) && e.timeMs > 0)
     .map((e) => ({
@@ -64,6 +109,7 @@ function sortBoard(entries) {
       timeMs: Math.round(e.timeMs),
       bestLapMs: e.bestLapMs != null ? Math.round(e.bestLapMs) : undefined,
       at: e.at || Date.now(),
+      trackId: tid || (e.trackId ? normalizeTrackId(e.trackId) : undefined),
     }));
 
   /** @type {BoardEntry[]} */
@@ -136,8 +182,15 @@ const httpServer = createServer(async (req, res) => {
   }
 
   if (url.pathname === "/api/leaderboard" && req.method === "GET") {
+    const store = loadStore();
+    const trackQ = url.searchParams.get("track");
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ ok: true, entries: sortBoard(loadBoard()) }));
+    if (trackQ) {
+      const tid = normalizeTrackId(trackQ);
+      res.end(JSON.stringify({ ok: true, trackId: tid, entries: sortBoard(store[tid] || [], tid), byTrack: store }));
+    } else {
+      res.end(JSON.stringify({ ok: true, byTrack: store }));
+    }
     return;
   }
 
@@ -146,21 +199,24 @@ const httpServer = createServer(async (req, res) => {
     for await (const chunk of req) body += chunk;
     try {
       const data = JSON.parse(body || "{}");
+      const tid = normalizeTrackId(data.trackId);
       const entry = {
         name: sanitizeDriverName(data.name),
         timeMs: Math.round(Number(data.timeMs)),
         bestLapMs: data.bestLapMs != null ? Math.round(Number(data.bestLapMs)) : undefined,
         at: Date.now(),
+        trackId: tid,
       };
       if (!Number.isFinite(entry.timeMs) || entry.timeMs <= 0) {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: false, error: "bad time" }));
         return;
       }
-      const next = sortBoard([...loadBoard(), entry]);
-      saveBoard(next);
+      const store = loadStore();
+      store[tid] = sortBoard([...(store[tid] || []), entry], tid);
+      saveStore(store);
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true, entries: next }));
+      res.end(JSON.stringify({ ok: true, trackId: tid, entries: store[tid], byTrack: store }));
     } catch {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "bad json" }));

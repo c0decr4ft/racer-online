@@ -108,12 +108,33 @@
         </div>
       </div>
 
+      <div id="map-select" class="overlay hidden">
+        <div class="overlay-inner map-select-panel">
+          <p class="eyebrow">SELECT COURSE</p>
+          <h1 id="map-select-title">MAP</h1>
+          <p class="tagline" id="map-select-tagline">Pick a circuit</p>
+          <div id="map-grid" class="map-grid" role="listbox" aria-label="Courses"></div>
+          <button id="map-select-back" class="btn-ghost" type="button">BACK</button>
+        </div>
+      </div>
+
       <div id="leaderboard" class="overlay hidden">
         <div class="overlay-inner board-panel">
           <p class="eyebrow">WORLDWIDE</p>
           <h1>TOP 10</h1>
           <p id="board-source" class="tagline board-source">Loading…</p>
-          <ol id="board-list" class="board-list"></ol>
+          <div class="board-body">
+            <div
+              id="board-track-grid"
+              class="board-map-rail"
+              role="tablist"
+              aria-label="Course boards"
+              aria-orientation="vertical"
+            ></div>
+            <div class="board-scores">
+              <ol id="board-list" class="board-list"></ol>
+            </div>
+          </div>
           <button id="board-close-btn" type="button">BACK</button>
         </div>
       </div>

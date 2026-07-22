@@ -1,16 +1,26 @@
 import * as THREE from "three";
 import { createCar, CAR_PALETTE } from "./car";
-import { createTrack, LapGateProgress, projectOnTrack, projectOnTrackNear } from "./track";
+import {
+  createTrack,
+  disposeTrack,
+  LapGateProgress,
+  projectOnTrack,
+  projectOnTrackNear,
+  TRACKS,
+  randomTrackId,
+  DEFAULT_TRACK_ID,
+} from "./track";
+import { drawTrackPreview } from "./mapPreview";
 import { Input } from "./input";
 import { Vehicle, RivalAI } from "./vehicle";
 import { NetClient, RemotePlayer } from "./net/client";
 import type { PlayerPose } from "./net/protocol";
 import {
+  bestRankAcrossTracks,
   boardSourceLabel,
   fetchLeaderboard,
   formatBoardTime,
   getLocalDriverName,
-  rankForDriver,
   sanitizeDriverName,
   saveLocalDriverName,
   submitScore,
@@ -63,7 +73,11 @@ export class Game {
   /** Roof-mounted look-behind cam for the always-on rearview inset. */
   private rearCamera: THREE.PerspectiveCamera;
   input = new Input();
-  track = createTrack();
+  track = createTrack(DEFAULT_TRACK_ID);
+  /** Active course id — rebuilt when starting a mode or Race Again (random). */
+  private trackId = DEFAULT_TRACK_ID;
+  /** Board panel currently showing this course. */
+  private boardTrackId = DEFAULT_TRACK_ID;
   player!: Vehicle;
   rivals: RivalAI[] = [];
   private audio = new GameAudio();
@@ -131,11 +145,18 @@ export class Game {
     minimap: document.getElementById("minimap") as HTMLCanvasElement,
     wallHits: document.getElementById("wall-hits")!,
     explodeFlash: document.getElementById("explode-flash")!,
+    mapSelect: document.getElementById("map-select")!,
+    mapGrid: document.getElementById("map-grid")!,
+    mapSelectTitle: document.getElementById("map-select-title")!,
+    mapSelectTagline: document.getElementById("map-select-tagline")!,
+    boardTrackGrid: document.getElementById("board-track-grid")!,
   };
 
   private pendingFinishMs = 0;
   private scoreSaveInFlight = false;
   private bestFlashUntil = 0;
+  /** Ignore stale async board fetches when switching maps quickly. */
+  private boardLoadGen = 0;
 
   /** Player wall-hit explode — counted distinct contacts only. */
   private wallHits = 0;
@@ -213,25 +234,29 @@ export class Game {
     this.bindMuteBtn();
 
     document.getElementById("start-btn")!.onclick = () => {
-      void this.bootFromMenu({});
+      // Start Race with AI — random course, no picker
+      void this.bootFromMenu({ trackId: randomTrackId() });
     };
     document.getElementById("test-drive-btn")!.onclick = () => {
-      void this.bootFromMenu({ practice: true });
+      void this.unlockAndMaybeMenuMusic().then(() => this.openMapSelect("practice"));
     };
     document.getElementById("solo-race-btn")!.onclick = () => {
-      void this.bootFromMenu({ solo: true });
+      void this.unlockAndMaybeMenuMusic().then(() => this.openMapSelect("solo"));
     };
+    document.getElementById("map-select-back")!.onclick = () => this.closeMapSelect();
     document.getElementById("restart-btn")!.onclick = () => {
       void this.audio.unlock().then(() => {
         this.audio.stopMusic();
-        this.startRace({ solo: this.solo });
+        // AI race again → new random map; solo keeps chosen course
+        const trackId = !this.solo && !this.practice ? randomTrackId() : this.trackId;
+        this.startRace({ solo: this.solo, trackId });
       });
     };
     document.getElementById("resume-btn")!.onclick = () => this.resume();
     document.getElementById("pause-restart-btn")!.onclick = () => {
       void this.audio.unlock().then(() => {
         this.audio.stopMusic();
-        this.startRace({ practice: this.practice, solo: this.solo });
+        this.startRace({ practice: this.practice, solo: this.solo, trackId: this.trackId });
       });
     };
     document.getElementById("pause-home-btn")!.onclick = () => this.goHome();
@@ -246,8 +271,10 @@ export class Game {
       this.audio.playMenuMusic();
       void this.refreshHomeRank();
     };
-    // First gesture on homepage unlocks AudioContext + starts menu music
     this.el.overlay.addEventListener("pointerdown", () => {
+      void this.unlockAndMaybeMenuMusic();
+    });
+    this.el.mapSelect.addEventListener("pointerdown", () => {
       void this.unlockAndMaybeMenuMusic();
     });
     document.getElementById("submit-score-btn")!.onclick = () => void this.saveDriverScore();
@@ -291,13 +318,14 @@ export class Game {
     btn.classList.toggle("hidden", !visible);
   }
 
-  /** Homepage overlay visible (incl. BOARD panel over it). */
+  /** Homepage overlay visible (incl. BOARD / map picker over it). */
   private onHomeOrBoard(): boolean {
+    const mapOpen = !this.el.mapSelect.classList.contains("hidden");
     return (
       !this.running &&
       !this.finished &&
       !this.paused &&
-      !this.el.overlay.classList.contains("hidden")
+      (!this.el.overlay.classList.contains("hidden") || mapOpen)
     );
   }
 
@@ -306,8 +334,80 @@ export class Game {
     if (this.onHomeOrBoard()) this.audio.playMenuMusic();
   }
 
+  /** Silhouette course picker for Test Drive / Solo — no text map names. */
+  private openMapSelect(mode: "practice" | "solo") {
+    this.el.leaderboard.classList.add("hidden");
+    this.el.mapSelectTitle.textContent = mode === "practice" ? "TEST DRIVE" : "SOLO RACE";
+    this.el.mapSelectTagline.textContent = "Choose a circuit";
+    this.renderMapGrid(this.el.mapGrid, null, (trackId) => {
+      void this.bootFromMenu({
+        practice: mode === "practice",
+        solo: mode === "solo",
+        trackId,
+      });
+    });
+    this.el.overlay.classList.add("hidden");
+    this.el.mapSelect.classList.remove("hidden");
+    this.syncMuteBtn();
+  }
+
+  private closeMapSelect() {
+    this.el.mapSelect.classList.add("hidden");
+    this.el.overlay.classList.remove("hidden");
+    this.syncMuteBtn();
+  }
+
+  /**
+   * Fill a grid with minimap-style route thumbnails (outline only, no labels).
+   * Clicking a thumb starts / selects that course.
+   */
+  private renderMapGrid(
+    grid: HTMLElement,
+    selectedId: string | null,
+    onPick: (trackId: string) => void,
+  ) {
+    const asTabs = grid.getAttribute("role") === "tablist";
+    grid.innerHTML = "";
+    for (const def of TRACKS) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "map-thumb";
+      btn.setAttribute("role", asTabs ? "tab" : "option");
+      // aria-label only — never shown as visible text on the picker
+      btn.setAttribute("aria-label", def.name);
+      btn.setAttribute("aria-selected", selectedId === def.id ? "true" : "false");
+      if (asTabs) btn.tabIndex = selectedId === def.id ? 0 : -1;
+      if (selectedId === def.id) btn.classList.add("selected");
+      const canvas = document.createElement("canvas");
+      btn.appendChild(canvas);
+      btn.onclick = () => onPick(def.id);
+      grid.appendChild(btn);
+      // Draw after layout so clientWidth is valid
+      requestAnimationFrame(() => {
+        drawTrackPreview(canvas, def.id, { selected: selectedId === def.id });
+      });
+    }
+  }
+
+  /** Dispose current track mesh and rebuild from a named path definition. */
+  private setActiveTrack(trackId: string) {
+    if (this.trackId === trackId && this.track.id === trackId) return;
+    disposeTrack(this.track);
+    this.track = createTrack(trackId);
+    this.trackId = this.track.id;
+    this.boardTrackId = this.track.id;
+    this.scene.add(this.track.group);
+    // Invalidate minimap bake — new path reference
+    this.minimapPath = null;
+    this.minimapPts = [];
+    this.minimapTrackKey = "";
+    this.stickyT = new WeakMap();
+  }
+
   /** Menu Start / Test Drive / Solo — unlock audio, leave online, start session. */
-  private async bootFromMenu(opts: { practice?: boolean; solo?: boolean } = {}) {
+  private async bootFromMenu(
+    opts: { practice?: boolean; solo?: boolean; trackId?: string } = {},
+  ) {
     await this.audio.unlock();
     this.audio.stopMenuMusic();
     this.online = false;
@@ -315,6 +415,7 @@ export class Game {
     this.clearRemotes();
     this.el.netStatus.classList.add("hidden");
     this.el.leaderboard.classList.add("hidden");
+    this.el.mapSelect.classList.add("hidden");
     this.startRace(opts);
   }
 
@@ -342,6 +443,7 @@ export class Game {
     this.el.explodeFlash.classList.add("hidden");
     this.el.nameEntry.classList.add("hidden");
     this.el.leaderboard.classList.add("hidden");
+    this.el.mapSelect.classList.add("hidden");
     this.el.minimap.classList.add("hidden");
     this.el.rearview.classList.add("hidden");
     this.el.overlay.classList.remove("hidden");
@@ -351,10 +453,8 @@ export class Game {
     void this.refreshHomeRank();
   }
 
-  /** Show this player's top-10 place above the brand, or hide if not on the board. */
-  private applyHomeRank(entries: LeaderboardEntry[]) {
-    const name = getLocalDriverName();
-    const rank = name ? rankForDriver(entries, name) : null;
+  /** Show this player's best top-10 place across all courses. */
+  private applyHomeRankNumber(rank: number | null) {
     if (rank == null) {
       this.el.homeRank.textContent = "";
       this.el.homeRank.classList.add("hidden");
@@ -367,16 +467,14 @@ export class Game {
   private async refreshHomeRank() {
     const name = getLocalDriverName();
     if (!name) {
-      this.el.homeRank.textContent = "";
-      this.el.homeRank.classList.add("hidden");
+      this.applyHomeRankNumber(null);
       return;
     }
     try {
-      const { entries } = await fetchLeaderboard();
-      this.applyHomeRank(entries);
+      const rank = await bestRankAcrossTracks(name);
+      this.applyHomeRankNumber(rank);
     } catch {
-      this.el.homeRank.textContent = "";
-      this.el.homeRank.classList.add("hidden");
+      this.applyHomeRankNumber(null);
     }
   }
 
@@ -394,13 +492,33 @@ export class Game {
   }
 
   private async openLeaderboard() {
+    this.el.mapSelect.classList.add("hidden");
     this.el.leaderboard.classList.remove("hidden");
+    // Last-played course if set, otherwise first map
+    this.boardTrackId = this.trackId || DEFAULT_TRACK_ID;
     this.el.boardSource.textContent = "Loading…";
     this.el.boardList.innerHTML = "";
-    const { entries, source } = await fetchLeaderboard();
+    this.renderBoardTrackPicker();
+    await this.loadBoardForTrack(this.boardTrackId);
+    void this.refreshHomeRank();
+  }
+
+  private renderBoardTrackPicker() {
+    this.renderMapGrid(this.el.boardTrackGrid, this.boardTrackId, (trackId) => {
+      if (trackId === this.boardTrackId) return;
+      this.boardTrackId = trackId;
+      this.renderBoardTrackPicker();
+      void this.loadBoardForTrack(trackId);
+    });
+  }
+
+  private async loadBoardForTrack(trackId: string) {
+    const gen = ++this.boardLoadGen;
+    this.el.boardSource.textContent = "Loading…";
+    const { entries, source } = await fetchLeaderboard(trackId);
+    if (gen !== this.boardLoadGen || trackId !== this.boardTrackId) return;
     this.el.boardSource.textContent = boardSourceLabel(source);
     this.renderBoardList(entries);
-    this.applyHomeRank(entries);
   }
 
   private async saveDriverScore() {
@@ -415,13 +533,20 @@ export class Game {
     this.scoreSaveInFlight = true;
     btn.disabled = true;
     try {
-      const { entries, source } = await submitScore(name, this.pendingFinishMs, this.bestLap);
+      const { entries, source } = await submitScore(
+        name,
+        this.pendingFinishMs,
+        this.bestLap,
+        this.trackId,
+      );
       saveLocalDriverName(name);
       this.el.nameEntry.classList.add("hidden");
+      this.boardTrackId = this.trackId;
       this.el.leaderboard.classList.remove("hidden");
+      this.renderBoardTrackPicker();
       this.el.boardSource.textContent = boardSourceLabel(source, true);
       this.renderBoardList(entries);
-      this.applyHomeRank(entries);
+      void this.refreshHomeRank();
     } finally {
       this.scoreSaveInFlight = false;
       btn.disabled = false;
@@ -541,12 +666,16 @@ export class Game {
   }
 
   /** @param opts.practice Test Drive — same world, no finish / podium.
-   *  @param opts.solo Timed race with no AI rivals. */
-  startRace(opts: { practice?: boolean; solo?: boolean } = {}) {
+   *  @param opts.solo Timed race with no AI rivals.
+   *  @param opts.trackId Course to load; AI Start Race should pass a random id. */
+  startRace(opts: { practice?: boolean; solo?: boolean; trackId?: string } = {}) {
     this.practice = !!opts.practice;
     this.solo = !!opts.solo && !this.practice;
+    const nextId = opts.trackId ?? this.trackId ?? DEFAULT_TRACK_ID;
+    this.setActiveTrack(nextId);
     this.setAiVisible(!this.solo && !this.online);
     this.el.overlay.classList.add("hidden");
+    this.el.mapSelect.classList.add("hidden");
     this.el.finish.classList.add("hidden");
     this.el.pause.classList.add("hidden");
     this.el.leaderboard.classList.add("hidden");
@@ -756,7 +885,7 @@ export class Game {
         this.updateCamera(dt);
         this.syncAudio(inputPeek, false);
         if (performance.now() >= this.explodeRestartAt) {
-          this.startRace({ practice: this.practice, solo: this.solo });
+          this.startRace({ practice: this.practice, solo: this.solo, trackId: this.trackId });
         }
       } else {
         if (this.countingDown) this.tickCountdown(now);
@@ -1298,7 +1427,7 @@ export class Game {
   }
 
   private async checkLeaderboardQualify() {
-    const qualifies = await wouldQualify(this.pendingFinishMs);
+    const qualifies = await wouldQualify(this.pendingFinishMs, this.trackId);
     if (!qualifies) return;
     this.el.nameEntry.classList.remove("hidden");
     this.el.driverName.focus();

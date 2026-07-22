@@ -1,32 +1,34 @@
+import { DEFAULT_TRACK_ID, isTrackId, TRACKS } from "../trackDefs";
+
 export type LeaderboardEntry = {
   name: string;
   timeMs: number;
   bestLapMs?: number;
   at: number;
+  trackId?: string;
 };
 
 export type BoardSource = "online" | "server" | "local";
 
-/** New course → new key so old-layout times never show. */
-const STORAGE_KEY = "racer-leaderboard-v2";
-const LEGACY_STORAGE_KEYS = ["racer-leaderboard-v1"];
-/** Last name this browser submitted to the worldwide board. */
+/** Per-track local cache — times never mix across courses. */
+function storageKey(trackId: string) {
+  return `racer-leaderboard-v2-${trackId}`;
+}
+
+const LEGACY_STORAGE_KEYS = ["racer-leaderboard-v1", "racer-leaderboard-v2"];
 const DRIVER_NAME_KEY = "racer-driver-name";
 const MAX = 10;
-/** Max characters for a driver name on the board. */
 export const NAME_MAX = 10;
 
-/** Drop previous-course local caches once per page load. */
 function clearLegacyLocalBoards() {
   try {
     for (const key of LEGACY_STORAGE_KEYS) localStorage.removeItem(key);
   } catch {
-    /* ignore quota / private mode */
+    /* ignore */
   }
 }
 clearLegacyLocalBoards();
 
-/** Trim, allow letters/digits/space/underscore, drop control/weird chars, cap length. */
 export function sanitizeDriverName(raw: string): string {
   const cleaned = String(raw ?? "")
     .normalize("NFKC")
@@ -38,7 +40,11 @@ export function sanitizeDriverName(raw: string): string {
   return cleaned || "RACER";
 }
 
-/** Shared public board (JSONBlob). Fresh empty store for the extended circuit. */
+function normalizeTrackId(raw: unknown): string {
+  const id = String(raw ?? "").trim();
+  return isTrackId(id) ? id : DEFAULT_TRACK_ID;
+}
+
 const PUBLIC_BLOB_URL =
   "https://jsonblob.com/api/jsonBlob/019f89b5-c828-7f52-80b7-ca3888e5ae1b";
 
@@ -48,9 +54,11 @@ function localApiBase(): string | null {
   return null;
 }
 
-function readLocal(): LeaderboardEntry[] {
+type BoardStore = Record<string, LeaderboardEntry[]>;
+
+function readLocal(trackId: string): LeaderboardEntry[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(storageKey(trackId));
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
@@ -59,11 +67,10 @@ function readLocal(): LeaderboardEntry[] {
   }
 }
 
-function writeLocal(entries: LeaderboardEntry[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(entries.slice(0, MAX)));
+function writeLocal(trackId: string, entries: LeaderboardEntry[]) {
+  localStorage.setItem(storageKey(trackId), JSON.stringify(entries.slice(0, MAX)));
 }
 
-/** Same driver + essentially same race time → one row (local+remote / retry merges). */
 const TIME_EPS_MS = 15;
 
 function entryKey(e: LeaderboardEntry): string {
@@ -75,7 +82,6 @@ function isSameRun(a: LeaderboardEntry, b: LeaderboardEntry): boolean {
   return Math.abs(a.timeMs - b.timeMs) <= TIME_EPS_MS;
 }
 
-/** Prefer earlier submit; keep richer bestLap when tied. */
 function pickBetter(a: LeaderboardEntry, b: LeaderboardEntry): LeaderboardEntry {
   const earlier = (a.at || 0) <= (b.at || 0) ? a : b;
   const other = earlier === a ? b : a;
@@ -85,7 +91,8 @@ function pickBetter(a: LeaderboardEntry, b: LeaderboardEntry): LeaderboardEntry 
   return earlier;
 }
 
-function normalize(entries: LeaderboardEntry[]): LeaderboardEntry[] {
+function normalize(entries: LeaderboardEntry[], trackId?: string): LeaderboardEntry[] {
+  const tid = trackId ? normalizeTrackId(trackId) : undefined;
   const cleaned = [...entries]
     .filter((e) => e && typeof e.timeMs === "number" && Number.isFinite(e.timeMs) && e.timeMs > 0)
     .map((e) => ({
@@ -93,9 +100,9 @@ function normalize(entries: LeaderboardEntry[]): LeaderboardEntry[] {
       timeMs: Math.round(e.timeMs),
       bestLapMs: e.bestLapMs != null ? Math.round(e.bestLapMs) : undefined,
       at: e.at || Date.now(),
+      trackId: tid ?? (e.trackId ? normalizeTrackId(e.trackId) : undefined),
     }));
 
-  // Dedupe by name+time (exact key first, then epsilon neighbors from merge races)
   const byKey = new Map<string, LeaderboardEntry>();
   for (const e of cleaned) {
     const key = entryKey(e);
@@ -116,93 +123,124 @@ function normalize(entries: LeaderboardEntry[]): LeaderboardEntry[] {
   return unique.sort((a, b) => a.timeMs - b.timeMs || (a.at || 0) - (b.at || 0)).slice(0, MAX);
 }
 
-function parsePayload(data: unknown): LeaderboardEntry[] {
-  if (Array.isArray(data)) return normalize(data);
-  if (data && typeof data === "object" && Array.isArray((data as { entries?: unknown }).entries)) {
-    return normalize((data as { entries: LeaderboardEntry[] }).entries);
-  }
-  return [];
+function emptyStore(): BoardStore {
+  const store: BoardStore = {};
+  for (const t of TRACKS) store[t.id] = [];
+  return store;
 }
 
-async function fetchLocalServer(): Promise<LeaderboardEntry[] | null> {
+function parseStore(data: unknown): BoardStore {
+  const store = emptyStore();
+  if (!data || typeof data !== "object") return store;
+
+  const obj = data as { byTrack?: unknown; entries?: unknown };
+  if (obj.byTrack && typeof obj.byTrack === "object") {
+    for (const [id, list] of Object.entries(obj.byTrack as Record<string, unknown>)) {
+      const tid = normalizeTrackId(id);
+      if (Array.isArray(list)) store[tid] = normalize(list as LeaderboardEntry[], tid);
+    }
+    return store;
+  }
+
+  if (Array.isArray(data)) {
+    store[DEFAULT_TRACK_ID] = normalize(data as LeaderboardEntry[], DEFAULT_TRACK_ID);
+    return store;
+  }
+  if (Array.isArray(obj.entries)) {
+    store[DEFAULT_TRACK_ID] = normalize(obj.entries as LeaderboardEntry[], DEFAULT_TRACK_ID);
+  }
+  return store;
+}
+
+function entriesFor(store: BoardStore, trackId: string): LeaderboardEntry[] {
+  const tid = normalizeTrackId(trackId);
+  return normalize(store[tid] ?? [], tid);
+}
+
+async function fetchLocalServerStore(): Promise<BoardStore | null> {
   const base = localApiBase();
   if (!base) return null;
   try {
     const res = await fetch(`${base}/api/leaderboard`, { cache: "no-store" });
     if (!res.ok) return null;
-    return parsePayload(await res.json());
+    return parseStore(await res.json());
   } catch {
     return null;
   }
 }
 
-async function fetchPublicBlob(): Promise<LeaderboardEntry[]> {
+async function fetchPublicBlobStore(): Promise<BoardStore> {
   const res = await fetch(PUBLIC_BLOB_URL, {
     cache: "no-store",
     headers: { Accept: "application/json" },
   });
   if (!res.ok) throw new Error(String(res.status));
-  return parsePayload(await res.json());
+  return parseStore(await res.json());
 }
 
-async function putPublicBlob(entries: LeaderboardEntry[]): Promise<LeaderboardEntry[]> {
-  const normalized = normalize(entries);
+async function putPublicBlobStore(store: BoardStore): Promise<BoardStore> {
+  const byTrack: BoardStore = emptyStore();
+  for (const t of TRACKS) {
+    byTrack[t.id] = normalize(store[t.id] ?? [], t.id);
+  }
   const res = await fetch(PUBLIC_BLOB_URL, {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json",
     },
-    body: JSON.stringify({ entries: normalized }),
+    body: JSON.stringify({ byTrack }),
   });
   if (!res.ok) throw new Error(String(res.status));
-  // Some hosts echo the body; prefer what we wrote.
   try {
-    const data = await res.json();
-    const parsed = parsePayload(data);
-    return parsed.length || !normalized.length ? parsed : normalized;
+    return parseStore(await res.json());
   } catch {
-    return normalized;
+    return byTrack;
   }
 }
 
-/** Fetch worldwide board; falls back to localStorage if offline. */
-export async function fetchLeaderboard(): Promise<{ entries: LeaderboardEntry[]; source: BoardSource }> {
-  const fromServer = await fetchLocalServer();
+function cacheStoreLocally(store: BoardStore) {
+  for (const t of TRACKS) writeLocal(t.id, store[t.id] ?? []);
+}
+
+export async function fetchLeaderboard(
+  trackId: string = DEFAULT_TRACK_ID,
+): Promise<{ entries: LeaderboardEntry[]; source: BoardSource }> {
+  const tid = normalizeTrackId(trackId);
+  const fromServer = await fetchLocalServerStore();
   if (fromServer) {
-    writeLocal(fromServer);
-    return { entries: fromServer, source: "server" };
+    cacheStoreLocally(fromServer);
+    return { entries: entriesFor(fromServer, tid), source: "server" };
   }
 
   try {
-    const entries = await fetchPublicBlob();
-    writeLocal(entries);
-    return { entries, source: "online" };
+    const store = await fetchPublicBlobStore();
+    cacheStoreLocally(store);
+    return { entries: entriesFor(store, tid), source: "online" };
   } catch {
-    return { entries: normalize(readLocal()), source: "local" };
+    return { entries: normalize(readLocal(tid), tid), source: "local" };
   }
 }
 
-export async function wouldQualify(timeMs: number): Promise<boolean> {
-  const { entries } = await fetchLeaderboard();
+export async function wouldQualify(timeMs: number, trackId: string = DEFAULT_TRACK_ID): Promise<boolean> {
+  const { entries } = await fetchLeaderboard(trackId);
   if (entries.length < MAX) return true;
-  return timeMs < entries[entries.length - 1].timeMs;
+  return timeMs < entries[entries.length - 1]!.timeMs;
 }
 
-/**
- * Submit a qualifying time with read-modify-write against the public store.
- * Retries once if a concurrent write likely raced.
- */
 export async function submitScore(
   name: string,
   timeMs: number,
   bestLapMs?: number,
+  trackId: string = DEFAULT_TRACK_ID,
 ): Promise<{ entries: LeaderboardEntry[]; source: BoardSource }> {
+  const tid = normalizeTrackId(trackId);
   const entry: LeaderboardEntry = {
     name: sanitizeDriverName(name),
     timeMs: Math.round(timeMs),
     bestLapMs: bestLapMs != null && Number.isFinite(bestLapMs) ? Math.round(bestLapMs) : undefined,
     at: Date.now(),
+    trackId: tid,
   };
 
   const base = localApiBase();
@@ -214,37 +252,34 @@ export async function submitScore(
         body: JSON.stringify(entry),
       });
       if (res.ok) {
-        const data = await res.json();
-        const entries = parsePayload(data);
-        writeLocal(entries);
-        // Mirror to public board so Pages players see local-dev scores too.
-        void putPublicBlob(entries).catch(() => undefined);
-        return { entries, source: "server" };
+        const store = parseStore(await res.json());
+        cacheStoreLocally(store);
+        void putPublicBlobStore(store).catch(() => undefined);
+        return { entries: entriesFor(store, tid), source: "server" };
       }
     } catch {
-      /* fall through to public / local */
+      /* fall through */
     }
   }
 
   try {
-    // normalize() dedupes — safe if soft-retry re-merges the same run
-    let entries = normalize([...(await fetchPublicBlob()), entry]);
-    entries = await putPublicBlob(entries);
-    // Soft retry: re-read and merge in case another client wrote between GET and PUT.
+    let store = await fetchPublicBlobStore();
+    store[tid] = normalize([...(store[tid] ?? []), entry], tid);
+    store = await putPublicBlobStore(store);
     try {
-      const latest = await fetchPublicBlob();
-      const merged = normalize([...latest, entry]);
-      if (JSON.stringify(merged) !== JSON.stringify(entries)) {
-        entries = await putPublicBlob(merged);
+      const latest = await fetchPublicBlobStore();
+      latest[tid] = normalize([...(latest[tid] ?? []), entry], tid);
+      if (JSON.stringify(latest[tid]) !== JSON.stringify(store[tid])) {
+        store = await putPublicBlobStore(latest);
       }
     } catch {
       /* keep first write */
     }
-    writeLocal(entries);
-    return { entries, source: "online" };
+    cacheStoreLocally(store);
+    return { entries: entriesFor(store, tid), source: "online" };
   } catch {
-    const merged = normalize([...readLocal(), entry]);
-    writeLocal(merged);
+    const merged = normalize([...readLocal(tid), entry], tid);
+    writeLocal(tid, merged);
     return { entries: merged, source: "local" };
   }
 }
@@ -265,16 +300,14 @@ export function boardSourceLabel(source: BoardSource, saved = false): string {
   return saved ? "Saved locally · offline" : "Local board · offline";
 }
 
-/** Persist the name used on the last qualifying submit (for homepage rank). */
 export function saveLocalDriverName(name: string): void {
   try {
     localStorage.setItem(DRIVER_NAME_KEY, sanitizeDriverName(name));
   } catch {
-    /* ignore quota / private mode */
+    /* ignore */
   }
 }
 
-/** Driver name from the last successful board submit, or null if never saved. */
 export function getLocalDriverName(): string | null {
   try {
     const raw = localStorage.getItem(DRIVER_NAME_KEY);
@@ -286,11 +319,6 @@ export function getLocalDriverName(): string | null {
   }
 }
 
-/**
- * 1-based place of `name` on a sorted top-10 board.
- * If the same name appears more than once, returns the best (lowest) place.
- * Returns null when the name is not on the board.
- */
 export function rankForDriver(entries: LeaderboardEntry[], name: string): number | null {
   const key = sanitizeDriverName(name).trim().toLowerCase();
   if (!key) return null;
@@ -299,6 +327,21 @@ export function rankForDriver(entries: LeaderboardEntry[], name: string): number
     if (entries[i]!.name.trim().toLowerCase() === key) {
       const place = i + 1;
       if (best == null || place < best) best = place;
+    }
+  }
+  return best;
+}
+
+/** Best place across every track board — homepage rank badge. */
+export async function bestRankAcrossTracks(name: string): Promise<number | null> {
+  let best: number | null = null;
+  for (const t of TRACKS) {
+    try {
+      const { entries } = await fetchLeaderboard(t.id);
+      const rank = rankForDriver(entries, name);
+      if (rank != null && (best == null || rank < best)) best = rank;
+    } catch {
+      /* skip */
     }
   }
   return best;
