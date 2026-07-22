@@ -14,6 +14,7 @@ import {
   wouldQualify,
   type LeaderboardEntry,
 } from "./net/leaderboard";
+import { GameAudio } from "./audio";
 
 function formatTime(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "--:--.---";
@@ -27,6 +28,12 @@ function formatTime(ms: number): string {
 const TOTAL_LAPS = 3;
 const COUNTDOWN_STEPS = ["3", "2", "1", "GO"] as const;
 const COUNTDOWN_STEP_MS = 1000;
+/** Distinct wall hits before the player car explodes and the race restarts. */
+const WALL_HIT_LIMIT = 10;
+/** Min seconds between counted wall hits (sliding shouldn't rack them up). */
+const WALL_HIT_COOLDOWN = 0.4;
+/** Brief DESTROYED hold before auto-restart. */
+const EXPLODE_RESTART_MS = 1600;
 
 /**
  * Skill tiers + fixed racing-line offsets (same every race). Player is slot 0.
@@ -56,6 +63,7 @@ export class Game {
   track = createTrack();
   player!: Vehicle;
   rivals: RivalAI[] = [];
+  private audio = new GameAudio();
   /** Show picture-in-picture rearview while driving (hidden on pause/home/finish). */
   private wantRearview = false;
 
@@ -115,11 +123,26 @@ export class Game {
     countdown: document.getElementById("countdown")!,
     rearview: document.getElementById("rearview-frame")!,
     minimap: document.getElementById("minimap") as HTMLCanvasElement,
+    wallHits: document.getElementById("wall-hits")!,
+    explodeFlash: document.getElementById("explode-flash")!,
   };
 
   private pendingFinishMs = 0;
   private scoreSaveInFlight = false;
   private bestFlashUntil = 0;
+
+  /** Player wall-hit explode — counted distinct contacts only. */
+  private wallHits = 0;
+  private wallTouching = false;
+  private wallHitCooldown = 0;
+  private exploding = false;
+  private explodeRestartAt = 0;
+  private explodeParts: {
+    mesh: THREE.Mesh;
+    vel: THREE.Vector3;
+    life: number;
+  }[] = [];
+  private explodeFlashLight: THREE.PointLight | null = null;
 
   /** Cached centerline samples for the 2D minimap (rebuilt if path changes). */
   private minimapPath: THREE.CatmullRomCurve3 | null = null;
@@ -139,6 +162,7 @@ export class Game {
   private readonly _camIdeal = new THREE.Vector3();
   private readonly _camLookTarget = new THREE.Vector3();
   private readonly _wallN = new THREE.Vector3();
+  private readonly _explodeGeo = new THREE.BoxGeometry(0.28, 0.28, 0.28);
 
   constructor(canvas: HTMLCanvasElement) {
     // Cap DPR for stable FPS on retina displays
@@ -179,35 +203,42 @@ export class Game {
   }
 
   private bindUi() {
+    this.bindMuteBtn();
+
     document.getElementById("start-btn")!.onclick = () => {
-      this.online = false;
-      this.net.disconnect();
-      this.clearRemotes();
-      this.setAiVisible(true);
-      this.el.netStatus.classList.add("hidden");
-      this.el.leaderboard.classList.add("hidden");
-      this.startRace(false);
+      void this.bootFromMenu(false);
     };
     document.getElementById("test-drive-btn")!.onclick = () => {
-      this.online = false;
-      this.net.disconnect();
-      this.clearRemotes();
-      this.setAiVisible(true);
-      this.el.netStatus.classList.add("hidden");
-      this.el.leaderboard.classList.add("hidden");
-      this.startRace(true);
+      void this.bootFromMenu(true);
     };
-    document.getElementById("restart-btn")!.onclick = () => this.startRace(false);
+    document.getElementById("restart-btn")!.onclick = () => {
+      void this.audio.unlock().then(() => {
+        this.audio.stopMusic();
+        this.startRace(false);
+      });
+    };
     document.getElementById("resume-btn")!.onclick = () => this.resume();
-    document.getElementById("pause-restart-btn")!.onclick = () => this.startRace(this.practice);
+    document.getElementById("pause-restart-btn")!.onclick = () => {
+      void this.audio.unlock().then(() => {
+        this.audio.stopMusic();
+        this.startRace(this.practice);
+      });
+    };
     document.getElementById("pause-home-btn")!.onclick = () => this.goHome();
     document.getElementById("finish-home-btn")!.onclick = () => this.goHome();
     this.el.pauseBtn.onclick = () => this.pause();
 
-    document.getElementById("home-board-btn")!.onclick = () => this.openLeaderboard();
+    document.getElementById("home-board-btn")!.onclick = () => {
+      void this.unlockAndMaybeMenuMusic().then(() => this.openLeaderboard());
+    };
     document.getElementById("board-close-btn")!.onclick = () => {
       this.el.leaderboard.classList.add("hidden");
+      this.audio.playMenuMusic();
     };
+    // First gesture on homepage unlocks AudioContext + starts menu music
+    this.el.overlay.addEventListener("pointerdown", () => {
+      void this.unlockAndMaybeMenuMusic();
+    });
     document.getElementById("submit-score-btn")!.onclick = () => void this.saveDriverScore();
     this.el.driverName.addEventListener("keydown", (e) => {
       if (e.key === "Enter") void this.saveDriverScore();
@@ -221,6 +252,62 @@ export class Game {
     });
   }
 
+  private bindMuteBtn() {
+    const btn = document.getElementById("mute-btn")!;
+    this.syncMuteBtn();
+    btn.onclick = () => {
+      void this.audio.unlock().then(() => {
+        this.audio.toggleUserMute();
+        this.syncMuteBtn();
+        // If unmuted on home/board, ensure menu track is running
+        if (!this.audio.isUserMuted && this.onHomeOrBoard()) {
+          this.audio.playMenuMusic();
+        }
+      });
+    };
+  }
+
+  /** Speaker icons + visibility: home/board + pause only (hidden while racing). */
+  private syncMuteBtn() {
+    const btn = document.getElementById("mute-btn")!;
+    const muted = this.audio.isUserMuted;
+    btn.setAttribute("aria-pressed", muted ? "true" : "false");
+    btn.setAttribute("aria-label", muted ? "Unmute sound" : "Mute sound");
+    btn.querySelector(".mute-icon-on")!.classList.toggle("hidden", muted);
+    btn.querySelector(".mute-icon-off")!.classList.toggle("hidden", !muted);
+    // Homepage (incl. BOARD) or pause overlay — not mid-race / countdown / finish
+    const visible = this.onHomeOrBoard() || this.paused;
+    btn.classList.toggle("hidden", !visible);
+  }
+
+  /** Homepage overlay visible (incl. BOARD panel over it). */
+  private onHomeOrBoard(): boolean {
+    return (
+      !this.running &&
+      !this.finished &&
+      !this.paused &&
+      !this.el.overlay.classList.contains("hidden")
+    );
+  }
+
+  private async unlockAndMaybeMenuMusic() {
+    await this.audio.unlock();
+    if (this.onHomeOrBoard()) this.audio.playMenuMusic();
+  }
+
+  /** Menu Start / Test Drive — unlock audio, leave online, start session. */
+  private async bootFromMenu(practice: boolean) {
+    await this.audio.unlock();
+    this.audio.stopMenuMusic();
+    this.online = false;
+    this.net.disconnect();
+    this.clearRemotes();
+    this.setAiVisible(true);
+    this.el.netStatus.classList.add("hidden");
+    this.el.leaderboard.classList.add("hidden");
+    this.startRace(practice);
+  }
+
   private goHome() {
     this.running = false;
     this.finished = false;
@@ -230,18 +317,26 @@ export class Game {
     this.pauseBegan = 0;
     this.bestFlashUntil = 0;
     this.clearCountdown();
+    this.clearExplode(true);
+    this.resetWallHits();
+    this.audio.mute();
+    this.audio.stopDriveMusic();
+    this.audio.resetGear();
     this.input.clearDriveKeys();
     this.el.pause.classList.add("hidden");
     this.el.finish.classList.add("hidden");
     this.el.pauseBtn.classList.add("hidden");
     this.el.wrongWay.classList.add("hidden");
     this.el.bestFlash.classList.add("hidden");
+    this.el.explodeFlash.classList.add("hidden");
     this.el.nameEntry.classList.add("hidden");
     this.el.leaderboard.classList.add("hidden");
     this.el.minimap.classList.add("hidden");
     this.el.rearview.classList.add("hidden");
     this.el.overlay.classList.remove("hidden");
     this.setAiVisible(true);
+    this.audio.playMenuMusic();
+    this.syncMuteBtn();
   }
 
   private renderBoardList(entries: LeaderboardEntry[]) {
@@ -426,6 +521,8 @@ export class Game {
     this.raceStart = 0;
     this.lapStart = 0;
     this.input.clearDriveKeys();
+    this.clearExplode(true);
+    this.resetWallHits();
 
     const slotIndex = this.online ? Math.min(this.remotes.size, 5) : 0;
     const startT = this.online ? slotIndex * 0.008 : 0;
@@ -462,6 +559,10 @@ export class Game {
     canvas.tabIndex = 0;
     canvas.focus({ preventScroll: true });
 
+    this.audio.resetGear();
+    this.audio.stopMusic();
+    this.audio.unmute();
+    this.syncMuteBtn();
     this.beginCountdown();
   }
 
@@ -487,6 +588,7 @@ export class Game {
     el.style.animation = "none";
     void el.offsetWidth;
     el.style.animation = "";
+    this.audio.playCountdown(label);
   }
 
   /** Advance 3→2→1→GO; release controls when GO appears. */
@@ -510,6 +612,7 @@ export class Game {
   private releaseGrid() {
     this.raceStart = this.raceNow();
     this.lapStart = this.raceStart;
+    this.audio.playDriveMusic();
     if (!this.online) {
       for (const r of this.rivals) {
         r.vehicle.state.speed = 5; // modest roll — soft launch still ramps throttle
@@ -531,8 +634,11 @@ export class Game {
     this.paused = true;
     this.pauseBegan = performance.now();
     this.input.clearDriveKeys();
+    this.audio.mute();
+    this.audio.stopDriveMusic();
     this.el.pause.classList.remove("hidden");
     this.el.pauseBtn.classList.add("hidden");
+    this.syncMuteBtn();
   }
 
   resume() {
@@ -541,8 +647,12 @@ export class Game {
     this.pauseTotal += pausedFor;
     if (this.countingDown) this.countdownStepAt += pausedFor;
     this.paused = false;
+    this.audio.unmute();
+    // Drive music only after GO (gridHeld covers 3-2-1)
+    if (!this.gridHeld) this.audio.playDriveMusic();
     this.el.pause.classList.add("hidden");
     this.el.pauseBtn.classList.remove("hidden");
+    this.syncMuteBtn();
     this.lastFrame = performance.now();
     this.input.clearDriveKeys();
     this.renderer.domElement.focus({ preventScroll: true });
@@ -587,80 +697,121 @@ export class Game {
     }
 
     const inputPeek = this.input.getState();
-    this.wantRearview = this.running && !this.paused && !this.finished;
+    this.wantRearview = this.running && !this.paused && !this.finished && !this.exploding;
     if (inputPeek.pause) {
       if (this.paused) this.resume();
-      else if (this.running && !this.finished) this.pause();
+      else if (this.running && !this.finished && !this.exploding) this.pause();
     }
 
     if (this.running && !this.finished && !this.paused) {
-      if (this.countingDown) this.tickCountdown(now);
-
-      if (this.gridHeld) {
-        // Frozen on grid through 3-2-1 — HUD/camera only (held throttle launches on GO)
-        this.updateHud();
+      if (this.exploding) {
+        this.updateExplode(dt);
         this.updateCamera(dt);
+        this.syncAudio(inputPeek, false);
+        if (performance.now() >= this.explodeRestartAt) {
+          this.startRace(this.practice);
+        }
       } else {
-        const input = inputPeek;
-        if (input.reset) {
-          this.player.reset(this.track.startPosition.clone(), this.track.startHeading);
-          this.resetSticky(this.player);
-          this.lastT = this.projectSticky(this.player, this.player.state.position).t;
-          this.gates.reset();
-          this.el.wrongWay.classList.add("hidden");
-          this.snapCamera();
-        }
-        this.player.update(dt, input);
-        this.keepOnTrack(this.player);
+        if (this.countingDown) this.tickCountdown(now);
 
-        if (!this.online) {
-          const playerT = this.projectSticky(this.player, this.player.state.position).t;
-          const cars = [this.player, ...this.rivals.map((r) => r.vehicle)];
-          this.rivals.forEach((r) => r.update(dt, this.track.path, playerT, now * 0.001, cars));
-          this.rivals.forEach((r) => this.keepOnTrack(r.vehicle));
-          // Race mode: AI that complete TOTAL_LAPS finish ahead; practice never ends for them
-          if (!this.practice) {
-            for (const r of this.rivals) {
-              if (!r.raceDone && r.laps >= TOTAL_LAPS) r.markRaceDone();
-            }
-          }
-          this.resolveCollisions();
+        if (this.gridHeld) {
+          // Frozen on grid through 3-2-1 — HUD/camera only (held throttle launches on GO)
+          this.updateHud();
+          this.updateCamera(dt);
+          this.syncAudio(inputPeek, true);
         } else {
-          this.net.maybeSendPose(dt, {
-            x: this.player.state.position.x,
-            z: this.player.state.position.z,
-            h: this.player.state.heading,
-            s: this.player.state.speed,
-            g: this.player.gearLabel,
-            lap: this.lap,
-          });
-          this.resolveRemoteCollisions();
-          this.pingTimer += dt;
-          if (this.pingTimer > 2) {
-            this.pingTimer = 0;
-            this.net.ping();
-            if (this.net.connected) {
-              this.setNetStatus(`Online · ${this.net.room}`, "ok");
+          const input = inputPeek;
+          if (input.reset) {
+            this.player.reset(this.track.startPosition.clone(), this.track.startHeading);
+            this.resetSticky(this.player);
+            this.lastT = this.projectSticky(this.player, this.player.state.position).t;
+            this.gates.reset();
+            this.el.wrongWay.classList.add("hidden");
+            this.snapCamera();
+          }
+          this.player.update(dt, input);
+          const onWall = this.keepOnTrack(this.player);
+          this.notePlayerWallHit(onWall, dt);
+
+          if (!this.online) {
+            const playerT = this.projectSticky(this.player, this.player.state.position).t;
+            const cars = [this.player, ...this.rivals.map((r) => r.vehicle)];
+            this.rivals.forEach((r) => r.update(dt, this.track.path, playerT, now * 0.001, cars));
+            this.rivals.forEach((r) => this.keepOnTrack(r.vehicle));
+            // Race mode: AI that complete TOTAL_LAPS finish ahead; practice never ends for them
+            if (!this.practice) {
+              for (const r of this.rivals) {
+                if (!r.raceDone && r.laps >= TOTAL_LAPS) r.markRaceDone();
+              }
+            }
+            this.resolveCollisions();
+          } else {
+            this.net.maybeSendPose(dt, {
+              x: this.player.state.position.x,
+              z: this.player.state.position.z,
+              h: this.player.state.heading,
+              s: this.player.state.speed,
+              g: this.player.gearLabel,
+              lap: this.lap,
+            });
+            this.resolveRemoteCollisions();
+            this.pingTimer += dt;
+            if (this.pingTimer > 2) {
+              this.pingTimer = 0;
+              this.net.ping();
+              if (this.net.connected) {
+                this.setNetStatus(`Online · ${this.net.room}`, "ok");
+              }
             }
           }
-        }
 
-        this.updateLaps();
-        this.updateHud();
-        this.updateCamera(dt);
+          if (!this.exploding) {
+            this.updateLaps();
+            this.updateHud();
+            this.updateCamera(dt);
+            this.syncAudio(input, true);
+          } else {
+            this.updateCamera(dt);
+            this.syncAudio(input, false);
+          }
+        }
       }
     } else if (this.paused) {
       this.updateCamera(0);
+      this.syncAudio(inputPeek, false);
     } else if (!this.running && !this.finished) {
       const t = now * 0.0002;
       const p = this.track.startPosition;
       this.camera.position.set(p.x + Math.cos(t) * 18, 7, p.z + Math.sin(t) * 18);
       this.camera.lookAt(p.x, 1.2, p.z);
+      this.syncAudio(inputPeek, false);
     } else if (this.finished) {
       this.updateCamera(dt);
+      this.syncAudio(inputPeek, false);
     }
 
     this.renderViews();
+  }
+
+  /** Push vehicle telemetry into the synth; silent when not driving. */
+  private syncAudio(input: { throttle: number }, active: boolean) {
+    if (!this.player) {
+      this.audio.updateEngine({ rpm: 800, speed: 0, throttle: 0, gear: 1 }, false);
+      return;
+    }
+    // On the grid cars are frozen — still allow throttle to rev the synth
+    const rpm = this.gridHeld
+      ? 1200 + input.throttle * 2800
+      : this.player.state.rpm;
+    this.audio.updateEngine(
+      {
+        rpm,
+        speed: this.gridHeld ? 0 : this.player.state.speed,
+        throttle: input.throttle,
+        gear: this.player.state.gear,
+      },
+      active,
+    );
   }
 
   /** Main chase cam + always-on bottom-right rearview mirror inset while driving. */
@@ -733,12 +884,13 @@ export class Game {
 
   /** Track edges are invisible walls: clamp lateral position at the edge and
    *  scrub only the velocity component pressing into the wall, so the car
-   *  slides along it instead of bouncing or teleporting. */
-  private keepOnTrack(v: Vehicle) {
+   *  slides along it instead of bouncing or teleporting.
+   *  @returns true while the vehicle is contacting / clamped to a wall. */
+  private keepOnTrack(v: Vehicle): boolean {
     const proj = this.projectSticky(v, v.state.position);
     const wall = this.track.width / 2 - 0.55;
     const d = proj.distanceFromCenter;
-    if (Math.abs(d) <= wall) return;
+    if (Math.abs(d) <= wall) return false;
 
     const side = Math.sign(d);
     this._wallN.set(-proj.tangent.z, 0, proj.tangent.x);
@@ -751,6 +903,130 @@ export class Game {
       s.speed *= 1 - intoWall * intoWall;
     }
     v.syncCollision();
+    return true;
+  }
+
+  /** Edge-trigger + cooldown: count a hit when contact starts, not every scrape frame. */
+  private notePlayerWallHit(touching: boolean, dt: number) {
+    if (this.exploding || this.gridHeld) {
+      this.wallTouching = touching;
+      return;
+    }
+    this.wallHitCooldown = Math.max(0, this.wallHitCooldown - dt);
+    if (touching && !this.wallTouching && this.wallHitCooldown <= 0) {
+      this.wallHits += 1;
+      this.wallHitCooldown = WALL_HIT_COOLDOWN;
+      this.updateWallHitsHud();
+      if (this.wallHits >= WALL_HIT_LIMIT) {
+        this.triggerExplode();
+      }
+    }
+    this.wallTouching = touching;
+  }
+
+  private resetWallHits() {
+    this.wallHits = 0;
+    this.wallTouching = false;
+    this.wallHitCooldown = 0;
+    this.updateWallHitsHud();
+  }
+
+  private updateWallHitsHud() {
+    const el = this.el.wallHits;
+    el.textContent = `${this.wallHits}/${WALL_HIT_LIMIT}`;
+    el.classList.toggle("warn", this.wallHits >= 6 && this.wallHits < 9);
+    el.classList.toggle("danger", this.wallHits >= 9);
+  }
+
+  private triggerExplode() {
+    if (this.exploding) return;
+    this.exploding = true;
+    this.explodeRestartAt = performance.now() + EXPLODE_RESTART_MS;
+    this.player.state.speed = 0;
+    this.player.state.steerAngle = 0;
+    this.player.syncCollision();
+    this.player.mesh.visible = false;
+    this.input.clearDriveKeys();
+    this.el.wrongWay.classList.add("hidden");
+    this.el.explodeFlash.classList.remove("hidden");
+    this.audio.stopDriveMusic();
+    this.audio.playBoom();
+    this.spawnExplodeFx();
+  }
+
+  private spawnExplodeFx() {
+    this.clearExplodeParticles();
+    const origin = this.player.state.position;
+    const colors = [0xff6a2e, 0xffc857, 0xff3b2e, 0xffeeaa, 0x888888];
+    for (let i = 0; i < 36; i++) {
+      const mat = new THREE.MeshBasicMaterial({
+        color: colors[i % colors.length]!,
+        transparent: true,
+        opacity: 1,
+      });
+      const mesh = new THREE.Mesh(this._explodeGeo, mat);
+      mesh.position.set(
+        origin.x + (Math.random() - 0.5) * 1.2,
+        0.6 + Math.random() * 0.8,
+        origin.z + (Math.random() - 0.5) * 1.2,
+      );
+      const speed = 8 + Math.random() * 14;
+      const vel = new THREE.Vector3(
+        (Math.random() - 0.5) * speed,
+        4 + Math.random() * 10,
+        (Math.random() - 0.5) * speed,
+      );
+      this.scene.add(mesh);
+      this.explodeParts.push({ mesh, vel, life: 0.55 + Math.random() * 0.55 });
+    }
+    const light = new THREE.PointLight(0xff7a3a, 8, 28);
+    light.position.set(origin.x, 2.2, origin.z);
+    this.scene.add(light);
+    this.explodeFlashLight = light;
+  }
+
+  private updateExplode(dt: number) {
+    for (let i = this.explodeParts.length - 1; i >= 0; i--) {
+      const p = this.explodeParts[i]!;
+      p.life -= dt;
+      p.vel.y -= 18 * dt;
+      p.mesh.position.addScaledVector(p.vel, dt);
+      p.mesh.rotation.x += dt * 6;
+      p.mesh.rotation.z += dt * 4;
+      const mat = p.mesh.material as THREE.MeshBasicMaterial;
+      mat.opacity = Math.max(0, p.life * 1.6);
+      if (p.life <= 0) {
+        this.scene.remove(p.mesh);
+        mat.dispose();
+        this.explodeParts.splice(i, 1);
+      }
+    }
+    if (this.explodeFlashLight) {
+      this.explodeFlashLight.intensity = Math.max(0, this.explodeFlashLight.intensity - dt * 10);
+    }
+  }
+
+  private clearExplodeParticles() {
+    for (const p of this.explodeParts) {
+      this.scene.remove(p.mesh);
+      (p.mesh.material as THREE.MeshBasicMaterial).dispose();
+    }
+    this.explodeParts.length = 0;
+    if (this.explodeFlashLight) {
+      this.scene.remove(this.explodeFlashLight);
+      this.explodeFlashLight = null;
+    }
+  }
+
+  /** @param restoreCar show player mesh again (race restart / home). */
+  private clearExplode(restoreCar: boolean) {
+    this.clearExplodeParticles();
+    this.el.explodeFlash.classList.add("hidden");
+    this.exploding = false;
+    this.explodeRestartAt = 0;
+    if (restoreCar && this.player) {
+      this.player.mesh.visible = true;
+    }
   }
 
   /** Solid car bodies — separate overlap (capped per frame) and cancel only
@@ -910,10 +1186,16 @@ export class Game {
     this.running = false;
     this.paused = false;
     this.clearCountdown();
+    this.clearExplode(true);
+    this.audio.mute();
+    this.audio.stopDriveMusic();
+    this.audio.resetGear();
     this.el.wrongWay.classList.add("hidden");
+    this.el.explodeFlash.classList.add("hidden");
     this.el.pause.classList.add("hidden");
     this.el.pauseBtn.classList.add("hidden");
     this.el.minimap.classList.add("hidden");
+    this.syncMuteBtn();
     this.pendingFinishMs = this.raceNow() - this.raceStart;
     this.el.finalTime.textContent = formatTime(this.pendingFinishMs);
     this.el.finalBest.textContent = formatTime(this.bestLap);
