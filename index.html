@@ -52,6 +52,11 @@
         </div>
 
         <div id="wrong-way" class="wrong-way hidden" aria-live="assertive">WRONG WAY</div>
+        <div id="best-flash" class="best-flash hidden" aria-live="polite">
+          <div class="best-flash-label">BEST</div>
+          <div id="best-flash-time">--:--.---</div>
+        </div>
+        <div id="countdown" class="countdown hidden" aria-live="assertive">3</div>
       </div>
 
       <div id="overlay" class="overlay">
@@ -68,6 +73,7 @@
 
           <div class="menu-actions">
             <button id="start-btn" type="button">START RACE</button>
+            <button id="test-drive-btn" class="btn-ghost" type="button">TEST DRIVE</button>
           </div>
         </div>
       </div>
@@ -100,8 +106,17 @@
           <p class="tagline finish-stat">Total <span id="final-time">0:00.000</span></p>
           <p class="tagline finish-stat">Best lap <span id="final-best">--:--.---</span></p>
           <div id="name-entry" class="name-entry hidden">
-            <p class="name-entry-label">Top 10 time — enter your driver name</p>
-            <input id="driver-name" type="text" maxlength="16" placeholder="Driver name" autocomplete="nickname" />
+            <p class="name-entry-label">Top 10 time — up to 10 letters or numbers</p>
+            <input
+              id="driver-name"
+              type="text"
+              maxlength="10"
+              pattern="[A-Za-z0-9 _]+"
+              title="Up to 10 letters, numbers, spaces, or underscores"
+              placeholder="Name (max 10)"
+              autocomplete="nickname"
+              spellcheck="false"
+            />
             <button id="submit-score-btn" type="button">SAVE TO BOARD</button>
           </div>
           <div class="finish-actions">

@@ -10,6 +10,19 @@ const MAX_PLAYERS = 8;
 const PLAYER_COLORS = [0xe4eaf2, 0xe23b2e, 0x2a66f0, 0xf0c020, 0x1dbf6a, 0xb44dff, 0xff6b9d, 0x00d4ff];
 const LEADERBOARD_PATH = join(dirname(fileURLToPath(import.meta.url)), "leaderboard.json");
 const MAX_BOARD = 10;
+const NAME_MAX = 10;
+
+/** Letters, digits, space, underscore — trim, strip control/weird chars, cap length. */
+function sanitizeDriverName(raw) {
+  const cleaned = String(raw ?? "")
+    .normalize("NFKC")
+    .replace(/[^\p{L}\p{N} _]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, NAME_MAX)
+    .trim();
+  return cleaned || "RACER";
+}
 
 /** @typedef {{ id: string, name: string, color: number, x: number, z: number, h: number, s: number, g: string, lap: number }} Pose */
 /** @typedef {{ id: string, name: string, color: number, room: string, ws: import('ws').WebSocket, pose: Pose, lastPoseAt: number }} Client */
@@ -34,12 +47,41 @@ function saveBoard(entries) {
   writeFileSync(LEADERBOARD_PATH, JSON.stringify(entries, null, 2));
 }
 
+const TIME_EPS_MS = 15;
+
+/** @param {BoardEntry} a @param {BoardEntry} b */
+function sameRun(a, b) {
+  if (String(a.name || "").trim().toLowerCase() !== String(b.name || "").trim().toLowerCase()) return false;
+  return Math.abs(a.timeMs - b.timeMs) <= TIME_EPS_MS;
+}
+
 /** @param {BoardEntry[]} entries */
 function sortBoard(entries) {
-  return [...entries]
+  const cleaned = [...entries]
     .filter((e) => e && Number.isFinite(e.timeMs) && e.timeMs > 0)
-    .sort((a, b) => a.timeMs - b.timeMs)
-    .slice(0, MAX_BOARD);
+    .map((e) => ({
+      name: sanitizeDriverName(e.name),
+      timeMs: Math.round(e.timeMs),
+      bestLapMs: e.bestLapMs != null ? Math.round(e.bestLapMs) : undefined,
+      at: e.at || Date.now(),
+    }));
+
+  /** @type {BoardEntry[]} */
+  const unique = [];
+  for (const e of cleaned) {
+    const i = unique.findIndex((u) => sameRun(u, e));
+    if (i >= 0) {
+      const prev = unique[i];
+      unique[i] = (prev.at || 0) <= (e.at || 0) ? prev : e;
+      if (unique[i].bestLapMs == null && e.bestLapMs != null) {
+        unique[i] = { ...unique[i], bestLapMs: e.bestLapMs };
+      }
+    } else {
+      unique.push(e);
+    }
+  }
+
+  return unique.sort((a, b) => a.timeMs - b.timeMs || (a.at || 0) - (b.at || 0)).slice(0, MAX_BOARD);
 }
 
 function cors(res) {
@@ -105,7 +147,7 @@ const httpServer = createServer(async (req, res) => {
     try {
       const data = JSON.parse(body || "{}");
       const entry = {
-        name: String(data.name || "RACER").trim().slice(0, 16) || "RACER",
+        name: sanitizeDriverName(data.name),
         timeMs: Math.round(Number(data.timeMs)),
         bestLapMs: data.bestLapMs != null ? Math.round(Number(data.bestLapMs)) : undefined,
         at: Date.now(),
@@ -162,7 +204,7 @@ wss.on("connection", (ws) => {
 
       const id = Math.random().toString(36).slice(2, 10);
       const color = pickColor(roomName);
-      const name = String(msg.name || "Racer").trim().slice(0, 16) || "Racer";
+      const name = sanitizeDriverName(msg.name || "Racer");
       const slot = room.size;
       /** @type {Pose} */
       const pose = {

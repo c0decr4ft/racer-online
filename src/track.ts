@@ -309,6 +309,44 @@ export type TrackProjection = {
   tangent: THREE.Vector3;
 };
 
+/**
+ * Invisible sequential progress gates along the circuit (fractional path t).
+ * A start/finish crossing only counts as a lap after all gates are cleared in order.
+ * Prevents awarding a lap from reversing through SF then driving forward again.
+ */
+export const PROGRESS_GATES = [0.2, 0.4, 0.6, 0.8] as const;
+
+/** Tracks which mid-lap progress gates have been cleared this lap. */
+export class LapGateProgress {
+  /** Index of the next gate that must be passed (=== length when ready for SF). */
+  nextIndex = 0;
+
+  reset() {
+    this.nextIndex = 0;
+  }
+
+  get readyForFinish() {
+    return this.nextIndex >= PROGRESS_GATES.length;
+  }
+
+  /** Advance when track-t moves forward past the next required gate(s). */
+  update(prevT: number, t: number) {
+    // Ignore SF wraps in either direction — gates live mid-lap only
+    if ((prevT > 0.7 && t < 0.3) || (prevT < 0.3 && t > 0.7)) return;
+    // Only count forward progress along the path
+    if (t + 0.001 < prevT) return;
+
+    while (this.nextIndex < PROGRESS_GATES.length) {
+      const g = PROGRESS_GATES[this.nextIndex];
+      if (prevT < g && t >= g) {
+        this.nextIndex += 1;
+        continue;
+      }
+      break;
+    }
+  }
+}
+
 function finishProjection(
   path: THREE.CatmullRomCurve3,
   position: THREE.Vector3,
@@ -386,4 +424,219 @@ export function projectOnTrackNear(
   }
 
   return finishProjection(path, position, bestT, bestDist, bestPoint, step);
+}
+
+/**
+ * Dense re-trace of one AI's invisible racing line:
+ *   point(t) = centerline(t) + continuousLateralNormal(t) * fixedOffset
+ *
+ * Normals are forced continuous (no mid-lap flips), so the groove stays a
+ * smooth parallel of the centerline and never zigzags into a barrier.
+ * Safe |offset| is the caller's responsibility (keep well inside road half-width).
+ */
+export class OffsetRacingLine {
+  readonly offset: number;
+  readonly count: number;
+  /** Closed-loop arc length of the offset groove (meters). */
+  readonly length: number;
+  /** Path parameter [0,1) per sample. */
+  readonly ts: Float64Array;
+  /** Cumulative arc length along the OFFSET line (open prefix; wrap uses length). */
+  readonly cum: Float64Array;
+  readonly points: THREE.Vector3[];
+  readonly tangents: THREE.Vector3[];
+  readonly normals: THREE.Vector3[];
+
+  private constructor(
+    offset: number,
+    length: number,
+    ts: Float64Array,
+    cum: Float64Array,
+    points: THREE.Vector3[],
+    tangents: THREE.Vector3[],
+    normals: THREE.Vector3[],
+  ) {
+    this.offset = offset;
+    this.length = length;
+    this.ts = ts;
+    this.cum = cum;
+    this.points = points;
+    this.tangents = tangents;
+    this.normals = normals;
+    this.count = points.length;
+  }
+
+  /** Densely sample the full lap and build a continuous offset groove. */
+  static trace(path: THREE.CatmullRomCurve3, offset: number, samples = 640): OffsetRacingLine {
+    const n = Math.max(64, samples);
+    const ts = new Float64Array(n);
+    const cum = new Float64Array(n);
+    const points: THREE.Vector3[] = [];
+    const tangents: THREE.Vector3[] = [];
+    const normals: THREE.Vector3[] = [];
+
+    let prevN: THREE.Vector3 | null = null;
+    for (let i = 0; i < n; i++) {
+      const t = i / n;
+      const center = path.getPointAt(t);
+      const tan = path.getTangentAt(t).normalize();
+      // Left-hand lateral in XZ (matches spawn / projectOnTrack)
+      const normal = new THREE.Vector3(-tan.z, 0, tan.x);
+      if (prevN && normal.dot(prevN) < 0) normal.negate();
+      const nLen = Math.hypot(normal.x, normal.z) || 1;
+      normal.x /= nLen;
+      normal.z /= nLen;
+      prevN = normal.clone();
+
+      ts[i] = t;
+      points.push(center.clone().addScaledVector(normal, offset));
+      tangents.push(tan.clone());
+      normals.push(normal);
+    }
+
+    cum[0] = 0;
+    for (let i = 1; i < n; i++) {
+      cum[i] = cum[i - 1] + points[i].distanceTo(points[i - 1]);
+    }
+    const length = cum[n - 1] + points[0].distanceTo(points[n - 1]);
+
+    // Tangents from the offset polyline so look-ahead follows THIS groove
+    for (let i = 0; i < n; i++) {
+      const a = points[(i - 1 + n) % n];
+      const b = points[(i + 1) % n];
+      const tx = b.x - a.x;
+      const tz = b.z - a.z;
+      const len = Math.hypot(tx, tz) || 1;
+      tangents[i].set(tx / len, 0, tz / len);
+    }
+
+    return new OffsetRacingLine(offset, length, ts, cum, points, tangents, normals);
+  }
+
+  /** Sample index nearest to centerline parameter t. */
+  indexAtT(t: number): number {
+    const tt = ((t % 1) + 1) % 1;
+    let best = 0;
+    let bestD = Infinity;
+    // Uniform samples → direct index is exact enough; refine ±1
+    const approx = Math.round(tt * this.count) % this.count;
+    for (let k = -2; k <= 2; k++) {
+      const i = (approx + k + this.count) % this.count;
+      const d = Math.min(Math.abs(this.ts[i] - tt), 1 - Math.abs(this.ts[i] - tt));
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    return best;
+  }
+
+  /** Point on this groove at centerline parameter t. */
+  pointAtT(t: number, out = new THREE.Vector3()): THREE.Vector3 {
+    const i = this.indexAtT(t);
+    return out.copy(this.points[i]);
+  }
+
+  /** Tangent of the offset line at centerline parameter t. */
+  tangentAtT(t: number, out = new THREE.Vector3()): THREE.Vector3 {
+    const i = this.indexAtT(t);
+    return out.copy(this.tangents[i]);
+  }
+
+  /** Point / tangent a given arc-length ahead along THIS offset line. */
+  sampleAhead(
+    t: number,
+    distMeters: number,
+    outPoint = new THREE.Vector3(),
+    outTan = new THREE.Vector3(),
+  ): { point: THREE.Vector3; tangent: THREE.Vector3; t: number } {
+    const i0 = this.indexAtT(t);
+    const target = this.cum[i0] + distMeters;
+    // Walk forward along cum (with wrap)
+    let i = i0;
+    const n = this.count;
+    let guard = 0;
+    let s = this.cum[i0];
+    let remain = distMeters;
+    while (remain > 0 && guard++ < n + 2) {
+      const iNext = (i + 1) % n;
+      const seg =
+        iNext === 0
+          ? this.length - this.cum[i]
+          : this.cum[iNext] - this.cum[i];
+      if (seg <= 1e-6) {
+        i = iNext;
+        continue;
+      }
+      if (remain <= seg) {
+        const u = remain / seg;
+        outPoint.lerpVectors(this.points[i], this.points[iNext], u);
+        outTan.copy(this.tangents[iNext]).multiplyScalar(u).addScaledVector(this.tangents[i], 1 - u);
+        const tl = Math.hypot(outTan.x, outTan.z) || 1;
+        outTan.set(outTan.x / tl, 0, outTan.z / tl);
+        const tOut = (this.ts[i] * (1 - u) + this.ts[iNext] * u + (iNext === 0 ? 1 : 0)) % 1;
+        return { point: outPoint, tangent: outTan, t: tOut };
+      }
+      remain -= seg;
+      i = iNext;
+      s += seg;
+    }
+    void target;
+    void s;
+    outPoint.copy(this.points[i]);
+    outTan.copy(this.tangents[i]);
+    return { point: outPoint, tangent: outTan, t: this.ts[i] };
+  }
+
+  /**
+   * Peak curvature (rad/m) ahead along the offset line over [nearDist, lookDist].
+   * Uses chord heading change — works for smooth arcs (unlike tiny adjacent samples).
+   */
+  curvatureAhead(t: number, lookDist: number): { maxKappa: number; nearKappa: number; turnAngle: number } {
+    const i0 = this.indexAtT(t);
+    const n = this.count;
+    let maxKappa = 0;
+    let nearKappa = 0;
+    let turnAngle = 0;
+    let traveled = 0;
+    let prevTan = this.tangents[i0];
+
+    for (let step = 1; step <= n; step++) {
+      const i = (i0 + step) % n;
+      const iPrev = (i0 + step - 1) % n;
+      const seg =
+        i === 0 ? this.length - this.cum[iPrev] : this.cum[i] - this.cum[iPrev];
+      if (seg < 1e-6) continue;
+      traveled += seg;
+      if (traveled > lookDist) break;
+
+      const tan = this.tangents[i];
+      let dot = prevTan.x * tan.x + prevTan.z * tan.z;
+      dot = Math.max(-1, Math.min(1, dot));
+      const dAng = Math.acos(dot);
+      turnAngle += dAng;
+      const kappa = dAng / Math.max(seg, 0.5);
+
+      maxKappa = Math.max(maxKappa, kappa);
+      if (traveled <= lookDist * 0.4) nearKappa = Math.max(nearKappa, kappa);
+      prevTan = tan;
+    }
+
+    // Also measure total heading change / lookDist as a smooth "bend threat"
+    const bulk = turnAngle / Math.max(lookDist, 1);
+    maxKappa = Math.max(maxKappa, bulk);
+    return { maxKappa, nearKappa: Math.max(nearKappa, bulk * 0.85), turnAngle };
+  }
+}
+
+/** Single-point sample (no continuity cache) — prefer OffsetRacingLine for AI. */
+export function pointOnOffsetLine(
+  path: THREE.CatmullRomCurve3,
+  t: number,
+  offset: number,
+  out = new THREE.Vector3(),
+): THREE.Vector3 {
+  const tan = path.getTangentAt(t).normalize();
+  const normal = new THREE.Vector3(-tan.z, 0, tan.x);
+  return out.copy(path.getPointAt(t)).addScaledVector(normal, offset);
 }

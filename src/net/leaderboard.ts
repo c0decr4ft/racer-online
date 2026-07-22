@@ -9,6 +9,20 @@ export type BoardSource = "online" | "server" | "local";
 
 const STORAGE_KEY = "racer-leaderboard-v1";
 const MAX = 10;
+/** Max characters for a driver name on the board. */
+export const NAME_MAX = 10;
+
+/** Trim, allow letters/digits/space/underscore, drop control/weird chars, cap length. */
+export function sanitizeDriverName(raw: string): string {
+  const cleaned = String(raw ?? "")
+    .normalize("NFKC")
+    .replace(/[^\p{L}\p{N} _]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, NAME_MAX)
+    .trim();
+  return cleaned || "RACER";
+}
 
 /** Shared public board (JSONBlob). Anyone can read/write — GitHub Pages primary. */
 const PUBLIC_BLOB_URL =
@@ -35,17 +49,57 @@ function writeLocal(entries: LeaderboardEntry[]) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(entries.slice(0, MAX)));
 }
 
+/** Same driver + essentially same race time → one row (local+remote / retry merges). */
+const TIME_EPS_MS = 15;
+
+function entryKey(e: LeaderboardEntry): string {
+  return `${e.name.trim().toLowerCase()}|${Math.round(e.timeMs)}`;
+}
+
+function isSameRun(a: LeaderboardEntry, b: LeaderboardEntry): boolean {
+  if (a.name.trim().toLowerCase() !== b.name.trim().toLowerCase()) return false;
+  return Math.abs(a.timeMs - b.timeMs) <= TIME_EPS_MS;
+}
+
+/** Prefer earlier submit; keep richer bestLap when tied. */
+function pickBetter(a: LeaderboardEntry, b: LeaderboardEntry): LeaderboardEntry {
+  const earlier = (a.at || 0) <= (b.at || 0) ? a : b;
+  const other = earlier === a ? b : a;
+  if (earlier.bestLapMs == null && other.bestLapMs != null) {
+    return { ...earlier, bestLapMs: other.bestLapMs };
+  }
+  return earlier;
+}
+
 function normalize(entries: LeaderboardEntry[]): LeaderboardEntry[] {
-  return [...entries]
+  const cleaned = [...entries]
     .filter((e) => e && typeof e.timeMs === "number" && Number.isFinite(e.timeMs) && e.timeMs > 0)
     .map((e) => ({
-      name: String(e.name || "RACER").slice(0, 16),
+      name: sanitizeDriverName(String(e.name || "RACER")),
       timeMs: Math.round(e.timeMs),
       bestLapMs: e.bestLapMs != null ? Math.round(e.bestLapMs) : undefined,
       at: e.at || Date.now(),
-    }))
-    .sort((a, b) => a.timeMs - b.timeMs)
-    .slice(0, MAX);
+    }));
+
+  // Dedupe by name+time (exact key first, then epsilon neighbors from merge races)
+  const byKey = new Map<string, LeaderboardEntry>();
+  for (const e of cleaned) {
+    const key = entryKey(e);
+    const prev = byKey.get(key);
+    byKey.set(key, prev ? pickBetter(prev, e) : e);
+  }
+  const unique: LeaderboardEntry[] = [];
+  for (const e of byKey.values()) {
+    const twin = unique.find((u) => isSameRun(u, e));
+    if (twin) {
+      const i = unique.indexOf(twin);
+      unique[i] = pickBetter(twin, e);
+    } else {
+      unique.push(e);
+    }
+  }
+
+  return unique.sort((a, b) => a.timeMs - b.timeMs || (a.at || 0) - (b.at || 0)).slice(0, MAX);
 }
 
 function parsePayload(data: unknown): LeaderboardEntry[] {
@@ -131,7 +185,7 @@ export async function submitScore(
   bestLapMs?: number,
 ): Promise<{ entries: LeaderboardEntry[]; source: BoardSource }> {
   const entry: LeaderboardEntry = {
-    name: name.trim().slice(0, 16) || "RACER",
+    name: sanitizeDriverName(name),
     timeMs: Math.round(timeMs),
     bestLapMs: bestLapMs != null && Number.isFinite(bestLapMs) ? Math.round(bestLapMs) : undefined,
     at: Date.now(),
@@ -159,6 +213,7 @@ export async function submitScore(
   }
 
   try {
+    // normalize() dedupes — safe if soft-retry re-merges the same run
     let entries = normalize([...(await fetchPublicBlob()), entry]);
     entries = await putPublicBlob(entries);
     // Soft retry: re-read and merge in case another client wrote between GET and PUT.

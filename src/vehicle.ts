@@ -1,6 +1,12 @@
 import * as THREE from "three";
 import type { Gear, InputState } from "./input";
-import { projectOnTrack, projectOnTrackNear } from "./track";
+import {
+  LapGateProgress,
+  OffsetRacingLine,
+  pointOnOffsetLine,
+  projectOnTrack,
+  projectOnTrackNear,
+} from "./track";
 
 export type VehicleState = {
   position: THREE.Vector3;
@@ -234,26 +240,65 @@ export class Vehicle {
   }
 }
 
-/** Competitive AI: curvature braking, racing line, catch-up. */
+/**
+ * Competitive AI that steers toward a dedicated invisible racing line
+ * re-traced once from the centerline (look-ahead + CTE via yaw —
+ * no continuous sideways position snap).
+ * Set DEBUG_RACING_LINES to draw each rival's groove.
+ */
+const DEBUG_RACING_LINES = false;
+
+/**
+ * Max |lateral| from centerline for any AI groove.
+ * Road half-width ≈ 7m, wall clamp ≈ 6.45, car half-width ≈ 1.0 →
+ * keep grooves well inside so line-follow never aims at barriers.
+ */
+export const MAX_LANE_OFFSET = 2.8;
+
+/** @deprecated Prefer OffsetRacingLine — kept for spawn helpers. */
+export function pointOnRacingLine(
+  path: THREE.CatmullRomCurve3,
+  t: number,
+  offset: number,
+  out = new THREE.Vector3(),
+): THREE.Vector3 {
+  return pointOnOffsetLine(path, t, offset, out);
+}
+
 export class RivalAI {
   vehicle: Vehicle;
-  /** Completed laps — forward SF crossings minus backward ones. */
+  /** Completed laps — only after mid-lap progress gates then SF wrap. */
   laps = 0;
-  private baseOffset: number;
+  /** Fixed lateral racing line (m from centerline) — never changes mid-race. */
+  private laneOffset: number;
   private skill: number;
   private aggression: number;
-  private linePhase: number;
+  /** Per-car look-ahead scale — slight pace variation, still fixed every race. */
+  private lookAheadBias: number;
+  /** Seconds since last reset — soft launch so they don't spike into traffic. */
+  private raceAge = 0;
   /** Sticky track progress — avoids snapping to a nearby wrong section. */
   private lastT: number | null = null;
+  private gates = new LapGateProgress();
   private stuckTimer = 0;
-  private recoverTimer = 0;
+  /** Densely re-traced groove for this car (built once per path). */
+  private line: OffsetRacingLine | null = null;
+  private linePath: THREE.CatmullRomCurve3 | null = null;
+  private debugLine: THREE.Line | null = null;
+  private readonly _aim = new THREE.Vector3();
+  private readonly _near = new THREE.Vector3();
+  private readonly _far = new THREE.Vector3();
+  private readonly _tan = new THREE.Vector3();
+  private readonly _n = new THREE.Vector3();
 
-  constructor(vehicle: Vehicle, offset: number, skill: number) {
+  constructor(vehicle: Vehicle, laneOffset: number, skill: number, gridIndex = 0) {
     this.vehicle = vehicle;
-    this.baseOffset = offset;
+    this.laneOffset = THREE.MathUtils.clamp(laneOffset, -MAX_LANE_OFFSET, MAX_LANE_OFFSET);
     this.skill = skill;
-    this.aggression = 0.85 + skill * 0.25;
-    this.linePhase = Math.random() * Math.PI * 2;
+    // Tier aggression: back≈1.15–1.19, mid≈1.28, front≈1.51–1.56
+    this.aggression = 0.82 + skill * 0.38;
+    // Deterministic — same groove / look-ahead every race for this slot
+    this.lookAheadBias = 0.84 + (gridIndex % 5) * 0.03 + skill * 0.07;
   }
 
   /** Total race progress (laps + track fraction) for standings. */
@@ -261,21 +306,42 @@ export class RivalAI {
     return this.laps + (this.lastT ?? 0);
   }
 
+  /** Fixed groove offset used for spawn / recovery (read-only). */
+  get racingOffset() {
+    return this.laneOffset;
+  }
+
   /** Call after teleporting/resetting the vehicle (fresh global projection). */
   resetProgress() {
     this.lastT = null;
     this.laps = 0;
+    this.gates.reset();
     this.stuckTimer = 0;
-    this.recoverTimer = 0;
+    this.raceAge = 0;
+  }
+
+  /** Build / reuse this car's invisible offset line from the track centerline. */
+  private ensureLine(path: THREE.CatmullRomCurve3): OffsetRacingLine {
+    if (!this.line || this.linePath !== path) {
+      this.line = OffsetRacingLine.trace(path, this.laneOffset, 720);
+      this.linePath = path;
+    }
+    return this.line;
   }
 
   update(
     dt: number,
     path: THREE.CatmullRomCurve3,
     playerT: number,
-    time: number,
+    _time: number,
     neighbors: Vehicle[] = [],
   ) {
+    this.raceAge += dt;
+    // Soft launch: ~5s ramp, cubed so early frames stay gentle into T1
+    const launch = Math.min(1, this.raceAge / 5.0);
+    const launchEase = launch * launch * launch;
+
+    const line = this.ensureLine(path);
     const pos = this.vehicle.state.position;
     const prevT = this.lastT;
     const bestT =
@@ -284,88 +350,114 @@ export class RivalAI {
         : projectOnTrackNear(path, pos, prevT).t;
     this.lastT = bestT;
 
-    // One-shot lap counting on start/finish wrap (mirrors player logic);
-    // backward wraps subtract so a shove across the line can't double-count
     if (prevT != null) {
-      if (prevT > 0.85 && bestT < 0.15) this.laps += 1;
-      else if (prevT < 0.15 && bestT > 0.85) this.laps -= 1;
+      this.gates.update(prevT, bestT);
+      if (prevT > 0.85 && bestT < 0.15 && this.gates.readyForFinish) {
+        this.laps += 1;
+        this.gates.reset();
+      }
     }
 
-    const pathLen = path.getLength();
-    const speed = Math.max(8, this.vehicle.state.speed);
-    const lookDist = THREE.MathUtils.clamp(12 + speed * 0.55, 16, 42);
-    const lookT = lookDist / pathLen;
+    const absSpeed = Math.abs(this.vehicle.state.speed);
+    const speed = Math.max(6, absSpeed);
 
-    // Path tangent at car — race direction (increasing t)
-    const pathTan = path.getTangentAt(bestT).normalize();
-    const pathHeading = Math.atan2(pathTan.x, pathTan.z);
+    // Lateral error vs THIS car's re-traced line (positive = line is to the left)
+    line.tangentAtT(bestT, this._tan);
+    this._n.set(-this._tan.z, 0, this._tan.x);
+    line.pointAtT(bestT, this._aim);
+    const lateralFromLine = pos.clone().sub(this._aim).dot(this._n);
+    // CTE: positive → need left steer (toward line). Car left of line → negative.
+    const laneErr = -lateralFromLine;
 
+    const pathHeading = Math.atan2(this._tan.x, this._tan.z);
     let facingErr = pathHeading - this.vehicle.state.heading;
     while (facingErr > Math.PI) facingErr -= Math.PI * 2;
     while (facingErr < -Math.PI) facingErr += Math.PI * 2;
 
-    // Wedged (near-zero speed for a while): back out gently, rotating the
-    // nose toward the race direction, then resume normal driving
-    if (Math.abs(this.vehicle.state.speed) < 2) this.stuckTimer += dt;
-    else this.stuckTimer = 0;
-    if (this.recoverTimer <= 0 && this.stuckTimer > 2) {
-      this.recoverTimer = 1.4;
-      this.stuckTimer = 0;
+    // Stuck / wall: rare snap onto the re-traced line — never continuous sideways yank
+    const lateralFromCenter = (() => {
+      const cTan = path.getTangentAt(bestT).normalize();
+      const cN = new THREE.Vector3(-cTan.z, 0, cTan.x);
+      return pos.clone().sub(path.getPointAt(bestT)).dot(cN);
+    })();
+    const nearWall = Math.abs(lateralFromCenter) > 5.0;
+    const offLine = Math.abs(laneErr) > 2.4;
+    if (absSpeed < 2.5 || (nearWall && absSpeed < 8) || (offLine && nearWall && absSpeed < 14)) {
+      this.stuckTimer += dt;
+    } else {
+      this.stuckTimer = Math.max(0, this.stuckTimer - dt * 0.5);
     }
-    if (this.recoverTimer > 0) {
-      this.recoverTimer -= dt;
-      this.vehicle.setGear("R");
-      // Reverse flips turn response, so negative gain still aims at the path
-      const steer = THREE.MathUtils.clamp(-facingErr * 1.5, -1, 1);
-      this.vehicle.update(dt, { throttle: 0.7, brake: 0, steer, reset: false, pause: false, gear: null, shiftDelta: 0 });
+
+    if (this.stuckTimer > 0.85) {
+      this.snapToLine(path, bestT, line);
+      this.stuckTimer = 0;
       return;
     }
 
     this.vehicle.autoShift(dt);
 
-    // If facing more than ~90° off race direction, snap toward path heading
-    // (prevents wrong-way / reverse progress after collisions or bad steers)
+    // Wrong-way after a hit: rotate toward race direction
     if (Math.abs(facingErr) > Math.PI * 0.55) {
-      this.vehicle.state.heading += Math.sign(facingErr) * Math.min(Math.abs(facingErr), 2.8 * dt);
-      if (this.vehicle.state.speed < 0) this.vehicle.state.speed = Math.abs(this.vehicle.state.speed) * 0.3;
+      this.vehicle.state.heading += Math.sign(facingErr) * Math.min(Math.abs(facingErr), 3.2 * dt);
+      if (this.vehicle.state.speed < 0) this.vehicle.state.speed = Math.abs(this.vehicle.state.speed) * 0.2;
     }
 
-    let maxBend = 0;
-    for (let k = 1; k <= 5; k++) {
-      const tA = (bestT + lookT * (k / 5) + 1) % 1;
-      const tB = (bestT + lookT * ((k + 0.5) / 5) + 1) % 1;
-      const tanA = path.getTangentAt(tA).normalize();
-      const tanB = path.getTangentAt(tB).normalize();
-      maxBend = Math.max(maxBend, 1 - Math.max(-1, Math.min(1, tanA.dot(tanB))));
-    }
+    // Look-ahead along the OFFSET line: longer at speed, shorter when correcting CTE
+    let lookDist = THREE.MathUtils.clamp((16 + speed * 0.72) * this.lookAheadBias, 18, 52);
+    if (Math.abs(laneErr) > 1.2) lookDist *= THREE.MathUtils.clamp(1.15 - Math.abs(laneErr) * 0.18, 0.55, 1);
+    if (launchEase < 0.55) lookDist = Math.min(lookDist, 28);
 
-    // Persistent per-rival line (no corner-cut toward the apex — that made
-    // every AI converge and wedge on the inside of each curve). Kept well
-    // inside the 7-unit half-width so the line never grazes the wall.
-    const weave = Math.sin(time * 0.7 + this.linePhase) * 0.35;
-    const lineOffset = THREE.MathUtils.clamp(this.baseOffset * 2.4 + weave, -3, 3);
+    // Curvature on the re-traced line (rad/m) — detects smooth T1, not just kinks
+    const { maxKappa, nearKappa, turnAngle } = line.curvatureAhead(bestT, Math.max(lookDist, 42));
+    const kmh = this.vehicle.kmh;
+    // Straight-line cruise by skill: back≈166, mid≈170, front≈178
+    // (gear 3 base ceiling is ~173 km/h; powerMul raises AI rev limit past that)
+    const cruiseKmh = 155 + this.skill * 12;
+    // Target corner speed from kappa: v ≈ sqrt(a / κ), a≈11.5 m/s² —
+    // still brakes for bends, but carries more speed than the old ~9 m/s² target
+    const peakKappa = Math.max(maxKappa, nearKappa, 1e-4);
+    const cornerKmh = Math.sqrt(11.5 / peakKappa) * 3.6;
+    // On open track hold cruise; in bends the corner target wins
+    const targetKmh = Math.min(cruiseKmh, cornerKmh);
 
-    // Steer primarily by path tangent (race direction). Pure point-pursuit was
-    // unstable from lateral offset and flipped cars the wrong way on the circuit.
-    const aheadT = (bestT + lookT + 1) % 1;
-    const lookTan = path.getTangentAt(aheadT).normalize();
-    const lookN = new THREE.Vector3(-lookTan.z, 0, lookTan.x);
-    const linePoint = path.getPointAt(aheadT).addScaledVector(lookN, lineOffset);
-    const tanHeading = Math.atan2(lookTan.x, lookTan.z);
-    const pointHeading = Math.atan2(linePoint.x - pos.x, linePoint.z - pos.z);
+    // --- Primary steer: pure pursuit on THIS car's re-traced groove ---
+    const nearDist = THREE.MathUtils.clamp(lookDist * 0.32, 8, 22);
+    const farDist = lookDist;
+    line.sampleAhead(bestT, nearDist, this._near, this._tan);
+    line.sampleAhead(bestT, farDist, this._far, this._tan);
+
+    // Blend near (CTE correction) + far (path anticipation)
+    const nearW = Math.abs(laneErr) > 1.5 ? 0.55 : 0.38;
+    const aimX = this._near.x * nearW + this._far.x * (1 - nearW);
+    const aimZ = this._near.z * nearW + this._far.z * (1 - nearW);
+    const pointHeading = Math.atan2(aimX - pos.x, aimZ - pos.z);
+
+    // Groove tangent at far look-ahead — keeps nose along the line through sweeps
+    const tanHeading = Math.atan2(this._tan.x, this._tan.z);
+    const lineW = 0.88;
     const desiredHeading = Math.atan2(
-      Math.sin(tanHeading) * 0.72 + Math.sin(pointHeading) * 0.28,
-      Math.cos(tanHeading) * 0.72 + Math.cos(pointHeading) * 0.28,
+      Math.sin(tanHeading) * (1 - lineW) + Math.sin(pointHeading) * lineW,
+      Math.cos(tanHeading) * (1 - lineW) + Math.cos(pointHeading) * lineW,
     );
 
     let headingError = desiredHeading - this.vehicle.state.heading;
     while (headingError > Math.PI) headingError -= Math.PI * 2;
     while (headingError < -Math.PI) headingError += Math.PI * 2;
 
-    // Neighbor avoidance: if a car sits close ahead, steer around it and lift
-    // slightly so rivals fan out instead of stacking nose-to-tail in corners
-    let avoidSteer = 0;
+    // Stanley CTE: positive laneErr (line left of car) → positive steer (left). Verified.
+    const cteK = 1.55 + this.skill * 0.4;
+    const laneSteer = THREE.MathUtils.clamp(
+      Math.atan2(laneErr * cteK, Math.max(5, absSpeed)) * 1.85,
+      -1,
+      1,
+    );
+
+    if (DEBUG_RACING_LINES) this.debugDrawLine(line);
+
+    // --- Avoidance: brake / lift only. Cap steer so it can't override the line. ---
     let avoidLift = 1;
+    let avoidBrake = 0;
+    let avoidSteer = 0;
     const fwdX = Math.sin(this.vehicle.state.heading);
     const fwdZ = Math.cos(this.vehicle.state.heading);
     for (const other of neighbors) {
@@ -373,45 +465,126 @@ export class RivalAI {
       const dx = other.state.position.x - pos.x;
       const dz = other.state.position.z - pos.z;
       const ahead = dx * fwdX + dz * fwdZ;
-      if (ahead < 0.5 || ahead > 6) continue;
-      const lateral = dx * fwdZ - dz * fwdX; // + means other is to the left
-      if (Math.abs(lateral) > 3.2) continue;
-      const urgency = 1 - ahead / 6;
-      // Steer toward whichever side the other car is NOT on
-      avoidSteer += (lateral >= 0 ? -1 : 1) * urgency * 0.8;
-      avoidLift = Math.min(avoidLift, 1 - urgency * 0.45);
-    }
+      if (ahead < -1.5 || ahead > 14) continue;
+      const lateral = dx * fwdZ - dz * fwdX;
+      if (Math.abs(lateral) > 4.8) continue;
+      const urgency = ahead > 0 ? 1 - ahead / 14 : 0.35;
+      const closeLat = 1 - Math.min(1, Math.abs(lateral) / 4.8);
 
-    // Positive steer increases heading (same convention as player A = +1)
-    const steerGain = 2.4 + this.skill * 0.7;
-    const steer = THREE.MathUtils.clamp(headingError * steerGain + avoidSteer, -1, 1);
+      if (ahead > 0) {
+        avoidLift = Math.min(avoidLift, 1 - urgency * (0.6 + closeLat * 0.35));
+        if (ahead < 8 && Math.abs(lateral) < 3.4) {
+          avoidBrake = Math.max(avoidBrake, urgency * (0.4 + closeLat * 0.55));
+        }
+      }
+
+      if (Math.abs(lateral) < 3.2 && ahead > -0.5 && ahead < 10) {
+        const side = lateral >= 0 ? -1 : 1;
+        const proposed = this.laneOffset + side * 0.8;
+        if (Math.abs(proposed) <= MAX_LANE_OFFSET) {
+          avoidSteer += side * urgency * closeLat * 0.05 * launchEase;
+        }
+      }
+    }
+    avoidSteer = THREE.MathUtils.clamp(avoidSteer, -0.07, 0.07);
+
+    const steerGain = 2.55 + this.skill * 0.35;
+    const steer = THREE.MathUtils.clamp(
+      headingError * steerGain + laneSteer + avoidSteer,
+      -1,
+      1,
+    );
     const cornering = Math.abs(headingError);
 
-    const bendThreat = maxBend * (0.7 + this.vehicle.kmh / 220);
-    let brake = 0;
-    if (bendThreat > 0.08 && this.vehicle.kmh > 100) brake = Math.max(brake, 0.35 + bendThreat * 2.5);
-    if (cornering > 0.55 && this.vehicle.kmh > 90) brake = Math.max(brake, 0.45);
-    if (cornering > 0.85 && this.vehicle.kmh > 70) brake = Math.max(brake, 0.75);
-    brake = Math.min(1, brake * (1.15 - this.skill * 0.15));
+    // Brake for curvature EARLY — old metric never fired on smooth T1.
+    // Absolute kappa thresholds only fire when actually overspeed for the
+    // upcoming bend / cruise — otherwise mild kinks capped AI well below ~170.
+    let brake = avoidBrake;
+    const overspeed = kmh - targetKmh;
+    if (overspeed > 8 && turnAngle > 0.25) {
+      brake = Math.max(brake, THREE.MathUtils.clamp(0.25 + overspeed / 55, 0.25, 0.95));
+    }
+    if (nearKappa > 0.012 && overspeed > 5) brake = Math.max(brake, 0.3 + nearKappa * 18);
+    if (maxKappa > 0.018 && overspeed > 8) brake = Math.max(brake, 0.35 + maxKappa * 16);
+    if (turnAngle > 0.55 && overspeed > 5) brake = Math.max(brake, 0.4 + Math.min(0.45, turnAngle * 0.35));
+    if (cornering > 0.4 && kmh > 70 && overspeed > 0) brake = Math.max(brake, 0.38);
+    if (cornering > 0.7 && kmh > 55) brake = Math.max(brake, 0.7);
+    if (Math.abs(laneErr) > 1.8 && kmh > 65) {
+      brake = Math.max(brake, 0.2 + Math.min(0.4, (Math.abs(laneErr) - 1.8) * 0.2));
+    }
+    // Soft launch into first bend: insist on braking if still winding up and bend ahead
+    if (launchEase < 0.7 && turnAngle > 0.35 && kmh > 55) {
+      brake = Math.max(brake, 0.45);
+    }
+    // Higher skill = carry more speed into bends
+    brake = Math.min(1, brake * (1.18 - this.skill * 0.18));
 
-    let throttle = this.aggression * avoidLift;
-    if (brake > 0.4) throttle *= 0.15;
-    else if (cornering > 0.4) throttle *= 0.55;
-    else if (bendThreat > 0.05) throttle *= 0.75;
+    let throttle = this.aggression * avoidLift * (0.28 + 0.72 * launchEase);
+    if (kmh < 35) throttle *= 0.5 + 0.5 * (kmh / 35);
+    // Hold cruise / don't full-throttle when overspeed for bend or top-end
+    if (overspeed > 2) throttle *= THREE.MathUtils.clamp(1 - overspeed / 45, 0.05, 1);
+    // On open track, taper onto cruise so they settle near ~170 instead of runaway
+    if (cornerKmh > cruiseKmh && kmh > cruiseKmh - 12) {
+      throttle *= THREE.MathUtils.clamp((cruiseKmh + 6 - kmh) / 18, 0.12, 1);
+    }
+    if (brake > 0.35) throttle *= 0.08;
+    else if (cornering > 0.35) throttle *= 0.5;
+    else if (maxKappa > 0.015 && overspeed > 0) throttle *= 0.68;
+    if (Math.abs(laneErr) > 1.5) throttle *= 0.78;
 
     let gap = bestT - playerT;
     if (gap > 0.5) gap -= 1;
     if (gap < -0.5) gap += 1;
-    if (gap < -0.04) {
-      this.vehicle.powerMul = 1.08 + Math.min(0.22, -gap * 1.4);
-      throttle = Math.min(1, throttle + 0.15);
-    } else if (gap > 0.12) {
-      this.vehicle.powerMul = 0.9;
-      throttle *= 0.85;
+    // Accel pull by tier: back≈1.22–1.25, mid≈1.34, front≈1.55–1.59 — enough to hit cruise
+    const paceMul = 0.92 + this.skill * 0.34;
+    // Soft rubber-band only — don't re-pack the field around the player
+    if (gap < -0.10) {
+      this.vehicle.powerMul = paceMul + (0.025 + Math.min(0.08, -gap * 0.45)) * launchEase;
+      throttle = Math.min(1, throttle + 0.06 * launchEase);
+    } else if (gap > 0.28) {
+      this.vehicle.powerMul = paceMul * 0.95;
+      throttle *= 0.92;
     } else {
-      this.vehicle.powerMul = 0.98 + this.skill * 0.08;
+      this.vehicle.powerMul = paceMul;
     }
 
-    this.vehicle.update(dt, { throttle, brake, steer, reset: false, pause: false, gear: null, shiftDelta: 0 });
+    this.vehicle.update(dt, {
+      throttle,
+      brake,
+      steer,
+      reset: false,
+      pause: false,
+      gear: null,
+      shiftDelta: 0,
+    });
+  }
+
+  /** Place the car on its re-traced racing line at track-t, facing forward. */
+  private snapToLine(path: THREE.CatmullRomCurve3, t: number, line?: OffsetRacingLine) {
+    const groove = line ?? this.ensureLine(path);
+    groove.pointAtT(t, this.vehicle.state.position);
+    groove.tangentAtT(t, this._tan);
+    this.vehicle.state.heading = Math.atan2(this._tan.x, this._tan.z);
+    this.vehicle.state.speed = 6;
+    this.vehicle.state.steerAngle = 0;
+    this.vehicle.setGear(1);
+    this.vehicle.syncCollision();
+  }
+
+  private debugDrawLine(line: OffsetRacingLine) {
+    const parent = this.vehicle.mesh.parent;
+    if (!parent) return;
+    const pts = line.points.map((p) => p.clone().setY(0.2));
+    pts.push(pts[0].clone());
+    if (!this.debugLine) {
+      const geo = new THREE.BufferGeometry().setFromPoints(pts);
+      this.debugLine = new THREE.Line(
+        geo,
+        new THREE.LineBasicMaterial({ color: 0xff66aa, transparent: true, opacity: 0.45 }),
+      );
+      parent.add(this.debugLine);
+    } else {
+      this.debugLine.geometry.setFromPoints(pts);
+    }
   }
 }

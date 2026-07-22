@@ -1,5 +1,13 @@
 export type Gear = "R" | "N" | 1 | 2 | 3 | 4 | 5;
 
+/** True when focus is in a text field — don't steal keys for driving/gears. */
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  return target.isContentEditable;
+}
+
 export type InputState = {
   throttle: number;
   brake: number;
@@ -20,6 +28,9 @@ export class Input {
 
   constructor() {
     window.addEventListener("keydown", (e) => {
+      // Let leaderboard / form fields receive digits, R/N, Backspace, Space, etc.
+      if (isTypingTarget(e.target)) return;
+
       this.keys.add(e.code);
 
       if (e.code === "Backspace") {
@@ -61,6 +72,7 @@ export class Input {
       }
     });
     window.addEventListener("keyup", (e) => {
+      if (isTypingTarget(e.target)) return;
       this.keys.delete(e.code);
     });
   }

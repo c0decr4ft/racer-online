@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { createCar, CAR_PALETTE } from "./car";
-import { createTrack, projectOnTrack, projectOnTrackNear } from "./track";
+import { createTrack, LapGateProgress, projectOnTrack, projectOnTrackNear } from "./track";
 import { Input } from "./input";
 import { Vehicle, RivalAI } from "./vehicle";
 import { NetClient, RemotePlayer } from "./net/client";
@@ -9,6 +9,7 @@ import {
   boardSourceLabel,
   fetchLeaderboard,
   formatBoardTime,
+  sanitizeDriverName,
   submitScore,
   wouldQualify,
   type LeaderboardEntry,
@@ -24,14 +25,26 @@ function formatTime(ms: number): string {
 }
 
 const TOTAL_LAPS = 3;
+const COUNTDOWN_STEPS = ["3", "2", "1", "GO"] as const;
+const COUNTDOWN_STEP_MS = 1000;
 
+/**
+ * Skill tiers + fixed racing-line offsets (same every race). Player is slot 0.
+ * Each AI owns one offset forever: centerline + lateralNormal * offset.
+ * Road half≈7, walls≈6.45, car≈1.0 wide → |offset| ≤ 2.8 keeps grooves
+ * clear of barriers. Each rival re-traces center+normal*offset densely.
+ *
+ * Pace tiers by spawn order (rivals = slots 1–5): higher t = further ahead.
+ * Front 2 (high t) hot / mid 1 / back 2 (low t) slow — pack strings out;
+ * overall floor/ceiling bumped vs prior mid≈1.06 / hot≈1.66–1.78 / slow≈0.72–0.82.
+ */
 const GRID = [
-  { offset: -3.5, t: 0.0, skill: 1 },
-  { offset: 3.8, t: 0.01, skill: 0.94 },
-  { offset: -3.2, t: 0.018, skill: 0.9 },
-  { offset: 3.0, t: 0.026, skill: 0.96 },
-  { offset: -2.4, t: 0.034, skill: 0.92 },
-  { offset: 2.6, t: 0.042, skill: 0.98 },
+  { offset: -2.55, t: 0.0, skill: 1.0 }, // player (unused by RivalAI)
+  { offset: 2.35, t: 0.01, skill: 0.88 }, // back — near player, drifts back
+  { offset: -1.15, t: 0.018, skill: 0.98 }, // back — second backmarker
+  { offset: 0.85, t: 0.026, skill: 1.22 }, // mid — packs with the player
+  { offset: -2.75, t: 0.034, skill: 1.82 }, // front — second string
+  { offset: 2.6, t: 0.042, skill: 1.94 }, // front — pace setter (furthest ahead)
 ];
 
 export class Game {
@@ -46,6 +59,8 @@ export class Game {
   running = false;
   finished = false;
   paused = false;
+  /** Infinite practice — same track/AI, no race finish. */
+  practice = false;
   online = false;
   private remotes = new Map<string, RemotePlayer>();
   private net: NetClient;
@@ -55,6 +70,8 @@ export class Game {
   private lap = 1;
   private lastT = 0;
   private crossedOnce = false;
+  /** Mid-lap progress gates — SF wrap only scores when these are complete. */
+  private gates = new LapGateProgress();
   private raceStart = 0;
   private lapStart = 0;
   private bestLap = Infinity;
@@ -82,14 +99,23 @@ export class Game {
     position: document.getElementById("position"),
     netStatus: document.getElementById("net-status")!,
     wrongWay: document.getElementById("wrong-way")!,
+    bestFlash: document.getElementById("best-flash")!,
+    bestFlashTime: document.getElementById("best-flash-time")!,
     leaderboard: document.getElementById("leaderboard")!,
     boardList: document.getElementById("board-list")!,
     boardSource: document.getElementById("board-source")!,
     nameEntry: document.getElementById("name-entry")!,
     driverName: document.getElementById("driver-name") as HTMLInputElement,
+    countdown: document.getElementById("countdown")!,
   };
 
   private pendingFinishMs = 0;
+  private scoreSaveInFlight = false;
+  private bestFlashUntil = 0;
+
+  /** Grid hold: -1 idle, 0..3 = 3/2/1/GO. Cars frozen until GO releases. */
+  private countdownIndex = -1;
+  private countdownStepAt = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     // Cap DPR for stable FPS on retina displays
@@ -136,11 +162,20 @@ export class Game {
       this.setAiVisible(true);
       this.el.netStatus.classList.add("hidden");
       this.el.leaderboard.classList.add("hidden");
-      this.startRace();
+      this.startRace(false);
     };
-    document.getElementById("restart-btn")!.onclick = () => this.startRace();
+    document.getElementById("test-drive-btn")!.onclick = () => {
+      this.online = false;
+      this.net.disconnect();
+      this.clearRemotes();
+      this.setAiVisible(true);
+      this.el.netStatus.classList.add("hidden");
+      this.el.leaderboard.classList.add("hidden");
+      this.startRace(true);
+    };
+    document.getElementById("restart-btn")!.onclick = () => this.startRace(false);
     document.getElementById("resume-btn")!.onclick = () => this.resume();
-    document.getElementById("pause-restart-btn")!.onclick = () => this.startRace();
+    document.getElementById("pause-restart-btn")!.onclick = () => this.startRace(this.practice);
     document.getElementById("pause-home-btn")!.onclick = () => this.goHome();
     document.getElementById("finish-home-btn")!.onclick = () => this.goHome();
     this.el.pauseBtn.onclick = () => this.pause();
@@ -153,19 +188,30 @@ export class Game {
     this.el.driverName.addEventListener("keydown", (e) => {
       if (e.key === "Enter") void this.saveDriverScore();
     });
+    this.el.driverName.addEventListener("input", () => {
+      const cleaned = this.el.driverName.value
+        .normalize("NFKC")
+        .replace(/[^\p{L}\p{N} _]/gu, "")
+        .slice(0, 10);
+      if (cleaned !== this.el.driverName.value) this.el.driverName.value = cleaned;
+    });
   }
 
   private goHome() {
     this.running = false;
     this.finished = false;
     this.paused = false;
+    this.practice = false;
     this.pauseTotal = 0;
     this.pauseBegan = 0;
+    this.bestFlashUntil = 0;
+    this.clearCountdown();
     this.input.clearDriveKeys();
     this.el.pause.classList.add("hidden");
     this.el.finish.classList.add("hidden");
     this.el.pauseBtn.classList.add("hidden");
     this.el.wrongWay.classList.add("hidden");
+    this.el.bestFlash.classList.add("hidden");
     this.el.nameEntry.classList.add("hidden");
     this.el.leaderboard.classList.add("hidden");
     this.el.overlay.classList.remove("hidden");
@@ -195,19 +241,26 @@ export class Game {
   }
 
   private async saveDriverScore() {
-    const name = this.el.driverName.value.trim();
-    if (!name) {
+    if (this.scoreSaveInFlight) return;
+    if (!this.el.driverName.value.trim()) {
       this.el.driverName.focus();
       return;
     }
+    const name = sanitizeDriverName(this.el.driverName.value);
+    this.el.driverName.value = name;
     const btn = document.getElementById("submit-score-btn") as HTMLButtonElement;
+    this.scoreSaveInFlight = true;
     btn.disabled = true;
-    const { entries, source } = await submitScore(name, this.pendingFinishMs, this.bestLap);
-    this.el.nameEntry.classList.add("hidden");
-    btn.disabled = false;
-    this.el.leaderboard.classList.remove("hidden");
-    this.el.boardSource.textContent = boardSourceLabel(source, true);
-    this.renderBoardList(entries);
+    try {
+      const { entries, source } = await submitScore(name, this.pendingFinishMs, this.bestLap);
+      this.el.nameEntry.classList.add("hidden");
+      this.el.leaderboard.classList.remove("hidden");
+      this.el.boardSource.textContent = boardSourceLabel(source, true);
+      this.renderBoardList(entries);
+    } finally {
+      this.scoreSaveInFlight = false;
+      btn.disabled = false;
+    }
   }
 
   private onNetWelcome(_id: string, room: string, players: PlayerPose[], you: PlayerPose) {
@@ -318,26 +371,31 @@ export class Game {
       const mesh = createCar(color, 11 + i * 3);
       this.scene.add(mesh);
       const { pos, heading } = this.spawnPose(slot.t, slot.offset);
-      return new RivalAI(new Vehicle(mesh, pos, heading, false), slot.offset * 0.25, slot.skill);
+      return new RivalAI(new Vehicle(mesh, pos, heading, false), slot.offset, slot.skill, i);
     });
   }
 
-  startRace() {
+  /** @param practice Test Drive — same world, no finish / podium. */
+  startRace(practice = false) {
+    this.practice = practice;
     this.el.overlay.classList.add("hidden");
     this.el.finish.classList.add("hidden");
     this.el.pause.classList.add("hidden");
     this.el.leaderboard.classList.add("hidden");
     this.el.nameEntry.classList.add("hidden");
+    this.el.bestFlash.classList.add("hidden");
     this.el.pauseBtn.classList.remove("hidden");
     this.finished = false;
     this.paused = false;
     this.running = true;
     this.lap = 1;
     this.bestLap = Infinity;
+    this.bestFlashUntil = 0;
     this.pauseTotal = 0;
     this.pauseBegan = 0;
-    this.raceStart = this.raceNow();
-    this.lapStart = this.raceStart;
+    // Timer starts when countdown hits GO — hold at zero until then
+    this.raceStart = 0;
+    this.lapStart = 0;
     this.input.clearDriveKeys();
 
     const slotIndex = this.online ? Math.min(this.remotes.size, 5) : 0;
@@ -350,26 +408,93 @@ export class Game {
     this.lastT = this.projectSticky(this.player, this.player.state.position).t;
     // Already on SF facing race direction — first forward wrap completes lap 1
     this.crossedOnce = true;
+    this.gates.reset();
     this.el.wrongWay.classList.add("hidden");
     this.snapCamera();
 
     if (!this.online) {
       this.rivals.forEach((r, i) => {
         const slot = GRID[i + 1] ?? GRID[GRID.length - 1];
-        const { pos, heading: h } = this.spawnPose(slot.t, slot.offset);
+        // Spawn already on their fixed invisible line, facing race direction
+        const { pos, heading: h } = this.spawnPose(slot.t, r.racingOffset);
         r.vehicle.reset(pos, h);
+        r.vehicle.state.speed = 0; // held on grid until GO
         this.resetSticky(r.vehicle);
         r.resetProgress();
       });
     }
 
-    this.el.lap.innerHTML = `1<span>/${TOTAL_LAPS}</span>`;
+    this.el.lap.innerHTML = practice ? "1" : `1<span>/${TOTAL_LAPS}</span>`;
     this.el.best.textContent = "--:--.---";
     this.el.gear.textContent = "1";
+    this.el.time.textContent = formatTime(0);
 
     const canvas = this.renderer.domElement;
     canvas.tabIndex = 0;
     canvas.focus({ preventScroll: true });
+
+    this.beginCountdown();
+  }
+
+  private beginCountdown() {
+    this.countdownIndex = 0;
+    this.countdownStepAt = performance.now();
+    this.showCountdownStep(COUNTDOWN_STEPS[0]);
+  }
+
+  private clearCountdown() {
+    this.countdownIndex = -1;
+    this.el.countdown.classList.add("hidden");
+    this.el.countdown.classList.remove("go");
+    this.el.countdown.textContent = "";
+  }
+
+  private showCountdownStep(label: (typeof COUNTDOWN_STEPS)[number]) {
+    const el = this.el.countdown;
+    el.classList.toggle("go", label === "GO");
+    el.textContent = label;
+    el.classList.remove("hidden");
+    // Retrigger CSS pulse on each digit
+    el.style.animation = "none";
+    void el.offsetWidth;
+    el.style.animation = "";
+  }
+
+  /** Advance 3→2→1→GO; release controls when GO appears. */
+  private tickCountdown(now: number) {
+    if (this.countdownIndex < 0) return;
+    if (now - this.countdownStepAt < COUNTDOWN_STEP_MS) return;
+
+    this.countdownIndex += 1;
+    this.countdownStepAt = now;
+
+    if (this.countdownIndex >= COUNTDOWN_STEPS.length) {
+      this.clearCountdown();
+      return;
+    }
+
+    const label = COUNTDOWN_STEPS[this.countdownIndex]!;
+    this.showCountdownStep(label);
+    if (label === "GO") this.releaseGrid();
+  }
+
+  private releaseGrid() {
+    this.raceStart = this.raceNow();
+    this.lapStart = this.raceStart;
+    if (!this.online) {
+      for (const r of this.rivals) {
+        r.vehicle.state.speed = 5; // modest roll — soft launch still ramps throttle
+      }
+    }
+  }
+
+  private get countingDown() {
+    return this.countdownIndex >= 0;
+  }
+
+  /** True while cars are held (before GO). GO itself has released controls. */
+  private get gridHeld() {
+    return this.countdownIndex >= 0 && this.countdownIndex < COUNTDOWN_STEPS.length - 1;
   }
 
   pause() {
@@ -383,7 +508,9 @@ export class Game {
 
   resume() {
     if (!this.paused) return;
-    this.pauseTotal += performance.now() - this.pauseBegan;
+    const pausedFor = performance.now() - this.pauseBegan;
+    this.pauseTotal += pausedFor;
+    if (this.countingDown) this.countdownStepAt += pausedFor;
     this.paused = false;
     this.el.pause.classList.add("hidden");
     this.el.pauseBtn.classList.remove("hidden");
@@ -436,46 +563,55 @@ export class Game {
     }
 
     if (this.running && !this.finished && !this.paused) {
-      const input = inputPeek;
-      if (input.reset) {
-        this.player.reset(this.track.startPosition.clone(), this.track.startHeading);
-        this.resetSticky(this.player);
-        this.lastT = this.projectSticky(this.player, this.player.state.position).t;
-        this.el.wrongWay.classList.add("hidden");
-        this.snapCamera();
-      }
-      this.player.update(dt, input);
-      this.keepOnTrack(this.player);
+      if (this.countingDown) this.tickCountdown(now);
 
-      if (!this.online) {
-        const playerT = this.projectSticky(this.player, this.player.state.position).t;
-        const cars = [this.player, ...this.rivals.map((r) => r.vehicle)];
-        this.rivals.forEach((r) => r.update(dt, this.track.path, playerT, now * 0.001, cars));
-        this.rivals.forEach((r) => this.keepOnTrack(r.vehicle));
-        this.resolveCollisions();
+      if (this.gridHeld) {
+        // Frozen on grid through 3-2-1 — HUD/camera only (held throttle launches on GO)
+        this.updateHud();
+        this.updateCamera(dt);
       } else {
-        this.net.maybeSendPose(dt, {
-          x: this.player.state.position.x,
-          z: this.player.state.position.z,
-          h: this.player.state.heading,
-          s: this.player.state.speed,
-          g: this.player.gearLabel,
-          lap: this.lap,
-        });
-        this.resolveRemoteCollisions();
-        this.pingTimer += dt;
-        if (this.pingTimer > 2) {
-          this.pingTimer = 0;
-          this.net.ping();
-          if (this.net.connected) {
-            this.setNetStatus(`Online · ${this.net.room}`, "ok");
+        const input = inputPeek;
+        if (input.reset) {
+          this.player.reset(this.track.startPosition.clone(), this.track.startHeading);
+          this.resetSticky(this.player);
+          this.lastT = this.projectSticky(this.player, this.player.state.position).t;
+          this.gates.reset();
+          this.el.wrongWay.classList.add("hidden");
+          this.snapCamera();
+        }
+        this.player.update(dt, input);
+        this.keepOnTrack(this.player);
+
+        if (!this.online) {
+          const playerT = this.projectSticky(this.player, this.player.state.position).t;
+          const cars = [this.player, ...this.rivals.map((r) => r.vehicle)];
+          this.rivals.forEach((r) => r.update(dt, this.track.path, playerT, now * 0.001, cars));
+          this.rivals.forEach((r) => this.keepOnTrack(r.vehicle));
+          this.resolveCollisions();
+        } else {
+          this.net.maybeSendPose(dt, {
+            x: this.player.state.position.x,
+            z: this.player.state.position.z,
+            h: this.player.state.heading,
+            s: this.player.state.speed,
+            g: this.player.gearLabel,
+            lap: this.lap,
+          });
+          this.resolveRemoteCollisions();
+          this.pingTimer += dt;
+          if (this.pingTimer > 2) {
+            this.pingTimer = 0;
+            this.net.ping();
+            if (this.net.connected) {
+              this.setNetStatus(`Online · ${this.net.room}`, "ok");
+            }
           }
         }
-      }
 
-      this.updateLaps();
-      this.updateHud();
-      this.updateCamera(dt);
+        this.updateLaps();
+        this.updateHud();
+        this.updateCamera(dt);
+      }
     } else if (this.paused) {
       this.updateCamera(0);
     } else if (!this.running && !this.finished) {
@@ -608,13 +744,14 @@ export class Game {
     const travelAlign = speed >= 0 ? align : -align;
 
     this.updateWrongWay(travelAlign, speed);
+    this.gates.update(this.lastT, t);
 
     // Forward wrap across start/finish only
     const wrappedForward = this.lastT > 0.78 && t < 0.22 && travelAlign > 0.2;
     // Backward wrap — ignore for scoring, still update lastT below
     const wrappedBackward = this.lastT < 0.22 && t > 0.78 && travelAlign < -0.15;
 
-    if (wrappedForward && !wrappedBackward) {
+    if (wrappedForward && !wrappedBackward && this.gates.readyForFinish) {
       const now = this.raceNow();
       const lapTime = now - this.lapStart;
       // Ignore jitter / spawn-line false positives
@@ -625,21 +762,49 @@ export class Game {
         }
         this.lapStart = now;
         this.lap += 1;
-        if (this.lap > TOTAL_LAPS) this.finishRace();
-        else this.el.lap.innerHTML = `${this.lap}<span>/${TOTAL_LAPS}</span>`;
+        this.gates.reset();
+        if (this.practice) {
+          // Practice: time laps forever — never finish the session
+          this.el.lap.textContent = String(this.lap);
+          this.showBestFlash(this.bestLap);
+        } else if (this.lap > TOTAL_LAPS) {
+          this.finishRace();
+        } else {
+          this.el.lap.innerHTML = `${this.lap}<span>/${TOTAL_LAPS}</span>`;
+        }
       } else if (!this.crossedOnce) {
         this.crossedOnce = true;
         this.lapStart = now;
+        this.gates.reset();
       }
     }
 
     this.lastT = t;
   }
 
+  private showBestFlash(ms: number) {
+    this.el.bestFlashTime.textContent = formatTime(ms);
+    this.el.bestFlash.classList.remove("hidden");
+    // Retrigger CSS enter animation
+    this.el.bestFlash.style.animation = "none";
+    void this.el.bestFlash.offsetWidth;
+    this.el.bestFlash.style.animation = "";
+    this.bestFlashUntil = performance.now() + 2000;
+  }
+
+  private updateBestFlash() {
+    if (this.bestFlashUntil <= 0) return;
+    if (performance.now() >= this.bestFlashUntil) {
+      this.bestFlashUntil = 0;
+      this.el.bestFlash.classList.add("hidden");
+    }
+  }
+
   private finishRace() {
     this.finished = true;
     this.running = false;
     this.paused = false;
+    this.clearCountdown();
     this.el.wrongWay.classList.add("hidden");
     this.el.pause.classList.add("hidden");
     this.el.pauseBtn.classList.add("hidden");
@@ -662,7 +827,15 @@ export class Game {
   private updateHud() {
     this.el.speed.textContent = String(Math.round(this.player.kmh));
     this.el.gear.textContent = this.player.gearLabel;
-    this.el.time.textContent = formatTime(this.raceNow() - this.raceStart);
+    // Practice: current lap clock; race: total race time — frozen at 0 during grid hold
+    const clockMs =
+      this.gridHeld || this.raceStart === 0
+        ? 0
+        : this.practice
+          ? this.raceNow() - this.lapStart
+          : this.raceNow() - this.raceStart;
+    this.el.time.textContent = formatTime(clockMs);
+    this.updateBestFlash();
 
     if (this.el.position) {
       // Total progress = completed laps + track fraction, so a car a lap
