@@ -9,7 +9,10 @@ import {
   boardSourceLabel,
   fetchLeaderboard,
   formatBoardTime,
+  getLocalDriverName,
+  rankForDriver,
   sanitizeDriverName,
+  saveLocalDriverName,
   submitScore,
   wouldQualify,
   type LeaderboardEntry,
@@ -72,6 +75,8 @@ export class Game {
   paused = false;
   /** Infinite practice — same track/AI, no race finish. */
   practice = false;
+  /** Timed race with no AI rivals — empty track, wall explode on. */
+  solo = false;
   online = false;
   private remotes = new Map<string, RemotePlayer>();
   private net: NetClient;
@@ -118,6 +123,7 @@ export class Game {
     leaderboard: document.getElementById("leaderboard")!,
     boardList: document.getElementById("board-list")!,
     boardSource: document.getElementById("board-source")!,
+    homeRank: document.getElementById("home-rank")!,
     nameEntry: document.getElementById("name-entry")!,
     driverName: document.getElementById("driver-name") as HTMLInputElement,
     countdown: document.getElementById("countdown")!,
@@ -197,6 +203,7 @@ export class Game {
     this.spawnVehicles();
     this.snapCamera();
     this.bindUi();
+    void this.refreshHomeRank();
 
     addEventListener("resize", () => this.onResize());
     this.renderer.setAnimationLoop(() => this.frame());
@@ -206,22 +213,25 @@ export class Game {
     this.bindMuteBtn();
 
     document.getElementById("start-btn")!.onclick = () => {
-      void this.bootFromMenu(false);
+      void this.bootFromMenu({});
     };
     document.getElementById("test-drive-btn")!.onclick = () => {
-      void this.bootFromMenu(true);
+      void this.bootFromMenu({ practice: true });
+    };
+    document.getElementById("solo-race-btn")!.onclick = () => {
+      void this.bootFromMenu({ solo: true });
     };
     document.getElementById("restart-btn")!.onclick = () => {
       void this.audio.unlock().then(() => {
         this.audio.stopMusic();
-        this.startRace(false);
+        this.startRace({ solo: this.solo });
       });
     };
     document.getElementById("resume-btn")!.onclick = () => this.resume();
     document.getElementById("pause-restart-btn")!.onclick = () => {
       void this.audio.unlock().then(() => {
         this.audio.stopMusic();
-        this.startRace(this.practice);
+        this.startRace({ practice: this.practice, solo: this.solo });
       });
     };
     document.getElementById("pause-home-btn")!.onclick = () => this.goHome();
@@ -234,6 +244,7 @@ export class Game {
     document.getElementById("board-close-btn")!.onclick = () => {
       this.el.leaderboard.classList.add("hidden");
       this.audio.playMenuMusic();
+      void this.refreshHomeRank();
     };
     // First gesture on homepage unlocks AudioContext + starts menu music
     this.el.overlay.addEventListener("pointerdown", () => {
@@ -295,17 +306,16 @@ export class Game {
     if (this.onHomeOrBoard()) this.audio.playMenuMusic();
   }
 
-  /** Menu Start / Test Drive — unlock audio, leave online, start session. */
-  private async bootFromMenu(practice: boolean) {
+  /** Menu Start / Test Drive / Solo — unlock audio, leave online, start session. */
+  private async bootFromMenu(opts: { practice?: boolean; solo?: boolean } = {}) {
     await this.audio.unlock();
     this.audio.stopMenuMusic();
     this.online = false;
     this.net.disconnect();
     this.clearRemotes();
-    this.setAiVisible(true);
     this.el.netStatus.classList.add("hidden");
     this.el.leaderboard.classList.add("hidden");
-    this.startRace(practice);
+    this.startRace(opts);
   }
 
   private goHome() {
@@ -313,6 +323,7 @@ export class Game {
     this.finished = false;
     this.paused = false;
     this.practice = false;
+    this.solo = false;
     this.pauseTotal = 0;
     this.pauseBegan = 0;
     this.bestFlashUntil = 0;
@@ -337,6 +348,36 @@ export class Game {
     this.setAiVisible(true);
     this.audio.playMenuMusic();
     this.syncMuteBtn();
+    void this.refreshHomeRank();
+  }
+
+  /** Show this player's top-10 place above the brand, or hide if not on the board. */
+  private applyHomeRank(entries: LeaderboardEntry[]) {
+    const name = getLocalDriverName();
+    const rank = name ? rankForDriver(entries, name) : null;
+    if (rank == null) {
+      this.el.homeRank.textContent = "";
+      this.el.homeRank.classList.add("hidden");
+      return;
+    }
+    this.el.homeRank.textContent = String(rank);
+    this.el.homeRank.classList.remove("hidden");
+  }
+
+  private async refreshHomeRank() {
+    const name = getLocalDriverName();
+    if (!name) {
+      this.el.homeRank.textContent = "";
+      this.el.homeRank.classList.add("hidden");
+      return;
+    }
+    try {
+      const { entries } = await fetchLeaderboard();
+      this.applyHomeRank(entries);
+    } catch {
+      this.el.homeRank.textContent = "";
+      this.el.homeRank.classList.add("hidden");
+    }
   }
 
   private renderBoardList(entries: LeaderboardEntry[]) {
@@ -359,6 +400,7 @@ export class Game {
     const { entries, source } = await fetchLeaderboard();
     this.el.boardSource.textContent = boardSourceLabel(source);
     this.renderBoardList(entries);
+    this.applyHomeRank(entries);
   }
 
   private async saveDriverScore() {
@@ -374,10 +416,12 @@ export class Game {
     btn.disabled = true;
     try {
       const { entries, source } = await submitScore(name, this.pendingFinishMs, this.bestLap);
+      saveLocalDriverName(name);
       this.el.nameEntry.classList.add("hidden");
       this.el.leaderboard.classList.remove("hidden");
       this.el.boardSource.textContent = boardSourceLabel(source, true);
       this.renderBoardList(entries);
+      this.applyHomeRank(entries);
     } finally {
       this.scoreSaveInFlight = false;
       btn.disabled = false;
@@ -496,9 +540,12 @@ export class Game {
     });
   }
 
-  /** @param practice Test Drive — same world, no finish / podium. */
-  startRace(practice = false) {
-    this.practice = practice;
+  /** @param opts.practice Test Drive — same world, no finish / podium.
+   *  @param opts.solo Timed race with no AI rivals. */
+  startRace(opts: { practice?: boolean; solo?: boolean } = {}) {
+    this.practice = !!opts.practice;
+    this.solo = !!opts.solo && !this.practice;
+    this.setAiVisible(!this.solo && !this.online);
     this.el.overlay.classList.add("hidden");
     this.el.finish.classList.add("hidden");
     this.el.pause.classList.add("hidden");
@@ -508,7 +555,7 @@ export class Game {
     this.el.pauseBtn.classList.remove("hidden");
     this.el.finishEyebrow.textContent = "SESSION COMPLETE";
     this.el.finishTitle.textContent = "FINISH";
-    this.el.finalPlace.textContent = "1/6";
+    this.el.finalPlace.textContent = this.solo ? "1/1" : "1/6";
     this.finished = false;
     this.paused = false;
     this.running = true;
@@ -538,7 +585,7 @@ export class Game {
     this.el.wrongWay.classList.add("hidden");
     this.snapCamera();
 
-    if (!this.online) {
+    if (!this.online && !this.solo) {
       this.rivals.forEach((r, i) => {
         const slot = GRID[i + 1] ?? GRID[GRID.length - 1];
         // Spawn already on their fixed invisible line, facing race direction
@@ -550,7 +597,7 @@ export class Game {
       });
     }
 
-    this.el.lap.innerHTML = practice ? "1" : `1<span>/${TOTAL_LAPS}</span>`;
+    this.el.lap.innerHTML = this.practice ? "1" : `1<span>/${TOTAL_LAPS}</span>`;
     this.el.best.textContent = "--:--.---";
     this.el.gear.textContent = "1";
     this.el.time.textContent = formatTime(0);
@@ -613,7 +660,7 @@ export class Game {
     this.raceStart = this.raceNow();
     this.lapStart = this.raceStart;
     this.audio.playDriveMusic();
-    if (!this.online) {
+    if (!this.online && !this.solo) {
       for (const r of this.rivals) {
         r.vehicle.state.speed = 5; // modest roll — soft launch still ramps throttle
       }
@@ -709,7 +756,7 @@ export class Game {
         this.updateCamera(dt);
         this.syncAudio(inputPeek, false);
         if (performance.now() >= this.explodeRestartAt) {
-          this.startRace(this.practice);
+          this.startRace({ practice: this.practice, solo: this.solo });
         }
       } else {
         if (this.countingDown) this.tickCountdown(now);
@@ -733,7 +780,7 @@ export class Game {
           const onWall = this.keepOnTrack(this.player);
           this.notePlayerWallHit(onWall, dt);
 
-          if (!this.online) {
+          if (!this.online && !this.solo) {
             const playerT = this.projectSticky(this.player, this.player.state.position).t;
             const cars = [this.player, ...this.rivals.map((r) => r.vehicle)];
             this.rivals.forEach((r) => r.update(dt, this.track.path, playerT, now * 0.001, cars));
@@ -745,7 +792,7 @@ export class Game {
               }
             }
             this.resolveCollisions();
-          } else {
+          } else if (this.online) {
             this.net.maybeSendPose(dt, {
               x: this.player.state.position.x,
               z: this.player.state.position.z,
@@ -908,6 +955,11 @@ export class Game {
 
   /** Edge-trigger + cooldown: count a hit when contact starts, not every scrape frame. */
   private notePlayerWallHit(touching: boolean, dt: number) {
+    // Test Drive: walls still bounce, but no hit count / explode.
+    if (this.practice) {
+      this.wallTouching = touching;
+      return;
+    }
     if (this.exploding || this.gridHeld) {
       this.wallTouching = touching;
       return;
@@ -933,6 +985,10 @@ export class Game {
 
   private updateWallHitsHud() {
     const el = this.el.wallHits;
+    const block = el.parentElement;
+    // Hide WALL n/10 in Test Drive; show + reset for real races.
+    block?.classList.toggle("hidden", this.practice);
+    if (this.practice) return;
     el.textContent = `${this.wallHits}/${WALL_HIT_LIMIT}`;
     el.classList.toggle("warn", this.wallHits >= 6 && this.wallHits < 9);
     el.classList.toggle("danger", this.wallHits >= 9);
@@ -1203,7 +1259,11 @@ export class Game {
     this.el.driverName.value = "";
 
     const place = this.playerFinishPlace();
-    const field = this.online ? this.remotes.size + 1 : this.rivals.length + 1;
+    const field = this.online
+      ? this.remotes.size + 1
+      : this.solo
+        ? 1
+        : this.rivals.length + 1;
     this.el.finalPlace.textContent = `${place}/${field}`;
     if (place === 1) {
       this.el.finishEyebrow.textContent = "RACE WINNER";
@@ -1233,6 +1293,7 @@ export class Game {
       return place;
     }
     // Finished AI count as ahead; unfinished pack is behind the player
+    if (this.solo) return 1;
     return 1 + this.rivals.filter((r) => r.raceDone).length;
   }
 
@@ -1260,22 +1321,26 @@ export class Game {
     if (this.el.position) {
       // Finished AI sit at race distance; otherwise laps + track fraction.
       // Player: completed laps = lap - 1.
-      const playerProgress = this.lap - 1 + this.raceProgress(this.player);
-      let place = 1;
-      if (this.online) {
-        const total = this.remotes.size + 1;
-        for (const remote of this.remotes.values()) {
-          const rt = this.projectSticky(remote, remote.mesh.position).t;
-          const rp = (remote.lap ?? 1) - 1 + rt;
-          if (rp > playerProgress + 0.002) place += 1;
-        }
-        this.el.position.textContent = `${place}/${total}`;
+      if (this.solo) {
+        this.el.position.textContent = "1/1";
       } else {
-        for (const r of this.rivals) {
-          const rp = r.raceDone ? TOTAL_LAPS + 0.001 : r.progress;
-          if (rp > playerProgress + 0.002) place += 1;
+        const playerProgress = this.lap - 1 + this.raceProgress(this.player);
+        let place = 1;
+        if (this.online) {
+          const total = this.remotes.size + 1;
+          for (const remote of this.remotes.values()) {
+            const rt = this.projectSticky(remote, remote.mesh.position).t;
+            const rp = (remote.lap ?? 1) - 1 + rt;
+            if (rp > playerProgress + 0.002) place += 1;
+          }
+          this.el.position.textContent = `${place}/${total}`;
+        } else {
+          for (const r of this.rivals) {
+            const rp = r.raceDone ? TOTAL_LAPS + 0.001 : r.progress;
+            if (rp > playerProgress + 0.002) place += 1;
+          }
+          this.el.position.textContent = `${place}/${this.rivals.length + 1}`;
         }
-        this.el.position.textContent = `${place}/${this.rivals.length + 1}`;
       }
     }
   }
@@ -1368,7 +1433,7 @@ export class Game {
       for (const remote of this.remotes.values()) {
         drawDot(remote.mesh.position.x, remote.mesh.position.z, "#7ec8ff", 3.2);
       }
-    } else {
+    } else if (!this.solo) {
       this.rivals.forEach((r, i) => {
         const color = CAR_PALETTE.rivals[i] ?? 0xe23b2e;
         const pos = r.vehicle.state.position;

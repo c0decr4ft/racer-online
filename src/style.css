@@ -776,6 +776,26 @@ body,
   margin-bottom: 1rem;
 }
 
+/* Personal top-10 place on homepage — sits just above the brand title.
+   Keep this smaller than .overlay h1 so the RACER ONLINE title stays hero-sized. */
+.home-rank {
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: clamp(1.35rem, 4.5vw, 2.1rem);
+  line-height: 1;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  margin: -0.55rem 0 0.35rem;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  text-shadow: 0 0 0.9rem var(--glow);
+  flex-shrink: 1;
+}
+
+.home-rank.hidden {
+  display: none;
+}
+
 .overlay h1 {
   font-family: var(--font-display);
   font-weight: 900;
@@ -783,6 +803,7 @@ body,
   line-height: 0.95;
   letter-spacing: 0.04em;
   margin-bottom: 1rem;
+  flex-shrink: 0;
 }
 
 .overlay h1 span {

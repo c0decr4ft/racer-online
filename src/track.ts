@@ -241,7 +241,8 @@ function buildRibbon(
   }
   for (let i = 0; i < segments; i++) {
     const a = i * 2;
-    indices.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+    // CCW when viewed from +Y so FrontSide shows asphalt/runoff (not grass through culls)
+    indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
   }
 
   const geo = new THREE.BufferGeometry();
@@ -277,10 +278,10 @@ export function createTrack(): TrackData {
   runoff.receiveShadow = true;
   group.add(runoff);
 
-  // Medium-gray asphalt
+  // Clear grey asphalt
   const road = new THREE.Mesh(
     buildRibbon(path, half, 0.035, 600),
-    new THREE.MeshStandardMaterial({ color: 0x9aa0a8, roughness: 0.92, metalness: 0.04 }),
+    new THREE.MeshStandardMaterial({ color: 0x6a6e74, roughness: 0.92, metalness: 0.04 }),
   );
   road.receiveShadow = true;
   group.add(road);

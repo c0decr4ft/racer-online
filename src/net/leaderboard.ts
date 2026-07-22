@@ -10,6 +10,8 @@ export type BoardSource = "online" | "server" | "local";
 /** New course → new key so old-layout times never show. */
 const STORAGE_KEY = "racer-leaderboard-v2";
 const LEGACY_STORAGE_KEYS = ["racer-leaderboard-v1"];
+/** Last name this browser submitted to the worldwide board. */
+const DRIVER_NAME_KEY = "racer-driver-name";
 const MAX = 10;
 /** Max characters for a driver name on the board. */
 export const NAME_MAX = 10;
@@ -261,4 +263,43 @@ export function boardSourceLabel(source: BoardSource, saved = false): string {
     return saved ? "Saved to worldwide board" : "Live worldwide board";
   }
   return saved ? "Saved locally · offline" : "Local board · offline";
+}
+
+/** Persist the name used on the last qualifying submit (for homepage rank). */
+export function saveLocalDriverName(name: string): void {
+  try {
+    localStorage.setItem(DRIVER_NAME_KEY, sanitizeDriverName(name));
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
+
+/** Driver name from the last successful board submit, or null if never saved. */
+export function getLocalDriverName(): string | null {
+  try {
+    const raw = localStorage.getItem(DRIVER_NAME_KEY);
+    if (!raw) return null;
+    const name = sanitizeDriverName(raw);
+    return name || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 1-based place of `name` on a sorted top-10 board.
+ * If the same name appears more than once, returns the best (lowest) place.
+ * Returns null when the name is not on the board.
+ */
+export function rankForDriver(entries: LeaderboardEntry[], name: string): number | null {
+  const key = sanitizeDriverName(name).trim().toLowerCase();
+  if (!key) return null;
+  let best: number | null = null;
+  for (let i = 0; i < entries.length; i++) {
+    if (entries[i]!.name.trim().toLowerCase() === key) {
+      const place = i + 1;
+      if (best == null || place < best) best = place;
+    }
+  }
+  return best;
 }
