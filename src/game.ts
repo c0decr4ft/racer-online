@@ -5,6 +5,15 @@ import { Input } from "./input";
 import { Vehicle, RivalAI } from "./vehicle";
 import { NetClient, RemotePlayer } from "./net/client";
 import type { PlayerPose } from "./net/protocol";
+import {
+  boardSourceLabel,
+  fetchLeaderboard,
+  formatBoardTime,
+  sanitizeDriverName,
+  submitScore,
+  wouldQualify,
+  type LeaderboardEntry,
+} from "./net/leaderboard";
 
 function formatTime(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "--:--.---";
@@ -98,12 +107,18 @@ export class Game {
     wrongWay: document.getElementById("wrong-way")!,
     bestFlash: document.getElementById("best-flash")!,
     bestFlashTime: document.getElementById("best-flash-time")!,
+    leaderboard: document.getElementById("leaderboard")!,
+    boardList: document.getElementById("board-list")!,
+    boardSource: document.getElementById("board-source")!,
+    nameEntry: document.getElementById("name-entry")!,
+    driverName: document.getElementById("driver-name") as HTMLInputElement,
     countdown: document.getElementById("countdown")!,
     rearview: document.getElementById("rearview-frame")!,
     minimap: document.getElementById("minimap") as HTMLCanvasElement,
   };
 
   private pendingFinishMs = 0;
+  private scoreSaveInFlight = false;
   private bestFlashUntil = 0;
 
   /** Cached centerline samples for the 2D minimap (rebuilt if path changes). */
@@ -111,10 +126,19 @@ export class Game {
   private minimapPts: { x: number; z: number }[] = [];
   private minimapBounds = { cx: 0, cz: 0, span: 1 };
   private minimapCtx: CanvasRenderingContext2D | null = null;
+  /** Baked track outline — redrawn only when canvas size/path changes. */
+  private minimapTrackCanvas: HTMLCanvasElement | null = null;
+  private minimapTrackKey = "";
+  /** Avoid rewriting rearview frame CSS every frame when layout is unchanged. */
+  private rearLayoutKey = "";
 
   /** Grid hold: -1 idle, 0..3 = 3/2/1/GO. Cars frozen until GO releases. */
   private countdownIndex = -1;
   private countdownStepAt = 0;
+
+  private readonly _camIdeal = new THREE.Vector3();
+  private readonly _camLookTarget = new THREE.Vector3();
+  private readonly _wallN = new THREE.Vector3();
 
   constructor(canvas: HTMLCanvasElement) {
     // Cap DPR for stable FPS on retina displays
@@ -161,6 +185,7 @@ export class Game {
       this.clearRemotes();
       this.setAiVisible(true);
       this.el.netStatus.classList.add("hidden");
+      this.el.leaderboard.classList.add("hidden");
       this.startRace(false);
     };
     document.getElementById("test-drive-btn")!.onclick = () => {
@@ -169,6 +194,7 @@ export class Game {
       this.clearRemotes();
       this.setAiVisible(true);
       this.el.netStatus.classList.add("hidden");
+      this.el.leaderboard.classList.add("hidden");
       this.startRace(true);
     };
     document.getElementById("restart-btn")!.onclick = () => this.startRace(false);
@@ -177,6 +203,22 @@ export class Game {
     document.getElementById("pause-home-btn")!.onclick = () => this.goHome();
     document.getElementById("finish-home-btn")!.onclick = () => this.goHome();
     this.el.pauseBtn.onclick = () => this.pause();
+
+    document.getElementById("home-board-btn")!.onclick = () => this.openLeaderboard();
+    document.getElementById("board-close-btn")!.onclick = () => {
+      this.el.leaderboard.classList.add("hidden");
+    };
+    document.getElementById("submit-score-btn")!.onclick = () => void this.saveDriverScore();
+    this.el.driverName.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") void this.saveDriverScore();
+    });
+    this.el.driverName.addEventListener("input", () => {
+      const cleaned = this.el.driverName.value
+        .normalize("NFKC")
+        .replace(/[^\p{L}\p{N} _]/gu, "")
+        .slice(0, 10);
+      if (cleaned !== this.el.driverName.value) this.el.driverName.value = cleaned;
+    });
   }
 
   private goHome() {
@@ -194,10 +236,57 @@ export class Game {
     this.el.pauseBtn.classList.add("hidden");
     this.el.wrongWay.classList.add("hidden");
     this.el.bestFlash.classList.add("hidden");
+    this.el.nameEntry.classList.add("hidden");
+    this.el.leaderboard.classList.add("hidden");
     this.el.minimap.classList.add("hidden");
     this.el.rearview.classList.add("hidden");
     this.el.overlay.classList.remove("hidden");
     this.setAiVisible(true);
+  }
+
+  private renderBoardList(entries: LeaderboardEntry[]) {
+    if (!entries.length) {
+      this.el.boardList.innerHTML = `<li class="empty">No times yet — be the first</li>`;
+      return;
+    }
+    this.el.boardList.innerHTML = entries
+      .map((e, i) => {
+        const cls = i === 0 ? "top1" : i === 1 ? "top2" : i === 2 ? "top3" : "";
+        return `<li class="${cls}"><span class="rank">${i + 1}</span><span class="name">${escapeHtml(e.name)}</span><span class="time">${formatBoardTime(e.timeMs)}</span></li>`;
+      })
+      .join("");
+  }
+
+  private async openLeaderboard() {
+    this.el.leaderboard.classList.remove("hidden");
+    this.el.boardSource.textContent = "Loading…";
+    this.el.boardList.innerHTML = "";
+    const { entries, source } = await fetchLeaderboard();
+    this.el.boardSource.textContent = boardSourceLabel(source);
+    this.renderBoardList(entries);
+  }
+
+  private async saveDriverScore() {
+    if (this.scoreSaveInFlight) return;
+    if (!this.el.driverName.value.trim()) {
+      this.el.driverName.focus();
+      return;
+    }
+    const name = sanitizeDriverName(this.el.driverName.value);
+    this.el.driverName.value = name;
+    const btn = document.getElementById("submit-score-btn") as HTMLButtonElement;
+    this.scoreSaveInFlight = true;
+    btn.disabled = true;
+    try {
+      const { entries, source } = await submitScore(name, this.pendingFinishMs, this.bestLap);
+      this.el.nameEntry.classList.add("hidden");
+      this.el.leaderboard.classList.remove("hidden");
+      this.el.boardSource.textContent = boardSourceLabel(source, true);
+      this.renderBoardList(entries);
+    } finally {
+      this.scoreSaveInFlight = false;
+      btn.disabled = false;
+    }
   }
 
   private onNetWelcome(_id: string, room: string, players: PlayerPose[], you: PlayerPose) {
@@ -318,6 +407,8 @@ export class Game {
     this.el.overlay.classList.add("hidden");
     this.el.finish.classList.add("hidden");
     this.el.pause.classList.add("hidden");
+    this.el.leaderboard.classList.add("hidden");
+    this.el.nameEntry.classList.add("hidden");
     this.el.bestFlash.classList.add("hidden");
     this.el.pauseBtn.classList.remove("hidden");
     this.el.finishEyebrow.textContent = "SESSION COMPLETE";
@@ -482,6 +573,7 @@ export class Game {
     this.camera.aspect = innerWidth / innerHeight;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(innerWidth, innerHeight);
+    this.rearLayoutKey = "";
   }
 
   private frame() {
@@ -582,6 +674,7 @@ export class Game {
 
     if (!this.wantRearview || !this.player) {
       this.el.rearview.classList.add("hidden");
+      this.rearLayoutKey = "";
       return;
     }
 
@@ -609,12 +702,16 @@ export class Game {
 
     const frame = this.el.rearview;
     frame.classList.remove("hidden");
-    frame.style.width = `${mw}px`;
-    frame.style.height = `${mh}px`;
-    frame.style.left = `${mx}px`;
-    frame.style.top = `${h - mh - bottomPad}px`;
-    frame.style.right = "auto";
-    frame.style.bottom = "auto";
+    const layoutKey = `${mw}x${mh}@${mx},${h - mh - bottomPad}`;
+    if (this.rearLayoutKey !== layoutKey) {
+      this.rearLayoutKey = layoutKey;
+      frame.style.width = `${mw}px`;
+      frame.style.height = `${mh}px`;
+      frame.style.left = `${mx}px`;
+      frame.style.top = `${h - mh - bottomPad}px`;
+      frame.style.right = "auto";
+      frame.style.bottom = "auto";
+    }
   }
 
   /** Look behind the car from just above the roof. */
@@ -644,12 +741,12 @@ export class Game {
     if (Math.abs(d) <= wall) return;
 
     const side = Math.sign(d);
-    const normal = new THREE.Vector3(-proj.tangent.z, 0, proj.tangent.x);
+    this._wallN.set(-proj.tangent.z, 0, proj.tangent.x);
     // Remove only the lateral excess — tangential motion is untouched
-    v.state.position.addScaledVector(normal, side * wall - d);
+    v.state.position.addScaledVector(this._wallN, side * wall - d);
 
     const s = v.state;
-    const intoWall = (Math.sin(s.heading) * normal.x + Math.cos(s.heading) * normal.z) * side;
+    const intoWall = (Math.sin(s.heading) * this._wallN.x + Math.cos(s.heading) * this._wallN.z) * side;
     if (s.speed * intoWall > 0) {
       s.speed *= 1 - intoWall * intoWall;
     }
@@ -820,6 +917,8 @@ export class Game {
     this.pendingFinishMs = this.raceNow() - this.raceStart;
     this.el.finalTime.textContent = formatTime(this.pendingFinishMs);
     this.el.finalBest.textContent = formatTime(this.bestLap);
+    this.el.nameEntry.classList.add("hidden");
+    this.el.driverName.value = "";
 
     const place = this.playerFinishPlace();
     const field = this.online ? this.remotes.size + 1 : this.rivals.length + 1;
@@ -833,6 +932,7 @@ export class Game {
     }
 
     this.el.finish.classList.remove("hidden");
+    void this.checkLeaderboardQualify();
   }
 
   /**
@@ -852,6 +952,13 @@ export class Game {
     }
     // Finished AI count as ahead; unfinished pack is behind the player
     return 1 + this.rivals.filter((r) => r.raceDone).length;
+  }
+
+  private async checkLeaderboardQualify() {
+    const qualifies = await wouldQualify(this.pendingFinishMs);
+    if (!qualifies) return;
+    this.el.nameEntry.classList.remove("hidden");
+    this.el.driverName.focus();
   }
 
   private updateHud() {
@@ -958,22 +1065,14 @@ export class Game {
     const ctx = this.minimapCtx;
     if (!ctx) return;
 
-    ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = "rgba(8, 12, 20, 0.55)";
-    ctx.fillRect(0, 0, w, h);
-
-    // Course outline
-    ctx.beginPath();
-    for (let i = 0; i < this.minimapPts.length; i++) {
-      const p = this.minimapPts[i];
-      const [mx, my] = this.worldToMinimap(p.x, p.z, w, h);
-      if (i === 0) ctx.moveTo(mx, my);
-      else ctx.lineTo(mx, my);
+    this.ensureMinimapTrackBitmap(w, h, dpr);
+    if (this.minimapTrackCanvas) {
+      ctx.drawImage(this.minimapTrackCanvas, 0, 0);
+    } else {
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = "rgba(8, 12, 20, 0.55)";
+      ctx.fillRect(0, 0, w, h);
     }
-    ctx.strokeStyle = "rgba(242, 245, 250, 0.55)";
-    ctx.lineWidth = 2 * dpr;
-    ctx.lineJoin = "round";
-    ctx.stroke();
 
     const drawDot = (x: number, z: number, fill: string, r: number) => {
       const [mx, my] = this.worldToMinimap(x, z, w, h);
@@ -1001,6 +1100,33 @@ export class Game {
     drawDot(pp.x, pp.z, "#ff3b2e", 2.6);
   }
 
+  /** Bake fill + course stroke once per size; only car dots redraw each frame. */
+  private ensureMinimapTrackBitmap(w: number, h: number, dpr: number) {
+    const key = `${w}x${h}@${dpr}:${this.minimapPts.length}`;
+    if (this.minimapTrackCanvas && this.minimapTrackKey === key) return;
+    this.minimapTrackKey = key;
+    if (!this.minimapTrackCanvas) this.minimapTrackCanvas = document.createElement("canvas");
+    const off = this.minimapTrackCanvas;
+    off.width = w;
+    off.height = h;
+    const ctx = off.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = "rgba(8, 12, 20, 0.55)";
+    ctx.fillRect(0, 0, w, h);
+    ctx.beginPath();
+    for (let i = 0; i < this.minimapPts.length; i++) {
+      const p = this.minimapPts[i];
+      const [mx, my] = this.worldToMinimap(p.x, p.z, w, h);
+      if (i === 0) ctx.moveTo(mx, my);
+      else ctx.lineTo(mx, my);
+    }
+    ctx.strokeStyle = "rgba(242, 245, 250, 0.55)";
+    ctx.lineWidth = 2 * dpr;
+    ctx.lineJoin = "round";
+    ctx.stroke();
+  }
+
   private snapCamera() {
     const s = this.player.state;
     this.camPos.set(
@@ -1021,21 +1147,29 @@ export class Game {
     const s = this.player.state;
     const back = 12 + Math.min(Math.abs(s.speed) * 0.07, 6);
     const height = 4.4 + Math.min(Math.abs(s.speed) * 0.028, 1.8);
-    const ideal = new THREE.Vector3(
+    this._camIdeal.set(
       s.position.x - Math.sin(s.heading) * back,
       height,
       s.position.z - Math.cos(s.heading) * back,
     );
     const k = dt <= 0 ? 1 : 1 - Math.exp(-6 * dt);
-    this.camPos.lerp(ideal, k);
+    this.camPos.lerp(this._camIdeal, k);
     this.camera.position.copy(this.camPos);
 
-    const look = new THREE.Vector3(
+    this._camLookTarget.set(
       s.position.x + Math.sin(s.heading) * 10,
       1.4,
       s.position.z + Math.cos(s.heading) * 10,
     );
-    this.camLook.lerp(look, dt <= 0 ? 1 : 1 - Math.exp(-8 * dt));
+    this.camLook.lerp(this._camLookTarget, dt <= 0 ? 1 : 1 - Math.exp(-8 * dt));
     this.camera.lookAt(this.camLook);
   }
+}
+
+function escapeHtml(s: string) {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }

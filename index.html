@@ -64,6 +64,12 @@
       </div>
 
       <div id="overlay" class="overlay">
+        <button id="home-board-btn" class="board-icon-btn" type="button" aria-label="Leaderboard">
+          <svg class="board-icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 20h14v-1.5H5V20zm2.5-4h2V10h-2v6zm3.5 0h2V7h-2v9zm3.5 0h2V12h-2v4z" fill="currentColor"/>
+          </svg>
+          <span class="board-icon-label">BOARD</span>
+        </button>
         <div class="overlay-inner">
           <p class="eyebrow">READY TO RACE</p>
           <h1>RACER<br /><span>ONLINE</span></h1>
@@ -73,6 +79,16 @@
             <button id="start-btn" type="button">START RACE</button>
             <button id="test-drive-btn" class="btn-ghost" type="button">TEST DRIVE</button>
           </div>
+        </div>
+      </div>
+
+      <div id="leaderboard" class="overlay hidden">
+        <div class="overlay-inner board-panel">
+          <p class="eyebrow">WORLDWIDE</p>
+          <h1>TOP 10</h1>
+          <p id="board-source" class="tagline board-source">Loading…</p>
+          <ol id="board-list" class="board-list"></ol>
+          <button id="board-close-btn" type="button">BACK</button>
         </div>
       </div>
 
@@ -94,6 +110,20 @@
           <p class="tagline finish-stat">Place <span id="final-place">1/6</span></p>
           <p class="tagline finish-stat">Total <span id="final-time">0:00.000</span></p>
           <p class="tagline finish-stat">Best lap <span id="final-best">--:--.---</span></p>
+          <div id="name-entry" class="name-entry hidden">
+            <p class="name-entry-label">Top 10 time — up to 10 letters or numbers</p>
+            <input
+              id="driver-name"
+              type="text"
+              maxlength="10"
+              pattern="[A-Za-z0-9 _]+"
+              title="Up to 10 letters, numbers, spaces, or underscores"
+              placeholder="Name (max 10)"
+              autocomplete="nickname"
+              spellcheck="false"
+            />
+            <button id="submit-score-btn" type="button">SAVE TO BOARD</button>
+          </div>
           <div class="finish-actions">
             <button id="restart-btn" type="button">RACE AGAIN</button>
             <button id="finish-home-btn" class="btn-ghost" type="button">HOME</button>

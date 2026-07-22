@@ -7,10 +7,22 @@ export type LeaderboardEntry = {
 
 export type BoardSource = "online" | "server" | "local";
 
-const STORAGE_KEY = "racer-leaderboard-v1";
+/** New course → new key so old-layout times never show. */
+const STORAGE_KEY = "racer-leaderboard-v2";
+const LEGACY_STORAGE_KEYS = ["racer-leaderboard-v1"];
 const MAX = 10;
 /** Max characters for a driver name on the board. */
 export const NAME_MAX = 10;
+
+/** Drop previous-course local caches once per page load. */
+function clearLegacyLocalBoards() {
+  try {
+    for (const key of LEGACY_STORAGE_KEYS) localStorage.removeItem(key);
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
+clearLegacyLocalBoards();
 
 /** Trim, allow letters/digits/space/underscore, drop control/weird chars, cap length. */
 export function sanitizeDriverName(raw: string): string {
@@ -24,9 +36,9 @@ export function sanitizeDriverName(raw: string): string {
   return cleaned || "RACER";
 }
 
-/** Shared public board (JSONBlob). Anyone can read/write — GitHub Pages primary. */
+/** Shared public board (JSONBlob). Fresh empty store for the extended circuit. */
 const PUBLIC_BLOB_URL =
-  "https://jsonblob.com/api/jsonBlob/019f894b-01a3-72f1-8af1-a5a29d24cf73";
+  "https://jsonblob.com/api/jsonBlob/019f89b5-c828-7f52-80b7-ca3888e5ae1b";
 
 function localApiBase(): string | null {
   const host = location.hostname || "127.0.0.1";

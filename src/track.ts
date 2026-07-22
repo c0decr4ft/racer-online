@@ -19,6 +19,7 @@ function hash2(ix: number, iz: number) {
   return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
 }
 
+/** Shared materials — same look as per-tree meshes, one draw call per chunk. */
 const TREE_TRUNK = new THREE.MeshStandardMaterial({ color: 0x5a3a22, roughness: 0.9 });
 const TREE_CANOPY = [
   new THREE.MeshStandardMaterial({ color: 0x2a8a32, roughness: 0.9 }),
@@ -26,30 +27,13 @@ const TREE_CANOPY = [
   new THREE.MeshStandardMaterial({ color: 0x33963a, roughness: 0.88 }),
 ];
 
-function addTree(group: THREE.Group, x: number, z: number, scale = 1) {
-  const tree = new THREE.Group();
-  const trunk = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.22 * scale, 0.3 * scale, 1.2 * scale, 6),
-    TREE_TRUNK,
-  );
-  trunk.position.y = 0.6 * scale;
-  tree.add(trunk);
-
-  const jitter = hash2(Math.round(x * 10), Math.round(z * 10));
-  const canopy = new THREE.Mesh(
-    new THREE.SphereGeometry(1.35 * scale + jitter * 0.35, 8, 8),
-    TREE_CANOPY[Math.floor(jitter * TREE_CANOPY.length) % TREE_CANOPY.length],
-  );
-  canopy.position.y = 2.0 * scale;
-  canopy.castShadow = true;
-  tree.add(canopy);
-  tree.position.set(x, 0, z);
-  group.add(tree);
-}
+type TreePose = { x: number; z: number; scale: number; jitter: number };
 
 /**
  * Dense forest on the grass: keep clear of asphalt + runoff (half+4.8) plus a
  * small canopy margin so trunks never sit on the driving surface.
+ * Same plant positions/count/appearance as before — InstancedMesh + spatial
+ * chunks cut draw calls; frustum culling drops off-screen chunks.
  */
 function plantForest(group: THREE.Group, path: THREE.CatmullRomCurve3, roadHalf: number) {
   const clear = roadHalf + 4.8 + 2.2; // outside runoff + canopy radius
@@ -67,12 +51,16 @@ function plantForest(group: THREE.Group, path: THREE.CatmullRomCurve3, roadHalf:
     return Math.sqrt(best);
   };
 
-  let planted = 0;
+  const poses: TreePose[] = [];
   const tryPlant = (x: number, z: number, scale: number) => {
     if (Math.abs(x) > 162 || Math.abs(z) > 162) return;
     if (minDistToPath(x, z) < clear) return;
-    addTree(group, x, z, scale);
-    planted += 1;
+    poses.push({
+      x,
+      z,
+      scale,
+      jitter: hash2(Math.round(x * 10), Math.round(z * 10)),
+    });
   };
 
   // 1) Rings along the circuit — dense belts outside + safe infield offsets
@@ -81,18 +69,20 @@ function plantForest(group: THREE.Group, path: THREE.CatmullRomCurve3, roadHalf:
     16, 20, 25, 31, 38, 48, 60,
   ];
   const ringSteps = 280;
+  const ringTan = new THREE.Vector3();
+  const ringN = new THREE.Vector3();
   for (const offset of ringOffsets) {
     for (let i = 0; i < ringSteps; i++) {
       const t = i / ringSteps;
       const p = path.getPointAt(t);
-      const tan = path.getTangentAt(t).normalize();
-      const n = new THREE.Vector3(-tan.z, 0, tan.x);
+      ringTan.copy(path.getTangentAt(t)).normalize();
+      ringN.set(-ringTan.z, 0, ringTan.x);
       const h = hash2(i, Math.round(offset * 10));
       if (h < 0.18) continue; // thin randomly so rings aren't a perfect fence
       const lat = offset + (h - 0.5) * 3.2;
       const along = (hash2(Math.round(offset * 7), i) - 0.5) * 2.4;
-      const x = p.x + n.x * lat + tan.x * along;
-      const z = p.z + n.z * lat + tan.z * along;
+      const x = p.x + ringN.x * lat + ringTan.x * along;
+      const z = p.z + ringN.z * lat + ringTan.z * along;
       tryPlant(x, z, 0.65 + h * 0.7);
     }
   }
@@ -109,7 +99,77 @@ function plantForest(group: THREE.Group, path: THREE.CatmullRomCurve3, roadHalf:
     }
   }
 
-  return planted;
+  // Spatial chunks so frustum culling can drop off-screen forest
+  const CELL = 68;
+  const buckets = new Map<string, TreePose[]>();
+  for (const pose of poses) {
+    const cx = Math.floor((pose.x + 170) / CELL);
+    const cz = Math.floor((pose.z + 170) / CELL);
+    const key = `${cx},${cz}`;
+    let list = buckets.get(key);
+    if (!list) {
+      list = [];
+      buckets.set(key, list);
+    }
+    list.push(pose);
+  }
+
+  // Unit geos (same segment counts as before) — scale via instance matrix
+  const trunkGeo = new THREE.CylinderGeometry(0.22, 0.3, 1.2, 6);
+  const canopyGeo = new THREE.SphereGeometry(1.35, 8, 8);
+  const dummy = new THREE.Object3D();
+
+  for (const list of buckets.values()) {
+    const n = list.length;
+    if (n === 0) continue;
+
+    const trunks = new THREE.InstancedMesh(trunkGeo, TREE_TRUNK, n);
+    trunks.castShadow = false;
+    trunks.receiveShadow = false;
+    trunks.frustumCulled = true;
+
+    const canopyCounts = [0, 0, 0];
+    for (const pose of list) {
+      canopyCounts[Math.floor(pose.jitter * TREE_CANOPY.length) % TREE_CANOPY.length] += 1;
+    }
+    const canopies = TREE_CANOPY.map((mat, ci) => {
+      const mesh = new THREE.InstancedMesh(canopyGeo, mat, Math.max(1, canopyCounts[ci]));
+      mesh.castShadow = true; // same as per-tree canopies
+      mesh.receiveShadow = false;
+      mesh.frustumCulled = true;
+      mesh.count = 0;
+      return mesh;
+    });
+
+    for (let i = 0; i < n; i++) {
+      const { x, z, scale, jitter } = list[i];
+      dummy.position.set(x, 0.6 * scale, z);
+      dummy.scale.set(scale, scale, scale);
+      dummy.rotation.set(0, 0, 0);
+      dummy.updateMatrix();
+      trunks.setMatrixAt(i, dummy.matrix);
+
+      const ci = Math.floor(jitter * TREE_CANOPY.length) % TREE_CANOPY.length;
+      const canopy = canopies[ci];
+      const cr = (1.35 * scale + jitter * 0.35) / 1.35;
+      dummy.position.set(x, 2.0 * scale, z);
+      dummy.scale.set(cr, cr, cr);
+      dummy.updateMatrix();
+      canopy.setMatrixAt(canopy.count++, dummy.matrix);
+    }
+
+    trunks.instanceMatrix.needsUpdate = true;
+    group.add(trunks);
+    for (const canopy of canopies) {
+      if (canopy.count === 0) continue;
+      canopy.instanceMatrix.needsUpdate = true;
+      canopy.computeBoundingSphere();
+      group.add(canopy);
+    }
+    trunks.computeBoundingSphere();
+  }
+
+  return poses.length;
 }
 
 /**
@@ -225,23 +285,36 @@ export function createTrack(): TrackData {
   road.receiveShadow = true;
   group.add(road);
 
-  // Thin white edge lines
+  // Thin white edge lines — InstancedMesh (same segments/look, 2 draw calls)
   const edgeMat = new THREE.MeshStandardMaterial({ color: 0xf4f6f8, roughness: 0.7, metalness: 0.05 });
+  const edgeGeo = new THREE.BoxGeometry(0.18, 0.04, 1);
+  const edgeDummy = new THREE.Object3D();
+  const edgeTan = new THREE.Vector3();
+  const edgeN = new THREE.Vector3();
   for (const side of [-1, 1] as const) {
     const samples = 420;
+    const edges = new THREE.InstancedMesh(edgeGeo, edgeMat, samples);
+    edges.castShadow = false;
+    edges.receiveShadow = false;
     for (let i = 0; i < samples; i++) {
       const u0 = i / samples;
       const u1 = (i + 1) / samples;
       const p0 = path.getPointAt(u0);
       const p1 = path.getPointAt(u1);
-      const tan = path.getTangentAt(u0).normalize();
-      const n = new THREE.Vector3(-tan.z, 0, tan.x);
-      const mid = p0.clone().lerp(p1, 0.5).addScaledVector(n, side * (half - 0.18));
-      const seg = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.04, p0.distanceTo(p1) * 1.08), edgeMat);
-      seg.position.set(mid.x, 0.055, mid.z);
-      seg.rotation.y = yawFromTangent(tan);
-      group.add(seg);
+      edgeTan.copy(path.getTangentAt(u0)).normalize();
+      edgeN.set(-edgeTan.z, 0, edgeTan.x);
+      const len = p0.distanceTo(p1) * 1.08;
+      const mx = (p0.x + p1.x) * 0.5 + edgeN.x * side * (half - 0.18);
+      const mz = (p0.z + p1.z) * 0.5 + edgeN.z * side * (half - 0.18);
+      edgeDummy.position.set(mx, 0.055, mz);
+      edgeDummy.rotation.set(0, yawFromTangent(edgeTan), 0);
+      edgeDummy.scale.set(1, 1, len);
+      edgeDummy.updateMatrix();
+      edges.setMatrixAt(i, edgeDummy.matrix);
     }
+    edges.instanceMatrix.needsUpdate = true;
+    edges.computeBoundingSphere();
+    group.add(edges);
   }
 
   // Start/finish checkered + gantry
@@ -365,8 +438,9 @@ function finishProjection(
   }
 
   const tangent = path.getTangentAt(bestT).normalize();
-  const normal = new THREE.Vector3(-tangent.z, 0, tangent.x);
-  const distanceFromCenter = position.clone().sub(bestPoint).dot(normal);
+  const nx = -tangent.z;
+  const nz = tangent.x;
+  const distanceFromCenter = (position.x - bestPoint.x) * nx + (position.z - bestPoint.z) * nz;
   return { t: bestT, point: bestPoint, distanceFromCenter, tangent };
 }
 
