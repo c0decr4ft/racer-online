@@ -10,12 +10,15 @@ export type LeaderboardEntry = {
 
 export type BoardSource = "online" | "server" | "local";
 
-/** Per-track local cache — times never mix across courses. */
+/** Per-track local cache — times never mix across courses. Bump to wipe old scores. */
+const BOARD_STORAGE_VERSION = 4;
+
 function storageKey(trackId: string) {
-  return `racer-leaderboard-v2-${trackId}`;
+  return `racer-leaderboard-v${BOARD_STORAGE_VERSION}-${trackId}`;
 }
 
-const LEGACY_STORAGE_KEYS = ["racer-leaderboard-v1", "racer-leaderboard-v2"];
+const LEGACY_STORAGE_KEYS = ["racer-leaderboard-v1", "racer-leaderboard-v2", "racer-leaderboard-v3"];
+const LEGACY_TRACK_PREFIXES = ["racer-leaderboard-v2-", "racer-leaderboard-v3-"];
 const DRIVER_NAME_KEY = "racer-driver-name";
 const MAX = 10;
 export const NAME_MAX = 10;
@@ -23,6 +26,17 @@ export const NAME_MAX = 10;
 function clearLegacyLocalBoards() {
   try {
     for (const key of LEGACY_STORAGE_KEYS) localStorage.removeItem(key);
+    for (const prefix of LEGACY_TRACK_PREFIXES) {
+      for (const t of TRACKS) localStorage.removeItem(`${prefix}${t.id}`);
+      localStorage.removeItem(`${prefix}twin-lakes`);
+    }
+    // Sweep any leftover older board keys (v1–v3)
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const key = localStorage.key(i);
+      if (!key || !key.startsWith("racer-leaderboard-v")) continue;
+      if (key.startsWith(`racer-leaderboard-v${BOARD_STORAGE_VERSION}-`)) continue;
+      localStorage.removeItem(key);
+    }
   } catch {
     /* ignore */
   }

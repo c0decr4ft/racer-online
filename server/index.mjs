@@ -18,7 +18,7 @@ const TRACK_IDS = [
   "summit-pass",
   "meadow-sweep",
   "canyon-cut",
-  "twin-lakes",
+  "oval-circuit",
 ];
 const DEFAULT_TRACK_ID = TRACK_IDS[0];
 

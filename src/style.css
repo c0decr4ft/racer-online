@@ -405,6 +405,21 @@ body,
   display: none !important;
 }
 
+.version-badge {
+  position: fixed;
+  right: 0.85rem;
+  bottom: 0.65rem;
+  z-index: 30;
+  pointer-events: none;
+  font-family: "Rajdhani", sans-serif;
+  font-weight: 600;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  color: rgba(232, 238, 246, 0.72);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+  user-select: none;
+}
+
 .mute-btn {
   position: fixed;
   top: 1.35rem;

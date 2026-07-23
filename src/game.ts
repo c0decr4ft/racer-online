@@ -195,7 +195,7 @@ export class Game {
       antialias: true,
       powerPreference: "high-performance",
     });
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.25));
     this.renderer.setSize(innerWidth, innerHeight);
     this.renderer.setClearColor(0x87a0bc, 1);
     this.renderer.shadowMap.enabled = true;
@@ -490,6 +490,7 @@ export class Game {
   }
 
   private async saveDriverScore() {
+    if (this.solo) return;
     if (this.scoreSaveInFlight) return;
     if (!this.el.driverName.value.trim()) {
       this.el.driverName.focus();
@@ -595,13 +596,13 @@ export class Game {
     const sun = new THREE.DirectionalLight(0xfff5e6, 1.85);
     sun.position.set(40, 80, 20);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(1024, 1024);
+    sun.shadow.mapSize.set(512, 512);
     sun.shadow.camera.near = 5;
-    sun.shadow.camera.far = 400;
-    sun.shadow.camera.left = -160;
-    sun.shadow.camera.right = 160;
-    sun.shadow.camera.top = 160;
-    sun.shadow.camera.bottom = -160;
+    sun.shadow.camera.far = 280;
+    sun.shadow.camera.left = -120;
+    sun.shadow.camera.right = 120;
+    sun.shadow.camera.top = 120;
+    sun.shadow.camera.bottom = -120;
     this.scene.add(sun);
   }
 
@@ -973,7 +974,7 @@ export class Game {
     }
 
     // Bottom-right corner — mirrors minimap’s bottom inset, opposite side
-    const mw = Math.floor(Math.min(260, w * 0.22));
+    const mw = Math.floor(Math.min(220, w * 0.18));
     const mh = Math.floor(mw * 0.52);
     const rightPad = Math.floor(Math.min(22, w * 0.02));
     const bottomPad = Math.floor(Math.min(118, h * 0.155)); // clear speed HUD
@@ -1370,7 +1371,8 @@ export class Game {
     }
 
     this.el.finish.classList.remove("hidden");
-    void this.checkLeaderboardQualify();
+    // Solo Race: finish UI only — no leaderboard qualify / name entry
+    if (!this.solo) void this.checkLeaderboardQualify();
   }
 
   /**
@@ -1394,6 +1396,7 @@ export class Game {
   }
 
   private async checkLeaderboardQualify() {
+    if (this.solo) return;
     const qualifies = await wouldQualify(this.pendingFinishMs, this.trackId);
     if (!qualifies) return;
     this.el.nameEntry.classList.remove("hidden");
@@ -1446,7 +1449,7 @@ export class Game {
     const path = this.track.path;
     if (this.minimapPath === path && this.minimapPts.length > 0) return;
     this.minimapPath = path;
-    const n = 256;
+    const n = 180;
     const pts: { x: number; z: number }[] = [];
     let minX = Infinity;
     let maxX = -Infinity;
