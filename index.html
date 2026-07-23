@@ -72,7 +72,43 @@
         </div>
       </div>
 
-      <div id="version-badge" class="version-badge" aria-hidden="true">v1.1</div>
+      <div class="version-switcher" id="version-switcher">
+        <button
+          id="version-badge"
+          class="version-badge"
+          type="button"
+          aria-haspopup="dialog"
+          aria-expanded="false"
+          aria-controls="version-menu"
+          aria-label="Choose game version"
+        >
+          v1.5
+        </button>
+        <div id="version-menu" class="version-menu hidden" role="listbox" aria-label="Game versions"></div>
+      </div>
+
+      <div id="version-gate" class="version-gate hidden" role="dialog" aria-modal="true" aria-labelledby="version-gate-title">
+        <div class="version-gate-panel">
+          <p class="eyebrow" id="version-gate-title">VERSION ACCESS</p>
+          <p class="version-gate-hint">Enter password to switch builds</p>
+          <form id="version-gate-form" class="version-gate-form" autocomplete="off">
+            <input
+              id="version-gate-input"
+              type="password"
+              name="version-password"
+              placeholder="Password"
+              autocomplete="off"
+              spellcheck="false"
+              required
+            />
+            <p id="version-gate-error" class="version-gate-error hidden" aria-live="polite"></p>
+            <div class="version-gate-actions">
+              <button type="submit">UNLOCK</button>
+              <button id="version-gate-cancel" class="btn-ghost" type="button">CANCEL</button>
+            </div>
+          </form>
+        </div>
+      </div>
 
       <button id="mute-btn" class="mute-btn" type="button" aria-label="Mute sound" aria-pressed="false">
         <svg class="mute-icon mute-icon-on" viewBox="0 0 24 24" aria-hidden="true">

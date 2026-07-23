@@ -25,6 +25,23 @@ jobs:
       - run: npm run build
       - name: Add .nojekyll
         run: touch dist/.nojekyll
+      # Keep /racer-online/vX.Y/ snapshots playable across orphan deploys of latest.
+      - name: Preserve versioned snapshots
+        run: |
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            git fetch origin gh-pages:gh-pages-prev
+            mkdir -p /tmp/gh-pages-prev
+            git archive gh-pages-prev | tar -x -C /tmp/gh-pages-prev
+            for d in /tmp/gh-pages-prev/v*/; do
+              [ -d "$d" ] || continue
+              name=$(basename "$d")
+              rm -rf "dist/$name"
+              cp -a "$d" "dist/$name"
+              echo "Preserved $name"
+            done
+          else
+            echo "No gh-pages branch yet — skip snapshot preserve"
+          fi
       - name: Deploy to gh-pages
         uses: peaceiris/actions-gh-pages@v4
         with:

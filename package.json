@@ -1,7 +1,7 @@
 {
   "name": "racer-online",
   "private": true,
-  "version": "1.4.0",
+  "version": "1.5.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,6 +9,7 @@
     "dev:online": "concurrently -k -n web,ws -c cyan,magenta \"vite\" \"node server/index.mjs\"",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "snapshot-version": "node scripts/snapshot-version.mjs",
     "start": "npm run dev:online"
   },
   "devDependencies": {

@@ -10,7 +10,11 @@ export type LeaderboardEntry = {
 
 export type BoardSource = "online" | "server" | "local";
 
-/** Per-track local cache — times never mix across courses. Bump to wipe old scores. */
+/**
+ * Per-track local cache schema revision — NOT the game display version (GAME_VERSION).
+ * Keys and the shared JSONBlob URL stay game-version-agnostic so all releases share one board.
+ * Bump only to wipe/migrate local score shape — never scope by release.
+ */
 const BOARD_STORAGE_VERSION = 4;
 
 function storageKey(trackId: string) {
