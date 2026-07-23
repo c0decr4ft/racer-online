@@ -39,32 +39,59 @@ const TREE_CANOPY = [
 
 type TreePose = { x: number; z: number; scale: number; jitter: number };
 
+/** Soft cap so large multi-map circuits don't plant 6k–10k trees per swap. */
+const MAX_TREES = 2400;
+
 /**
  * Dense forest on the grass: keep clear of asphalt + runoff (half+4.8) plus a
  * small canopy margin so trunks never sit on the driving surface.
- * Same plant positions/count/appearance as before — InstancedMesh + spatial
- * chunks cut draw calls; frustum culling drops off-screen chunks.
+ * InstancedMesh + spatial chunks; density tuned for multi-map FPS.
  */
 function plantForest(group: THREE.Group, path: THREE.CatmullRomCurve3, roadHalf: number) {
   const clear = roadHalf + 4.8 + 2.2; // ~14m outside centerline for 14m road
+  const clear2 = clear * clear;
   const bounds = pathBounds(path);
   const samples: THREE.Vector3[] = [];
-  const sampleN = 800;
+  const sampleN = 480;
   for (let i = 0; i < sampleN; i++) samples.push(path.getPointAt(i / sampleN));
 
-  const minDistToPath = (x: number, z: number) => {
-    let best = Infinity;
-    for (const p of samples) {
-      const d = (p.x - x) * (p.x - x) + (p.z - z) * (p.z - z);
-      if (d < best) best = d;
+  // Coarse grid of nearby centerline samples — O(1) reject far from road
+  const BIN = 24;
+  const bins = new Map<string, number[]>();
+  for (let i = 0; i < sampleN; i++) {
+    const p = samples[i]!;
+    const key = `${Math.floor(p.x / BIN)},${Math.floor(p.z / BIN)}`;
+    let list = bins.get(key);
+    if (!list) {
+      list = [];
+      bins.set(key, list);
     }
-    return Math.sqrt(best);
+    list.push(i);
+  }
+
+  const minDist2ToPath = (x: number, z: number) => {
+    const bx = Math.floor(x / BIN);
+    const bz = Math.floor(z / BIN);
+    let best = Infinity;
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        const list = bins.get(`${bx + dx},${bz + dz}`);
+        if (!list) continue;
+        for (const i of list) {
+          const p = samples[i]!;
+          const d = (p.x - x) * (p.x - x) + (p.z - z) * (p.z - z);
+          if (d < best) best = d;
+        }
+      }
+    }
+    // Far from all bins → treat as clear of road
+    return best;
   };
 
   const poses: TreePose[] = [];
   const tryPlant = (x: number, z: number, scale: number) => {
     if (x < bounds.minX || x > bounds.maxX || z < bounds.minZ || z > bounds.maxZ) return;
-    if (minDistToPath(x, z) < clear) return;
+    if (minDist2ToPath(x, z) < clear2) return;
     poses.push({
       x,
       z,
@@ -73,12 +100,9 @@ function plantForest(group: THREE.Group, path: THREE.CatmullRomCurve3, roadHalf:
     });
   };
 
-  // 1) Rings along the circuit — dense belts outside + safe infield offsets
-  const ringOffsets = [
-    -16, -20, -25, -31, -38, -46, -56, -68, -82, -98, -116, -136,
-    16, 20, 25, 31, 38, 48, 60,
-  ];
-  const ringSteps = 280;
+  // 1) Rings along the circuit — dense belts, fewer layers than the old 19×280
+  const ringOffsets = [-18, -26, -36, -48, -64, -84, -110, 18, 28, 40, 55];
+  const ringSteps = 160;
   const ringTan = new THREE.Vector3();
   const ringN = new THREE.Vector3();
   for (const offset of ringOffsets) {
@@ -88,29 +112,46 @@ function plantForest(group: THREE.Group, path: THREE.CatmullRomCurve3, roadHalf:
       ringTan.copy(path.getTangentAt(t)).normalize();
       ringN.set(-ringTan.z, 0, ringTan.x);
       const h = hash2(i, Math.round(offset * 10));
-      if (h < 0.18) continue; // thin randomly so rings aren't a perfect fence
-      const lat = offset + (h - 0.5) * 3.2;
-      const along = (hash2(Math.round(offset * 7), i) - 0.5) * 2.4;
+      if (h < 0.28) continue;
+      const lat = offset + (h - 0.5) * 3.6;
+      const along = (hash2(Math.round(offset * 7), i) - 0.5) * 2.8;
       const x = p.x + ringN.x * lat + ringTan.x * along;
       const z = p.z + ringN.z * lat + ringTan.z * along;
       tryPlant(x, z, 0.65 + h * 0.7);
     }
   }
 
-  // 2) Fill the green plane with a jittered grid (skips road corridor)
-  const step = 5.2;
+  // 2) Jittered fill — coarser grid keeps look dense without 6k+ instances
+  const step = 7.8;
   for (let ix = bounds.minX; ix <= bounds.maxX; ix += step) {
     for (let iz = bounds.minZ; iz <= bounds.maxZ; iz += step) {
       const h = hash2(Math.round(ix * 3), Math.round(iz * 3));
-      if (h < 0.12) continue;
-      const x = ix + (h - 0.5) * 4.2;
-      const z = iz + (hash2(Math.round(iz * 5), Math.round(ix * 5)) - 0.5) * 4.2;
+      if (h < 0.22) continue;
+      const x = ix + (h - 0.5) * 5.2;
+      const z = iz + (hash2(Math.round(iz * 5), Math.round(ix * 5)) - 0.5) * 5.2;
       tryPlant(x, z, 0.55 + h * 0.85);
     }
   }
 
+  // Cap oversized plantings (big meadow / canyon AABB) without changing density feel
+  if (poses.length > MAX_TREES) {
+    const keep: TreePose[] = [];
+    for (let i = 0; i < poses.length; i++) {
+      const h = hash2(i * 17, Math.round(poses[i]!.x * 3));
+      if (h < MAX_TREES / poses.length) keep.push(poses[i]!);
+    }
+    // Ensure we don't undershoot too far if hash is unlucky
+    if (keep.length < MAX_TREES * 0.85) {
+      for (let i = 0; i < poses.length && keep.length < MAX_TREES; i++) {
+        if (hash2(i * 31, Math.round(poses[i]!.z * 5)) > 0.55) keep.push(poses[i]!);
+      }
+    }
+    poses.length = 0;
+    poses.push(...keep.slice(0, MAX_TREES));
+  }
+
   // Spatial chunks so frustum culling can drop off-screen forest
-  const CELL = 68;
+  const CELL = 72;
   const buckets = new Map<string, TreePose[]>();
   const originX = bounds.minX - 10;
   const originZ = bounds.minZ - 10;
@@ -126,9 +167,9 @@ function plantForest(group: THREE.Group, path: THREE.CatmullRomCurve3, roadHalf:
     list.push(pose);
   }
 
-  // Unit geos (same segment counts as before) — scale via instance matrix
-  const trunkGeo = new THREE.CylinderGeometry(0.22, 0.3, 1.2, 6);
-  const canopyGeo = new THREE.SphereGeometry(1.35, 8, 8);
+  // Unit geos — slightly lower canopy tessellation (look identical at distance)
+  const trunkGeo = new THREE.CylinderGeometry(0.22, 0.3, 1.2, 5);
+  const canopyGeo = new THREE.SphereGeometry(1.35, 6, 6);
   const dummy = new THREE.Object3D();
 
   for (const list of buckets.values()) {
@@ -146,7 +187,8 @@ function plantForest(group: THREE.Group, path: THREE.CatmullRomCurve3, roadHalf:
     }
     const canopies = TREE_CANOPY.map((mat, ci) => {
       const mesh = new THREE.InstancedMesh(canopyGeo, mat, Math.max(1, canopyCounts[ci]));
-      mesh.castShadow = true; // same as per-tree canopies
+      // Shadows on thousands of canopies dominate GPU cost — skip for FPS
+      mesh.castShadow = false;
       mesh.receiveShadow = false;
       mesh.frustumCulled = true;
       mesh.count = 0;
@@ -154,7 +196,7 @@ function plantForest(group: THREE.Group, path: THREE.CatmullRomCurve3, roadHalf:
     });
 
     for (let i = 0; i < n; i++) {
-      const { x, z, scale, jitter } = list[i];
+      const { x, z, scale, jitter } = list[i]!;
       dummy.position.set(x, 0.6 * scale, z);
       dummy.scale.set(scale, scale, scale);
       dummy.rotation.set(0, 0, 0);
@@ -162,7 +204,7 @@ function plantForest(group: THREE.Group, path: THREE.CatmullRomCurve3, roadHalf:
       trunks.setMatrixAt(i, dummy.matrix);
 
       const ci = Math.floor(jitter * TREE_CANOPY.length) % TREE_CANOPY.length;
-      const canopy = canopies[ci];
+      const canopy = canopies[ci]!;
       const cr = (1.35 * scale + jitter * 0.35) / 1.35;
       dummy.position.set(x, 2.0 * scale, z);
       dummy.scale.set(cr, cr, cr);
@@ -202,7 +244,7 @@ function pathBounds(path: THREE.CatmullRomCurve3) {
     if (p.z < minZ) minZ = p.z;
     if (p.z > maxZ) maxZ = p.z;
   }
-  const pad = 55;
+  const pad = 48;
   return {
     minX: minX - pad,
     maxX: maxX + pad,
@@ -220,19 +262,27 @@ function buildRibbon(
   halfW: number,
   y: number,
   segments: number,
+  /** Lateral offset of ribbon center from path (road-half − stripeHalf for edge lines). */
+  lateral = 0,
 ) {
   const positions: number[] = [];
   const normals: number[] = [];
   const indices: number[] = [];
+  const p = new THREE.Vector3();
+  const tan = new THREE.Vector3();
+  const n = new THREE.Vector3();
 
   for (let i = 0; i <= segments; i++) {
     const u = (i / segments) % 1;
-    const p = path.getPointAt(u);
-    const tan = path.getTangentAt(u).normalize();
-    const n = new THREE.Vector3(-tan.z, 0, tan.x);
-    const L = p.clone().addScaledVector(n, -halfW);
-    const R = p.clone().addScaledVector(n, halfW);
-    positions.push(L.x, y, L.z, R.x, y, R.z);
+    path.getPointAt(u, p);
+    path.getTangentAt(u, tan).normalize();
+    n.set(-tan.z, 0, tan.x);
+    const cx = p.x + n.x * lateral;
+    const cz = p.z + n.z * lateral;
+    positions.push(
+      cx - n.x * halfW, y, cz - n.z * halfW,
+      cx + n.x * halfW, y, cz + n.z * halfW,
+    );
     normals.push(0, 1, 0, 0, 1, 0);
   }
   for (let i = 0; i < segments; i++) {
@@ -269,9 +319,13 @@ export function createTrack(trackId: string = DEFAULT_TRACK_ID): TrackData {
   ground.receiveShadow = true;
   group.add(ground);
 
+  // Segment density scales with circuit length so long maps stay smooth
+  const pathLen = path.getLength();
+  const ribbonSegs = Math.max(480, Math.min(1400, Math.ceil(pathLen / 1.35)));
+
   // Tan sand / gravel runoff
   const runoff = new THREE.Mesh(
-    buildRibbon(path, half + 4.8, -0.02, 600),
+    buildRibbon(path, half + 4.8, -0.02, ribbonSegs),
     new THREE.MeshStandardMaterial({ color: 0xd4b896, roughness: 1, metalness: 0 }),
   );
   runoff.receiveShadow = true;
@@ -279,41 +333,27 @@ export function createTrack(trackId: string = DEFAULT_TRACK_ID): TrackData {
 
   // Clear grey asphalt
   const road = new THREE.Mesh(
-    buildRibbon(path, half, 0.035, 600),
+    buildRibbon(path, half, 0.035, ribbonSegs),
     new THREE.MeshStandardMaterial({ color: 0x6a6e74, roughness: 0.92, metalness: 0.04 }),
   );
   road.receiveShadow = true;
   group.add(road);
 
-  // Thin white edge lines — InstancedMesh (same segments/look, 2 draw calls)
-  const edgeMat = new THREE.MeshStandardMaterial({ color: 0xf4f6f8, roughness: 0.7, metalness: 0.05 });
-  const edgeGeo = new THREE.BoxGeometry(0.18, 0.04, 1);
-  const edgeDummy = new THREE.Object3D();
-  const edgeTan = new THREE.Vector3();
-  const edgeN = new THREE.Vector3();
+  // Continuous white edge stripes — thin ribbons flush with asphalt (no box gaps)
+  const stripeHalf = 0.11; // ~22cm painted line
+  const edgeMat = new THREE.MeshStandardMaterial({
+    color: 0xf4f6f8,
+    roughness: 0.65,
+    metalness: 0.04,
+  });
+  const edgeSegs = Math.max(ribbonSegs, Math.ceil(pathLen / 1.1));
   for (const side of [-1, 1] as const) {
-    const samples = 420;
-    const edges = new THREE.InstancedMesh(edgeGeo, edgeMat, samples);
+    const edges = new THREE.Mesh(
+      buildRibbon(path, stripeHalf, 0.048, edgeSegs, side * (half - stripeHalf)),
+      edgeMat,
+    );
     edges.castShadow = false;
     edges.receiveShadow = false;
-    for (let i = 0; i < samples; i++) {
-      const u0 = i / samples;
-      const u1 = (i + 1) / samples;
-      const p0 = path.getPointAt(u0);
-      const p1 = path.getPointAt(u1);
-      edgeTan.copy(path.getTangentAt(u0)).normalize();
-      edgeN.set(-edgeTan.z, 0, edgeTan.x);
-      const len = p0.distanceTo(p1) * 1.08;
-      const mx = (p0.x + p1.x) * 0.5 + edgeN.x * side * (half - 0.18);
-      const mz = (p0.z + p1.z) * 0.5 + edgeN.z * side * (half - 0.18);
-      edgeDummy.position.set(mx, 0.055, mz);
-      edgeDummy.rotation.set(0, yawFromTangent(edgeTan), 0);
-      edgeDummy.scale.set(1, 1, len);
-      edgeDummy.updateMatrix();
-      edges.setMatrixAt(i, edgeDummy.matrix);
-    }
-    edges.instanceMatrix.needsUpdate = true;
-    edges.computeBoundingSphere();
     group.add(edges);
   }
 
