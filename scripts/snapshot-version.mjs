@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * Build a playable version snapshot for GitHub Pages.
+ * Build a playable version snapshot from the *current* tree for GitHub Pages.
  *
  * Usage:
  *   node scripts/snapshot-version.mjs
- *   node scripts/snapshot-version.mjs 1.4
+ *   node scripts/snapshot-version.mjs 1.5
  *
  * Output: dist-versions/v{id}/  (deploy under /racer-online/v{id}/)
  *
@@ -12,7 +12,13 @@
  *   { "id": "1.4", "path": "/racer-online/v1.4/" }
  * and point the newest release at "/racer-online/".
  *
- * CI preserves existing gh-pages v*/ folders on each deploy so snapshots stay live.
+ * Historical builds (freeze an older commit): worktree that commit, graft the
+ * version-switcher files from HEAD (versions.ts, main.ts init, index.html UI,
+ * style.css switcher rules, public/versions.json), keep that commit's
+ * GAME_VERSION, then `npx vite build --base /racer-online/v{id}/ --outDir …`.
+ *
+ * CI copies dist-versions/v* into the Pages dist and also preserves existing
+ * gh-pages v*/ folders so snapshots stay live across orphan deploys.
  */
 import { readFileSync, mkdirSync, rmSync, cpSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";

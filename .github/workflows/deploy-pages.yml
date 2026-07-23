@@ -42,6 +42,20 @@ jobs:
           else
             echo "No gh-pages branch yet — skip snapshot preserve"
           fi
+      # Publish newly built snapshots from the repo (overrides preserved copies).
+      - name: Include dist-versions snapshots
+        run: |
+          if [ -d dist-versions ]; then
+            for d in dist-versions/v*/; do
+              [ -d "$d" ] || continue
+              name=$(basename "$d")
+              rm -rf "dist/$name"
+              cp -a "$d" "dist/$name"
+              echo "Included $name from dist-versions"
+            done
+          else
+            echo "No dist-versions/ — relying on preserved gh-pages snapshots only"
+          fi
       - name: Deploy to gh-pages
         uses: peaceiris/actions-gh-pages@v4
         with:
