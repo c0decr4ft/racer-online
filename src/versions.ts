@@ -93,13 +93,43 @@ export function isCurrentVersion(v: PlayableVersion): boolean {
   return v.id === GAME_VERSION;
 }
 
+function openDash(): void {
+  void import("./devDashboard").then((m) => m.openDevDashboard());
+}
+
+function closeDash(): void {
+  void import("./devDashboard").then((m) => m.closeDevDashboard());
+}
+
+/** Show on homepage/menu; hide (and close gate/dashboard) during a race session. */
+export function setVersionSwitcherVisible(visible: boolean): void {
+  const switcher = document.getElementById("version-switcher");
+  const badge = document.getElementById("version-badge");
+  const gate = document.getElementById("version-gate");
+  const input = document.getElementById("version-gate-input");
+  const errorEl = document.getElementById("version-gate-error");
+
+  if (switcher instanceof HTMLElement) {
+    switcher.classList.toggle("hidden", !visible);
+  }
+  if (!visible) {
+    gate?.classList.add("hidden");
+    closeDash();
+    badge?.setAttribute("aria-expanded", "false");
+    if (input instanceof HTMLInputElement) input.value = "";
+    if (errorEl instanceof HTMLElement) {
+      errorEl.textContent = "";
+      errorEl.classList.add("hidden");
+    }
+  }
+}
+
 /**
- * Wire: badge click → password modal → on success → version menu → navigate on pick.
- * Escape / cancel closes without switching. Wrong password stays on the gate.
+ * Wire: badge click → password modal → on success → developer dashboard
+ * (activity graph, feedback inbox, version switching). Wrong password stays on the gate.
  */
 export function initVersionSwitcher(): void {
   const badge = document.getElementById("version-badge");
-  const menu = document.getElementById("version-menu");
   const gate = document.getElementById("version-gate");
   const form = document.getElementById("version-gate-form");
   const input = document.getElementById("version-gate-input");
@@ -108,7 +138,6 @@ export function initVersionSwitcher(): void {
 
   if (
     !(badge instanceof HTMLButtonElement) ||
-    !(menu instanceof HTMLElement) ||
     !(gate instanceof HTMLElement) ||
     !(form instanceof HTMLFormElement) ||
     !(input instanceof HTMLInputElement) ||
@@ -120,18 +149,10 @@ export function initVersionSwitcher(): void {
 
   badge.textContent = `v${GAME_VERSION}`;
   badge.setAttribute("aria-expanded", "false");
+  badge.setAttribute("aria-controls", "dev-dashboard");
+  badge.setAttribute("aria-label", "Developer tools");
 
   let unlocked = false;
-
-  const closeMenu = () => {
-    menu.classList.add("hidden");
-    badge.setAttribute("aria-expanded", "false");
-  };
-
-  const openMenu = () => {
-    menu.classList.remove("hidden");
-    badge.setAttribute("aria-expanded", "true");
-  };
 
   const closeGate = () => {
     gate.classList.add("hidden");
@@ -141,35 +162,12 @@ export function initVersionSwitcher(): void {
   };
 
   const openGate = () => {
-    closeMenu();
+    closeDash();
     errorEl.textContent = "";
     errorEl.classList.add("hidden");
     input.value = "";
     gate.classList.remove("hidden");
     requestAnimationFrame(() => input.focus());
-  };
-
-  const render = (versions: PlayableVersion[]) => {
-    menu.replaceChildren();
-    for (const v of versions) {
-      const current = isCurrentVersion(v);
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "version-menu-item" + (current ? " is-current" : "");
-      btn.setAttribute("role", "option");
-      btn.setAttribute("aria-selected", current ? "true" : "false");
-      btn.dataset.versionId = v.id;
-      btn.textContent = current ? `v${v.id} · playing` : `v${v.id}`;
-      btn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        if (current) {
-          closeMenu();
-          return;
-        }
-        location.assign(versionHref(v.path));
-      });
-      menu.appendChild(btn);
-    }
   };
 
   badge.addEventListener("click", (e) => {
@@ -178,8 +176,8 @@ export function initVersionSwitcher(): void {
       openGate();
       return;
     }
-    if (menu.classList.contains("hidden")) openMenu();
-    else closeMenu();
+    openDash();
+    badge.setAttribute("aria-expanded", "true");
   });
 
   form.addEventListener("submit", (e) => {
@@ -187,7 +185,8 @@ export function initVersionSwitcher(): void {
     if (input.value === VERSION_SWITCH_PASSWORD) {
       unlocked = true;
       closeGate();
-      openMenu();
+      openDash();
+      badge.setAttribute("aria-expanded", "true");
       return;
     }
     unlocked = false;
@@ -210,15 +209,10 @@ export function initVersionSwitcher(): void {
       if (panel instanceof HTMLElement && !panel.contains(t) && !badge.contains(t)) {
         closeGate();
       }
-      return;
     }
-
-    if (menu.classList.contains("hidden")) return;
-    if (menu.contains(t) || badge.contains(t)) return;
-    closeMenu();
   });
 
-  // Capture so Escape closes gate/menu without toggling pause.
+  // Capture so Escape closes gate without toggling pause.
   document.addEventListener(
     "keydown",
     (e) => {
@@ -228,17 +222,8 @@ export function initVersionSwitcher(): void {
         e.preventDefault();
         closeGate();
         badge.focus();
-        return;
-      }
-      if (!menu.classList.contains("hidden")) {
-        e.stopPropagation();
-        e.preventDefault();
-        closeMenu();
-        badge.focus();
       }
     },
     true,
   );
-
-  void loadPlayableVersions().then(render);
 }

@@ -26,6 +26,8 @@ import {
   type LeaderboardEntry,
 } from "./net/leaderboard";
 import { GameAudio } from "./audio";
+import { setFeedbackBtnVisible } from "./feedbackCompose";
+import { setVersionSwitcherVisible } from "./versions";
 
 function formatTime(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "--:--.---";
@@ -81,6 +83,8 @@ export class Game {
   private audio = new GameAudio();
   /** Show picture-in-picture rearview while driving (hidden on pause/home/finish). */
   private wantRearview = false;
+  /** One-shot shadow rebuild after home/track transitions (menu orbit is static-lit). */
+  private shadowNeedsWarmup = true;
 
   running = false;
   finished = false;
@@ -187,6 +191,13 @@ export class Game {
   private readonly _camLookTarget = new THREE.Vector3();
   private readonly _wallN = new THREE.Vector3();
   private readonly _explodeGeo = new THREE.BoxGeometry(0.28, 0.28, 0.28);
+  /** Reused pack list for AI update + local collisions (no per-frame alloc). */
+  private readonly _pack: Vehicle[] = [];
+  /** Cached rival minimap CSS colors — avoid hex string alloc every HUD frame. */
+  private readonly _rivalCss = CAR_PALETTE.rivals.map(
+    (c) => `#${c.toString(16).padStart(6, "0")}`,
+  );
+  private _rearAspect = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     // Cap DPR for stable FPS on retina displays
@@ -199,6 +210,9 @@ export class Game {
     this.renderer.setSize(innerWidth, innerHeight);
     this.renderer.setClearColor(0x87a0bc, 1);
     this.renderer.shadowMap.enabled = true;
+    // Keep default PCFShadowMap type; rebuild once per frame before the main
+    // pass so the rearview inset does not re-render the shadow map.
+    this.renderer.shadowMap.autoUpdate = false;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.2;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -227,8 +241,8 @@ export class Game {
   }
 
   private bindUi() {
-    this.bindMuteBtn();
-
+    // Bind menu actions first — syncMuteBtn/onHomeOrBoard must not abort handler wiring
+    // if a removed overlay ref throws (that previously left every homepage button dead).
     document.getElementById("start-btn")!.onclick = () => {
       // Start Race with AI — random course, no picker
       void this.bootFromMenu({ trackId: randomTrackId() });
@@ -283,6 +297,8 @@ export class Game {
         .slice(0, 10);
       if (cleaned !== this.el.driverName.value) this.el.driverName.value = cleaned;
     });
+
+    this.bindMuteBtn();
   }
 
   private bindMuteBtn() {
@@ -311,16 +327,22 @@ export class Game {
     // Homepage (incl. BOARD) or pause overlay — not mid-race / countdown / finish
     const visible = this.onHomeOrBoard() || this.paused;
     btn.classList.toggle("hidden", !visible);
+    // Version: home + finish/results (hidden while racing / countdown / pause)
+    // Feedback: homepage/menu only
+    const onHome = this.onHomeOrBoard();
+    setVersionSwitcherVisible(onHome || this.finished);
+    setFeedbackBtnVisible(onHome);
   }
 
   /** Homepage overlay visible (incl. BOARD / map picker over it). */
   private onHomeOrBoard(): boolean {
     const mapOpen = !this.el.mapSelect.classList.contains("hidden");
+    const boardOpen = !this.el.leaderboard.classList.contains("hidden");
     return (
       !this.running &&
       !this.finished &&
       !this.paused &&
-      (!this.el.overlay.classList.contains("hidden") || mapOpen)
+      (!this.el.overlay.classList.contains("hidden") || mapOpen || boardOpen)
     );
   }
 
@@ -443,6 +465,7 @@ export class Game {
     this.el.rearview.classList.add("hidden");
     this.el.overlay.classList.remove("hidden");
     this.setAiVisible(true);
+    this.shadowNeedsWarmup = true;
     this.audio.playMenuMusic();
     this.syncMuteBtn();
   }
@@ -463,12 +486,17 @@ export class Game {
   private async openLeaderboard() {
     this.el.mapSelect.classList.add("hidden");
     this.el.leaderboard.classList.remove("hidden");
+    const boardEyebrow = document.getElementById("board-eyebrow");
+    if (boardEyebrow) {
+      boardEyebrow.textContent = `WORLDWIDE · ${new Date().getFullYear()}`;
+    }
     // Last-played course if set, otherwise first map
     this.boardTrackId = this.trackId || DEFAULT_TRACK_ID;
     this.el.boardSource.textContent = "Loading…";
     this.el.boardList.innerHTML = "";
     this.renderBoardTrackPicker();
     await this.loadBoardForTrack(this.boardTrackId);
+    this.syncMuteBtn();
   }
 
   private renderBoardTrackPicker() {
@@ -832,6 +860,11 @@ export class Game {
 
   private frame() {
     const now = performance.now();
+    // Hidden tab: skip sim + both scene passes (no GPU work, no dt spike on return)
+    if (document.visibilityState === "hidden") {
+      this.lastFrame = now;
+      return;
+    }
     const dt = Math.min((now - this.lastFrame) / 1000, 0.05);
     this.lastFrame = now;
 
@@ -878,10 +911,11 @@ export class Game {
           this.notePlayerWallHit(onWall, dt);
 
           if (!this.online && !this.solo) {
-            const playerT = this.projectSticky(this.player, this.player.state.position).t;
-            const cars = [this.player, ...this.rivals.map((r) => r.vehicle)];
-            this.rivals.forEach((r) => r.update(dt, this.track.path, playerT, now * 0.001, cars));
-            this.rivals.forEach((r) => this.keepOnTrack(r.vehicle));
+            // keepOnTrack already refreshed sticky t — reuse instead of projecting again
+            const playerT = this.stickyT.get(this.player) ?? this.projectSticky(this.player, this.player.state.position).t;
+            const cars = this.fillPack();
+            for (const r of this.rivals) r.update(dt, this.track.path, playerT, now * 0.001, cars);
+            for (const r of this.rivals) this.keepOnTrack(r.vehicle);
             // Race mode: AI that complete TOTAL_LAPS finish ahead; practice never ends for them
             if (!this.practice) {
               for (const r of this.rivals) {
@@ -958,6 +992,15 @@ export class Game {
     );
   }
 
+  /** Player + rivals into reused `_pack` (AI neighbors + collision pairs). */
+  private fillPack(): Vehicle[] {
+    const pack = this._pack;
+    pack.length = 0;
+    pack.push(this.player);
+    for (const r of this.rivals) pack.push(r.vehicle);
+    return pack;
+  }
+
   /** Main chase cam + always-on bottom-right rearview mirror inset while driving. */
   private renderViews() {
     const w = innerWidth;
@@ -965,6 +1008,11 @@ export class Game {
     this.renderer.setScissorTest(false);
     this.renderer.setViewport(0, 0, w, h);
     this.renderer.autoClear = true;
+    // Live race: one shadow rebuild per frame; rearview reuses the same maps.
+    // Home/pause/finish: casters are still — skip rebuilds after a warmup.
+    const liveShadows = this.running && !this.paused && !this.finished;
+    this.renderer.shadowMap.needsUpdate = liveShadows || this.shadowNeedsWarmup;
+    if (this.shadowNeedsWarmup) this.shadowNeedsWarmup = false;
     this.renderer.render(this.scene, this.camera);
 
     if (!this.wantRearview || !this.player) {
@@ -982,8 +1030,12 @@ export class Game {
     const my = bottomPad; // WebGL origin is bottom-left
 
     this.updateRearCamera();
-    this.rearCamera.aspect = mw / mh;
-    this.rearCamera.updateProjectionMatrix();
+    const aspect = mw / mh;
+    if (aspect !== this._rearAspect) {
+      this._rearAspect = aspect;
+      this.rearCamera.aspect = aspect;
+      this.rearCamera.updateProjectionMatrix();
+    }
 
     this.renderer.autoClear = false;
     this.renderer.clearDepth();
@@ -1185,11 +1237,11 @@ export class Game {
   /** Solid car bodies — separate overlap (capped per frame) and cancel only
    *  the closing velocity along the contact normal. No bounce, no fling. */
   private resolveCollisions() {
-    const all = [this.player, ...this.rivals.map((r) => r.vehicle)];
+    const all = this.fillPack();
     const radius = 1.7;
     for (let i = 0; i < all.length; i++) {
       for (let j = i + 1; j < all.length; j++) {
-        this.bumpVehicles(all[i], all[j], radius);
+        this.bumpVehicles(all[i]!, all[j]!, radius);
       }
     }
   }
@@ -1482,10 +1534,6 @@ export class Game {
     return [w * 0.5 + (x - cx) * scale, h * 0.5 + (z - cz) * scale];
   }
 
-  private hexCss(color: number): string {
-    return `#${color.toString(16).padStart(6, "0")}`;
-  }
-
   /** Bottom-left track map: course outline + player + rivals (race & Test Drive). */
   private updateMinimap() {
     const canvas = this.el.minimap;
@@ -1533,11 +1581,10 @@ export class Game {
         drawDot(remote.mesh.position.x, remote.mesh.position.z, "#7ec8ff", 3.2);
       }
     } else if (!this.solo) {
-      this.rivals.forEach((r, i) => {
-        const color = CAR_PALETTE.rivals[i] ?? 0xe23b2e;
-        const pos = r.vehicle.state.position;
-        drawDot(pos.x, pos.z, this.hexCss(color), 3.2);
-      });
+      for (let i = 0; i < this.rivals.length; i++) {
+        const pos = this.rivals[i]!.vehicle.state.position;
+        drawDot(pos.x, pos.z, this._rivalCss[i] ?? "#e23b2e", 3.2);
+      }
     }
 
     // Player on top — bright accent so it reads clearly

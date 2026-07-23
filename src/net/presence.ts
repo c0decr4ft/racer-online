@@ -1,0 +1,373 @@
+/**
+ * Lightweight player-presence store (JSONBlob), same pattern as the leaderboard.
+ *
+ * Public blob (read/write):
+ *   https://jsonblob.com/api/jsonBlob/019f8e7b-0531-7284-a6c5-37b403b91b8d
+ *
+ * Shape: { buckets: { "YYYY-MM-DDTHH": peakCount }, sessions: { id: lastSeenMs }, updatedAt }
+ * Clients heartbeat every ~40s while visible; stale sessions drop after 90s.
+ * Hourly peak buckets store the max true concurrent count for that hour (never invented).
+ * Current "online" = count of non-expired sessions only — never a peak bucket.
+ */
+
+const PUBLIC_BLOB_URL =
+  "https://jsonblob.com/api/jsonBlob/019f8e7b-0531-7284-a6c5-37b403b91b8d";
+
+const SESSION_KEY = "racer-presence-session";
+const HEARTBEAT_MS = 40_000;
+/** Drop sessions that haven't heartbeated within this window (~1.5 min). */
+const STALE_MS = 90_000;
+const KEEP_HOURS = 14 * 24;
+const WRITE_ATTEMPTS = 4;
+
+export type PresenceBucket = { key: string; count: number; at: number };
+export type PresenceSnapshot = {
+  now: number;
+  buckets: PresenceBucket[];
+  updatedAt: number;
+  source: "online" | "local";
+};
+
+type PresenceStore = {
+  buckets: Record<string, number>;
+  sessions: Record<string, number>;
+  updatedAt: number;
+};
+
+function emptyStore(): PresenceStore {
+  return { buckets: {}, sessions: {}, updatedAt: 0 };
+}
+
+function hourKey(ms: number): string {
+  const d = new Date(ms);
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  const h = String(d.getUTCHours()).padStart(2, "0");
+  return `${y}-${m}-${day}T${h}`;
+}
+
+function hourKeyToMs(key: string): number {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2})$/.exec(key);
+  if (!m) return 0;
+  return Date.UTC(+m[1]!, +m[2]! - 1, +m[3]!, +m[4]!);
+}
+
+function parseStore(data: unknown): PresenceStore {
+  const store = emptyStore();
+  if (!data || typeof data !== "object") return store;
+  const obj = data as Partial<PresenceStore>;
+  if (obj.buckets && typeof obj.buckets === "object") {
+    for (const [k, v] of Object.entries(obj.buckets)) {
+      if (/^\d{4}-\d{2}-\d{2}T\d{2}$/.test(k) && typeof v === "number" && Number.isFinite(v) && v >= 0) {
+        store.buckets[k] = Math.max(0, Math.round(v));
+      }
+    }
+  }
+  if (obj.sessions && typeof obj.sessions === "object") {
+    for (const [id, at] of Object.entries(obj.sessions)) {
+      if (typeof id === "string" && id.length >= 8 && typeof at === "number" && Number.isFinite(at) && at > 0) {
+        store.sessions[id] = Math.round(at);
+      }
+    }
+  }
+  if (typeof obj.updatedAt === "number" && Number.isFinite(obj.updatedAt)) {
+    store.updatedAt = Math.round(obj.updatedAt);
+  }
+  return store;
+}
+
+function pruneStore(store: PresenceStore, now = Date.now()): PresenceStore {
+  const sessions: Record<string, number> = {};
+  for (const [id, at] of Object.entries(store.sessions)) {
+    if (now - at <= STALE_MS) sessions[id] = at;
+  }
+  const cutoff = now - KEEP_HOURS * 3_600_000;
+  const buckets: Record<string, number> = {};
+  for (const [k, v] of Object.entries(store.buckets)) {
+    const at = hourKeyToMs(k);
+    if (at >= cutoff) buckets[k] = v;
+  }
+  return { buckets, sessions, updatedAt: store.updatedAt };
+}
+
+function activeCount(store: PresenceStore, now = Date.now()): number {
+  let n = 0;
+  for (const at of Object.values(store.sessions)) {
+    if (now - at <= STALE_MS) n += 1;
+  }
+  return n;
+}
+
+function toBuckets(store: PresenceStore): PresenceBucket[] {
+  return Object.entries(store.buckets)
+    .map(([key, count]) => ({ key, count, at: hourKeyToMs(key) }))
+    .filter((b) => b.at > 0)
+    .sort((a, b) => a.at - b.at);
+}
+
+/** Max peaks per hour only (sessions are never merged from a stale local snapshot). */
+function mergeBucketPeaks(a: Record<string, number>, b: Record<string, number>): Record<string, number> {
+  const buckets: Record<string, number> = { ...a };
+  for (const [k, v] of Object.entries(b)) {
+    buckets[k] = Math.max(buckets[k] ?? 0, v);
+  }
+  return buckets;
+}
+
+function recordPeak(store: PresenceStore, now = Date.now()): void {
+  const peak = activeCount(store, now);
+  const key = hourKey(now);
+  store.buckets[key] = Math.max(store.buckets[key] ?? 0, peak);
+  store.updatedAt = now;
+}
+
+function applyHeartbeat(store: PresenceStore, id: string, now = Date.now()): PresenceStore {
+  const next = pruneStore(store, now);
+  next.sessions[id] = now;
+  recordPeak(next, now);
+  return next;
+}
+
+function applyLeave(store: PresenceStore, id: string, now = Date.now()): PresenceStore {
+  const next = pruneStore(store, now);
+  delete next.sessions[id];
+  // Do not rewrite hourly peaks on leave — peaks are historical maxima.
+  next.updatedAt = now;
+  return next;
+}
+
+function snapshotOf(store: PresenceStore, source: "online" | "local"): PresenceSnapshot {
+  const pruned = pruneStore(store);
+  return {
+    now: activeCount(pruned),
+    buckets: toBuckets(pruned),
+    updatedAt: pruned.updatedAt,
+    source,
+  };
+}
+
+function sessionsEqual(a: Record<string, number>, b: Record<string, number>): boolean {
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  for (const k of keysA) {
+    if (a[k] !== b[k]) return false;
+  }
+  return true;
+}
+
+function bucketsEqual(a: Record<string, number>, b: Record<string, number>): boolean {
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  for (const k of keysA) {
+    if (a[k] !== b[k]) return false;
+  }
+  return true;
+}
+
+/** Stable per-tab id: memory cache + sessionStorage (never invent a new id each call). */
+let cachedSessionId: string | null = null;
+
+function newSessionId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  return `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function sessionId(): string {
+  if (cachedSessionId) return cachedSessionId;
+  try {
+    const existing = sessionStorage.getItem(SESSION_KEY);
+    if (existing && existing.length >= 8) {
+      cachedSessionId = existing;
+      return existing;
+    }
+    const id = newSessionId();
+    sessionStorage.setItem(SESSION_KEY, id);
+    cachedSessionId = id;
+    return id;
+  } catch {
+    // sessionStorage unavailable — still keep one id for this page lifetime
+    cachedSessionId = newSessionId();
+    return cachedSessionId;
+  }
+}
+
+async function fetchStore(): Promise<PresenceStore> {
+  const res = await fetch(PUBLIC_BLOB_URL, {
+    cache: "no-store",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) throw new Error(String(res.status));
+  return parseStore(await res.json());
+}
+
+async function putStore(store: PresenceStore, keepalive = false): Promise<PresenceStore> {
+  const body = pruneStore(store);
+  body.updatedAt = Date.now();
+  const res = await fetch(PUBLIC_BLOB_URL, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(body),
+    keepalive,
+  });
+  if (!res.ok) throw new Error(String(res.status));
+  try {
+    return parseStore(await res.json());
+  } catch {
+    return body;
+  }
+}
+
+/**
+ * Read-modify-write with retries.
+ *
+ * Important: after a put we re-apply *only* our mutate against the latest remote.
+ * We must NOT merge an older local session map back in — that resurrects sessions
+ * another tab already removed (leave) and inflates the online count.
+ */
+async function mutatePresenceOnce(
+  mutate: (store: PresenceStore, now: number) => PresenceStore,
+  opts: { keepalive?: boolean } = {},
+): Promise<PresenceStore> {
+  let last = emptyStore();
+  for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt++) {
+    const now = Date.now();
+    const remote = pruneStore(await fetchStore(), now);
+    const next = mutate(remote, now);
+    // Preserve any higher historical peaks we already computed locally this attempt.
+    next.buckets = mergeBucketPeaks(remote.buckets, next.buckets);
+    await putStore(next, opts.keepalive);
+
+    const latest = pruneStore(await fetchStore(), Date.now());
+    // Re-apply intent on whatever won the race — never merge stale local sessions.
+    const reconciled = mutate(latest, Date.now());
+    reconciled.buckets = mergeBucketPeaks(latest.buckets, reconciled.buckets);
+
+    if (sessionsEqual(reconciled.sessions, latest.sessions) && bucketsEqual(reconciled.buckets, latest.buckets)) {
+      return reconciled;
+    }
+
+    last = await putStore(reconciled, opts.keepalive);
+  }
+  return last;
+}
+
+/** Serialize all writes from this tab (heartbeat vs leave must not interleave). */
+let writeChain: Promise<unknown> = Promise.resolve();
+
+function enqueueWrite<T>(fn: () => Promise<T>): Promise<T> {
+  const run = writeChain.then(fn, fn);
+  writeChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+/** Read current activity for the dashboard (does not write a heartbeat). */
+export async function fetchPresence(): Promise<PresenceSnapshot> {
+  try {
+    return snapshotOf(await fetchStore(), "online");
+  } catch {
+    return { now: 0, buckets: [], updatedAt: 0, source: "local" };
+  }
+}
+
+/** Ping once — update this tab's session + current hour peak. */
+export async function sendHeartbeat(): Promise<PresenceSnapshot | null> {
+  const id = sessionId();
+  return enqueueWrite(async () => {
+    try {
+      const store = await mutatePresenceOnce((remote, now) => applyHeartbeat(remote, id, now));
+      return snapshotOf(store, "online");
+    } catch {
+      return null;
+    }
+  });
+}
+
+/** Best-effort remove this tab from the online set (page hide / unload). */
+export async function endPresenceSession(): Promise<void> {
+  const id =
+    cachedSessionId ??
+    (() => {
+      try {
+        return sessionStorage.getItem(SESSION_KEY);
+      } catch {
+        return null;
+      }
+    })();
+  if (!id) return;
+  await enqueueWrite(async () => {
+    try {
+      await mutatePresenceOnce((remote, now) => applyLeave(remote, id, now), { keepalive: true });
+    } catch {
+      /* ignore — session will expire via STALE_MS */
+    }
+  });
+}
+
+let presenceStarted = false;
+let heartbeatInFlight = false;
+
+/** Start periodic heartbeats while the page is visible. Safe to call once from main. */
+export function startPresenceHeartbeat(): void {
+  if (presenceStarted) return;
+  presenceStarted = true;
+
+  const tick = () => {
+    if (document.visibilityState === "hidden") return;
+    if (heartbeatInFlight) return;
+    heartbeatInFlight = true;
+    const run = () => {
+      void sendHeartbeat().finally(() => {
+        heartbeatInFlight = false;
+      });
+    };
+    // Keep JSONBlob RMW off the animation-frame path (menu hitching)
+    if (typeof requestIdleCallback === "function") {
+      requestIdleCallback(run, { timeout: 4000 });
+    } else {
+      setTimeout(run, 0);
+    }
+  };
+
+  tick();
+  setInterval(tick, HEARTBEAT_MS);
+
+  document.addEventListener("visibilitychange", () => {
+    // Hidden tabs stop heartbeating; they fall out after STALE_MS.
+    if (document.visibilityState === "visible") tick();
+  });
+
+  // Restore from bfcache — pagehide may have removed us; re-announce.
+  addEventListener("pageshow", (ev) => {
+    if (ev.persisted) tick();
+  });
+
+  // Best-effort remove on close/navigate so count drops sooner than STALE_MS.
+  addEventListener("pagehide", () => {
+    void endPresenceSession();
+  });
+}
+
+export const PRESENCE_BLOB_URL = PUBLIC_BLOB_URL;
+export const PRESENCE_STALE_MS = STALE_MS;
+
+/** Pure helpers for unit tests (node) — not used by the game UI. */
+export const __presenceTest = {
+  parseStore,
+  pruneStore,
+  activeCount,
+  applyHeartbeat,
+  applyLeave,
+  mergeBucketPeaks,
+  sessionsEqual,
+  STALE_MS,
+  emptyStore,
+};

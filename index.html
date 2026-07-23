@@ -79,18 +79,34 @@
           type="button"
           aria-haspopup="dialog"
           aria-expanded="false"
-          aria-controls="version-menu"
-          aria-label="Choose game version"
+          aria-controls="dev-dashboard"
+          aria-label="Developer tools"
         >
-          v1.5
+          v1.6
         </button>
-        <div id="version-menu" class="version-menu hidden" role="listbox" aria-label="Game versions"></div>
       </div>
+
+      <button
+        id="feedback-btn"
+        class="feedback-btn"
+        type="button"
+        aria-haspopup="dialog"
+        aria-controls="feedback-compose"
+        aria-label="Send feedback"
+        title="Send feedback"
+      >
+        <svg class="feedback-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path
+            fill="currentColor"
+            d="M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4v-4H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm0 2v9h3v2.2L9.8 15H20V6H4z"
+          />
+        </svg>
+      </button>
 
       <div id="version-gate" class="version-gate hidden" role="dialog" aria-modal="true" aria-labelledby="version-gate-title">
         <div class="version-gate-panel">
-          <p class="eyebrow" id="version-gate-title">VERSION ACCESS</p>
-          <p class="version-gate-hint">Enter password to switch builds</p>
+          <p class="eyebrow" id="version-gate-title">DEVELOPER ACCESS</p>
+          <p class="version-gate-hint">Enter password to open the developer page</p>
           <form id="version-gate-form" class="version-gate-form" autocomplete="off">
             <input
               id="version-gate-input"
@@ -110,6 +126,77 @@
         </div>
       </div>
 
+      <div id="feedback-compose" class="feedback-compose hidden" role="dialog" aria-modal="true" aria-labelledby="feedback-compose-title">
+        <div class="feedback-compose-panel">
+          <p class="eyebrow" id="feedback-compose-title">FEEDBACK</p>
+          <p class="feedback-compose-hint">Send a note to the developer</p>
+          <form id="feedback-compose-form" class="feedback-compose-form" autocomplete="off">
+            <textarea
+              id="feedback-text"
+              name="feedback-text"
+              rows="4"
+              maxlength="500"
+              placeholder="What should we know?"
+              required
+            ></textarea>
+            <input
+              id="feedback-name"
+              type="text"
+              name="feedback-name"
+              maxlength="24"
+              placeholder="Name (optional)"
+              autocomplete="nickname"
+              spellcheck="false"
+            />
+            <p id="feedback-compose-status" class="feedback-compose-status hidden" aria-live="polite"></p>
+            <div class="feedback-compose-actions">
+              <button id="feedback-compose-submit" type="submit">SEND</button>
+              <button id="feedback-compose-cancel" class="btn-ghost" type="button">CANCEL</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <div id="dev-dashboard" class="dev-dashboard hidden" role="dialog" aria-modal="true" aria-labelledby="dev-dashboard-title">
+        <div class="dev-dashboard-panel">
+          <header class="dev-dashboard-header">
+            <div>
+              <p class="eyebrow">ADMIN</p>
+              <h1 id="dev-dashboard-title">DEVELOPER</h1>
+            </div>
+            <button id="dev-dashboard-close" class="btn-ghost" type="button">CLOSE</button>
+          </header>
+
+          <section class="dev-section" aria-labelledby="dev-activity-heading">
+            <div class="dev-section-head">
+              <h2 id="dev-activity-heading">Player activity</h2>
+              <p class="dev-stat">
+                <span id="dev-players-now">—</span>
+                <span class="dev-stat-label">playing now</span>
+              </p>
+            </div>
+            <p id="dev-activity-source" class="dev-section-meta">Loading…</p>
+            <svg id="dev-activity-chart" class="dev-activity-chart" viewBox="0 0 560 160" role="img" aria-label="Players over time"></svg>
+          </section>
+
+          <section class="dev-section" aria-labelledby="dev-feedback-heading">
+            <div class="dev-section-head">
+              <h2 id="dev-feedback-heading">Feedback inbox</h2>
+              <p id="dev-feedback-source" class="dev-section-meta">Loading…</p>
+            </div>
+            <ul id="dev-feedback-list" class="dev-feedback-list"></ul>
+          </section>
+
+          <section class="dev-section" aria-labelledby="dev-versions-heading">
+            <div class="dev-section-head">
+              <h2 id="dev-versions-heading">Versions</h2>
+              <p class="dev-section-meta">Switch builds from versions.json</p>
+            </div>
+            <div id="dev-version-list" class="dev-version-list"></div>
+          </section>
+        </div>
+      </div>
+
       <button id="mute-btn" class="mute-btn" type="button" aria-label="Mute sound" aria-pressed="false">
         <svg class="mute-icon mute-icon-on" viewBox="0 0 24 24" aria-hidden="true">
           <path
@@ -126,12 +213,14 @@
       </button>
 
       <div id="overlay" class="overlay">
-        <button id="home-board-btn" class="board-icon-btn" type="button" aria-label="Leaderboard">
-          <svg class="board-icon-svg" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M5 20h14v-1.5H5V20zm2.5-4h2V10h-2v6zm3.5 0h2V7h-2v9zm3.5 0h2V12h-2v4z" fill="currentColor"/>
-          </svg>
-          <span class="board-icon-label">BOARD</span>
-        </button>
+        <div class="home-top-actions">
+          <button id="home-board-btn" class="board-icon-btn" type="button" aria-label="Leaderboard">
+            <svg class="board-icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 20h14v-1.5H5V20zm2.5-4h2V10h-2v6zm3.5 0h2V7h-2v9zm3.5 0h2V12h-2v4z" fill="currentColor"/>
+            </svg>
+            <span class="board-icon-label">BOARD</span>
+          </button>
+        </div>
         <div class="overlay-inner">
           <p class="eyebrow">READY TO RACE</p>
           <h1>RACER<br /><span>ONLINE</span></h1>
@@ -157,7 +246,7 @@
 
       <div id="leaderboard" class="overlay hidden">
         <div class="overlay-inner board-panel">
-          <p class="eyebrow">WORLDWIDE</p>
+          <p class="eyebrow" id="board-eyebrow">WORLDWIDE · 2026</p>
           <h1>TOP 10</h1>
           <p id="board-source" class="tagline board-source">Loading…</p>
           <div class="board-body">

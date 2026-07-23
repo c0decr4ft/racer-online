@@ -320,6 +320,17 @@ export class RivalAI {
   private readonly _far = new THREE.Vector3();
   private readonly _tan = new THREE.Vector3();
   private readonly _n = new THREE.Vector3();
+  private readonly _tmp = new THREE.Vector3();
+  /** Reused AI control input — avoid allocating a new object every frame. */
+  private readonly _driveInput: InputState = {
+    throttle: 0,
+    brake: 0,
+    steer: 0,
+    reset: false,
+    pause: false,
+    gear: null,
+    shiftDelta: 0,
+  };
 
   constructor(vehicle: Vehicle, laneOffset: number, skill: number, gridIndex = 0) {
     this.vehicle = vehicle;
@@ -407,7 +418,8 @@ export class RivalAI {
     line.tangentAtT(bestT, this._tan);
     this._n.set(-this._tan.z, 0, this._tan.x);
     line.pointAtT(bestT, this._aim);
-    const lateralFromLine = pos.clone().sub(this._aim).dot(this._n);
+    const lateralFromLine =
+      (pos.x - this._aim.x) * this._n.x + (pos.z - this._aim.z) * this._n.z;
     // CTE: positive → need left steer (toward line). Car left of line → negative.
     const laneErr = -lateralFromLine;
 
@@ -417,11 +429,11 @@ export class RivalAI {
     while (facingErr < -Math.PI) facingErr += Math.PI * 2;
 
     // Stuck / wall: rare snap onto the re-traced line — never continuous sideways yank
-    const lateralFromCenter = (() => {
-      const cTan = path.getTangentAt(bestT).normalize();
-      const cN = new THREE.Vector3(-cTan.z, 0, cTan.x);
-      return pos.clone().sub(path.getPointAt(bestT)).dot(cN);
-    })();
+    path.getTangentAt(bestT, this._tmp).normalize();
+    const cNx = -this._tmp.z;
+    const cNz = this._tmp.x;
+    path.getPointAt(bestT, this._tmp);
+    const lateralFromCenter = (pos.x - this._tmp.x) * cNx + (pos.z - this._tmp.z) * cNz;
     const nearWall = Math.abs(lateralFromCenter) > 5.0;
     const offLine = Math.abs(laneErr) > 2.4;
     if (absSpeed < 2.5 || (nearWall && absSpeed < 8) || (offLine && nearWall && absSpeed < 14)) {
@@ -595,15 +607,11 @@ export class RivalAI {
       throttle *= 0.95;
     }
 
-    this.vehicle.update(dt, {
-      throttle,
-      brake,
-      steer,
-      reset: false,
-      pause: false,
-      gear: null,
-      shiftDelta: 0,
-    });
+    const input = this._driveInput;
+    input.throttle = throttle;
+    input.brake = brake;
+    input.steer = steer;
+    this.vehicle.update(dt, input);
   }
 
   /** Slow cruise along the groove after finishing — clears racing lines. */
@@ -622,15 +630,11 @@ export class RivalAI {
     if (this.vehicle.state.gear !== 2 && this.vehicle.state.gear !== 1) {
       this.vehicle.setGear(2);
     }
-    this.vehicle.update(dt, {
-      throttle,
-      brake,
-      steer: THREE.MathUtils.clamp(headingError * 2.2, -1, 1),
-      reset: false,
-      pause: false,
-      gear: null,
-      shiftDelta: 0,
-    });
+    const input = this._driveInput;
+    input.throttle = throttle;
+    input.brake = brake;
+    input.steer = THREE.MathUtils.clamp(headingError * 2.2, -1, 1);
+    this.vehicle.update(dt, input);
   }
 
   /** Place the car on its re-traced racing line at track-t, facing forward. */

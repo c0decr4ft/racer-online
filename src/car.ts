@@ -217,6 +217,8 @@ export function createCar(bodyColor = 0xd0d7e0, raceNumber = 7): THREE.Group {
   car.userData.steers = steers;
   car.userData.spinners = spinners;
   car.userData.wheelRadius = r;
+  car.userData.bodyMaterial = body;
+  car.userData.bodyColor = bodyColor;
   return car;
 }
 
