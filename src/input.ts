@@ -25,6 +25,16 @@ export class Input {
   pausePressed = false;
   private gearPress: Gear | null = null;
   private shiftPress: -1 | 0 | 1 = 0;
+  /** Mutated in place by getState — avoid a new object every frame. */
+  private readonly state: InputState = {
+    throttle: 0,
+    brake: 0,
+    steer: 0,
+    reset: false,
+    pause: false,
+    gear: null,
+    shiftDelta: 0,
+  };
 
   constructor() {
     window.addEventListener("keydown", (e) => {
@@ -101,17 +111,17 @@ export class Input {
     const shiftDelta = this.shiftPress;
     this.shiftPress = 0;
 
-    return {
-      throttle: up ? 1 : 0,
-      brake: down || space ? 1 : 0,
-      // Positive steer increases heading, which turns the car LEFT
-      // (heading: x += sin(h), z += cos(h); +h rotates forward toward +x,
-      // and +x is screen-left with the chase cam). So A = +1, D = -1.
-      steer: (left ? 1 : 0) + (right ? -1 : 0),
-      reset,
-      pause,
-      gear,
-      shiftDelta,
-    };
+    const s = this.state;
+    s.throttle = up ? 1 : 0;
+    s.brake = down || space ? 1 : 0;
+    // Positive steer increases heading, which turns the car LEFT
+    // (heading: x += sin(h), z += cos(h); +h rotates forward toward +x,
+    // and +x is screen-left with the chase cam). So A = +1, D = -1.
+    s.steer = (left ? 1 : 0) + (right ? -1 : 0);
+    s.reset = reset;
+    s.pause = pause;
+    s.gear = gear;
+    s.shiftDelta = shiftDelta;
+    return s;
   }
 }

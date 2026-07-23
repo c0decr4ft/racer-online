@@ -442,6 +442,10 @@ export type TrackProjection = {
   tangent: THREE.Vector3;
 };
 
+/** Scratch for projection sample loops — avoid per-sample Vector3 GC. */
+const _projScratch = new THREE.Vector3();
+const _projTangent = new THREE.Vector3();
+
 /**
  * Invisible sequential progress gates along the circuit (fractional path t).
  * A start/finish crossing only counts as a lap after all gates are cleared in order.
@@ -490,20 +494,21 @@ function finishProjection(
 ): TrackProjection {
   for (let k = -6; k <= 6; k++) {
     const t = (bestT + k * refineStep * 0.2 + 1) % 1;
-    const p = path.getPointAt(t);
-    const d = p.distanceToSquared(position);
+    path.getPointAt(t, _projScratch);
+    const d = _projScratch.distanceToSquared(position);
     if (d < bestDist) {
       bestDist = d;
       bestT = t;
-      bestPoint.copy(p);
+      bestPoint.copy(_projScratch);
     }
   }
 
-  const tangent = path.getTangentAt(bestT).normalize();
-  const nx = -tangent.z;
-  const nz = tangent.x;
+  path.getTangentAt(bestT, _projTangent).normalize();
+  const nx = -_projTangent.z;
+  const nz = _projTangent.x;
   const distanceFromCenter = (position.x - bestPoint.x) * nx + (position.z - bestPoint.z) * nz;
-  return { t: bestT, point: bestPoint, distanceFromCenter, tangent };
+  // tangent aliases module scratch — callers must read it before the next project*
+  return { t: bestT, point: bestPoint, distanceFromCenter, tangent: _projTangent };
 }
 
 /** Global nearest-point search. Only safe for spawn/reset: on a circuit whose
@@ -520,12 +525,12 @@ export function projectOnTrack(
 
   for (let i = 0; i < samples; i++) {
     const t = i / samples;
-    const p = path.getPointAt(t);
-    const d = p.distanceToSquared(position);
+    path.getPointAt(t, _projScratch);
+    const d = _projScratch.distanceToSquared(position);
     if (d < bestDist) {
       bestDist = d;
       bestT = t;
-      bestPoint.copy(p);
+      bestPoint.copy(_projScratch);
     }
   }
 
@@ -548,12 +553,12 @@ export function projectOnTrackNear(
 
   for (let i = 0; i <= samples; i++) {
     const t = (tHint - window + i * step + 1) % 1;
-    const p = path.getPointAt(t);
-    const d = p.distanceToSquared(position);
+    path.getPointAt(t, _projScratch);
+    const d = _projScratch.distanceToSquared(position);
     if (d < bestDist) {
       bestDist = d;
       bestT = t;
-      bestPoint.copy(p);
+      bestPoint.copy(_projScratch);
     }
   }
 

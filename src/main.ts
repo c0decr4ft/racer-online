@@ -1,5 +1,8 @@
 import "./style.css";
+import { initDevDashboard } from "./devDashboard";
+import { initFeedbackCompose } from "./feedbackCompose";
 import { Game } from "./game";
+import { startPresenceHeartbeat } from "./net/presence";
 import { GAME_VERSION } from "./version";
 import { initVersionSwitcher } from "./versions";
 
@@ -9,6 +12,9 @@ if (!(canvas instanceof HTMLCanvasElement)) {
 }
 
 initVersionSwitcher();
+initDevDashboard();
+initFeedbackCompose();
+startPresenceHeartbeat();
 
 const game = new Game(canvas);
 Object.assign(window, { __game: game });
