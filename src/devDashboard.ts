@@ -59,7 +59,7 @@ function renderActivityChart(svg: SVGSVGElement, buckets: PresenceBucket[]): voi
     empty.setAttribute("fill", "rgba(168,180,196,0.9)");
     empty.setAttribute("font-size", "13");
     empty.setAttribute("font-family", "Rajdhani, sans-serif");
-    empty.textContent = "No activity data yet — heartbeats will fill this in";
+    empty.textContent = "No human activity yet — browser heartbeats will fill this in";
     svg.appendChild(empty);
     return;
   }
@@ -199,7 +199,7 @@ function applyPresence(snap: PresenceSnapshot): void {
   if (sourceEl instanceof HTMLElement) {
     sourceEl.textContent =
       snap.source === "online"
-        ? `Updated ${formatWhen(snap.updatedAt || Date.now())} · now = live sessions · chart = hourly peaks (UTC)`
+        ? `Updated ${formatWhen(snap.updatedAt || Date.now())} · humans only (1 tab = 1) · AI never counted · chart = hourly concurrent humans (UTC)`
         : "Offline — could not reach presence store";
   }
   if (svg instanceof SVGSVGElement) renderActivityChart(svg, snap.buckets);

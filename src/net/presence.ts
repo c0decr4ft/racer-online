@@ -1,13 +1,15 @@
 /**
- * Lightweight player-presence store (JSONBlob), same pattern as the leaderboard.
+ * Lightweight human-presence store (JSONBlob), same pattern as the leaderboard.
  *
  * Public blob (read/write):
  *   https://jsonblob.com/api/jsonBlob/019f8e7b-0531-7284-a6c5-37b403b91b8d
  *
- * Shape: { buckets: { "YYYY-MM-DDTHH": peakCount }, sessions: { id: lastSeenMs }, updatedAt }
- * Clients heartbeat every ~40s while visible; stale sessions drop after 90s.
- * Hourly peak buckets store the max true concurrent count for that hour (never invented).
- * Current "online" = count of non-expired sessions only — never a peak bucket.
+ * Shape: { buckets: { "YYYY-MM-DDTHH": peakCount }, sessions: { id: lastSeenMs }, updatedAt, historyEpoch? }
+ *
+ * Counts unique browser tabs only (one session id per tab). AI / race-grid cars are never written
+ * or counted. Clients heartbeat every ~40s while visible; hidden/closed tabs leave immediately.
+ * Hourly peak buckets = max concurrent human sessions that hour (never invented, never car counts).
+ * Current "online" = non-expired sessions only — never a peak bucket.
  */
 
 const PUBLIC_BLOB_URL =
@@ -15,10 +17,16 @@ const PUBLIC_BLOB_URL =
 
 const SESSION_KEY = "racer-presence-session";
 const HEARTBEAT_MS = 40_000;
-/** Drop sessions that haven't heartbeated within this window (~1.5 min). */
-const STALE_MS = 90_000;
+/** Drop sessions that haven't heartbeated within this window (~1 heartbeat miss + margin). */
+const STALE_MS = 75_000;
 const KEEP_HOURS = 14 * 24;
 const WRITE_ATTEMPTS = 4;
+/**
+ * Bump to discard historically inflated peak buckets (ghost-session races / agent tabs).
+ * Live sessions are always pruned by STALE_MS; this only resets the graph series.
+ */
+const HISTORY_EPOCH = 2;
+const STARTED_FLAG = "__racerPresenceHeartbeatStarted";
 
 export type PresenceBucket = { key: string; count: number; at: number };
 export type PresenceSnapshot = {
@@ -32,10 +40,11 @@ type PresenceStore = {
   buckets: Record<string, number>;
   sessions: Record<string, number>;
   updatedAt: number;
+  historyEpoch: number;
 };
 
 function emptyStore(): PresenceStore {
-  return { buckets: {}, sessions: {}, updatedAt: 0 };
+  return { buckets: {}, sessions: {}, updatedAt: 0, historyEpoch: HISTORY_EPOCH };
 }
 
 function hourKey(ms: number): string {
@@ -56,14 +65,22 @@ function hourKeyToMs(key: string): number {
 function parseStore(data: unknown): PresenceStore {
   const store = emptyStore();
   if (!data || typeof data !== "object") return store;
-  const obj = data as Partial<PresenceStore>;
-  if (obj.buckets && typeof obj.buckets === "object") {
+  const obj = data as Partial<PresenceStore> & { historyEpoch?: unknown };
+  const epoch =
+    typeof obj.historyEpoch === "number" && Number.isFinite(obj.historyEpoch)
+      ? Math.round(obj.historyEpoch)
+      : 0;
+  store.historyEpoch = epoch;
+
+  // Drop pre-epoch peaks — they mixed ghost sessions into the graph.
+  if (epoch >= HISTORY_EPOCH && obj.buckets && typeof obj.buckets === "object") {
     for (const [k, v] of Object.entries(obj.buckets)) {
       if (/^\d{4}-\d{2}-\d{2}T\d{2}$/.test(k) && typeof v === "number" && Number.isFinite(v) && v >= 0) {
         store.buckets[k] = Math.max(0, Math.round(v));
       }
     }
   }
+
   if (obj.sessions && typeof obj.sessions === "object") {
     for (const [id, at] of Object.entries(obj.sessions)) {
       if (typeof id === "string" && id.length >= 8 && typeof at === "number" && Number.isFinite(at) && at > 0) {
@@ -84,11 +101,19 @@ function pruneStore(store: PresenceStore, now = Date.now()): PresenceStore {
   }
   const cutoff = now - KEEP_HOURS * 3_600_000;
   const buckets: Record<string, number> = {};
-  for (const [k, v] of Object.entries(store.buckets)) {
-    const at = hourKeyToMs(k);
-    if (at >= cutoff) buckets[k] = v;
+  // Only keep peaks from the current history epoch (human heartbeats only).
+  if (store.historyEpoch >= HISTORY_EPOCH) {
+    for (const [k, v] of Object.entries(store.buckets)) {
+      const at = hourKeyToMs(k);
+      if (at >= cutoff) buckets[k] = v;
+    }
   }
-  return { buckets, sessions, updatedAt: store.updatedAt };
+  return {
+    buckets,
+    sessions,
+    updatedAt: store.updatedAt,
+    historyEpoch: Math.max(store.historyEpoch, HISTORY_EPOCH),
+  };
 }
 
 function activeCount(store: PresenceStore, now = Date.now()): number {
@@ -120,6 +145,7 @@ function recordPeak(store: PresenceStore, now = Date.now()): void {
   const key = hourKey(now);
   store.buckets[key] = Math.max(store.buckets[key] ?? 0, peak);
   store.updatedAt = now;
+  store.historyEpoch = HISTORY_EPOCH;
 }
 
 function applyHeartbeat(store: PresenceStore, id: string, now = Date.now()): PresenceStore {
@@ -134,6 +160,7 @@ function applyLeave(store: PresenceStore, id: string, now = Date.now()): Presenc
   delete next.sessions[id];
   // Do not rewrite hourly peaks on leave — peaks are historical maxima.
   next.updatedAt = now;
+  next.historyEpoch = HISTORY_EPOCH;
   return next;
 }
 
@@ -206,6 +233,7 @@ async function fetchStore(): Promise<PresenceStore> {
 async function putStore(store: PresenceStore, keepalive = false): Promise<PresenceStore> {
   const body = pruneStore(store);
   body.updatedAt = Date.now();
+  body.historyEpoch = HISTORY_EPOCH;
   const res = await fetch(PUBLIC_BLOB_URL, {
     method: "PUT",
     headers: {
@@ -239,14 +267,16 @@ async function mutatePresenceOnce(
     const now = Date.now();
     const remote = pruneStore(await fetchStore(), now);
     const next = mutate(remote, now);
-    // Preserve any higher historical peaks we already computed locally this attempt.
+    // Preserve higher peaks only within the current history epoch.
     next.buckets = mergeBucketPeaks(remote.buckets, next.buckets);
+    next.historyEpoch = HISTORY_EPOCH;
     await putStore(next, opts.keepalive);
 
     const latest = pruneStore(await fetchStore(), Date.now());
     // Re-apply intent on whatever won the race — never merge stale local sessions.
     const reconciled = mutate(latest, Date.now());
     reconciled.buckets = mergeBucketPeaks(latest.buckets, reconciled.buckets);
+    reconciled.historyEpoch = HISTORY_EPOCH;
 
     if (sessionsEqual(reconciled.sessions, latest.sessions) && bucketsEqual(reconciled.buckets, latest.buckets)) {
       return reconciled;
@@ -317,8 +347,15 @@ let heartbeatInFlight = false;
 
 /** Start periodic heartbeats while the page is visible. Safe to call once from main. */
 export function startPresenceHeartbeat(): void {
+  // Survive Vite HMR so we don't stack intervals (same tab id, but extra write load).
+  if (typeof window !== "undefined" && (window as unknown as Record<string, unknown>)[STARTED_FLAG]) {
+    return;
+  }
   if (presenceStarted) return;
   presenceStarted = true;
+  if (typeof window !== "undefined") {
+    (window as unknown as Record<string, unknown>)[STARTED_FLAG] = true;
+  }
 
   const tick = () => {
     if (document.visibilityState === "hidden") return;
@@ -341,8 +378,12 @@ export function startPresenceHeartbeat(): void {
   setInterval(tick, HEARTBEAT_MS);
 
   document.addEventListener("visibilitychange", () => {
-    // Hidden tabs stop heartbeating; they fall out after STALE_MS.
-    if (document.visibilityState === "visible") tick();
+    if (document.visibilityState === "visible") {
+      tick();
+    } else {
+      // Drop immediately so "playing now" doesn't linger until STALE_MS.
+      void endPresenceSession();
+    }
   });
 
   // Restore from bfcache — pagehide may have removed us; re-announce.
@@ -369,5 +410,6 @@ export const __presenceTest = {
   mergeBucketPeaks,
   sessionsEqual,
   STALE_MS,
+  HISTORY_EPOCH,
   emptyStore,
 };
