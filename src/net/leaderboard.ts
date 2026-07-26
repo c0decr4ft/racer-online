@@ -63,8 +63,19 @@ function normalizeTrackId(raw: unknown): string {
   return isTrackId(id) ? id : DEFAULT_TRACK_ID;
 }
 
-const PUBLIC_BLOB_URL =
-  "https://jsonblob.com/api/jsonBlob/019f89b5-c828-7f52-80b7-ca3888e5ae1b";
+/**
+ * Public worldwide board (JSONBlob). Read/write from any browser — independent of the
+ * developer's laptop and of the optional local :8787 server.
+ *
+ * Recreated 2026-07-26 after the previous blob returned 404 (service expired it).
+ * Note: current jsonblob.com issues short TTLs (~24h on create). If BOARD goes
+ * "offline" again with GET 404, POST a fresh blob and update this URL.
+ */
+export const PUBLIC_BLOB_URL =
+  "https://jsonblob.com/api/jsonBlob/019f9de3-a976-77fd-a689-adc8ad4e118f";
+
+const BLOB_ATTEMPTS = 4;
+const BLOB_RETRY_BASE_MS = 250;
 
 function localApiBase(): string | null {
   const host = location.hostname || "127.0.0.1";
@@ -228,6 +239,43 @@ function writeStoreLocally(store: BoardStore) {
   for (const t of TRACKS) writeLocal(t.id, normalize(store[t.id] ?? [], t.id));
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function shouldRetryBlobStatus(status: number): boolean {
+  return status === 429 || status === 408 || status >= 500;
+}
+
+/** Fetch JSONBlob with backoff on transient network / rate-limit / 5xx failures. */
+async function fetchBlobResponse(init?: RequestInit): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < BLOB_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(PUBLIC_BLOB_URL, {
+        cache: "no-store",
+        ...init,
+        headers: {
+          Accept: "application/json",
+          ...(init?.headers ?? {}),
+        },
+      });
+      if (shouldRetryBlobStatus(res.status) && attempt < BLOB_ATTEMPTS - 1) {
+        await sleep(BLOB_RETRY_BASE_MS * 2 ** attempt);
+        continue;
+      }
+      return res;
+    } catch (err) {
+      lastError = err;
+      if (attempt < BLOB_ATTEMPTS - 1) {
+        await sleep(BLOB_RETRY_BASE_MS * 2 ** attempt);
+        continue;
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("blob fetch failed");
+}
+
 async function fetchLocalServerStore(): Promise<BoardStore | null> {
   const base = localApiBase();
   if (!base) return null;
@@ -243,28 +291,27 @@ async function fetchLocalServerStore(): Promise<BoardStore | null> {
 }
 
 async function fetchPublicBlobStore(): Promise<BoardStore> {
-  const res = await fetch(PUBLIC_BLOB_URL, {
-    cache: "no-store",
-    headers: { Accept: "application/json" },
-  });
+  const res = await fetchBlobResponse();
   if (!res.ok) throw new Error(String(res.status));
   const data = await res.json();
   if (!isBoardPayload(data)) throw new Error("unrecognized board payload");
   return parseStore(data);
 }
 
-async function putPublicBlobStore(store: BoardStore): Promise<BoardStore> {
+function storeToPayload(store: BoardStore): { byTrack: BoardStore } {
   const byTrack: BoardStore = emptyStore();
   for (const t of TRACKS) {
     byTrack[t.id] = normalize(store[t.id] ?? [], t.id);
   }
-  const res = await fetch(PUBLIC_BLOB_URL, {
+  return { byTrack };
+}
+
+async function putPublicBlobStore(store: BoardStore): Promise<BoardStore> {
+  const payload = storeToPayload(store);
+  const res = await fetchBlobResponse({
     method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({ byTrack }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(String(res.status));
   try {
@@ -273,7 +320,7 @@ async function putPublicBlobStore(store: BoardStore): Promise<BoardStore> {
   } catch {
     /* some hosts omit a JSON body on PUT */
   }
-  return byTrack;
+  return payload.byTrack;
 }
 
 /**
@@ -335,14 +382,16 @@ export async function fetchLeaderboard(
 ): Promise<{ entries: LeaderboardEntry[]; source: BoardSource }> {
   const tid = normalizeTrackId(trackId);
   const local = readLocalStore();
-  const fromServer = await fetchLocalServerStore();
 
+  // Cloud first — local :8787 is an optional cache only and must not gate "online".
   let fromPublic: BoardStore | null = null;
   try {
     fromPublic = await fetchPublicBlobStore();
   } catch {
     fromPublic = null;
   }
+
+  const fromServer = await fetchLocalServerStore();
 
   // Merge every source so an empty local-dev server never hides / wipes worldwide scores.
   const merged = mergeBoardStores(local, fromServer ?? emptyStore(), fromPublic ?? emptyStore());
@@ -388,7 +437,13 @@ export async function submitScore(
   let fromServer: BoardStore | null = null;
   let fromPublic: BoardStore | null = null;
 
-  // Persist on local server when available — but never treat that as the sole worldwide truth.
+  // Cloud read first (source of truth), then optional local-server cache write.
+  try {
+    fromPublic = await fetchPublicBlobStore();
+  } catch {
+    fromPublic = null;
+  }
+
   const base = localApiBase();
   if (base) {
     try {
@@ -402,14 +457,8 @@ export async function submitScore(
         if (isBoardPayload(data)) fromServer = parseStore(data);
       }
     } catch {
-      /* fall through */
+      /* fall through — local server is optional */
     }
-  }
-
-  try {
-    fromPublic = await fetchPublicBlobStore();
-  } catch {
-    fromPublic = null;
   }
 
   let store = insertEntry(
@@ -424,6 +473,7 @@ export async function submitScore(
     cacheStoreLocally(store);
     return { entries: entriesFor(store, tid), source: "online" };
   } catch {
+    // Still allow a local/server save when cloud is down; UI must not claim worldwide.
     if (fromServer) {
       return { entries: entriesFor(store, tid), source: "server" };
     }
@@ -441,8 +491,11 @@ export function formatBoardTime(ms: number): string {
 }
 
 export function boardSourceLabel(source: BoardSource, saved = false): string {
-  if (source === "online" || source === "server") {
+  if (source === "online") {
     return saved ? "Saved to worldwide board" : "Live worldwide board";
+  }
+  if (source === "server") {
+    return saved ? "Saved on local server · not worldwide" : "Local server board · not worldwide";
   }
   return saved ? "Saved locally · offline" : "Local board · offline";
 }
