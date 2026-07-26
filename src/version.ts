@@ -9,4 +9,4 @@
  *   1.1 → 1.2 → … → 1.9 → 2.0 → 2.1 → …
  * When the minor hits 9 and bumps: `X.9` → `(X+1).0`.
  */
-export const GAME_VERSION = "1.7";
+export const GAME_VERSION = "1.8";

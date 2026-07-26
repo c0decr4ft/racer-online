@@ -72,7 +72,7 @@ function localApiBase(): string | null {
   return null;
 }
 
-type BoardStore = Record<string, LeaderboardEntry[]>;
+export type BoardStore = Record<string, LeaderboardEntry[]>;
 
 function readLocal(trackId: string): LeaderboardEntry[] {
   try {
@@ -86,7 +86,11 @@ function readLocal(trackId: string): LeaderboardEntry[] {
 }
 
 function writeLocal(trackId: string, entries: LeaderboardEntry[]) {
-  localStorage.setItem(storageKey(trackId), JSON.stringify(entries.slice(0, MAX)));
+  try {
+    localStorage.setItem(storageKey(trackId), JSON.stringify(entries.slice(0, MAX)));
+  } catch {
+    /* ignore quota / private mode */
+  }
 }
 
 const TIME_EPS_MS = 15;
@@ -109,7 +113,8 @@ function pickBetter(a: LeaderboardEntry, b: LeaderboardEntry): LeaderboardEntry 
   return earlier;
 }
 
-function normalize(entries: LeaderboardEntry[], trackId?: string): LeaderboardEntry[] {
+/** Normalize, dedupe near-identical runs, keep top N. */
+export function normalize(entries: LeaderboardEntry[], trackId?: string): LeaderboardEntry[] {
   const tid = trackId ? normalizeTrackId(trackId) : undefined;
   const cleaned = [...entries]
     .filter((e) => e && typeof e.timeMs === "number" && Number.isFinite(e.timeMs) && e.timeMs > 0)
@@ -141,21 +146,53 @@ function normalize(entries: LeaderboardEntry[], trackId?: string): LeaderboardEn
   return unique.sort((a, b) => a.timeMs - b.timeMs || (a.at || 0) - (b.at || 0)).slice(0, MAX);
 }
 
-function emptyStore(): BoardStore {
+export function emptyStore(): BoardStore {
   const store: BoardStore = {};
   for (const t of TRACKS) store[t.id] = [];
   return store;
 }
 
-function parseStore(data: unknown): BoardStore {
+export function storeEntryCount(store: BoardStore): number {
+  let n = 0;
+  for (const t of TRACKS) n += store[t.id]?.length ?? 0;
+  return n;
+}
+
+/** Union all per-track lists, then normalize/top-N each track. */
+export function mergeBoardStores(...stores: BoardStore[]): BoardStore {
+  const out = emptyStore();
+  for (const t of TRACKS) {
+    const merged: LeaderboardEntry[] = [];
+    for (const s of stores) {
+      const list = s?.[t.id];
+      if (Array.isArray(list) && list.length) merged.push(...list);
+    }
+    out[t.id] = normalize(merged, t.id);
+  }
+  return out;
+}
+
+function isBoardPayload(data: unknown): boolean {
+  if (!data || typeof data !== "object") return false;
+  if (Array.isArray(data)) return true;
+  const obj = data as { byTrack?: unknown; entries?: unknown; error?: unknown };
+  if (obj.error != null && obj.byTrack == null && obj.entries == null) return false;
+  if (obj.byTrack && typeof obj.byTrack === "object") return true;
+  if (Array.isArray(obj.entries)) return true;
+  return false;
+}
+
+export function parseStore(data: unknown): BoardStore {
   const store = emptyStore();
-  if (!data || typeof data !== "object") return store;
+  if (!isBoardPayload(data)) return store;
 
   const obj = data as { byTrack?: unknown; entries?: unknown };
   if (obj.byTrack && typeof obj.byTrack === "object") {
     for (const [id, list] of Object.entries(obj.byTrack as Record<string, unknown>)) {
       const tid = normalizeTrackId(id);
-      if (Array.isArray(list)) store[tid] = normalize(list as LeaderboardEntry[], tid);
+      if (!Array.isArray(list)) continue;
+      // Merge when legacy / unknown ids collapse onto the same track
+      store[tid] = normalize([...(store[tid] ?? []), ...(list as LeaderboardEntry[])], tid);
     }
     return store;
   }
@@ -175,13 +212,31 @@ function entriesFor(store: BoardStore, trackId: string): LeaderboardEntry[] {
   return normalize(store[tid] ?? [], tid);
 }
 
+function readLocalStore(): BoardStore {
+  const store = emptyStore();
+  for (const t of TRACKS) store[t.id] = normalize(readLocal(t.id), t.id);
+  return store;
+}
+
+/** Cache a store locally without dropping any scores already cached. */
+function cacheStoreLocally(store: BoardStore) {
+  const merged = mergeBoardStores(readLocalStore(), store);
+  for (const t of TRACKS) writeLocal(t.id, merged[t.id] ?? []);
+}
+
+function writeStoreLocally(store: BoardStore) {
+  for (const t of TRACKS) writeLocal(t.id, normalize(store[t.id] ?? [], t.id));
+}
+
 async function fetchLocalServerStore(): Promise<BoardStore | null> {
   const base = localApiBase();
   if (!base) return null;
   try {
     const res = await fetch(`${base}/api/leaderboard`, { cache: "no-store" });
     if (!res.ok) return null;
-    return parseStore(await res.json());
+    const data = await res.json();
+    if (!isBoardPayload(data)) return null;
+    return parseStore(data);
   } catch {
     return null;
   }
@@ -193,7 +248,9 @@ async function fetchPublicBlobStore(): Promise<BoardStore> {
     headers: { Accept: "application/json" },
   });
   if (!res.ok) throw new Error(String(res.status));
-  return parseStore(await res.json());
+  const data = await res.json();
+  if (!isBoardPayload(data)) throw new Error("unrecognized board payload");
+  return parseStore(data);
 }
 
 async function putPublicBlobStore(store: BoardStore): Promise<BoardStore> {
@@ -211,33 +268,99 @@ async function putPublicBlobStore(store: BoardStore): Promise<BoardStore> {
   });
   if (!res.ok) throw new Error(String(res.status));
   try {
-    return parseStore(await res.json());
+    const data = await res.json();
+    if (isBoardPayload(data)) return parseStore(data);
   } catch {
-    return byTrack;
+    /* some hosts omit a JSON body on PUT */
   }
+  return byTrack;
 }
 
-function cacheStoreLocally(store: BoardStore) {
-  for (const t of TRACKS) writeLocal(t.id, store[t.id] ?? []);
+/**
+ * Write store to the public blob after merging with the latest remote.
+ * Never replaces a non-empty remote track with an empty list.
+ */
+async function publishMergedStore(store: BoardStore): Promise<BoardStore> {
+  let latest: BoardStore;
+  try {
+    latest = await fetchPublicBlobStore();
+  } catch {
+    // If we cannot read remote, only write when we actually have scores to preserve.
+    if (storeEntryCount(store) === 0) throw new Error("refusing empty publish without remote");
+    return putPublicBlobStore(store);
+  }
+
+  const merged = mergeBoardStores(latest, store);
+  for (const t of TRACKS) {
+    const remoteList = latest[t.id] ?? [];
+    const nextList = merged[t.id] ?? [];
+    if (remoteList.length > 0 && nextList.length === 0) {
+      merged[t.id] = remoteList;
+    }
+  }
+
+  // Refuse a full wipe of a previously non-empty worldwide board.
+  if (storeEntryCount(latest) > 0 && storeEntryCount(merged) === 0) {
+    return latest;
+  }
+
+  let written = await putPublicBlobStore(merged);
+
+  // Second pass: absorb concurrent submits that landed between fetch and put.
+  try {
+    const againRemote = await fetchPublicBlobStore();
+    const again = mergeBoardStores(againRemote, written, store);
+    if (
+      storeEntryCount(again) > storeEntryCount(written) ||
+      JSON.stringify(again) !== JSON.stringify(written)
+    ) {
+      written = await putPublicBlobStore(again);
+    }
+  } catch {
+    /* keep first write */
+  }
+
+  return written;
+}
+
+function insertEntry(store: BoardStore, entry: LeaderboardEntry, trackId: string): BoardStore {
+  const tid = normalizeTrackId(trackId);
+  const next = mergeBoardStores(store);
+  next[tid] = normalize([...(next[tid] ?? []), entry], tid);
+  return next;
 }
 
 export async function fetchLeaderboard(
   trackId: string = DEFAULT_TRACK_ID,
 ): Promise<{ entries: LeaderboardEntry[]; source: BoardSource }> {
   const tid = normalizeTrackId(trackId);
+  const local = readLocalStore();
   const fromServer = await fetchLocalServerStore();
-  if (fromServer) {
-    cacheStoreLocally(fromServer);
-    return { entries: entriesFor(fromServer, tid), source: "server" };
+
+  let fromPublic: BoardStore | null = null;
+  try {
+    fromPublic = await fetchPublicBlobStore();
+  } catch {
+    fromPublic = null;
   }
 
-  try {
-    const store = await fetchPublicBlobStore();
-    cacheStoreLocally(store);
-    return { entries: entriesFor(store, tid), source: "online" };
-  } catch {
-    return { entries: normalize(readLocal(tid), tid), source: "local" };
+  // Merge every source so an empty local-dev server never hides / wipes worldwide scores.
+  const merged = mergeBoardStores(local, fromServer ?? emptyStore(), fromPublic ?? emptyStore());
+  cacheStoreLocally(merged);
+
+  if (fromPublic) {
+    // Heal a wiped/empty remote from local or server scores when we have more.
+    if (storeEntryCount(merged) > storeEntryCount(fromPublic)) {
+      void publishMergedStore(merged).catch(() => undefined);
+    }
+    return { entries: entriesFor(merged, tid), source: "online" };
   }
+
+  if (fromServer) {
+    return { entries: entriesFor(merged, tid), source: "server" };
+  }
+
+  return { entries: entriesFor(merged, tid), source: "local" };
 }
 
 export async function wouldQualify(timeMs: number, trackId: string = DEFAULT_TRACK_ID): Promise<boolean> {
@@ -261,6 +384,11 @@ export async function submitScore(
     trackId: tid,
   };
 
+  const local = readLocalStore();
+  let fromServer: BoardStore | null = null;
+  let fromPublic: BoardStore | null = null;
+
+  // Persist on local server when available — but never treat that as the sole worldwide truth.
   const base = localApiBase();
   if (base) {
     try {
@@ -270,10 +398,8 @@ export async function submitScore(
         body: JSON.stringify(entry),
       });
       if (res.ok) {
-        const store = parseStore(await res.json());
-        cacheStoreLocally(store);
-        void putPublicBlobStore(store).catch(() => undefined);
-        return { entries: entriesFor(store, tid), source: "server" };
+        const data = await res.json();
+        if (isBoardPayload(data)) fromServer = parseStore(data);
       }
     } catch {
       /* fall through */
@@ -281,24 +407,27 @@ export async function submitScore(
   }
 
   try {
-    let store = await fetchPublicBlobStore();
-    store[tid] = normalize([...(store[tid] ?? []), entry], tid);
-    store = await putPublicBlobStore(store);
-    try {
-      const latest = await fetchPublicBlobStore();
-      latest[tid] = normalize([...(latest[tid] ?? []), entry], tid);
-      if (JSON.stringify(latest[tid]) !== JSON.stringify(store[tid])) {
-        store = await putPublicBlobStore(latest);
-      }
-    } catch {
-      /* keep first write */
-    }
+    fromPublic = await fetchPublicBlobStore();
+  } catch {
+    fromPublic = null;
+  }
+
+  let store = insertEntry(
+    mergeBoardStores(local, fromServer ?? emptyStore(), fromPublic ?? emptyStore()),
+    entry,
+    tid,
+  );
+  writeStoreLocally(store);
+
+  try {
+    store = insertEntry(await publishMergedStore(store), entry, tid);
     cacheStoreLocally(store);
     return { entries: entriesFor(store, tid), source: "online" };
   } catch {
-    const merged = normalize([...readLocal(tid), entry], tid);
-    writeLocal(tid, merged);
-    return { entries: merged, source: "local" };
+    if (fromServer) {
+      return { entries: entriesFor(store, tid), source: "server" };
+    }
+    return { entries: entriesFor(store, tid), source: "local" };
   }
 }
 

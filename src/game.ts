@@ -54,16 +54,17 @@ const EXPLODE_RESTART_MS = 1600;
  * Road half≈7, walls≈6.45, car≈1.0 wide → |offset| ≤ 2.8 keeps grooves
  * clear of barriers. Each rival re-traces center+normal*offset densely.
  *
- * Pace tiers by spawn order (rivals = slots 1–5): higher t = further ahead.
+ * Path t is race direction; SF checkers sit at t=0. Negative t (wrapped) keeps
+ * every nose behind the line — player rearmost, pace setter closest to SF.
  * Skill + mild powerMul → cruise ~200–250 (fast but playable pack).
  */
 const GRID = [
-  { offset: -2.55, t: 0.0, skill: 1.0 }, // player (unused by RivalAI)
-  { offset: 2.35, t: 0.01, skill: 1.55 }, // back
-  { offset: -1.15, t: 0.018, skill: 1.72 }, // back
-  { offset: 0.85, t: 0.026, skill: 1.92 }, // mid
-  { offset: -2.75, t: 0.034, skill: 2.12 }, // front
-  { offset: 2.6, t: 0.042, skill: 2.35 }, // front — pace setter
+  { offset: -2.55, t: -0.048, skill: 1.0 }, // player — rearmost
+  { offset: 2.35, t: -0.038, skill: 1.55 }, // back
+  { offset: -1.15, t: -0.030, skill: 1.72 }, // back
+  { offset: 0.85, t: -0.022, skill: 1.92 }, // mid
+  { offset: -2.75, t: -0.014, skill: 2.12 }, // front
+  { offset: 2.6, t: -0.006, skill: 2.35 }, // front — pace setter, still behind SF
 ];
 
 export class Game {
@@ -635,8 +636,10 @@ export class Game {
   }
 
   private spawnPose(t: number, offset: number) {
-    const p = this.track.path.getPointAt(t);
-    const tan = this.track.path.getTangentAt(t).normalize();
+    // Wrap so negative t (behind SF) maps onto the closed path
+    const tt = ((t % 1) + 1) % 1;
+    const p = this.track.path.getPointAt(tt);
+    const tan = this.track.path.getTangentAt(tt).normalize();
     const n = new THREE.Vector3(-tan.z, 0, tan.x);
     // Heading must match path tangent (race direction)
     const heading = Math.atan2(tan.x, tan.z);
@@ -697,14 +700,16 @@ export class Game {
     this.resetWallHits();
 
     const slotIndex = this.online ? Math.min(this.remotes.size, 5) : 0;
-    const startT = this.online ? slotIndex * 0.008 : 0;
-    const offset = this.online ? (slotIndex % 2 === 0 ? -3.2 : 3.2) : -3.5;
+    const gridSlot = GRID[0]!;
+    // Offline: player rearmost on GRID. Online: stagger further behind SF.
+    const startT = this.online ? gridSlot.t - slotIndex * 0.008 : gridSlot.t;
+    const offset = this.online ? (slotIndex % 2 === 0 ? -3.2 : 3.2) : gridSlot.offset;
     const { pos: spawn, heading } = this.spawnPose(startT, offset);
 
     this.player.reset(spawn, heading);
     this.resetSticky(this.player);
     this.lastT = this.projectSticky(this.player, this.player.state.position).t;
-    // Already on SF facing race direction — first forward wrap completes lap 1
+    // Spawned behind SF facing race direction — first armed wrap after a full lap
     this.crossedOnce = true;
     this.gates.reset();
     this.el.wrongWay.classList.add("hidden");

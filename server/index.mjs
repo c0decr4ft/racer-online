@@ -69,7 +69,9 @@ function loadStore() {
       if (raw.byTrack && typeof raw.byTrack === "object") {
         for (const [id, list] of Object.entries(raw.byTrack)) {
           const tid = normalizeTrackId(id);
-          if (Array.isArray(list)) store[tid] = sortBoard(list, tid);
+          if (!Array.isArray(list)) continue;
+          // Merge when legacy / unknown ids collapse onto the same track
+          store[tid] = sortBoard([...(store[tid] || []), ...list], tid);
         }
         return store;
       }
