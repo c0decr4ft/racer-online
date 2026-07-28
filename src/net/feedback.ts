@@ -1,15 +1,22 @@
 /**
  * Append-only player feedback store (JSONBlob), same pattern as the leaderboard.
  *
- * Public blob (read/write):
- *   https://jsonblob.com/api/jsonBlob/019f8e7b-0678-7e10-bbd6-74574f05ea78
+ * Bootstrap blob (recreated 2026-07-28 after TTL expiry 404):
+ *   https://jsonblob.com/api/jsonBlob/019fa867-934f-77e1-8322-369891206837
  *
  * Shape: { messages: [{ id, text, createdAt, name? }] }
  * Newest-first; capped at MAX_MESSAGES.
+ *
+ * When the bootstrap URL 404s (jsonblob ~24h TTL), clients POST a fresh blob
+ * seeded from the local queue and cache the new URL — so feedback stays online
+ * instead of silently dying forever.
  */
 
-const PUBLIC_BLOB_URL =
-  "https://jsonblob.com/api/jsonBlob/019f8e7b-0678-7e10-bbd6-74574f05ea78";
+import { getJsonBlob, putJsonBlob } from "./jsonBlob";
+
+const BOOTSTRAP_BLOB_URL =
+  "https://jsonblob.com/api/jsonBlob/019fa867-934f-77e1-8322-369891206837";
+const BLOB_URL_CACHE_KEY = "racer-feedback-blob-url-v1";
 
 const MAX_MESSAGES = 80;
 export const FEEDBACK_TEXT_MAX = 500;
@@ -70,7 +77,8 @@ function normalizeMessage(raw: unknown): FeedbackMessage | null {
   return name ? { id, text, createdAt, name } : { id, text, createdAt };
 }
 
-function normalizeStore(data: unknown): FeedbackStore {
+/** Normalize + dedupe by id; newest-first; cap length. */
+export function normalizeStore(data: unknown): FeedbackStore {
   const store = emptyStore();
   if (!data || typeof data !== "object") return store;
   const list = (data as { messages?: unknown }).messages;
@@ -88,31 +96,9 @@ function normalizeStore(data: unknown): FeedbackStore {
   return store;
 }
 
-async function fetchStore(): Promise<FeedbackStore> {
-  const res = await fetch(PUBLIC_BLOB_URL, {
-    cache: "no-store",
-    headers: { Accept: "application/json" },
-  });
-  if (!res.ok) throw new Error(String(res.status));
-  return normalizeStore(await res.json());
-}
-
-async function putStore(store: FeedbackStore): Promise<FeedbackStore> {
-  const body = normalizeStore(store);
-  const res = await fetch(PUBLIC_BLOB_URL, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(String(res.status));
-  try {
-    return normalizeStore(await res.json());
-  } catch {
-    return body;
-  }
+/** Union message lists without dropping either side (by id). */
+export function mergeFeedbackMessages(...lists: FeedbackMessage[][]): FeedbackMessage[] {
+  return normalizeStore({ messages: lists.flat() }).messages;
 }
 
 const LOCAL_KEY = "racer-feedback-local-v1";
@@ -135,11 +121,45 @@ function writeLocal(messages: FeedbackMessage[]) {
   }
 }
 
+function seedFromLocal(): FeedbackStore {
+  return { messages: readLocal() };
+}
+
+async function fetchStore(): Promise<FeedbackStore> {
+  const local = readLocal();
+  const { data, recreated } = await getJsonBlob<unknown>(
+    BOOTSTRAP_BLOB_URL,
+    BLOB_URL_CACHE_KEY,
+    seedFromLocal(),
+  );
+  const remote = normalizeStore(data);
+  // Always merge with local so a freshly recreated empty blob cannot wipe the offline queue.
+  const merged = mergeFeedbackMessages(remote.messages, local);
+  if (recreated || merged.length > remote.messages.length) {
+    // Push merged queue up so other clients (and the developer inbox) see offline notes.
+    try {
+      const put = await putJsonBlob(BOOTSTRAP_BLOB_URL, BLOB_URL_CACHE_KEY, { messages: merged });
+      return normalizeStore(put.data);
+    } catch {
+      return { messages: merged };
+    }
+  }
+  return { messages: merged };
+}
+
+async function putStore(store: FeedbackStore): Promise<FeedbackStore> {
+  const body = normalizeStore(store);
+  const { data } = await putJsonBlob(BOOTSTRAP_BLOB_URL, BLOB_URL_CACHE_KEY, body);
+  return normalizeStore(data);
+}
+
 export async function fetchFeedback(): Promise<FeedbackSnapshot> {
   try {
     const store = await fetchStore();
-    writeLocal(store.messages);
-    return { messages: store.messages, source: "online" };
+    // Merge-before-write: never replace a richer local queue with a poorer remote.
+    const merged = mergeFeedbackMessages(store.messages, readLocal());
+    writeLocal(merged);
+    return { messages: merged, source: "online" };
   } catch {
     return { messages: readLocal(), source: "local" };
   }
@@ -159,26 +179,35 @@ export async function submitFeedback(
     return fetchFeedback();
   }
 
+  // Park locally first so a mid-flight failure never loses the note.
+  writeLocal(mergeFeedbackMessages([msg], readLocal()));
+
   try {
     let store = await fetchStore();
-    store.messages = [msg, ...store.messages];
+    store.messages = mergeFeedbackMessages([msg], store.messages);
     store = await putStore(store);
     try {
       const latest = await fetchStore();
       if (!latest.messages.some((m) => m.id === msg.id)) {
-        latest.messages = [msg, ...latest.messages];
+        latest.messages = mergeFeedbackMessages([msg], latest.messages);
         store = await putStore(latest);
       }
     } catch {
       /* keep first write */
     }
-    writeLocal(store.messages);
+    writeLocal(mergeFeedbackMessages(store.messages, readLocal()));
     return { messages: store.messages, source: "online" };
   } catch {
-    const merged = normalizeStore({ messages: [msg, ...readLocal()] }).messages;
+    const merged = mergeFeedbackMessages([msg], readLocal());
     writeLocal(merged);
     return { messages: merged, source: "local" };
   }
 }
 
-export const FEEDBACK_BLOB_URL = PUBLIC_BLOB_URL;
+export const FEEDBACK_BLOB_URL = BOOTSTRAP_BLOB_URL;
+
+export const __feedbackTest = {
+  normalizeStore,
+  mergeFeedbackMessages,
+  MAX_MESSAGES,
+};
