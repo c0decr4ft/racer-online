@@ -1,8 +1,8 @@
 /**
  * Lightweight human-presence store (JSONBlob), same pattern as the leaderboard.
  *
- * Public blob (read/write):
- *   https://jsonblob.com/api/jsonBlob/019f8e7b-0531-7284-a6c5-37b403b91b8d
+ * Bootstrap blob (recreated 2026-07-28 after TTL expiry 404):
+ *   https://jsonblob.com/api/jsonBlob/019fa867-940f-750e-a05c-0a15583c6b77
  *
  * Shape: { buckets: { "YYYY-MM-DDTHH": peakCount }, sessions: { id: lastSeenMs }, updatedAt, historyEpoch? }
  *
@@ -10,10 +10,16 @@
  * or counted. Clients heartbeat every ~40s while visible; hidden/closed tabs leave immediately.
  * Hourly peak buckets = max concurrent human sessions that hour (never invented, never car counts).
  * Current "online" = non-expired sessions only — never a peak bucket.
+ *
+ * When the bootstrap URL 404s (jsonblob ~24h TTL), clients POST a fresh blob and cache the URL
+ * so heartbeats / the activity graph stay online instead of dying silently.
  */
 
-const PUBLIC_BLOB_URL =
-  "https://jsonblob.com/api/jsonBlob/019f8e7b-0531-7284-a6c5-37b403b91b8d";
+import { getJsonBlob, putJsonBlob } from "./jsonBlob";
+
+const BOOTSTRAP_BLOB_URL =
+  "https://jsonblob.com/api/jsonBlob/019fa867-940f-750e-a05c-0a15583c6b77";
+const BLOB_URL_CACHE_KEY = "racer-presence-blob-url-v1";
 
 const SESSION_KEY = "racer-presence-session";
 const HEARTBEAT_MS = 40_000;
@@ -222,33 +228,17 @@ function sessionId(): string {
 }
 
 async function fetchStore(): Promise<PresenceStore> {
-  const res = await fetch(PUBLIC_BLOB_URL, {
-    cache: "no-store",
-    headers: { Accept: "application/json" },
-  });
-  if (!res.ok) throw new Error(String(res.status));
-  return parseStore(await res.json());
+  const seed = emptyStore();
+  const { data } = await getJsonBlob<unknown>(BOOTSTRAP_BLOB_URL, BLOB_URL_CACHE_KEY, seed);
+  return parseStore(data);
 }
 
 async function putStore(store: PresenceStore, keepalive = false): Promise<PresenceStore> {
   const body = pruneStore(store);
   body.updatedAt = Date.now();
   body.historyEpoch = HISTORY_EPOCH;
-  const res = await fetch(PUBLIC_BLOB_URL, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify(body),
-    keepalive,
-  });
-  if (!res.ok) throw new Error(String(res.status));
-  try {
-    return parseStore(await res.json());
-  } catch {
-    return body;
-  }
+  const { data } = await putJsonBlob(BOOTSTRAP_BLOB_URL, BLOB_URL_CACHE_KEY, body, { keepalive });
+  return parseStore(data);
 }
 
 /**
@@ -397,7 +387,7 @@ export function startPresenceHeartbeat(): void {
   });
 }
 
-export const PRESENCE_BLOB_URL = PUBLIC_BLOB_URL;
+export const PRESENCE_BLOB_URL = BOOTSTRAP_BLOB_URL;
 export const PRESENCE_STALE_MS = STALE_MS;
 
 /** Pure helpers for unit tests (node) — not used by the game UI. */
