@@ -92,6 +92,38 @@ function storeEntryCount(store) {
   return TRACK_IDS.reduce((n, id) => n + (store[id]?.length ?? 0), 0);
 }
 
+/** Mirrors src/net/leaderboard.ts boardStoresEqual. */
+function boardStoresEqual(a, b) {
+  for (const id of TRACK_IDS) {
+    const left = a[id] ?? [];
+    const right = b[id] ?? [];
+    if (left.length !== right.length) return false;
+    for (let i = 0; i < left.length; i++) {
+      const x = left[i];
+      const y = right[i];
+      if (
+        x.name !== y.name ||
+        x.timeMs !== y.timeMs ||
+        (x.bestLapMs ?? undefined) !== (y.bestLapMs ?? undefined) ||
+        (x.at || 0) !== (y.at || 0)
+      ) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+/** Old buggy heal gate: only republish when total entry count grows. */
+function shouldHealByCountOnly(merged, fromPublic) {
+  return storeEntryCount(merged) > storeEntryCount(fromPublic);
+}
+
+/** Fixed heal gate: republish when ranked membership/content differs. */
+function shouldHealByContent(merged, fromPublic) {
+  return !boardStoresEqual(merged, fromPublic);
+}
+
 function mergeBoardStores(...stores) {
   const out = emptyStore();
   for (const id of TRACK_IDS) {
@@ -202,6 +234,42 @@ const top = normalize(
   Array.from({ length: 15 }, (_, i) => ({ name: `N${i}`, timeMs: 100000 - i * 100, at: i })),
 );
 check("normalize keeps top 10 sorted", top.length === 10 && top[0].timeMs < top[9].timeMs);
+
+// Full top-10 remote + better offline local: count stays 10, membership changes.
+const fullRemote = emptyStore();
+fullRemote["forest-loop"] = Array.from({ length: 10 }, (_, i) => ({
+  name: `R${i}`,
+  timeMs: 100000 + i * 100,
+  at: i + 1,
+}));
+const offlineBetter = emptyStore();
+offlineBetter["forest-loop"] = [{ name: "ACE", timeMs: 95000, at: 999 }];
+const healed = mergeBoardStores(offlineBetter, fullRemote);
+check(
+  "full board + better offline keeps top-10 count",
+  storeEntryCount(healed) === storeEntryCount(fullRemote) && storeEntryCount(healed) === 10,
+);
+check(
+  "full board + better offline includes ACE and drops slowest",
+  healed["forest-loop"].some((e) => e.name === "ACE") &&
+    !healed["forest-loop"].some((e) => e.name === "R9"),
+);
+check(
+  "repro: count-only heal skips full-board membership change",
+  shouldHealByCountOnly(healed, fullRemote) === false,
+);
+check(
+  "fix: content heal publishes full-board membership change",
+  shouldHealByContent(healed, fullRemote) === true,
+);
+check(
+  "content heal is a no-op when merged equals remote",
+  shouldHealByContent(fullRemote, fullRemote) === false,
+);
+check(
+  "content heal still fires when remote is empty and local has scores",
+  shouldHealByContent(worldwide, emptyStore()) === true,
+);
 
 if (failures.length) {
   console.error(`\n${failures.length} failed`);

@@ -238,70 +238,82 @@ wss.on("connection", (ws) => {
   let client = null;
 
   ws.on("message", (data) => {
-    let msg;
     try {
-      msg = JSON.parse(String(data));
-    } catch {
-      send(ws, { t: "error", message: "bad json" });
-      return;
-    }
-
-    if (msg.t === "ping") {
-      send(ws, { t: "pong", n: msg.n, serverTime: Date.now() });
-      return;
-    }
-
-    if (msg.t === "join") {
-      if (client) return;
-      const roomName = String(msg.room || "circuit").slice(0, 24);
-      const room = ensureRoom(roomName);
-      if (room.size >= MAX_PLAYERS) {
-        send(ws, { t: "error", message: "room full (max 8)" });
+      let msg;
+      try {
+        msg = JSON.parse(String(data));
+      } catch {
+        send(ws, { t: "error", message: "bad json" });
         return;
       }
 
-      const id = Math.random().toString(36).slice(2, 10);
-      const color = pickColor(roomName);
-      const name = sanitizeDriverName(msg.name || "Racer");
-      const slot = room.size;
-      /** @type {Pose} */
-      const pose = {
-        id,
-        name,
-        color,
-        x: 8 + (slot % 2 === 0 ? -3.2 : 3.2),
-        z: -95 + slot * 2.4,
-        h: -Math.PI / 2,
-        s: 0,
-        g: "1",
-        lap: 1,
-      };
+      // JSON.parse("null") / primitives must not throw on msg.t — that uncaught
+      // TypeError takes down the whole Node process (WS + /api/leaderboard).
+      if (!msg || typeof msg !== "object" || Array.isArray(msg) || typeof msg.t !== "string") {
+        send(ws, { t: "error", message: "bad message" });
+        return;
+      }
 
-      client = { id, name, color, room: roomName, ws, pose, lastPoseAt: 0 };
-      room.set(id, client);
+      if (msg.t === "ping") {
+        send(ws, { t: "pong", n: msg.n, serverTime: Date.now() });
+        return;
+      }
 
-      send(ws, { t: "welcome", id, room: roomName, players: roomPlayers(roomName), you: pose });
-      broadcast(roomName, { t: "join", player: pose }, id);
-      console.log(`[join] ${name} → ${roomName} (${room.size}/${MAX_PLAYERS})`);
-      return;
-    }
+      if (msg.t === "join") {
+        if (client) return;
+        const roomName = String(msg.room || "circuit").slice(0, 24);
+        const room = ensureRoom(roomName);
+        if (room.size >= MAX_PLAYERS) {
+          send(ws, { t: "error", message: "room full (max 8)" });
+          return;
+        }
 
-    if (!client) {
-      send(ws, { t: "error", message: "join first" });
-      return;
-    }
+        const id = Math.random().toString(36).slice(2, 10);
+        const color = pickColor(roomName);
+        const name = sanitizeDriverName(msg.name || "Racer");
+        const slot = room.size;
+        /** @type {Pose} */
+        const pose = {
+          id,
+          name,
+          color,
+          x: 8 + (slot % 2 === 0 ? -3.2 : 3.2),
+          z: -95 + slot * 2.4,
+          h: -Math.PI / 2,
+          s: 0,
+          g: "1",
+          lap: 1,
+        };
 
-    if (msg.t === "pose") {
-      const now = Date.now();
-      if (now - client.lastPoseAt < 32) return; // ~30Hz max ingest
-      client.lastPoseAt = now;
-      const p = client.pose;
-      p.x = +msg.x || 0;
-      p.z = +msg.z || 0;
-      p.h = +msg.h || 0;
-      p.s = +msg.s || 0;
-      p.g = String(msg.g || "1").slice(0, 2);
-      p.lap = Math.max(1, Math.min(99, msg.lap | 0));
+        client = { id, name, color, room: roomName, ws, pose, lastPoseAt: 0 };
+        room.set(id, client);
+
+        send(ws, { t: "welcome", id, room: roomName, players: roomPlayers(roomName), you: pose });
+        broadcast(roomName, { t: "join", player: pose }, id);
+        console.log(`[join] ${name} → ${roomName} (${room.size}/${MAX_PLAYERS})`);
+        return;
+      }
+
+      if (!client) {
+        send(ws, { t: "error", message: "join first" });
+        return;
+      }
+
+      if (msg.t === "pose") {
+        const now = Date.now();
+        if (now - client.lastPoseAt < 32) return; // ~30Hz max ingest
+        client.lastPoseAt = now;
+        const p = client.pose;
+        p.x = +msg.x || 0;
+        p.z = +msg.z || 0;
+        p.h = +msg.h || 0;
+        p.s = +msg.s || 0;
+        p.g = String(msg.g || "1").slice(0, 2);
+        p.lap = Math.max(1, Math.min(99, msg.lap | 0));
+      }
+    } catch (err) {
+      console.error("[ws] message handler error:", err);
+      send(ws, { t: "error", message: "bad message" });
     }
   });
 
