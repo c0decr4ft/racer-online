@@ -1,0 +1,8 @@
+node_modules
+dist
+dist-versions
+.git
+.cursor
+*.md
+scripts/full-suite.mjs
+agent-transcripts

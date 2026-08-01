@@ -1,10 +1,18 @@
 import { WebSocketServer } from "ws";
 import { createServer } from "node:http";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
+import { dirname, join, extname, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const PORT = Number(process.env.PORT || 8787);
+const HOST = process.env.HOST || "0.0.0.0";
+/** When set (or when ../dist exists), serve the built web client from this process. */
+const DIST_DIR = process.env.STATIC_DIR
+  ? process.env.STATIC_DIR
+  : existsSync(join(dirname(fileURLToPath(import.meta.url)), "..", "dist"))
+    ? join(dirname(fileURLToPath(import.meta.url)), "..", "dist")
+    : null;
+const STATIC_BASE = (process.env.STATIC_BASE || "/racer-online").replace(/\/$/, "") || "";
 const NET_TICK_MS = 50; // 20 Hz
 const MAX_PLAYERS = 8;
 const PLAYER_COLORS = [0xe4eaf2, 0xe23b2e, 0x2a66f0, 0xf0c020, 0x1dbf6a, 0xb44dff, 0xff6b9d, 0x00d4ff];
@@ -321,6 +329,61 @@ function cors(res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
+const MIME = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".ico": "image/x-icon",
+  ".woff2": "font/woff2",
+  ".map": "application/json",
+};
+
+/** @param {import('node:http').ServerResponse} res @param {string} filePath */
+function sendStaticFile(res, filePath) {
+  try {
+    const data = readFileSync(filePath);
+    const type = MIME[extname(filePath).toLowerCase()] || "application/octet-stream";
+    res.writeHead(200, { "Content-Type": type, "Cache-Control": "public, max-age=60" });
+    res.end(data);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Serve Vite `dist` under STATIC_BASE (default `/racer-online`). */
+function tryServeStatic(urlPath, res) {
+  if (!DIST_DIR) return false;
+  let path = urlPath.split("?")[0] || "/";
+  if (STATIC_BASE && (path === STATIC_BASE || path.startsWith(`${STATIC_BASE}/`))) {
+    path = path.slice(STATIC_BASE.length) || "/";
+  } else if (STATIC_BASE && path !== "/" && path !== "/index.html") {
+    // Also allow bare `/` → redirect hint via index when STATIC_BASE set
+    if (path === "/") {
+      res.writeHead(302, { Location: `${STATIC_BASE}/` });
+      res.end();
+      return true;
+    }
+  }
+  if (path.endsWith("/")) path += "index.html";
+  const rel = normalize(path).replace(/^(\.\.(\/|\\|$))+/, "");
+  const filePath = join(DIST_DIR, rel);
+  if (!filePath.startsWith(DIST_DIR)) return false;
+  if (existsSync(filePath) && statSync(filePath).isFile()) {
+    return sendStaticFile(res, filePath);
+  }
+  // SPA fallback
+  const index = join(DIST_DIR, "index.html");
+  if (existsSync(index)) return sendStaticFile(res, index);
+  return false;
+}
+
 /** @param {import('ws').WebSocket} ws @param {object} msg */
 function send(ws, msg) {
   if (ws.readyState === 1) ws.send(JSON.stringify(msg));
@@ -375,8 +438,14 @@ function admitClient(ws, msg, mode) {
   if (mode === "create") {
     if (room && room.clients.size > 0) {
       send(ws, { t: "error", message: "room already exists — pick another name or join it" });
+      try {
+        ws.close();
+      } catch {
+        /* ignore */
+      }
       return null;
     }
+    // Replace empty/stale leftover rooms so recreate always works
     room = {
       name: roomName,
       password,
@@ -391,18 +460,38 @@ function admitClient(ws, msg, mode) {
   } else {
     if (!room || room.clients.size === 0) {
       send(ws, { t: "error", message: "room not found" });
+      try {
+        ws.close();
+      } catch {
+        /* ignore */
+      }
       return null;
     }
     if (room.phase === "racing") {
       send(ws, { t: "error", message: "race already started" });
+      try {
+        ws.close();
+      } catch {
+        /* ignore */
+      }
       return null;
     }
     if (password !== room.password) {
       send(ws, { t: "error", message: "wrong password" });
+      try {
+        ws.close();
+      } catch {
+        /* ignore */
+      }
       return null;
     }
     if (room.clients.size >= room.maxPlayers) {
       send(ws, { t: "error", message: `room full (max ${room.maxPlayers})` });
+      try {
+        ws.close();
+      } catch {
+        /* ignore */
+      }
       return null;
     }
   }
@@ -547,21 +636,37 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
-  res.writeHead(200, { "Content-Type": "application/json" });
-  const stats = [...rooms.values()].map((room) => ({
-    room: room.name,
-    players: room.clients.size,
-    phase: room.phase,
-    maxPlayers: room.maxPlayers,
-    trackId: room.trackId,
-  }));
-  res.end(
-    JSON.stringify({
-      ok: true,
-      rooms: stats,
-      presence: presenceSnapshot(prunePresence(presence)),
-    }),
-  );
+  if (url.pathname === "/healthz" || url.pathname === "/api/health") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true, uptime: process.uptime() }));
+    return;
+  }
+
+  if (url.pathname === "/api/status") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    const stats = [...rooms.values()].map((room) => ({
+      room: room.name,
+      players: room.clients.size,
+      phase: room.phase,
+      maxPlayers: room.maxPlayers,
+      trackId: room.trackId,
+    }));
+    res.end(
+      JSON.stringify({
+        ok: true,
+        rooms: stats,
+        presence: presenceSnapshot(prunePresence(presence)),
+      }),
+    );
+    return;
+  }
+
+  if (req.method === "GET" || req.method === "HEAD") {
+    if (tryServeStatic(url.pathname, res)) return;
+  }
+
+  res.writeHead(404, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ ok: false, error: "not found" }));
 });
 
 const wss = new WebSocketServer({ server: httpServer });
@@ -684,6 +789,8 @@ setInterval(() => {
   }
 }, 15_000);
 
-httpServer.listen(PORT, () => {
-  console.log(`Racer Online :${PORT} (WS + /api/leaderboard + /api/presence)`);
+httpServer.listen(PORT, HOST, () => {
+  console.log(
+    `Racer Online http://${HOST}:${PORT} (WS + /api/*${DIST_DIR ? ` + static ${STATIC_BASE || "/"}` : ""})`,
+  );
 });

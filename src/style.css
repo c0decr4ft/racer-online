@@ -1148,13 +1148,22 @@ html.touch-mode [contenteditable="true"] {
 }
 
 .garage-panel > button,
-.multiplayer-panel button {
+.multiplayer-panel > .mp-view > button,
+.multiplayer-form > button {
   width: min(100%, 16rem);
 }
 
 .garage-panel .btn-ghost,
-.multiplayer-panel .btn-ghost {
+.multiplayer-form > .btn-ghost,
+#mp-lobby > .btn-ghost {
   margin-top: 0.65rem;
+}
+
+/* Kind + map thumbs must stay in their grids — not forced to full panel width */
+.multiplayer-panel .garage-kind-btn,
+.multiplayer-panel .map-thumb {
+  width: 100%;
+  margin-top: 0;
 }
 
 .multiplayer-form {

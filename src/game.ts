@@ -21,7 +21,6 @@ import {
   boardSourceLabel,
   fetchLeaderboard,
   formatBoardTime,
-  getLocalDriverName,
   sanitizeDriverName,
   saveLocalDriverName,
   submitScore,
@@ -117,6 +116,8 @@ export class Game {
   private garage: GarageLoadout = loadGarage();
   /** Waiting in multiplayer lobby (connected, race not started). */
   private inLobby = false;
+  /** True after create/join until welcome, leave, or cancel — blocks late welcomes. */
+  private expectingLobby = false;
   private lobbyPlayers: PlayerPose[] = [];
   private mpCreateTrackId = DEFAULT_TRACK_ID;
   private mpCreateKind: VehicleKind = "car";
@@ -311,10 +312,15 @@ export class Game {
           this.setMpFormStatus(text);
           if (this.inLobby) this.el.mpStatus.textContent = text;
         }
-        if (/Disconnect/i.test(text) && this.inLobby && !this.running) {
-          this.inLobby = false;
-          this.online = false;
-          this.showMpView("entry");
+        // Only leave the lobby on a real drop — ignore stale closes from reconnects.
+        if (
+          /Disconnect/i.test(text) &&
+          this.inLobby &&
+          !this.running &&
+          !this.net.connected &&
+          !this.net.id
+        ) {
+          this.closeMultiplayer();
         }
       },
     });
@@ -419,8 +425,8 @@ export class Game {
     document.getElementById("mp-back-btn")!.onclick = () => this.closeMultiplayer();
     document.getElementById("mp-goto-create")!.onclick = () => this.showMpView("create");
     document.getElementById("mp-goto-join")!.onclick = () => this.showMpView("join");
-    document.getElementById("mp-create-back")!.onclick = () => this.showMpView("entry");
-    document.getElementById("mp-join-back")!.onclick = () => this.showMpView("entry");
+    document.getElementById("mp-create-back")!.onclick = () => this.cancelMpConnect("entry");
+    document.getElementById("mp-join-back")!.onclick = () => this.cancelMpConnect("entry");
     document.getElementById("mp-lobby-leave")!.onclick = () => this.leaveLobby();
     this.el.mpStartBtn.onclick = () => {
       if (this.net.isHost) this.net.startRace();
@@ -682,12 +688,12 @@ export class Game {
     this.el.garage.classList.add("hidden");
     this.garage = loadGarage();
     this.mpCreateKind = this.garage.kind;
-    this.mpCreateTrackId = this.trackId || DEFAULT_TRACK_ID;
-    const saved = getLocalDriverName();
-    if (saved) {
-      this.el.mpCreateName.value = saved;
-      this.el.mpJoinName.value = saved;
-    }
+    this.mpCreateTrackId = DEFAULT_TRACK_ID;
+    // Always start blank — don't autofill a previous name (e.g. "Luca").
+    this.el.mpCreateName.value = "";
+    this.el.mpJoinName.value = "";
+    this.el.mpCreatePass.value = "";
+    this.el.mpJoinPass.value = "";
     if (!this.el.mpCreateRoom.value.trim()) this.el.mpCreateRoom.value = "circuit";
     if (!this.el.mpJoinRoom.value.trim()) this.el.mpJoinRoom.value = "circuit";
     this.el.mpCreateStatus.textContent = "Your vehicle class applies to everyone in the room";
@@ -698,9 +704,31 @@ export class Game {
   }
 
   private closeMultiplayer() {
-    if (this.inLobby) this.leaveLobby();
+    this.expectingLobby = false;
+    this.inLobby = false;
+    this.online = false;
+    this.lobbyPlayers = [];
+    this.net.disconnect();
+    this.clearRemotes();
+    this.el.netStatus.classList.add("hidden");
+    this.el.mpLobbyFeed.innerHTML = "";
     this.el.multiplayer.classList.add("hidden");
+    this.showMpView("entry");
+    // Lobby flow hides the home overlay — always restore it when leaving MP.
+    this.el.overlay.classList.remove("hidden");
     this.audio.playMenuMusic();
+    this.syncMuteBtn();
+  }
+
+  /** Back from create/join while connecting — drop the socket so a late welcome can't yank you in. */
+  private cancelMpConnect(view: "entry" | "create" | "join") {
+    this.expectingLobby = false;
+    this.inLobby = false;
+    this.online = false;
+    this.net.disconnect();
+    this.clearRemotes();
+    this.el.netStatus.classList.add("hidden");
+    this.showMpView(view);
     this.syncMuteBtn();
   }
 
@@ -743,7 +771,13 @@ export class Game {
   }
 
   private async createMultiplayerRoom() {
-    const name = sanitizeDriverName(this.el.mpCreateName.value);
+    const typed = this.el.mpCreateName.value.trim();
+    if (!typed) {
+      this.el.mpCreateStatus.textContent = "Enter a racer name";
+      this.el.mpCreateName.focus();
+      return;
+    }
+    const name = sanitizeDriverName(typed);
     this.el.mpCreateName.value = name;
     saveLocalDriverName(name);
     const room = this.sanitizeRoomName(this.el.mpCreateRoom.value);
@@ -758,6 +792,7 @@ export class Game {
     this.solo = false;
     this.practice = false;
     this.clearRemotes();
+    this.expectingLobby = true;
     this.el.netStatus.classList.remove("hidden");
     this.setNetStatus("Creating room…", "ok");
     this.net.createRoom({
@@ -773,7 +808,13 @@ export class Game {
   }
 
   private async joinMultiplayerRoom() {
-    const name = sanitizeDriverName(this.el.mpJoinName.value);
+    const typed = this.el.mpJoinName.value.trim();
+    if (!typed) {
+      this.el.mpJoinStatus.textContent = "Enter a racer name";
+      this.el.mpJoinName.focus();
+      return;
+    }
+    const name = sanitizeDriverName(typed);
     this.el.mpJoinName.value = name;
     saveLocalDriverName(name);
     const room = this.sanitizeRoomName(this.el.mpJoinRoom.value);
@@ -787,6 +828,7 @@ export class Game {
     this.solo = false;
     this.practice = false;
     this.clearRemotes();
+    this.expectingLobby = true;
     this.el.netStatus.classList.remove("hidden");
     this.setNetStatus("Joining room…", "ok");
     this.net.joinRoom({
@@ -799,16 +841,8 @@ export class Game {
   }
 
   private leaveLobby() {
-    this.inLobby = false;
-    this.online = false;
-    this.lobbyPlayers = [];
-    this.net.disconnect();
-    this.clearRemotes();
-    this.el.netStatus.classList.add("hidden");
-    this.el.mpLobbyFeed.innerHTML = "";
-    this.showMpView("entry");
-    this.audio.playMenuMusic();
-    this.syncMuteBtn();
+    // Leave room → back to the main home menu (not a blank overlay).
+    this.closeMultiplayer();
   }
 
   private upsertLobbyPlayer(player: PlayerPose) {
@@ -953,6 +987,7 @@ export class Game {
     this.solo = false;
     this.online = false;
     this.inLobby = false;
+    this.expectingLobby = false;
     this.lobbyPlayers = [];
     this.net.disconnect();
     this.clearRemotes();
@@ -1072,6 +1107,12 @@ export class Game {
   }
 
   private onNetWelcome(info: WelcomeInfo) {
+    // User hit Back/Leave before the server replied — drop the late welcome.
+    if (!this.expectingLobby) {
+      this.net.disconnect();
+      return;
+    }
+    this.expectingLobby = false;
     this.online = true;
     this.inLobby = true;
     this.lobbyPlayers = [...info.players];

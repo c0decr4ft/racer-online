@@ -1,0 +1,5 @@
+{
+  "apiBase": "",
+  "wsUrl": "",
+  "_comment": "Filled by CI / deploy with your cloud game server URLs so GitHub Pages works while your PC is off. Example: apiBase https://racer-online.onrender.com/api , wsUrl wss://racer-online.onrender.com"
+}

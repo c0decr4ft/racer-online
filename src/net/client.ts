@@ -8,6 +8,7 @@ import {
   type PlayerPose,
   type ServerMsg,
 } from "./protocol";
+import { configuredApiBase, configuredWsUrl } from "./onlineConfig";
 
 type Snapshot = { at: number; pose: PlayerPose };
 
@@ -183,6 +184,8 @@ export class NetClient {
   kind: NetVehicleKind = "car";
   maxPlayers = 8;
   phase: LobbyPhase | "" = "";
+  /** Bumps on each connect/disconnect so stale socket handlers are ignored. */
+  private connGen = 0;
 
   constructor(handlers: NetHandlers) {
     this.handlers = handlers;
@@ -199,29 +202,53 @@ export class NetClient {
   private connect(opts: RoomConnectOpts) {
     this.disconnect();
     this.pending = opts;
+    const gen = ++this.connGen;
 
     const proto = location.protocol === "https:" ? "wss" : "ws";
+    const local =
+      location.hostname === "localhost" || location.hostname === "127.0.0.1";
     // Prefer dedicated WS port in local dev (avoids flaky Vite HMR proxy upgrades)
-    const direct =
-      location.hostname === "localhost" || location.hostname === "127.0.0.1"
-        ? `${proto}://${location.hostname}:8787`
-        : null;
-    const proxied = `${proto}://${location.host}/ws`;
-    const url =
-      (import.meta as ImportMeta & { env: Record<string, string | undefined> }).env.VITE_WS_URL ||
-      direct ||
-      proxied;
+    const direct = local ? `${proto}://${location.hostname}:8787` : null;
+    const proxied = local ? `${proto}://${location.host}/ws` : null;
+    const hosted = configuredWsUrl();
+    // Derive WS from API host when only apiBase is configured (Pages → cloud server).
+    let fromApi: string | null = null;
+    const api = configuredApiBase();
+    if (!hosted && api) {
+      try {
+        const u = new URL(api, location.href);
+        fromApi = `${u.protocol === "https:" ? "wss:" : "ws:"}//${u.host}`;
+      } catch {
+        fromApi = null;
+      }
+    }
+    const url = hosted || fromApi || direct || proxied;
+    if (!url) {
+      this.handlers.onStatus("Online server not configured — multiplayer needs a hosted game server");
+      this.handlers.onError("Online server not configured");
+      return;
+    }
 
     this.handlers.onStatus(opts.mode === "create" ? "Creating room…" : "Joining room…");
-    this.openSocket(url, opts, proxied !== url ? proxied : null);
+    this.openSocket(url, opts, proxied && proxied !== url ? proxied : null, gen);
   }
 
-  private openSocket(url: string, opts: RoomConnectOpts, fallback: string | null) {
+  private openSocket(
+    url: string,
+    opts: RoomConnectOpts,
+    fallback: string | null,
+    gen: number,
+  ) {
+    if (gen !== this.connGen) return;
     const ws = new WebSocket(url);
     this.ws = ws;
     let settled = false;
 
     ws.onopen = () => {
+      if (gen !== this.connGen || this.ws !== ws) {
+        ws.close();
+        return;
+      }
       settled = true;
       this.connected = true;
       this.handlers.onStatus(opts.mode === "create" ? "Creating room…" : "Joining room…");
@@ -252,6 +279,7 @@ export class NetClient {
     };
 
     ws.onmessage = (ev) => {
+      if (gen !== this.connGen || this.ws !== ws) return;
       let msg: ServerMsg;
       try {
         msg = JSON.parse(String(ev.data)) as ServerMsg;
@@ -267,6 +295,7 @@ export class NetClient {
         this.kind = msg.kind === "bike" ? "bike" : "car";
         this.maxPlayers = msg.maxPlayers;
         this.phase = msg.phase;
+        this.pending = null;
         this.handlers.onStatus(`Lobby · ${msg.room}`);
         this.handlers.onWelcome({
           id: msg.id,
@@ -304,27 +333,53 @@ export class NetClient {
       } else if (msg.t === "error") {
         this.handlers.onError(msg.message);
         this.handlers.onStatus(msg.message);
+        // Drop the dead socket without a misleading "Disconnected" status.
+        this.softClose(ws, gen);
       }
     };
 
     ws.onclose = () => {
+      if (gen !== this.connGen || this.ws !== ws) return;
       this.connected = false;
+      this.ws = null;
       if (!settled && fallback && this.pending) {
         this.handlers.onStatus("Retrying via proxy…");
-        this.openSocket(fallback, this.pending, null);
+        this.openSocket(fallback, this.pending, null, gen);
         return;
       }
+      // Intentional leave / softClose already cleared pending + ids
+      if (!this.myId && !this.pending) return;
+      this.myId = "";
+      this.hostId = "";
+      this.phase = "";
+      this.pending = null;
       this.handlers.onStatus("Disconnected");
     };
 
     ws.onerror = () => {
+      if (gen !== this.connGen || this.ws !== ws) return;
       if (!settled && fallback) return; // onclose will retry
       this.handlers.onStatus("Connection failed — run npm start");
     };
   }
 
+  /** Close a failed admit without bumping connGen or shouting Disconnected. */
+  private softClose(ws: WebSocket, gen: number) {
+    if (gen !== this.connGen || this.ws !== ws) return;
+    this.connected = false;
+    this.ws = null;
+    this.pending = null;
+    this.myId = "";
+    try {
+      ws.close();
+    } catch {
+      /* ignore */
+    }
+  }
+
   disconnect() {
-    this.ws?.close();
+    this.connGen++;
+    const ws = this.ws;
     this.ws = null;
     this.connected = false;
     this.myId = "";
@@ -334,6 +389,11 @@ export class NetClient {
     this.maxPlayers = 8;
     this.phase = "";
     this.pending = null;
+    try {
+      ws?.close();
+    } catch {
+      /* ignore */
+    }
   }
 
   get id() {

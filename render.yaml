@@ -1,0 +1,20 @@
+# One-click always-on host: https://dashboard.render.com/select-repo?type=blueprint
+# Free web service sleeps after ~15m idle — first multiplayer join may take ~30s to wake.
+services:
+  - type: web
+    name: racer-online
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: npm ci && npm run build
+    startCommand: node server/index.mjs
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: PORT
+        value: 10000
+      - key: STATIC_BASE
+        value: /racer-online
