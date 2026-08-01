@@ -10,7 +10,9 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "snapshot-version": "node scripts/snapshot-version.mjs",
-    "start": "npm run dev:online"
+    "start": "npm run dev:online",
+    "start:prod": "node server/index.mjs",
+    "test:full": "node scripts/full-suite.mjs"
   },
   "devDependencies": {
     "@types/three": "^0.185.1",

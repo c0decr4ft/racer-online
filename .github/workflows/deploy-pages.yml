@@ -22,7 +22,29 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run build
+      # Point the static Pages build at a cloud game server (set repo Actions secrets):
+      #   VITE_API_BASE = https://YOUR-APP.onrender.com/api
+      #   VITE_WS_URL   = wss://YOUR-APP.onrender.com
+      # Also writes public/online.json so runtime fetch works for older caches.
+      - name: Write online endpoints
+        env:
+          VITE_API_BASE: ${{ secrets.VITE_API_BASE }}
+          VITE_WS_URL: ${{ secrets.VITE_WS_URL }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const body = {
+              apiBase: (process.env.VITE_API_BASE || "").trim(),
+              wsUrl: (process.env.VITE_WS_URL || "").trim(),
+            };
+            fs.writeFileSync("public/online.json", JSON.stringify(body, null, 2) + "\n");
+            console.log("online.json →", body);
+          '
+      - name: Build
+        env:
+          VITE_API_BASE: ${{ secrets.VITE_API_BASE }}
+          VITE_WS_URL: ${{ secrets.VITE_WS_URL }}
+        run: npm run build
       - name: Add .nojekyll
         run: touch dist/.nojekyll
       # Keep /racer-online/vX.Y/ snapshots playable across orphan deploys of latest.

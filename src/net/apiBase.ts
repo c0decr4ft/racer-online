@@ -2,14 +2,15 @@
  * Resolve the HTTP API base for leaderboard / presence / feedback.
  *
  * Order:
- * 1. VITE_API_BASE (deployed backend origin or …/api)
+ * 1. VITE_API_BASE / online.json (hosted cloud server)
  * 2. Same-origin Vite proxy `/api` in local dev
  * 3. Direct local game server :8787/api
  */
 
+import { configuredApiBase } from "./onlineConfig";
+
 export function apiBase(): string | null {
-  const env = (import.meta as ImportMeta & { env: Record<string, string | undefined> }).env;
-  const configured = (env.VITE_API_BASE || "").trim().replace(/\/$/, "");
+  const configured = configuredApiBase();
   if (configured) return configured;
 
   const host = typeof location !== "undefined" ? location.hostname || "" : "";
