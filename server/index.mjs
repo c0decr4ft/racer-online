@@ -642,6 +642,13 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
+  // Convenience: open the game from the service root
+  if ((url.pathname === "/" || url.pathname === "") && DIST_DIR && STATIC_BASE) {
+    res.writeHead(302, { Location: `${STATIC_BASE}/` });
+    res.end();
+    return;
+  }
+
   if (url.pathname === "/api/status") {
     res.writeHead(200, { "Content-Type": "application/json" });
     const stats = [...rooms.values()].map((room) => ({
