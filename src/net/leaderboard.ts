@@ -158,6 +158,28 @@ export function storeEntryCount(store: BoardStore): number {
   return n;
 }
 
+/** True when every track's ranked entries match (name/time/lap/at). */
+export function boardStoresEqual(a: BoardStore, b: BoardStore): boolean {
+  for (const t of TRACKS) {
+    const left = a[t.id] ?? [];
+    const right = b[t.id] ?? [];
+    if (left.length !== right.length) return false;
+    for (let i = 0; i < left.length; i++) {
+      const x = left[i]!;
+      const y = right[i]!;
+      if (
+        x.name !== y.name ||
+        x.timeMs !== y.timeMs ||
+        (x.bestLapMs ?? undefined) !== (y.bestLapMs ?? undefined) ||
+        (x.at || 0) !== (y.at || 0)
+      ) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 /** Union all per-track lists, then normalize/top-N each track. */
 export function mergeBoardStores(...stores: BoardStore[]): BoardStore {
   const out = emptyStore();
@@ -349,8 +371,11 @@ export async function fetchLeaderboard(
   cacheStoreLocally(merged);
 
   if (fromPublic) {
-    // Heal a wiped/empty remote from local or server scores when we have more.
-    if (storeEntryCount(merged) > storeEntryCount(fromPublic)) {
+    // Heal remote whenever merged content differs — not only when entry *count*
+    // grows. A qualifying offline score on a full top-10 keeps count stable while
+    // changing membership; count-only healing would never publish it worldwide,
+    // even though the UI already shows the merged board as "online".
+    if (!boardStoresEqual(merged, fromPublic)) {
       void publishMergedStore(merged).catch(() => undefined);
     }
     return { entries: entriesFor(merged, tid), source: "online" };
