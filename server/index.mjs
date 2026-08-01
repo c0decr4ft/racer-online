@@ -375,8 +375,14 @@ function admitClient(ws, msg, mode) {
   if (mode === "create") {
     if (room && room.clients.size > 0) {
       send(ws, { t: "error", message: "room already exists — pick another name or join it" });
+      try {
+        ws.close();
+      } catch {
+        /* ignore */
+      }
       return null;
     }
+    // Replace empty/stale leftover rooms so recreate always works
     room = {
       name: roomName,
       password,
@@ -391,18 +397,38 @@ function admitClient(ws, msg, mode) {
   } else {
     if (!room || room.clients.size === 0) {
       send(ws, { t: "error", message: "room not found" });
+      try {
+        ws.close();
+      } catch {
+        /* ignore */
+      }
       return null;
     }
     if (room.phase === "racing") {
       send(ws, { t: "error", message: "race already started" });
+      try {
+        ws.close();
+      } catch {
+        /* ignore */
+      }
       return null;
     }
     if (password !== room.password) {
       send(ws, { t: "error", message: "wrong password" });
+      try {
+        ws.close();
+      } catch {
+        /* ignore */
+      }
       return null;
     }
     if (room.clients.size >= room.maxPlayers) {
       send(ws, { t: "error", message: `room full (max ${room.maxPlayers})` });
+      try {
+        ws.close();
+      } catch {
+        /* ignore */
+      }
       return null;
     }
   }

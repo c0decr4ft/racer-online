@@ -183,6 +183,8 @@ export class NetClient {
   kind: NetVehicleKind = "car";
   maxPlayers = 8;
   phase: LobbyPhase | "" = "";
+  /** Bumps on each connect/disconnect so stale socket handlers are ignored. */
+  private connGen = 0;
 
   constructor(handlers: NetHandlers) {
     this.handlers = handlers;
@@ -199,6 +201,7 @@ export class NetClient {
   private connect(opts: RoomConnectOpts) {
     this.disconnect();
     this.pending = opts;
+    const gen = ++this.connGen;
 
     const proto = location.protocol === "https:" ? "wss" : "ws";
     // Prefer dedicated WS port in local dev (avoids flaky Vite HMR proxy upgrades)
@@ -213,15 +216,25 @@ export class NetClient {
       proxied;
 
     this.handlers.onStatus(opts.mode === "create" ? "Creating room…" : "Joining room…");
-    this.openSocket(url, opts, proxied !== url ? proxied : null);
+    this.openSocket(url, opts, proxied !== url ? proxied : null, gen);
   }
 
-  private openSocket(url: string, opts: RoomConnectOpts, fallback: string | null) {
+  private openSocket(
+    url: string,
+    opts: RoomConnectOpts,
+    fallback: string | null,
+    gen: number,
+  ) {
+    if (gen !== this.connGen) return;
     const ws = new WebSocket(url);
     this.ws = ws;
     let settled = false;
 
     ws.onopen = () => {
+      if (gen !== this.connGen || this.ws !== ws) {
+        ws.close();
+        return;
+      }
       settled = true;
       this.connected = true;
       this.handlers.onStatus(opts.mode === "create" ? "Creating room…" : "Joining room…");
@@ -252,6 +265,7 @@ export class NetClient {
     };
 
     ws.onmessage = (ev) => {
+      if (gen !== this.connGen || this.ws !== ws) return;
       let msg: ServerMsg;
       try {
         msg = JSON.parse(String(ev.data)) as ServerMsg;
@@ -267,6 +281,7 @@ export class NetClient {
         this.kind = msg.kind === "bike" ? "bike" : "car";
         this.maxPlayers = msg.maxPlayers;
         this.phase = msg.phase;
+        this.pending = null;
         this.handlers.onStatus(`Lobby · ${msg.room}`);
         this.handlers.onWelcome({
           id: msg.id,
@@ -304,27 +319,53 @@ export class NetClient {
       } else if (msg.t === "error") {
         this.handlers.onError(msg.message);
         this.handlers.onStatus(msg.message);
+        // Drop the dead socket without a misleading "Disconnected" status.
+        this.softClose(ws, gen);
       }
     };
 
     ws.onclose = () => {
+      if (gen !== this.connGen || this.ws !== ws) return;
       this.connected = false;
+      this.ws = null;
       if (!settled && fallback && this.pending) {
         this.handlers.onStatus("Retrying via proxy…");
-        this.openSocket(fallback, this.pending, null);
+        this.openSocket(fallback, this.pending, null, gen);
         return;
       }
+      // Intentional leave / softClose already cleared pending + ids
+      if (!this.myId && !this.pending) return;
+      this.myId = "";
+      this.hostId = "";
+      this.phase = "";
+      this.pending = null;
       this.handlers.onStatus("Disconnected");
     };
 
     ws.onerror = () => {
+      if (gen !== this.connGen || this.ws !== ws) return;
       if (!settled && fallback) return; // onclose will retry
       this.handlers.onStatus("Connection failed — run npm start");
     };
   }
 
+  /** Close a failed admit without bumping connGen or shouting Disconnected. */
+  private softClose(ws: WebSocket, gen: number) {
+    if (gen !== this.connGen || this.ws !== ws) return;
+    this.connected = false;
+    this.ws = null;
+    this.pending = null;
+    this.myId = "";
+    try {
+      ws.close();
+    } catch {
+      /* ignore */
+    }
+  }
+
   disconnect() {
-    this.ws?.close();
+    this.connGen++;
+    const ws = this.ws;
     this.ws = null;
     this.connected = false;
     this.myId = "";
@@ -334,6 +375,11 @@ export class NetClient {
     this.maxPlayers = 8;
     this.phase = "";
     this.pending = null;
+    try {
+      ws?.close();
+    } catch {
+      /* ignore */
+    }
   }
 
   get id() {
