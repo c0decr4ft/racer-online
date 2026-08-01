@@ -1,5 +1,5 @@
 /**
- * Lightweight human-presence store.
+ * Lightweight human-presence store (JSONBlob), same pattern as the leaderboard.
  *
  * Prefer the durable game server (`/api/presence`) when available. Fall back to
  * JSONBlob for static hosting without a backend (blob TTLs are short ~24h).

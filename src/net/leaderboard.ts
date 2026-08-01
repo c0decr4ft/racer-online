@@ -397,6 +397,7 @@ export async function fetchLeaderboard(
   }
 
   if (fromPublic) {
+    // Heal a wiped/empty remote from local or server scores when we have more.
     if (storeEntryCount(merged) > storeEntryCount(fromPublic)) {
       void publishMergedStore(merged).catch(() => undefined);
     }
@@ -431,6 +432,7 @@ export async function submitScore(
   let fromServer: BoardStore | null = null;
   let fromPublic: BoardStore | null = null;
 
+  // Persist on game server when available — but never treat that as the sole worldwide truth.
   const serverUrl = apiUrl("/leaderboard");
   if (serverUrl) {
     try {
