@@ -9,7 +9,7 @@
  */
 
 const PUBLIC_BLOB_URL =
-  "https://jsonblob.com/api/jsonBlob/019f8e7b-0678-7e10-bbd6-74574f05ea78";
+  "https://jsonblob.com/api/jsonBlob/019fbe1c-6eab-7997-bff4-46ce4bfc7d97";
 
 const MAX_MESSAGES = 80;
 export const FEEDBACK_TEXT_MAX = 500;

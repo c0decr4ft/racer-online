@@ -8,9 +8,14 @@ const PORT = Number(process.env.PORT || 8787);
 const NET_TICK_MS = 50; // 20 Hz
 const MAX_PLAYERS = 8;
 const PLAYER_COLORS = [0xe4eaf2, 0xe23b2e, 0x2a66f0, 0xf0c020, 0x1dbf6a, 0xb44dff, 0xff6b9d, 0x00d4ff];
-const LEADERBOARD_PATH = join(dirname(fileURLToPath(import.meta.url)), "leaderboard.json");
+const DIR = dirname(fileURLToPath(import.meta.url));
+const LEADERBOARD_PATH = join(DIR, "leaderboard.json");
+const PRESENCE_PATH = join(DIR, "presence.json");
 const MAX_BOARD = 10;
 const NAME_MAX = 10;
+const PRESENCE_STALE_MS = 75_000;
+const PRESENCE_KEEP_HOURS = 14 * 24;
+const PRESENCE_HISTORY_EPOCH = 2;
 
 const TRACK_IDS = [
   "forest-loop",
@@ -39,13 +44,57 @@ function normalizeTrackId(raw) {
   return TRACK_IDS.includes(id) ? id : DEFAULT_TRACK_ID;
 }
 
-/** @typedef {{ id: string, name: string, color: number, x: number, z: number, h: number, s: number, g: string, lap: number }} Pose */
+function normalizeKind(raw) {
+  return String(raw ?? "").toLowerCase() === "bike" ? "bike" : "car";
+}
+
+function normalizeSessionId(raw) {
+  const id = String(raw ?? "").trim();
+  if (id.length < 8 || id.length > 80) return null;
+  if (!/^[A-Za-z0-9_\-:]+$/.test(id)) return null;
+  return id;
+}
+
+/** @typedef {{ id: string, name: string, color: number, accent: number, kind: string, x: number, z: number, h: number, s: number, g: string, lap: number }} Pose */
 /** @typedef {{ id: string, name: string, color: number, room: string, ws: import('ws').WebSocket, pose: Pose, lastPoseAt: number }} Client */
+/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, hostId: string, phase: 'lobby' | 'racing', clients: Map<string, Client> }} Room */
 /** @typedef {{ name: string, timeMs: number, bestLapMs?: number, at: number, trackId?: string }} BoardEntry */
 /** @typedef {Record<string, BoardEntry[]>} BoardStore */
+/** @typedef {{ buckets: Record<string, number>, sessions: Record<string, number>, updatedAt: number, historyEpoch: number }} PresenceStore */
 
-/** @type {Map<string, Map<string, Client>>} */
+/** @type {Map<string, Room>} */
 const rooms = new Map();
+
+const MIN_PLAYERS_CAP = 2;
+const DEFAULT_MAX_PLAYERS = 8;
+
+function sanitizeRoomName(raw) {
+  return (
+    String(raw || "circuit")
+      .replace(/[^\w\- ]/g, "")
+      .trim()
+      .slice(0, 24) || "circuit"
+  );
+}
+
+function sanitizePassword(raw) {
+  return String(raw ?? "")
+    .normalize("NFKC")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .slice(0, 32);
+}
+
+function clampMaxPlayers(raw) {
+  const n = Math.round(Number(raw));
+  if (!Number.isFinite(n)) return DEFAULT_MAX_PLAYERS;
+  return Math.max(MIN_PLAYERS_CAP, Math.min(MAX_PLAYERS, n));
+}
+
+function normalizeColor(raw, fallback) {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.round(n) & 0xffffff;
+}
 
 /** @returns {BoardStore} */
 function emptyStore() {
@@ -70,7 +119,6 @@ function loadStore() {
         for (const [id, list] of Object.entries(raw.byTrack)) {
           const tid = normalizeTrackId(id);
           if (!Array.isArray(list)) continue;
-          // Merge when legacy / unknown ids collapse onto the same track
           store[tid] = sortBoard([...(store[tid] || []), ...list], tid);
         }
         return store;
@@ -132,6 +180,140 @@ function sortBoard(entries, trackId) {
   return unique.sort((a, b) => a.timeMs - b.timeMs || (a.at || 0) - (b.at || 0)).slice(0, MAX_BOARD);
 }
 
+function hourKey(ms) {
+  const d = new Date(ms);
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  const h = String(d.getUTCHours()).padStart(2, "0");
+  return `${y}-${m}-${day}T${h}`;
+}
+
+function hourKeyToMs(key) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2})$/.exec(key);
+  if (!m) return 0;
+  return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4]);
+}
+
+/** @returns {PresenceStore} */
+function emptyPresence() {
+  return { buckets: {}, sessions: {}, updatedAt: 0, historyEpoch: PRESENCE_HISTORY_EPOCH };
+}
+
+/** @returns {PresenceStore} */
+function loadPresence() {
+  try {
+    if (!existsSync(PRESENCE_PATH)) return emptyPresence();
+    const raw = JSON.parse(readFileSync(PRESENCE_PATH, "utf8"));
+    return prunePresence(parsePresence(raw));
+  } catch {
+    return emptyPresence();
+  }
+}
+
+/** @param {unknown} data @returns {PresenceStore} */
+function parsePresence(data) {
+  const store = emptyPresence();
+  if (!data || typeof data !== "object") return store;
+  const obj = /** @type {Partial<PresenceStore>} */ (data);
+  const epoch =
+    typeof obj.historyEpoch === "number" && Number.isFinite(obj.historyEpoch)
+      ? Math.round(obj.historyEpoch)
+      : 0;
+  store.historyEpoch = epoch;
+  if (epoch >= PRESENCE_HISTORY_EPOCH && obj.buckets && typeof obj.buckets === "object") {
+    for (const [k, v] of Object.entries(obj.buckets)) {
+      if (/^\d{4}-\d{2}-\d{2}T\d{2}$/.test(k) && typeof v === "number" && Number.isFinite(v) && v >= 0) {
+        store.buckets[k] = Math.max(0, Math.round(v));
+      }
+    }
+  }
+  if (obj.sessions && typeof obj.sessions === "object") {
+    for (const [id, at] of Object.entries(obj.sessions)) {
+      if (typeof id === "string" && id.length >= 8 && typeof at === "number" && Number.isFinite(at) && at > 0) {
+        store.sessions[id] = Math.round(at);
+      }
+    }
+  }
+  if (typeof obj.updatedAt === "number" && Number.isFinite(obj.updatedAt)) {
+    store.updatedAt = Math.round(obj.updatedAt);
+  }
+  return store;
+}
+
+/** @param {PresenceStore} store @param {number} [now] */
+function prunePresence(store, now = Date.now()) {
+  /** @type {Record<string, number>} */
+  const sessions = {};
+  for (const [id, at] of Object.entries(store.sessions)) {
+    if (now - at <= PRESENCE_STALE_MS) sessions[id] = at;
+  }
+  const cutoff = now - PRESENCE_KEEP_HOURS * 3_600_000;
+  /** @type {Record<string, number>} */
+  const buckets = {};
+  if (store.historyEpoch >= PRESENCE_HISTORY_EPOCH) {
+    for (const [k, v] of Object.entries(store.buckets)) {
+      const at = hourKeyToMs(k);
+      if (at >= cutoff) buckets[k] = v;
+    }
+  }
+  return {
+    buckets,
+    sessions,
+    updatedAt: store.updatedAt,
+    historyEpoch: Math.max(store.historyEpoch, PRESENCE_HISTORY_EPOCH),
+  };
+}
+
+/** @param {PresenceStore} store */
+function savePresence(store) {
+  const body = prunePresence(store);
+  body.historyEpoch = PRESENCE_HISTORY_EPOCH;
+  writeFileSync(PRESENCE_PATH, JSON.stringify(body, null, 2));
+  return body;
+}
+
+/** @param {PresenceStore} store @param {number} [now] */
+function activePresenceCount(store, now = Date.now()) {
+  let n = 0;
+  for (const at of Object.values(store.sessions)) {
+    if (now - at <= PRESENCE_STALE_MS) n += 1;
+  }
+  return n;
+}
+
+/** @param {PresenceStore} store @param {number} [now] */
+function recordPresencePeak(store, now = Date.now()) {
+  const peak = activePresenceCount(store, now);
+  const key = hourKey(now);
+  store.buckets[key] = Math.max(store.buckets[key] ?? 0, peak);
+  store.updatedAt = now;
+  store.historyEpoch = PRESENCE_HISTORY_EPOCH;
+}
+
+/** @param {PresenceStore} store */
+function presenceSnapshot(store) {
+  const pruned = prunePresence(store);
+  const buckets = Object.entries(pruned.buckets)
+    .map(([key, count]) => ({ key, count, at: hourKeyToMs(key) }))
+    .filter((b) => b.at > 0)
+    .sort((a, b) => a.at - b.at);
+  return {
+    ok: true,
+    now: activePresenceCount(pruned),
+    buckets,
+    updatedAt: pruned.updatedAt,
+    source: "server",
+    racing: [...rooms.values()].reduce((n, room) => n + room.clients.size, 0),
+    rooms: [...rooms.values()].map((room) => ({
+      room: room.name,
+      players: room.clients.size,
+      phase: room.phase,
+      maxPlayers: room.maxPlayers,
+    })),
+  };
+}
+
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
@@ -143,35 +325,134 @@ function send(ws, msg) {
   if (ws.readyState === 1) ws.send(JSON.stringify(msg));
 }
 
-/** @param {string} room */
+/** @param {Room} room */
 function roomPlayers(room) {
-  const map = rooms.get(room);
-  if (!map) return [];
-  return [...map.values()].map((c) => c.pose);
+  return [...room.clients.values()].map((c) => c.pose);
 }
 
-/** @param {string} room @param {object} msg @param {string} [except] */
+/** @param {Room} room @param {object} msg @param {string} [except] */
 function broadcast(room, msg, except) {
-  const map = rooms.get(room);
-  if (!map) return;
   const raw = JSON.stringify(msg);
-  for (const c of map.values()) {
+  for (const c of room.clients.values()) {
     if (except && c.id === except) continue;
     if (c.ws.readyState === 1) c.ws.send(raw);
   }
 }
 
-/** @param {string} room */
+/** @param {Room} room */
 function pickColor(room) {
-  const used = new Set([...(rooms.get(room)?.values() ?? [])].map((c) => c.color));
+  const used = new Set([...room.clients.values()].map((c) => c.color));
   return PLAYER_COLORS.find((c) => !used.has(c)) ?? PLAYER_COLORS[(Math.random() * PLAYER_COLORS.length) | 0];
 }
 
-/** @param {string} name */
-function ensureRoom(name) {
-  if (!rooms.has(name)) rooms.set(name, new Map());
-  return rooms.get(name);
+/** @param {Room} room */
+function lobbySnapshot(room) {
+  return {
+    t: "lobby",
+    players: roomPlayers(room),
+    trackId: room.trackId,
+    kind: room.kind,
+    hostId: room.hostId,
+    maxPlayers: room.maxPlayers,
+  };
 }
+
+/**
+ * @param {import('ws').WebSocket} ws
+ * @param {object} msg
+ * @param {'create' | 'join'} mode
+ */
+function admitClient(ws, msg, mode) {
+  const roomName = sanitizeRoomName(msg.room);
+  const password = sanitizePassword(msg.password);
+  const name = sanitizeDriverName(msg.name || "Racer");
+  const accent = normalizeColor(msg.accent, 0xff3b2e);
+
+  /** @type {Room | undefined} */
+  let room = rooms.get(roomName);
+
+  if (mode === "create") {
+    if (room && room.clients.size > 0) {
+      send(ws, { t: "error", message: "room already exists — pick another name or join it" });
+      return null;
+    }
+    room = {
+      name: roomName,
+      password,
+      maxPlayers: clampMaxPlayers(msg.maxPlayers),
+      trackId: normalizeTrackId(msg.trackId),
+      kind: normalizeKind(msg.kind),
+      hostId: "",
+      phase: "lobby",
+      clients: new Map(),
+    };
+    rooms.set(roomName, room);
+  } else {
+    if (!room || room.clients.size === 0) {
+      send(ws, { t: "error", message: "room not found" });
+      return null;
+    }
+    if (room.phase === "racing") {
+      send(ws, { t: "error", message: "race already started" });
+      return null;
+    }
+    if (password !== room.password) {
+      send(ws, { t: "error", message: "wrong password" });
+      return null;
+    }
+    if (room.clients.size >= room.maxPlayers) {
+      send(ws, { t: "error", message: `room full (max ${room.maxPlayers})` });
+      return null;
+    }
+  }
+
+  // Room vehicle class is host-chosen at create — every racer uses it.
+  const kind = room.kind;
+  const id = Math.random().toString(36).slice(2, 10);
+  const color = normalizeColor(msg.color, pickColor(room));
+  const slot = room.clients.size;
+  /** @type {Pose} */
+  const pose = {
+    id,
+    name,
+    color,
+    accent,
+    kind,
+    x: 8 + (slot % 2 === 0 ? -3.2 : 3.2),
+    z: -95 + slot * 2.4,
+    h: -Math.PI / 2,
+    s: 0,
+    g: "1",
+    lap: 1,
+  };
+
+  /** @type {Client} */
+  const client = { id, name, color, room: roomName, ws, pose, lastPoseAt: 0 };
+  room.clients.set(id, client);
+  if (!room.hostId || mode === "create") room.hostId = id;
+
+  send(ws, {
+    t: "welcome",
+    id,
+    room: roomName,
+    players: roomPlayers(room),
+    you: pose,
+    hostId: room.hostId,
+    trackId: room.trackId,
+    kind: room.kind,
+    maxPlayers: room.maxPlayers,
+    phase: room.phase,
+  });
+  broadcast(room, { t: "join", player: pose }, id);
+  broadcast(room, { t: "notice", text: `${name} joined` });
+  broadcast(room, lobbySnapshot(room));
+  console.log(
+    `[${mode}] ${name} (${kind}) → ${roomName} (${room.clients.size}/${room.maxPlayers}) track=${room.trackId}`,
+  );
+  return client;
+}
+
+let presence = loadPresence();
 
 const httpServer = createServer(async (req, res) => {
   cors(res);
@@ -226,9 +507,60 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
+  if (url.pathname === "/api/presence" && req.method === "GET") {
+    presence = prunePresence(presence);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(presenceSnapshot(presence)));
+    return;
+  }
+
+  if (url.pathname === "/api/presence" && req.method === "POST") {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    try {
+      const data = JSON.parse(body || "{}");
+      const id = normalizeSessionId(data.id);
+      if (!id) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "bad session id" }));
+        return;
+      }
+      const now = Date.now();
+      presence = prunePresence(presence, now);
+      const action = String(data.action || "heartbeat").toLowerCase();
+      if (action === "leave") {
+        delete presence.sessions[id];
+        presence.updatedAt = now;
+        presence.historyEpoch = PRESENCE_HISTORY_EPOCH;
+      } else {
+        presence.sessions[id] = now;
+        recordPresencePeak(presence, now);
+      }
+      presence = savePresence(presence);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(presenceSnapshot(presence)));
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "bad json" }));
+    }
+    return;
+  }
+
   res.writeHead(200, { "Content-Type": "application/json" });
-  const stats = [...rooms.entries()].map(([name, map]) => ({ room: name, players: map.size }));
-  res.end(JSON.stringify({ ok: true, rooms: stats }));
+  const stats = [...rooms.values()].map((room) => ({
+    room: room.name,
+    players: room.clients.size,
+    phase: room.phase,
+    maxPlayers: room.maxPlayers,
+    trackId: room.trackId,
+  }));
+  res.end(
+    JSON.stringify({
+      ok: true,
+      rooms: stats,
+      presence: presenceSnapshot(prunePresence(presence)),
+    }),
+  );
 });
 
 const wss = new WebSocketServer({ server: httpServer });
@@ -251,38 +583,9 @@ wss.on("connection", (ws) => {
       return;
     }
 
-    if (msg.t === "join") {
+    if (msg.t === "create" || msg.t === "join") {
       if (client) return;
-      const roomName = String(msg.room || "circuit").slice(0, 24);
-      const room = ensureRoom(roomName);
-      if (room.size >= MAX_PLAYERS) {
-        send(ws, { t: "error", message: "room full (max 8)" });
-        return;
-      }
-
-      const id = Math.random().toString(36).slice(2, 10);
-      const color = pickColor(roomName);
-      const name = sanitizeDriverName(msg.name || "Racer");
-      const slot = room.size;
-      /** @type {Pose} */
-      const pose = {
-        id,
-        name,
-        color,
-        x: 8 + (slot % 2 === 0 ? -3.2 : 3.2),
-        z: -95 + slot * 2.4,
-        h: -Math.PI / 2,
-        s: 0,
-        g: "1",
-        lap: 1,
-      };
-
-      client = { id, name, color, room: roomName, ws, pose, lastPoseAt: 0 };
-      room.set(id, client);
-
-      send(ws, { t: "welcome", id, room: roomName, players: roomPlayers(roomName), you: pose });
-      broadcast(roomName, { t: "join", player: pose }, id);
-      console.log(`[join] ${name} → ${roomName} (${room.size}/${MAX_PLAYERS})`);
+      client = admitClient(ws, msg, msg.t === "create" ? "create" : "join");
       return;
     }
 
@@ -291,7 +594,28 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    const room = rooms.get(client.room);
+    if (!room) {
+      send(ws, { t: "error", message: "room gone" });
+      return;
+    }
+
+    if (msg.t === "start") {
+      if (client.id !== room.hostId) {
+        send(ws, { t: "error", message: "only the host can start" });
+        return;
+      }
+      if (room.phase === "racing") return;
+      if (msg.trackId != null) room.trackId = normalizeTrackId(msg.trackId);
+      room.phase = "racing";
+      const at = Date.now() + 250;
+      broadcast(room, { t: "start", at, trackId: room.trackId, kind: room.kind });
+      console.log(`[start] ${room.name} by ${client.name} → ${room.trackId} ${room.kind} (${room.clients.size}p)`);
+      return;
+    }
+
     if (msg.t === "pose") {
+      if (room.phase !== "racing") return;
       const now = Date.now();
       if (now - client.lastPoseAt < 32) return; // ~30Hz max ingest
       client.lastPoseAt = now;
@@ -302,32 +626,63 @@ wss.on("connection", (ws) => {
       p.s = +msg.s || 0;
       p.g = String(msg.g || "1").slice(0, 2);
       p.lap = Math.max(1, Math.min(99, msg.lap | 0));
+      // Ignore client kind — room class is locked by the host at create.
+      p.kind = room.kind;
+      if (Number.isFinite(Number(msg.color)) && Number(msg.color) > 0) {
+        p.color = Math.round(Number(msg.color)) & 0xffffff;
+        client.color = p.color;
+      }
+      if (Number.isFinite(Number(msg.accent)) && Number(msg.accent) > 0) {
+        p.accent = Math.round(Number(msg.accent)) & 0xffffff;
+      }
     }
   });
 
   ws.on("close", () => {
     if (!client) return;
     const room = rooms.get(client.room);
-    room?.delete(client.id);
-    broadcast(client.room, { t: "leave", id: client.id });
+    if (!room) {
+      client = null;
+      return;
+    }
+    room.clients.delete(client.id);
     console.log(`[leave] ${client.name}`);
-    if (room && room.size === 0) rooms.delete(client.room);
+    if (room.clients.size === 0) {
+      rooms.delete(client.room);
+    } else {
+      if (room.hostId === client.id) {
+        room.hostId = room.clients.keys().next().value;
+      }
+      broadcast(room, { t: "leave", id: client.id, hostId: room.hostId });
+      broadcast(room, { t: "notice", text: `${client.name} left` });
+      if (room.phase === "lobby") broadcast(room, lobbySnapshot(room));
+    }
     client = null;
   });
 });
 
 setInterval(() => {
   const serverTime = Date.now();
-  for (const [, map] of rooms) {
-    if (map.size === 0) continue;
-    const players = [...map.values()].map((c) => c.pose);
+  for (const room of rooms.values()) {
+    if (room.phase !== "racing" || room.clients.size === 0) continue;
+    const players = roomPlayers(room);
     const raw = JSON.stringify({ t: "state", players, serverTime });
-    for (const c of map.values()) {
+    for (const c of room.clients.values()) {
       if (c.ws.readyState === 1) c.ws.send(raw);
     }
   }
 }, NET_TICK_MS);
 
+// Drop stale presence sessions periodically so GET stays fresh without heartbeats.
+setInterval(() => {
+  const next = prunePresence(presence);
+  if (Object.keys(next.sessions).length !== Object.keys(presence.sessions).length) {
+    presence = savePresence(next);
+  } else {
+    presence = next;
+  }
+}, 15_000);
+
 httpServer.listen(PORT, () => {
-  console.log(`Racer Online :${PORT} (WS + /api/leaderboard)`);
+  console.log(`Racer Online :${PORT} (WS + /api/leaderboard + /api/presence)`);
 });

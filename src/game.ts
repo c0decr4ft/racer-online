@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { createCar, CAR_PALETTE } from "./car";
+import { createVehicle, CAR_PALETTE } from "./car";
 import {
   createTrack,
   disposeTrack,
@@ -9,16 +9,19 @@ import {
   TRACKS,
   randomTrackId,
   DEFAULT_TRACK_ID,
+  getTrackDef,
 } from "./track";
 import { drawTrackPreview } from "./mapPreview";
 import { Input } from "./input";
+import { isTouchPrimary, TouchControls, viewportSize } from "./touch";
 import { Vehicle, RivalAI } from "./vehicle";
-import { NetClient, RemotePlayer } from "./net/client";
+import { NetClient, RemotePlayer, type WelcomeInfo } from "./net/client";
 import type { PlayerPose } from "./net/protocol";
 import {
   boardSourceLabel,
   fetchLeaderboard,
   formatBoardTime,
+  getLocalDriverName,
   sanitizeDriverName,
   saveLocalDriverName,
   submitScore,
@@ -27,6 +30,15 @@ import {
 } from "./net/leaderboard";
 import { GameAudio } from "./audio";
 import { setFeedbackBtnVisible } from "./feedbackCompose";
+import {
+  GARAGE_SWATCHES,
+  hexColor,
+  loadGarage,
+  parseHexColor,
+  saveGarage,
+  type GarageLoadout,
+  type VehicleKind,
+} from "./garage";
 import { setVersionSwitcherVisible } from "./versions";
 
 function formatTime(ms: number): string {
@@ -74,6 +86,8 @@ export class Game {
   /** Roof-mounted look-behind cam for the always-on rearview inset. */
   private rearCamera: THREE.PerspectiveCamera;
   input = new Input();
+  private touch = new TouchControls(this.input);
+  private touchMode = false;
   track = createTrack(DEFAULT_TRACK_ID);
   /** Active course id — rebuilt when starting a mode or Race Again (random). */
   private trackId = DEFAULT_TRACK_ID;
@@ -99,6 +113,13 @@ export class Game {
   private net: NetClient;
   private pingTimer = 0;
   private labelRoot = document.getElementById("player-tags")!;
+  /** Player garage loadout — bots always match `kind`. */
+  private garage: GarageLoadout = loadGarage();
+  /** Waiting in multiplayer lobby (connected, race not started). */
+  private inLobby = false;
+  private lobbyPlayers: PlayerPose[] = [];
+  private mpCreateTrackId = DEFAULT_TRACK_ID;
+  private mpCreateKind: VehicleKind = "car";
 
   private lap = 1;
   private lastT = 0;
@@ -152,6 +173,30 @@ export class Game {
     mapSelectTitle: document.getElementById("map-select-title")!,
     mapSelectTagline: document.getElementById("map-select-tagline")!,
     boardTrackGrid: document.getElementById("board-track-grid")!,
+    garage: document.getElementById("garage")!,
+    multiplayer: document.getElementById("multiplayer")!,
+    garagePrimary: document.getElementById("garage-primary") as HTMLInputElement,
+    garageAccent: document.getElementById("garage-accent") as HTMLInputElement,
+    mpEntry: document.getElementById("mp-entry")!,
+    mpCreate: document.getElementById("mp-create")!,
+    mpJoin: document.getElementById("mp-join")!,
+    mpLobby: document.getElementById("mp-lobby")!,
+    mpCreateName: document.getElementById("mp-create-name") as HTMLInputElement,
+    mpCreateRoom: document.getElementById("mp-create-room") as HTMLInputElement,
+    mpCreatePass: document.getElementById("mp-create-pass") as HTMLInputElement,
+    mpCreateMax: document.getElementById("mp-create-max") as HTMLInputElement,
+    mpCreateStatus: document.getElementById("mp-create-status")!,
+    mpCreateTrackGrid: document.getElementById("mp-create-track-grid")!,
+    mpJoinName: document.getElementById("mp-join-name") as HTMLInputElement,
+    mpJoinRoom: document.getElementById("mp-join-room") as HTMLInputElement,
+    mpJoinPass: document.getElementById("mp-join-pass") as HTMLInputElement,
+    mpJoinStatus: document.getElementById("mp-join-status")!,
+    mpLobbyTitle: document.getElementById("mp-lobby-title")!,
+    mpLobbyMeta: document.getElementById("mp-lobby-meta")!,
+    mpLobbyPlayers: document.getElementById("mp-lobby-players")!,
+    mpLobbyFeed: document.getElementById("mp-lobby-feed")!,
+    mpStatus: document.getElementById("mp-status")!,
+    mpStartBtn: document.getElementById("mp-start-btn") as HTMLButtonElement,
   };
 
   private pendingFinishMs = 0;
@@ -208,7 +253,8 @@ export class Game {
       powerPreference: "high-performance",
     });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.25));
-    this.renderer.setSize(innerWidth, innerHeight);
+    const boot = viewportSize();
+    this.renderer.setSize(boot.w, boot.h);
     this.renderer.setClearColor(0x87a0bc, 1);
     this.renderer.shadowMap.enabled = true;
     // Keep default PCFShadowMap type; rebuild once per frame before the main
@@ -218,27 +264,97 @@ export class Game {
     this.renderer.toneMappingExposure = 1.2;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
 
-    this.camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 700);
+    this.camera = new THREE.PerspectiveCamera(55, boot.w / boot.h, 0.1, 700);
     this.rearCamera = new THREE.PerspectiveCamera(70, 1.6, 0.2, 400);
     this.scene.background = new THREE.Color(0x87a0bc);
     this.scene.fog = new THREE.Fog(0x87a0bc, 160, 520);
 
     this.net = new NetClient({
-      onWelcome: (id, room, players, you) => this.onNetWelcome(id, room, players, you),
-      onJoin: (p) => this.spawnRemote(p),
-      onLeave: (id) => this.removeRemote(id),
+      onWelcome: (info) => this.onNetWelcome(info),
+      onJoin: (p) => {
+        if (this.inLobby) this.upsertLobbyPlayer(p);
+        else if (this.running) this.spawnRemote(p);
+      },
+      onLeave: (id, hostId) => {
+        if (this.inLobby) {
+          this.lobbyPlayers = this.lobbyPlayers.filter((p) => p.id !== id);
+          if (hostId) this.net.hostId = hostId;
+          this.renderLobby();
+        } else {
+          this.removeRemote(id);
+        }
+      },
+      onNotice: (text) => this.pushLobbyNotice(text),
+      onLobby: (info) => {
+        if (!this.inLobby) return;
+        this.lobbyPlayers = info.players;
+        this.net.hostId = info.hostId;
+        this.net.trackId = info.trackId;
+        this.net.kind = info.kind === "bike" ? "bike" : "car";
+        this.net.maxPlayers = info.maxPlayers;
+        this.renderLobby();
+      },
+      onStart: (_at, trackId, kind) => this.beginOnlineRace(trackId, kind),
       onState: (players) => this.onNetState(players),
-      onError: (message) => this.setNetStatus(message, "bad"),
-      onStatus: (text) => this.setNetStatus(text, text.includes("fail") || text.includes("Disconnect") ? "bad" : "ok"),
+      onError: (message) => {
+        this.setNetStatus(message, "bad");
+        this.setMpFormStatus(message);
+        this.el.mpStatus.textContent = message;
+        if (!this.running && !this.inLobby && !this.el.multiplayer.classList.contains("hidden")) {
+          this.online = false;
+        }
+      },
+      onStatus: (text) => {
+        const bad = /fail|Disconnect|full|error|wrong|not found|already/i.test(text);
+        this.setNetStatus(text, bad ? "bad" : "ok");
+        if (!this.running && !this.el.multiplayer.classList.contains("hidden")) {
+          this.setMpFormStatus(text);
+          if (this.inLobby) this.el.mpStatus.textContent = text;
+        }
+        if (/Disconnect/i.test(text) && this.inLobby && !this.running) {
+          this.inLobby = false;
+          this.online = false;
+          this.showMpView("entry");
+        }
+      },
     });
 
     this.buildWorld();
     this.spawnVehicles();
     this.snapCamera();
     this.bindUi();
+    this.refreshTouchMode();
 
     addEventListener("resize", () => this.onResize());
+    addEventListener("orientationchange", () => {
+      // Wait a tick for mobile browsers to settle the visual viewport
+      setTimeout(() => {
+        this.refreshTouchMode();
+        this.onResize();
+      }, 120);
+    });
+    window.visualViewport?.addEventListener("resize", () => this.onResize());
+    window.matchMedia("(pointer: coarse)").addEventListener("change", () => this.refreshTouchMode());
+    window.matchMedia("(hover: none)").addEventListener("change", () => this.refreshTouchMode());
     this.renderer.setAnimationLoop(() => this.frame());
+  }
+
+  /** Detect phone/tablet touchscreens; hide pads on desktop/laptops. */
+  private refreshTouchMode() {
+    this.touchMode = isTouchPrimary();
+    this.touch.syncMode(this.touchMode);
+    this.syncTouchControls();
+  }
+
+  /** On-screen drive pads only while racing on a touch-primary device. */
+  private syncTouchControls() {
+    const racing =
+      this.touchMode &&
+      this.running &&
+      !this.paused &&
+      !this.finished &&
+      !this.exploding;
+    this.touch.setVisible(racing);
   }
 
   private bindUi() {
@@ -254,12 +370,16 @@ export class Game {
     document.getElementById("solo-race-btn")!.onclick = () => {
       void this.unlockAndMaybeMenuMusic().then(() => this.openMapSelect("solo"));
     };
+    document.getElementById("multiplayer-btn")!.onclick = () => {
+      void this.unlockAndMaybeMenuMusic().then(() => this.openMultiplayer());
+    };
     document.getElementById("map-select-back")!.onclick = () => this.closeMapSelect();
     document.getElementById("restart-btn")!.onclick = () => {
       void this.audio.unlock().then(() => {
         this.audio.stopMusic();
-        // AI race again → new random map; solo keeps chosen course
-        const trackId = !this.solo && !this.practice ? randomTrackId() : this.trackId;
+        // AI race again → new random map; solo/online keep chosen course
+        const trackId =
+          this.online || this.solo || this.practice ? this.trackId : randomTrackId();
         this.startRace({ solo: this.solo, trackId });
       });
     };
@@ -277,10 +397,44 @@ export class Game {
     document.getElementById("home-board-btn")!.onclick = () => {
       void this.unlockAndMaybeMenuMusic().then(() => this.openLeaderboard());
     };
+    document.getElementById("home-garage-btn")!.onclick = () => {
+      void this.unlockAndMaybeMenuMusic().then(() => this.openGarage());
+    };
     document.getElementById("board-close-btn")!.onclick = () => {
       this.el.leaderboard.classList.add("hidden");
       this.audio.playMenuMusic();
     };
+    document.getElementById("garage-back-btn")!.onclick = () => this.closeGarage(false);
+    document.getElementById("garage-save-btn")!.onclick = () => this.closeGarage(true);
+    document.getElementById("garage-kind-car")!.onclick = () => this.setGarageKind("car");
+    document.getElementById("garage-kind-bike")!.onclick = () => this.setGarageKind("bike");
+    this.el.garagePrimary.addEventListener("input", () => {
+      this.setGarageChannel("primary", parseHexColor(this.el.garagePrimary.value, this.garage.primary));
+    });
+    this.el.garageAccent.addEventListener("input", () => {
+      this.setGarageChannel("accent", parseHexColor(this.el.garageAccent.value, this.garage.accent));
+    });
+    this.bindGarageColorPickers();
+
+    document.getElementById("mp-back-btn")!.onclick = () => this.closeMultiplayer();
+    document.getElementById("mp-goto-create")!.onclick = () => this.showMpView("create");
+    document.getElementById("mp-goto-join")!.onclick = () => this.showMpView("join");
+    document.getElementById("mp-create-back")!.onclick = () => this.showMpView("entry");
+    document.getElementById("mp-join-back")!.onclick = () => this.showMpView("entry");
+    document.getElementById("mp-lobby-leave")!.onclick = () => this.leaveLobby();
+    this.el.mpStartBtn.onclick = () => {
+      if (this.net.isHost) this.net.startRace();
+    };
+    document.getElementById("mp-create-form")!.addEventListener("submit", (e) => {
+      e.preventDefault();
+      void this.createMultiplayerRoom();
+    });
+    document.getElementById("mp-join-form")!.addEventListener("submit", (e) => {
+      e.preventDefault();
+      void this.joinMultiplayerRoom();
+    });
+    document.getElementById("mp-create-kind-car")!.onclick = () => this.setMpCreateKind("car");
+    document.getElementById("mp-create-kind-bike")!.onclick = () => this.setMpCreateKind("bike");
     this.el.overlay.addEventListener("pointerdown", () => {
       void this.unlockAndMaybeMenuMusic();
     });
@@ -335,16 +489,366 @@ export class Game {
     setFeedbackBtnVisible(onHome);
   }
 
-  /** Homepage overlay visible (incl. BOARD / map picker over it). */
+  /** Homepage overlay visible (incl. BOARD / garage / multiplayer / map picker). */
   private onHomeOrBoard(): boolean {
     const mapOpen = !this.el.mapSelect.classList.contains("hidden");
     const boardOpen = !this.el.leaderboard.classList.contains("hidden");
+    const garageOpen = !this.el.garage.classList.contains("hidden");
+    const mpOpen = !this.el.multiplayer.classList.contains("hidden");
     return (
       !this.running &&
       !this.finished &&
       !this.paused &&
-      (!this.el.overlay.classList.contains("hidden") || mapOpen || boardOpen)
+      (!this.el.overlay.classList.contains("hidden") || mapOpen || boardOpen || garageOpen || mpOpen)
     );
+  }
+
+  private openGarage() {
+    this.el.mapSelect.classList.add("hidden");
+    this.el.leaderboard.classList.add("hidden");
+    this.el.multiplayer.classList.add("hidden");
+    this.garage = loadGarage();
+    this.closeGarageSwatchPalettes();
+    this.syncGarageUi();
+    this.el.garage.classList.remove("hidden");
+    this.syncMuteBtn();
+  }
+
+  private closeGarage(save: boolean) {
+    this.closeGarageSwatchPalettes();
+    if (save) {
+      this.garage = saveGarage({
+        kind: this.garage.kind,
+        primary: parseHexColor(this.el.garagePrimary.value, this.garage.primary),
+        accent: parseHexColor(this.el.garageAccent.value, this.garage.accent),
+      });
+      this.applyGarageToWorld(true);
+    } else {
+      this.garage = loadGarage();
+    }
+    this.el.garage.classList.add("hidden");
+    this.audio.playMenuMusic();
+    this.syncMuteBtn();
+  }
+
+  private setGarageKind(kind: VehicleKind) {
+    this.garage.kind = kind;
+    this.syncGarageUi();
+  }
+
+  private syncGarageUi() {
+    document.getElementById("garage-kind-car")?.classList.toggle("is-active", this.garage.kind === "car");
+    document.getElementById("garage-kind-bike")?.classList.toggle("is-active", this.garage.kind === "bike");
+    this.el.garagePrimary.value = hexColor(this.garage.primary);
+    this.el.garageAccent.value = hexColor(this.garage.accent);
+    this.syncGarageSwatches();
+    const hint = document.getElementById("garage-hint");
+    if (hint) {
+      hint.textContent =
+        this.garage.kind === "bike"
+          ? "Bike selected — all AI rivals become bikes"
+          : "Car selected — all AI rivals become cars";
+    }
+    this.syncGarageSwatchPaletteActive();
+  }
+
+  private garageSwatchBtn(channel: "primary" | "accent"): HTMLButtonElement | null {
+    const el = document.getElementById(channel === "primary" ? "garage-primary-swatch" : "garage-accent-swatch");
+    return el instanceof HTMLButtonElement ? el : null;
+  }
+
+  private garageSwatchPalette(channel: "primary" | "accent"): HTMLElement | null {
+    const el = document.getElementById(
+      channel === "primary" ? "garage-primary-palette" : "garage-accent-palette",
+    );
+    return el instanceof HTMLElement ? el : null;
+  }
+
+  private syncGarageSwatches() {
+    const primaryBtn = this.garageSwatchBtn("primary");
+    const accentBtn = this.garageSwatchBtn("accent");
+    if (primaryBtn) primaryBtn.style.background = hexColor(this.garage.primary);
+    if (accentBtn) accentBtn.style.background = hexColor(this.garage.accent);
+  }
+
+  private setGarageChannel(channel: "primary" | "accent", color: number) {
+    if (channel === "primary") this.garage.primary = color;
+    else this.garage.accent = color;
+    this.el.garagePrimary.value = hexColor(this.garage.primary);
+    this.el.garageAccent.value = hexColor(this.garage.accent);
+    this.syncGarageSwatches();
+    this.syncGarageSwatchPaletteActive();
+  }
+
+  private closeGarageSwatchPalettes() {
+    for (const channel of ["primary", "accent"] as const) {
+      const palette = this.garageSwatchPalette(channel);
+      const btn = this.garageSwatchBtn(channel);
+      palette?.classList.add("hidden");
+      btn?.setAttribute("aria-expanded", "false");
+    }
+  }
+
+  private openGarageSwatchPalette(channel: "primary" | "accent") {
+    for (const other of ["primary", "accent"] as const) {
+      const palette = this.garageSwatchPalette(other);
+      const btn = this.garageSwatchBtn(other);
+      const open = other === channel;
+      palette?.classList.toggle("hidden", !open);
+      btn?.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+    this.syncGarageSwatchPaletteActive();
+  }
+
+  private openNativeGarageColor(channel: "primary" | "accent") {
+    this.closeGarageSwatchPalettes();
+    const input = channel === "primary" ? this.el.garagePrimary : this.el.garageAccent;
+    const picker = input as HTMLInputElement & { showPicker?: () => void };
+    // Temporarily enable hit-testing so click()/showPicker can open the OS chooser.
+    input.style.pointerEvents = "auto";
+    try {
+      if (typeof picker.showPicker === "function") picker.showPicker();
+      else input.click();
+    } catch {
+      input.click();
+    } finally {
+      requestAnimationFrame(() => {
+        input.style.pointerEvents = "";
+      });
+    }
+  }
+
+  private bindGarageColorPickers() {
+    for (const channel of ["primary", "accent"] as const) {
+      const btn = this.garageSwatchBtn(channel);
+      const palette = this.garageSwatchPalette(channel);
+      if (!btn || !palette) continue;
+
+      palette.replaceChildren();
+      for (const color of GARAGE_SWATCHES) {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "garage-swatch-chip";
+        chip.style.background = hexColor(color);
+        chip.dataset.color = String(color);
+        chip.title = hexColor(color);
+        chip.setAttribute("role", "option");
+        chip.onclick = (e) => {
+          e.stopPropagation();
+          this.setGarageChannel(channel, color);
+          this.closeGarageSwatchPalettes();
+        };
+        palette.appendChild(chip);
+      }
+
+      btn.setAttribute("aria-expanded", "false");
+      btn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const open = palette.classList.contains("hidden");
+        if (open) this.openGarageSwatchPalette(channel);
+        else this.closeGarageSwatchPalettes();
+      };
+      btn.oncontextmenu = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.openNativeGarageColor(channel);
+      };
+    }
+
+    this.el.garage.addEventListener("pointerdown", (e) => {
+      const t = e.target;
+      if (!(t instanceof Node)) return;
+      if (t instanceof Element && t.closest(".garage-color-field")) return;
+      this.closeGarageSwatchPalettes();
+    });
+  }
+
+  private syncGarageSwatchPaletteActive() {
+    for (const channel of ["primary", "accent"] as const) {
+      const palette = this.garageSwatchPalette(channel);
+      if (!palette) continue;
+      const current = channel === "primary" ? this.garage.primary : this.garage.accent;
+      for (const el of palette.querySelectorAll(".garage-swatch-chip")) {
+        if (!(el instanceof HTMLElement)) continue;
+        el.classList.toggle("is-active", Number(el.dataset.color) === current);
+      }
+    }
+  }
+
+  private openMultiplayer() {
+    this.el.mapSelect.classList.add("hidden");
+    this.el.leaderboard.classList.add("hidden");
+    this.el.garage.classList.add("hidden");
+    this.garage = loadGarage();
+    this.mpCreateKind = this.garage.kind;
+    this.mpCreateTrackId = this.trackId || DEFAULT_TRACK_ID;
+    const saved = getLocalDriverName();
+    if (saved) {
+      this.el.mpCreateName.value = saved;
+      this.el.mpJoinName.value = saved;
+    }
+    if (!this.el.mpCreateRoom.value.trim()) this.el.mpCreateRoom.value = "circuit";
+    if (!this.el.mpJoinRoom.value.trim()) this.el.mpJoinRoom.value = "circuit";
+    this.el.mpCreateStatus.textContent = "Your vehicle class applies to everyone in the room";
+    this.el.mpJoinStatus.textContent = "Vehicle class is set by the host · garage paint still applies";
+    this.showMpView("entry");
+    this.el.multiplayer.classList.remove("hidden");
+    this.syncMuteBtn();
+  }
+
+  private closeMultiplayer() {
+    if (this.inLobby) this.leaveLobby();
+    this.el.multiplayer.classList.add("hidden");
+    this.audio.playMenuMusic();
+    this.syncMuteBtn();
+  }
+
+  private showMpView(view: "entry" | "create" | "join" | "lobby") {
+    this.el.mpEntry.classList.toggle("hidden", view !== "entry");
+    this.el.mpCreate.classList.toggle("hidden", view !== "create");
+    this.el.mpJoin.classList.toggle("hidden", view !== "join");
+    this.el.mpLobby.classList.toggle("hidden", view !== "lobby");
+    if (view === "create") {
+      this.syncMpCreateKindUi();
+      this.renderMpCreateTracks();
+    }
+    this.syncMuteBtn();
+  }
+
+  private setMpCreateKind(kind: VehicleKind) {
+    this.mpCreateKind = kind;
+    this.syncMpCreateKindUi();
+  }
+
+  private syncMpCreateKindUi() {
+    document.getElementById("mp-create-kind-car")?.classList.toggle("is-active", this.mpCreateKind === "car");
+    document.getElementById("mp-create-kind-bike")?.classList.toggle("is-active", this.mpCreateKind === "bike");
+  }
+
+  private renderMpCreateTracks() {
+    this.renderMapGrid(this.el.mpCreateTrackGrid, this.mpCreateTrackId, (trackId) => {
+      this.mpCreateTrackId = trackId;
+      this.renderMpCreateTracks();
+    });
+  }
+
+  private setMpFormStatus(text: string) {
+    if (!this.el.mpCreate.classList.contains("hidden")) this.el.mpCreateStatus.textContent = text;
+    if (!this.el.mpJoin.classList.contains("hidden")) this.el.mpJoinStatus.textContent = text;
+  }
+
+  private sanitizeRoomName(raw: string): string {
+    return raw.replace(/[^\w\- ]/g, "").trim().slice(0, 24) || "circuit";
+  }
+
+  private async createMultiplayerRoom() {
+    const name = sanitizeDriverName(this.el.mpCreateName.value);
+    this.el.mpCreateName.value = name;
+    saveLocalDriverName(name);
+    const room = this.sanitizeRoomName(this.el.mpCreateRoom.value);
+    this.el.mpCreateRoom.value = room;
+    const password = this.el.mpCreatePass.value.slice(0, 32);
+    const maxPlayers = Math.max(2, Math.min(8, Number(this.el.mpCreateMax.value) || 4));
+    this.el.mpCreateMax.value = String(maxPlayers);
+    this.el.mpCreateStatus.textContent = "Creating room…";
+    await this.audio.unlock();
+    this.audio.stopMenuMusic();
+    this.garage = { ...loadGarage(), kind: this.mpCreateKind };
+    this.solo = false;
+    this.practice = false;
+    this.clearRemotes();
+    this.el.netStatus.classList.remove("hidden");
+    this.setNetStatus("Creating room…", "ok");
+    this.net.createRoom({
+      name,
+      room,
+      password,
+      maxPlayers,
+      trackId: this.mpCreateTrackId,
+      kind: this.mpCreateKind,
+      color: this.garage.primary,
+      accent: this.garage.accent,
+    });
+  }
+
+  private async joinMultiplayerRoom() {
+    const name = sanitizeDriverName(this.el.mpJoinName.value);
+    this.el.mpJoinName.value = name;
+    saveLocalDriverName(name);
+    const room = this.sanitizeRoomName(this.el.mpJoinRoom.value);
+    this.el.mpJoinRoom.value = room;
+    const password = this.el.mpJoinPass.value.slice(0, 32);
+    this.el.mpJoinStatus.textContent = "Joining room…";
+    await this.audio.unlock();
+    this.audio.stopMenuMusic();
+    // Colors from garage; vehicle kind is forced by the host/room on welcome.
+    this.garage = loadGarage();
+    this.solo = false;
+    this.practice = false;
+    this.clearRemotes();
+    this.el.netStatus.classList.remove("hidden");
+    this.setNetStatus("Joining room…", "ok");
+    this.net.joinRoom({
+      name,
+      room,
+      password,
+      color: this.garage.primary,
+      accent: this.garage.accent,
+    });
+  }
+
+  private leaveLobby() {
+    this.inLobby = false;
+    this.online = false;
+    this.lobbyPlayers = [];
+    this.net.disconnect();
+    this.clearRemotes();
+    this.el.netStatus.classList.add("hidden");
+    this.el.mpLobbyFeed.innerHTML = "";
+    this.showMpView("entry");
+    this.audio.playMenuMusic();
+    this.syncMuteBtn();
+  }
+
+  private upsertLobbyPlayer(player: PlayerPose) {
+    const i = this.lobbyPlayers.findIndex((p) => p.id === player.id);
+    if (i >= 0) this.lobbyPlayers[i] = player;
+    else this.lobbyPlayers.push(player);
+    this.renderLobby();
+  }
+
+  private pushLobbyNotice(text: string) {
+    if (!this.inLobby) return;
+    const line = document.createElement("div");
+    line.className = "mp-feed-line";
+    line.textContent = text;
+    this.el.mpLobbyFeed.appendChild(line);
+    this.el.mpLobbyFeed.scrollTop = this.el.mpLobbyFeed.scrollHeight;
+    while (this.el.mpLobbyFeed.children.length > 12) {
+      this.el.mpLobbyFeed.firstElementChild?.remove();
+    }
+  }
+
+  private renderLobby() {
+    const trackName = getTrackDef(this.net.trackId || this.mpCreateTrackId).name;
+    const vehicle = this.net.kind === "bike" ? "BIKES" : "CARS";
+    this.el.mpLobbyTitle.textContent = this.net.room.toUpperCase();
+    this.el.mpLobbyMeta.textContent = `${trackName} · ${vehicle} · ${this.lobbyPlayers.length}/${this.net.maxPlayers}`;
+    this.el.mpLobbyPlayers.innerHTML = this.lobbyPlayers
+      .map((p) => {
+        const host = p.id === this.net.hostId ? "HOST" : "RACER";
+        const you = p.id === this.net.id ? " (you)" : "";
+        const color = `#${(p.color >>> 0).toString(16).padStart(6, "0")}`;
+        return `<li><span class="mp-name-row"><span class="mp-swatch" style="background:${color}"></span><span>${escapeHtml(p.name)}${you}</span></span><span class="mp-role">${host}</span></li>`;
+      })
+      .join("");
+    const host = this.net.isHost;
+    this.el.mpStartBtn.classList.toggle("hidden", !host);
+    this.el.mpStartBtn.disabled = !host;
+    this.el.mpStatus.textContent = host
+      ? "You are the host — start when ready"
+      : "Waiting for host to start the race…";
   }
 
   private async unlockAndMaybeMenuMusic() {
@@ -355,6 +859,8 @@ export class Game {
   /** Silhouette course picker for Test Drive / Solo — no text map names. */
   private openMapSelect(mode: "practice" | "solo") {
     this.el.leaderboard.classList.add("hidden");
+    this.el.garage.classList.add("hidden");
+    this.el.multiplayer.classList.add("hidden");
     this.el.mapSelectTitle.textContent = mode === "practice" ? "TEST DRIVE" : "SOLO RACE";
     this.el.mapSelectTagline.textContent = "Choose a circuit";
     this.renderMapGrid(this.el.mapGrid, null, (trackId) => {
@@ -434,6 +940,8 @@ export class Game {
     this.el.netStatus.classList.add("hidden");
     this.el.leaderboard.classList.add("hidden");
     this.el.mapSelect.classList.add("hidden");
+    this.el.garage.classList.add("hidden");
+    this.el.multiplayer.classList.add("hidden");
     this.startRace(opts);
   }
 
@@ -443,6 +951,12 @@ export class Game {
     this.paused = false;
     this.practice = false;
     this.solo = false;
+    this.online = false;
+    this.inLobby = false;
+    this.lobbyPlayers = [];
+    this.net.disconnect();
+    this.clearRemotes();
+    this.el.netStatus.classList.add("hidden");
     this.pauseTotal = 0;
     this.pauseBegan = 0;
     this.bestFlashUntil = 0;
@@ -462,9 +976,14 @@ export class Game {
     this.el.nameEntry.classList.add("hidden");
     this.el.leaderboard.classList.add("hidden");
     this.el.mapSelect.classList.add("hidden");
+    this.el.garage.classList.add("hidden");
+    this.el.multiplayer.classList.add("hidden");
+    this.el.mpLobbyFeed.innerHTML = "";
     this.el.minimap.classList.add("hidden");
     this.el.rearview.classList.add("hidden");
+    this.syncTouchControls();
     this.el.overlay.classList.remove("hidden");
+    this.applyGarageToWorld();
     this.setAiVisible(true);
     this.shadowNeedsWarmup = true;
     this.audio.playMenuMusic();
@@ -486,6 +1005,8 @@ export class Game {
 
   private async openLeaderboard() {
     this.el.mapSelect.classList.add("hidden");
+    this.el.garage.classList.add("hidden");
+    this.el.multiplayer.classList.add("hidden");
     this.el.leaderboard.classList.remove("hidden");
     const boardEyebrow = document.getElementById("board-eyebrow");
     if (boardEyebrow) {
@@ -550,29 +1071,66 @@ export class Game {
     }
   }
 
-  private onNetWelcome(_id: string, room: string, players: PlayerPose[], you: PlayerPose) {
-    this.setNetStatus(`Joined “${room}”`, "ok");
-    // Tint local car to assigned color
-    this.scene.remove(this.player.mesh);
-    const mesh = createCar(you.color, 7);
+  private onNetWelcome(info: WelcomeInfo) {
+    this.online = true;
+    this.inLobby = true;
+    this.lobbyPlayers = [...info.players];
+    // Room kind is host-locked — personal garage paint/name still apply.
+    const kind: VehicleKind = info.kind === "bike" || info.you.kind === "bike" ? "bike" : "car";
+    this.garage = {
+      ...loadGarage(),
+      kind,
+      primary: info.you.color || this.garage.primary,
+      accent: info.you.accent ?? this.garage.accent,
+    };
+    this.net.kind = kind;
+    this.setNetStatus(`Lobby · ${info.room}`, "ok");
+    this.el.overlay.classList.add("hidden");
+    this.el.mpLobbyFeed.innerHTML = "";
+    this.showMpView("lobby");
+    this.el.multiplayer.classList.remove("hidden");
+    this.renderLobby();
+    this.pushLobbyNotice(`Welcome to ${info.room}`);
+    this.syncMuteBtn();
+  }
+
+  /** Host pressed Start Race (or we received the shared start). */
+  private beginOnlineRace(trackId: string, kindHint?: VehicleKind) {
+    if (!this.online) return;
+    this.inLobby = false;
+    this.el.multiplayer.classList.add("hidden");
+    this.el.overlay.classList.add("hidden");
+
+    const kind: VehicleKind =
+      kindHint === "bike" || this.net.kind === "bike" || this.garage.kind === "bike" ? "bike" : "car";
+    this.garage = { ...this.garage, kind };
+    this.net.kind = kind;
+    this.disposeVehicleMesh(this.player);
+    const mesh = createVehicle(kind, this.garage.primary, 7, this.garage.accent);
     this.scene.add(mesh);
     this.player = new Vehicle(mesh, this.track.startPosition.clone(), this.track.startHeading, true);
-
-    for (const p of players) {
-      if (p.id !== this.net.id) this.spawnRemote(p);
+    this.setAiVisible(false);
+    this.clearRemotes();
+    for (const p of this.lobbyPlayers) {
+      if (p.id === this.net.id) continue;
+      // Force remotes onto the host-chosen class (personal colors preserved).
+      this.spawnRemote({ ...p, kind });
     }
-    this.startRace();
+    this.setNetStatus(`Racing · ${this.net.room}`, "ok");
+    this.startRace({ trackId: trackId || this.net.trackId || this.trackId });
   }
 
   private onNetState(players: PlayerPose[]) {
     const now = performance.now();
     const seen = new Set<string>();
+    const roomKind: VehicleKind = this.net.kind === "bike" ? "bike" : "car";
     for (const p of players) {
       if (p.id === this.net.id) continue;
       seen.add(p.id);
+      const pose = { ...p, kind: roomKind };
       const remote = this.remotes.get(p.id);
-      if (remote) remote.push(p, now);
-      else this.spawnRemote(p);
+      if (remote) remote.push(pose, now);
+      else this.spawnRemote(pose);
     }
     for (const id of [...this.remotes.keys()]) {
       if (!seen.has(id)) this.removeRemote(id);
@@ -650,18 +1208,57 @@ export class Game {
     };
   }
 
-  private spawnVehicles() {
-    const playerMesh = createCar(CAR_PALETTE.player, 7);
+  private disposeVehicleMesh(vehicle: Vehicle | undefined) {
+    if (!vehicle) return;
+    this.scene.remove(vehicle.mesh);
+    vehicle.mesh.traverse((obj) => {
+      if (!(obj instanceof THREE.Mesh)) return;
+      obj.geometry?.dispose();
+      const mat = obj.material;
+      if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+      else mat?.dispose();
+    });
+  }
+
+  /** Rebuild player + AI meshes from garage (bots match player kind; keep own paint). */
+  private applyGarageToWorld(force = false) {
+    const next = loadGarage();
+    const currentKind = (this.player?.mesh.userData.kind as VehicleKind | undefined) ?? null;
+    const currentPrimary = (this.player?.mesh.userData.bodyColor as number | undefined) ?? null;
+    const currentAccent = (this.player?.mesh.userData.accentColor as number | undefined) ?? null;
+    const unchanged =
+      !force &&
+      this.player &&
+      this.rivals.length === CAR_PALETTE.rivals.length &&
+      currentKind === next.kind &&
+      currentPrimary === next.primary &&
+      currentAccent === next.accent;
+    this.garage = next;
+    if (unchanged) return;
+
+    const kind = this.garage.kind;
+    const playerPos = this.player?.state.position.clone() ?? this.track.startPosition.clone();
+    const playerHeading = this.player?.state.heading ?? this.track.startHeading;
+
+    this.disposeVehicleMesh(this.player);
+    for (const r of this.rivals) this.disposeVehicleMesh(r.vehicle);
+
+    const playerMesh = createVehicle(kind, this.garage.primary, 7, this.garage.accent);
     this.scene.add(playerMesh);
-    this.player = new Vehicle(playerMesh, this.track.startPosition.clone(), this.track.startHeading, true);
+    this.player = new Vehicle(playerMesh, playerPos, playerHeading, true);
 
     this.rivals = CAR_PALETTE.rivals.map((color, i) => {
       const slot = GRID[i + 1] ?? GRID[GRID.length - 1];
-      const mesh = createCar(color, 11 + i * 3);
+      const accent = CAR_PALETTE.rivalAccents[i] ?? 0xf0f4f8;
+      const mesh = createVehicle(kind, color, 11 + i * 3, accent);
       this.scene.add(mesh);
       const { pos, heading } = this.spawnPose(slot.t, slot.offset);
       return new RivalAI(new Vehicle(mesh, pos, heading, false), slot.offset, slot.skill, i);
     });
+  }
+
+  private spawnVehicles() {
+    this.applyGarageToWorld();
   }
 
   /** @param opts.practice Test Drive — same world, no finish / podium.
@@ -672,9 +1269,12 @@ export class Game {
     this.solo = !!opts.solo && !this.practice;
     const nextId = opts.trackId ?? this.trackId ?? DEFAULT_TRACK_ID;
     this.setActiveTrack(nextId);
+    if (!this.online) this.applyGarageToWorld();
     this.setAiVisible(!this.solo && !this.online);
     this.el.overlay.classList.add("hidden");
     this.el.mapSelect.classList.add("hidden");
+    this.el.multiplayer.classList.add("hidden");
+    this.el.garage.classList.add("hidden");
     this.el.finish.classList.add("hidden");
     this.el.pause.classList.add("hidden");
     this.el.leaderboard.classList.add("hidden");
@@ -687,6 +1287,7 @@ export class Game {
     this.finished = false;
     this.paused = false;
     this.running = true;
+    this.syncTouchControls();
     this.lap = 1;
     this.bestLap = Infinity;
     this.bestFlashUntil = 0;
@@ -815,6 +1416,7 @@ export class Game {
     this.audio.stopDriveMusic();
     this.el.pause.classList.remove("hidden");
     this.el.pauseBtn.classList.add("hidden");
+    this.syncTouchControls();
     this.syncMuteBtn();
   }
 
@@ -829,6 +1431,7 @@ export class Game {
     if (!this.gridHeld) this.audio.playDriveMusic();
     this.el.pause.classList.add("hidden");
     this.el.pauseBtn.classList.remove("hidden");
+    this.syncTouchControls();
     this.syncMuteBtn();
     this.lastFrame = performance.now();
     this.input.clearDriveKeys();
@@ -857,9 +1460,10 @@ export class Game {
   }
 
   private onResize() {
-    this.camera.aspect = innerWidth / innerHeight;
+    const { w, h } = viewportSize();
+    this.camera.aspect = w / Math.max(1, h);
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(innerWidth, innerHeight);
+    this.renderer.setSize(w, h);
     this.rearLayoutKey = "";
   }
 
@@ -936,6 +1540,9 @@ export class Game {
               s: this.player.state.speed,
               g: this.player.gearLabel,
               lap: this.lap,
+              kind: this.net.kind || this.garage.kind,
+              color: this.garage.primary,
+              accent: this.garage.accent,
             });
             this.resolveRemoteCollisions();
             this.pingTimer += dt;
@@ -1008,8 +1615,7 @@ export class Game {
 
   /** Main chase cam + always-on bottom-right rearview mirror inset while driving. */
   private renderViews() {
-    const w = innerWidth;
-    const h = innerHeight;
+    const { w, h } = viewportSize();
     this.renderer.setScissorTest(false);
     this.renderer.setViewport(0, 0, w, h);
     this.renderer.autoClear = true;
@@ -1030,7 +1636,10 @@ export class Game {
     const mw = Math.floor(Math.min(220, w * 0.18));
     const mh = Math.floor(mw * 0.52);
     const rightPad = Math.floor(Math.min(22, w * 0.02));
-    const bottomPad = Math.floor(Math.min(118, h * 0.155)); // clear speed HUD
+    // Clear speed HUD; on touch, also clear the on-screen pedals
+    const bottomPad = Math.floor(
+      Math.min(this.touchMode ? 200 : 118, h * (this.touchMode ? 0.28 : 0.155)),
+    );
     const mx = w - mw - rightPad;
     const my = bottomPad; // WebGL origin is bottom-left
 
@@ -1159,6 +1768,7 @@ export class Game {
     this.input.clearDriveKeys();
     this.el.wrongWay.classList.add("hidden");
     this.el.explodeFlash.classList.remove("hidden");
+    this.syncTouchControls();
     this.audio.stopDriveMusic();
     this.audio.playBoom();
     this.spawnExplodeFx();
@@ -1405,6 +2015,7 @@ export class Game {
     this.el.pause.classList.add("hidden");
     this.el.pauseBtn.classList.add("hidden");
     this.el.minimap.classList.add("hidden");
+    this.syncTouchControls();
     this.syncMuteBtn();
     this.pendingFinishMs = this.raceNow() - this.raceStart;
     this.el.finalTime.textContent = formatTime(this.pendingFinishMs);

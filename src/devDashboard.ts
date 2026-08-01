@@ -7,7 +7,7 @@ import {
   versionHref,
 } from "./versions";
 
-const POLL_MS = 30_000;
+const POLL_MS = 8_000;
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let versionsLoaded = false;
@@ -197,10 +197,14 @@ function applyPresence(snap: PresenceSnapshot): void {
   const svg = document.getElementById("dev-activity-chart");
   if (nowEl) nowEl.textContent = String(snap.now);
   if (sourceEl instanceof HTMLElement) {
-    sourceEl.textContent =
-      snap.source === "online"
-        ? `Updated ${formatWhen(snap.updatedAt || Date.now())} · humans only (1 tab = 1) · AI never counted · chart = hourly concurrent humans (UTC)`
-        : "Offline — could not reach presence store";
+    if (snap.source === "local") {
+      sourceEl.textContent = "Offline — start the game server (npm start) for live counts";
+    } else {
+      const racing =
+        snap.racing != null && snap.racing > 0 ? ` · ${snap.racing} in multiplayer rooms` : "";
+      const via = snap.source === "server" ? "game server" : "worldwide store";
+      sourceEl.textContent = `Updated ${formatWhen(snap.updatedAt || Date.now())} via ${via} · humans only (1 tab = 1) · AI never counted${racing}`;
+    }
   }
   if (svg instanceof SVGSVGElement) renderActivityChart(svg, snap.buckets);
 }

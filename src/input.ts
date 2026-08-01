@@ -25,6 +25,10 @@ export class Input {
   pausePressed = false;
   private gearPress: Gear | null = null;
   private shiftPress: -1 | 0 | 1 = 0;
+  /** On-screen touch pads (phones) — merged with keyboard in getState. */
+  private touchThrottle = 0;
+  private touchBrake = 0;
+  private touchSteer = 0;
   /** Mutated in place by getState — avoid a new object every frame. */
   private readonly state: InputState = {
     throttle: 0,
@@ -92,6 +96,24 @@ export class Input {
     for (const code of ["KeyW", "KeyA", "KeyS", "KeyD", "ArrowLeft", "ArrowRight", "Space"]) {
       this.keys.delete(code);
     }
+    this.clearTouchDrive();
+  }
+
+  setTouchDrive(axes: { throttle?: number; brake?: number; steer?: number }) {
+    if (axes.throttle !== undefined) this.touchThrottle = axes.throttle;
+    if (axes.brake !== undefined) this.touchBrake = axes.brake;
+    if (axes.steer !== undefined) this.touchSteer = axes.steer;
+  }
+
+  clearTouchDrive() {
+    this.touchThrottle = 0;
+    this.touchBrake = 0;
+    this.touchSteer = 0;
+  }
+
+  /** One-shot sequential shift from on-screen pads. */
+  requestShift(delta: -1 | 1) {
+    this.shiftPress = delta;
   }
 
   getState(): InputState {
@@ -112,12 +134,14 @@ export class Input {
     this.shiftPress = 0;
 
     const s = this.state;
-    s.throttle = up ? 1 : 0;
-    s.brake = down || space ? 1 : 0;
+    s.throttle = Math.max(up ? 1 : 0, this.touchThrottle);
+    s.brake = Math.max(down || space ? 1 : 0, this.touchBrake);
     // Positive steer increases heading, which turns the car LEFT
     // (heading: x += sin(h), z += cos(h); +h rotates forward toward +x,
     // and +x is screen-left with the chase cam). So A = +1, D = -1.
-    s.steer = (left ? 1 : 0) + (right ? -1 : 0);
+    const keySteer = (left ? 1 : 0) + (right ? -1 : 0);
+    const steer = keySteer + this.touchSteer;
+    s.steer = Math.max(-1, Math.min(1, steer));
     s.reset = reset;
     s.pause = pause;
     s.gear = gear;

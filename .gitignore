@@ -12,6 +12,7 @@ dist
 dist-ssr
 *.local
 server/leaderboard.json
+server/presence.json
 
 # Editor directories and files
 .vscode/*
