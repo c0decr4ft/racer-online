@@ -13,9 +13,9 @@ export default defineConfig({
         changeOrigin: true,
       },
       "/api": {
+        // Keep /api prefix — server routes are /api/leaderboard, /api/presence, …
         target: "http://127.0.0.1:8787",
         changeOrigin: true,
-        rewrite: (p) => p.replace(/^\/api/, ""),
       },
     },
   },

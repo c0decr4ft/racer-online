@@ -253,8 +253,12 @@ export class Vehicle {
     const radius = (this.mesh.userData.wheelRadius as number) ?? 0.38;
     if (!steers || !spinners) return;
     const spin = (this.state.speed * dt) / radius;
+    const steerCount =
+      typeof this.mesh.userData.steerCount === "number"
+        ? Math.max(0, this.mesh.userData.steerCount as number)
+        : Math.min(2, steers.length);
     steers.forEach((steer, i) => {
-      steer.rotation.y = i < 2 ? this.state.steerAngle * 0.85 : 0;
+      steer.rotation.y = i < steerCount ? this.state.steerAngle * 0.85 : 0;
     });
     spinners.forEach((spinner) => spinner.rotateX(-spin));
   }

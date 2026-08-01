@@ -3,7 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1, user-scalable=no"
+    />
     <title>RACER ONLINE</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -70,6 +73,22 @@
         <div id="rearview-frame" class="rearview-frame hidden" aria-hidden="true">
           <span class="rearview-label">REAR</span>
         </div>
+
+        <!-- Shown only on touch-primary devices while racing -->
+        <div id="touch-controls" class="touch-controls hidden" aria-hidden="true">
+          <div class="touch-cluster touch-steer">
+            <button type="button" class="touch-btn" data-touch="left" aria-label="Steer left">◀</button>
+            <button type="button" class="touch-btn" data-touch="right" aria-label="Steer right">▶</button>
+          </div>
+          <div class="touch-cluster touch-gears">
+            <button type="button" class="touch-btn touch-shift" data-touch="shift-down" aria-label="Downshift">−</button>
+            <button type="button" class="touch-btn touch-shift" data-touch="shift-up" aria-label="Upshift">+</button>
+          </div>
+          <div class="touch-cluster touch-pedals">
+            <button type="button" class="touch-btn touch-brake" data-touch="brake" aria-label="Brake">BRAKE</button>
+            <button type="button" class="touch-btn touch-gas" data-touch="gas" aria-label="Accelerate">GAS</button>
+          </div>
+        </div>
       </div>
 
       <div class="version-switcher" id="version-switcher">
@@ -82,7 +101,7 @@
           aria-controls="dev-dashboard"
           aria-label="Developer tools"
         >
-          v1.6
+          v2.0
         </button>
       </div>
 
@@ -214,6 +233,12 @@
 
       <div id="overlay" class="overlay">
         <div class="home-top-actions">
+          <button id="home-garage-btn" class="board-icon-btn" type="button" aria-label="Garage">
+            <svg class="board-icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 11l7-6 7 6v8a1 1 0 0 1-1 1h-4v-5H10v5H6a1 1 0 0 1-1-1v-8z" fill="currentColor"/>
+            </svg>
+            <span class="board-icon-label">GARAGE</span>
+          </button>
           <button id="home-board-btn" class="board-icon-btn" type="button" aria-label="Leaderboard">
             <svg class="board-icon-svg" viewBox="0 0 24 24" aria-hidden="true">
               <path d="M5 20h14v-1.5H5V20zm2.5-4h2V10h-2v6zm3.5 0h2V7h-2v9zm3.5 0h2V12h-2v4z" fill="currentColor"/>
@@ -224,12 +249,144 @@
         <div class="overlay-inner">
           <p class="eyebrow">READY TO RACE</p>
           <h1>RACER<br /><span>ONLINE</span></h1>
-          <p class="tagline">GT coupe · race AI rivals on the circuit</p>
+          <p class="tagline">Cars &amp; bikes · AI rivals · online rooms</p>
 
           <div class="menu-actions">
             <button id="start-btn" type="button">START RACE</button>
+            <button id="multiplayer-btn" class="btn-ghost" type="button">MULTIPLAYER</button>
             <button id="test-drive-btn" class="btn-ghost" type="button">TEST DRIVE</button>
             <button id="solo-race-btn" class="btn-ghost" type="button">SOLO RACE</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="garage" class="overlay hidden">
+        <div class="overlay-inner garage-panel">
+          <p class="eyebrow">CUSTOMIZE</p>
+          <h1>GARAGE</h1>
+          <p class="tagline">Pick your ride — AI rivals match your class</p>
+
+          <div class="garage-kind" role="group" aria-label="Vehicle type">
+            <button id="garage-kind-car" class="garage-kind-btn is-active" type="button" data-kind="car">CAR</button>
+            <button id="garage-kind-bike" class="garage-kind-btn" type="button" data-kind="bike">BIKE</button>
+          </div>
+
+          <div class="garage-colors">
+            <div class="garage-color-field" data-channel="primary">
+              <span>Body</span>
+              <button
+                type="button"
+                id="garage-primary-swatch"
+                class="garage-color-swatch"
+                aria-label="Body color"
+                aria-haspopup="listbox"
+                title="Click for palette · Right-click for custom color"
+              ></button>
+              <input id="garage-primary" class="garage-color-native" type="color" value="#e4eaf2" tabindex="-1" aria-hidden="true" />
+              <div id="garage-primary-palette" class="garage-swatch-palette hidden" role="listbox" aria-label="Body palette"></div>
+            </div>
+            <div class="garage-color-field" data-channel="accent">
+              <span>Line</span>
+              <button
+                type="button"
+                id="garage-accent-swatch"
+                class="garage-color-swatch"
+                aria-label="Line color"
+                aria-haspopup="listbox"
+                title="Click for palette · Right-click for custom color"
+              ></button>
+              <input id="garage-accent" class="garage-color-native" type="color" value="#ff3b2e" tabindex="-1" aria-hidden="true" />
+              <div id="garage-accent-palette" class="garage-swatch-palette hidden" role="listbox" aria-label="Line palette"></div>
+            </div>
+          </div>
+
+          <p id="garage-hint" class="tagline garage-hint">Cars race cars · bikes race bikes</p>
+          <button id="garage-save-btn" type="button">SAVE &amp; CLOSE</button>
+          <button id="garage-back-btn" class="btn-ghost" type="button">BACK</button>
+        </div>
+      </div>
+
+      <div id="multiplayer" class="overlay hidden">
+        <div class="overlay-inner multiplayer-panel">
+          <div id="mp-entry" class="mp-view">
+            <p class="eyebrow">ONLINE</p>
+            <h1>MULTIPLAYER</h1>
+            <p class="tagline">Create a private room or join with a password</p>
+            <button id="mp-goto-create" type="button">CREATE ROOM</button>
+            <button id="mp-goto-join" class="btn-ghost" type="button">JOIN ROOM</button>
+            <button id="mp-back-btn" class="btn-ghost" type="button">BACK</button>
+          </div>
+
+          <div id="mp-create" class="mp-view hidden">
+            <p class="eyebrow">HOST</p>
+            <h1>CREATE ROOM</h1>
+            <p class="tagline">Set the lobby — race starts when you say go</p>
+            <form id="mp-create-form" class="multiplayer-form" autocomplete="off">
+              <label class="mp-field">
+                <span>Racer name</span>
+                <input id="mp-create-name" type="text" maxlength="10" placeholder="Name (max 10)" autocomplete="nickname" spellcheck="false" required />
+              </label>
+              <label class="mp-field">
+                <span>Room name</span>
+                <input id="mp-create-room" type="text" maxlength="24" placeholder="circuit" value="circuit" autocomplete="off" spellcheck="false" required />
+              </label>
+              <label class="mp-field">
+                <span>Password</span>
+                <input id="mp-create-pass" type="password" maxlength="32" placeholder="Optional" autocomplete="new-password" />
+              </label>
+              <label class="mp-field">
+                <span>Max players</span>
+                <input id="mp-create-max" type="number" min="2" max="8" value="4" />
+              </label>
+              <div class="mp-field">
+                <span>Vehicle</span>
+                <div class="garage-kind mp-kind" role="group" aria-label="Vehicle type">
+                  <button id="mp-create-kind-car" class="garage-kind-btn is-active" type="button" data-kind="car">CAR</button>
+                  <button id="mp-create-kind-bike" class="garage-kind-btn" type="button" data-kind="bike">BIKE</button>
+                </div>
+              </div>
+              <div class="mp-field">
+                <span>Track</span>
+                <div id="mp-create-track-grid" class="map-grid mp-track-grid" role="listbox" aria-label="Tracks"></div>
+              </div>
+              <p id="mp-create-status" class="tagline mp-status">Your vehicle class applies to everyone in the room</p>
+              <button type="submit">CREATE &amp; ENTER LOBBY</button>
+              <button id="mp-create-back" class="btn-ghost" type="button">BACK</button>
+            </form>
+          </div>
+
+          <div id="mp-join" class="mp-view hidden">
+            <p class="eyebrow">RACER</p>
+            <h1>JOIN ROOM</h1>
+            <p class="tagline">Enter the room name and password</p>
+            <form id="mp-join-form" class="multiplayer-form" autocomplete="off">
+              <label class="mp-field">
+                <span>Racer name</span>
+                <input id="mp-join-name" type="text" maxlength="10" placeholder="Name (max 10)" autocomplete="nickname" spellcheck="false" required />
+              </label>
+              <label class="mp-field">
+                <span>Room name</span>
+                <input id="mp-join-room" type="text" maxlength="24" placeholder="circuit" autocomplete="off" spellcheck="false" required />
+              </label>
+              <label class="mp-field">
+                <span>Password</span>
+                <input id="mp-join-pass" type="password" maxlength="32" placeholder="Room password" autocomplete="current-password" />
+              </label>
+              <p id="mp-join-status" class="tagline mp-status">Vehicle class is set by the host · garage paint still applies</p>
+              <button type="submit">ENTER LOBBY</button>
+              <button id="mp-join-back" class="btn-ghost" type="button">BACK</button>
+            </form>
+          </div>
+
+          <div id="mp-lobby" class="mp-view hidden">
+            <p class="eyebrow">LOBBY</p>
+            <h1 id="mp-lobby-title">ROOM</h1>
+            <p id="mp-lobby-meta" class="tagline">Waiting for host…</p>
+            <ul id="mp-lobby-players" class="mp-lobby-players" aria-live="polite"></ul>
+            <div id="mp-lobby-feed" class="mp-lobby-feed" aria-live="polite"></div>
+            <p id="mp-status" class="tagline mp-status">Waiting in lobby</p>
+            <button id="mp-start-btn" class="mp-start-btn hidden" type="button">START RACE</button>
+            <button id="mp-lobby-leave" class="btn-ghost" type="button">LEAVE</button>
           </div>
         </div>
       </div>

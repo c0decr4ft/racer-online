@@ -1,4 +1,5 @@
 import { DEFAULT_TRACK_ID, isTrackId, TRACKS } from "../trackDefs";
+import { apiUrl } from "./apiBase";
 
 export type LeaderboardEntry = {
   name: string;
@@ -63,14 +64,19 @@ function normalizeTrackId(raw: unknown): string {
   return isTrackId(id) ? id : DEFAULT_TRACK_ID;
 }
 
-const PUBLIC_BLOB_URL =
-  "https://jsonblob.com/api/jsonBlob/019f89b5-c828-7f52-80b7-ca3888e5ae1b";
+/**
+ * Public worldwide board (JSONBlob). Best-effort sync when no game server is available.
+ *
+ * Recreated 2026-08-01 after prior blob returned 403 (expired).
+ * Note: jsonblob.com currently issues ~24h TTLs on create. Prefer the durable
+ * Node server (`npm run server` / `npm start`) — scores persist in server/leaderboard.json.
+ * Set VITE_API_BASE to a hosted server for production Pages deploys.
+ */
+export const PUBLIC_BLOB_URL =
+  "https://jsonblob.com/api/jsonBlob/019fbe1c-6b22-7df1-9007-59a04ae0df4c";
 
-function localApiBase(): string | null {
-  const host = location.hostname || "127.0.0.1";
-  if (host === "localhost" || host === "127.0.0.1") return `http://${host}:8787`;
-  return null;
-}
+const BLOB_ATTEMPTS = 4;
+const BLOB_RETRY_BASE_MS = 250;
 
 export type BoardStore = Record<string, LeaderboardEntry[]>;
 
@@ -228,11 +234,48 @@ function writeStoreLocally(store: BoardStore) {
   for (const t of TRACKS) writeLocal(t.id, normalize(store[t.id] ?? [], t.id));
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function shouldRetryBlobStatus(status: number): boolean {
+  return status === 429 || status === 408 || status >= 500;
+}
+
+/** Fetch JSONBlob with backoff on transient network / rate-limit / 5xx failures. */
+async function fetchBlobResponse(init?: RequestInit): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < BLOB_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(PUBLIC_BLOB_URL, {
+        cache: "no-store",
+        ...init,
+        headers: {
+          Accept: "application/json",
+          ...(init?.headers ?? {}),
+        },
+      });
+      if (shouldRetryBlobStatus(res.status) && attempt < BLOB_ATTEMPTS - 1) {
+        await sleep(BLOB_RETRY_BASE_MS * 2 ** attempt);
+        continue;
+      }
+      return res;
+    } catch (err) {
+      lastError = err;
+      if (attempt < BLOB_ATTEMPTS - 1) {
+        await sleep(BLOB_RETRY_BASE_MS * 2 ** attempt);
+        continue;
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("blob fetch failed");
+}
+
 async function fetchLocalServerStore(): Promise<BoardStore | null> {
-  const base = localApiBase();
-  if (!base) return null;
+  const url = apiUrl("/leaderboard");
+  if (!url) return null;
   try {
-    const res = await fetch(`${base}/api/leaderboard`, { cache: "no-store" });
+    const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) return null;
     const data = await res.json();
     if (!isBoardPayload(data)) return null;
@@ -243,28 +286,27 @@ async function fetchLocalServerStore(): Promise<BoardStore | null> {
 }
 
 async function fetchPublicBlobStore(): Promise<BoardStore> {
-  const res = await fetch(PUBLIC_BLOB_URL, {
-    cache: "no-store",
-    headers: { Accept: "application/json" },
-  });
+  const res = await fetchBlobResponse();
   if (!res.ok) throw new Error(String(res.status));
   const data = await res.json();
   if (!isBoardPayload(data)) throw new Error("unrecognized board payload");
   return parseStore(data);
 }
 
-async function putPublicBlobStore(store: BoardStore): Promise<BoardStore> {
+function storeToPayload(store: BoardStore): { byTrack: BoardStore } {
   const byTrack: BoardStore = emptyStore();
   for (const t of TRACKS) {
     byTrack[t.id] = normalize(store[t.id] ?? [], t.id);
   }
-  const res = await fetch(PUBLIC_BLOB_URL, {
+  return { byTrack };
+}
+
+async function putPublicBlobStore(store: BoardStore): Promise<BoardStore> {
+  const payload = storeToPayload(store);
+  const res = await fetchBlobResponse({
     method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({ byTrack }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(String(res.status));
   try {
@@ -273,7 +315,7 @@ async function putPublicBlobStore(store: BoardStore): Promise<BoardStore> {
   } catch {
     /* some hosts omit a JSON body on PUT */
   }
-  return byTrack;
+  return payload.byTrack;
 }
 
 /**
@@ -335,6 +377,8 @@ export async function fetchLeaderboard(
 ): Promise<{ entries: LeaderboardEntry[]; source: BoardSource }> {
   const tid = normalizeTrackId(trackId);
   const local = readLocalStore();
+
+  // Durable game server first, then public blob, then local cache.
   const fromServer = await fetchLocalServerStore();
 
   let fromPublic: BoardStore | null = null;
@@ -344,9 +388,13 @@ export async function fetchLeaderboard(
     fromPublic = null;
   }
 
-  // Merge every source so an empty local-dev server never hides / wipes worldwide scores.
+  // Merge every source so an empty server never hides / wipes worldwide scores.
   const merged = mergeBoardStores(local, fromServer ?? emptyStore(), fromPublic ?? emptyStore());
   cacheStoreLocally(merged);
+
+  if (fromServer) {
+    return { entries: entriesFor(merged, tid), source: "server" };
+  }
 
   if (fromPublic) {
     // Heal a wiped/empty remote from local or server scores when we have more.
@@ -354,10 +402,6 @@ export async function fetchLeaderboard(
       void publishMergedStore(merged).catch(() => undefined);
     }
     return { entries: entriesFor(merged, tid), source: "online" };
-  }
-
-  if (fromServer) {
-    return { entries: entriesFor(merged, tid), source: "server" };
   }
 
   return { entries: entriesFor(merged, tid), source: "local" };
@@ -388,11 +432,11 @@ export async function submitScore(
   let fromServer: BoardStore | null = null;
   let fromPublic: BoardStore | null = null;
 
-  // Persist on local server when available — but never treat that as the sole worldwide truth.
-  const base = localApiBase();
-  if (base) {
+  // Persist on game server when available — but never treat that as the sole worldwide truth.
+  const serverUrl = apiUrl("/leaderboard");
+  if (serverUrl) {
     try {
-      const res = await fetch(`${base}/api/leaderboard`, {
+      const res = await fetch(serverUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(entry),
@@ -402,7 +446,7 @@ export async function submitScore(
         if (isBoardPayload(data)) fromServer = parseStore(data);
       }
     } catch {
-      /* fall through */
+      /* fall through — local server is optional */
     }
   }
 
@@ -419,14 +463,17 @@ export async function submitScore(
   );
   writeStoreLocally(store);
 
+  if (fromServer) {
+    // Best-effort mirror to public blob when available.
+    void publishMergedStore(store).then((written) => cacheStoreLocally(written)).catch(() => undefined);
+    return { entries: entriesFor(store, tid), source: "server" };
+  }
+
   try {
     store = insertEntry(await publishMergedStore(store), entry, tid);
     cacheStoreLocally(store);
     return { entries: entriesFor(store, tid), source: "online" };
   } catch {
-    if (fromServer) {
-      return { entries: entriesFor(store, tid), source: "server" };
-    }
     return { entries: entriesFor(store, tid), source: "local" };
   }
 }
@@ -441,7 +488,10 @@ export function formatBoardTime(ms: number): string {
 }
 
 export function boardSourceLabel(source: BoardSource, saved = false): string {
-  if (source === "online" || source === "server") {
+  if (source === "server") {
+    return saved ? "Saved to online board" : "Live online board";
+  }
+  if (source === "online") {
     return saved ? "Saved to worldwide board" : "Live worldwide board";
   }
   return saved ? "Saved locally · offline" : "Local board · offline";

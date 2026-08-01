@@ -1,8 +1,8 @@
 /**
  * Lightweight human-presence store (JSONBlob), same pattern as the leaderboard.
  *
- * Public blob (read/write):
- *   https://jsonblob.com/api/jsonBlob/019f8e7b-0531-7284-a6c5-37b403b91b8d
+ * Prefer the durable game server (`/api/presence`) when available. Fall back to
+ * JSONBlob for static hosting without a backend (blob TTLs are short ~24h).
  *
  * Shape: { buckets: { "YYYY-MM-DDTHH": peakCount }, sessions: { id: lastSeenMs }, updatedAt, historyEpoch? }
  *
@@ -12,8 +12,10 @@
  * Current "online" = non-expired sessions only — never a peak bucket.
  */
 
+import { apiUrl } from "./apiBase";
+
 const PUBLIC_BLOB_URL =
-  "https://jsonblob.com/api/jsonBlob/019f8e7b-0531-7284-a6c5-37b403b91b8d";
+  "https://jsonblob.com/api/jsonBlob/019fbe1c-6ce6-78a2-b891-3908b5a6b901";
 
 const SESSION_KEY = "racer-presence-session";
 const HEARTBEAT_MS = 40_000;
@@ -33,7 +35,8 @@ export type PresenceSnapshot = {
   now: number;
   buckets: PresenceBucket[];
   updatedAt: number;
-  source: "online" | "local";
+  source: "online" | "server" | "local";
+  racing?: number;
 };
 
 type PresenceStore = {
@@ -164,13 +167,56 @@ function applyLeave(store: PresenceStore, id: string, now = Date.now()): Presenc
   return next;
 }
 
-function snapshotOf(store: PresenceStore, source: "online" | "local"): PresenceSnapshot {
+function snapshotOf(
+  store: PresenceStore,
+  source: "online" | "server" | "local",
+  racing?: number,
+): PresenceSnapshot {
   const pruned = pruneStore(store);
   return {
     now: activeCount(pruned),
     buckets: toBuckets(pruned),
     updatedAt: pruned.updatedAt,
     source,
+    racing,
+  };
+}
+
+function snapshotFromServerPayload(data: unknown): PresenceSnapshot | null {
+  if (!data || typeof data !== "object") return null;
+  const obj = data as {
+    now?: unknown;
+    buckets?: unknown;
+    updatedAt?: unknown;
+    racing?: unknown;
+    ok?: unknown;
+  };
+  if (typeof obj.now !== "number" || !Number.isFinite(obj.now)) return null;
+  const buckets: PresenceBucket[] = [];
+  if (Array.isArray(obj.buckets)) {
+    for (const row of obj.buckets) {
+      if (!row || typeof row !== "object") continue;
+      const b = row as { key?: unknown; count?: unknown; at?: unknown };
+      if (typeof b.key !== "string" || typeof b.count !== "number") continue;
+      buckets.push({
+        key: b.key,
+        count: Math.max(0, Math.round(b.count)),
+        at: typeof b.at === "number" && Number.isFinite(b.at) ? b.at : hourKeyToMs(b.key),
+      });
+    }
+  }
+  return {
+    now: Math.max(0, Math.round(obj.now)),
+    buckets: buckets.filter((b) => b.at > 0).sort((a, b) => a.at - b.at),
+    updatedAt:
+      typeof obj.updatedAt === "number" && Number.isFinite(obj.updatedAt)
+        ? Math.round(obj.updatedAt)
+        : Date.now(),
+    source: "server",
+    racing:
+      typeof obj.racing === "number" && Number.isFinite(obj.racing)
+        ? Math.max(0, Math.round(obj.racing))
+        : undefined,
   };
 }
 
@@ -299,8 +345,43 @@ function enqueueWrite<T>(fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
+async function fetchServerPresence(): Promise<PresenceSnapshot | null> {
+  const url = apiUrl("/presence");
+  if (!url) return null;
+  try {
+    const res = await fetch(url, { cache: "no-store", headers: { Accept: "application/json" } });
+    if (!res.ok) return null;
+    return snapshotFromServerPayload(await res.json());
+  } catch {
+    return null;
+  }
+}
+
+async function postServerPresence(
+  id: string,
+  action: "heartbeat" | "leave",
+  keepalive = false,
+): Promise<PresenceSnapshot | null> {
+  const url = apiUrl("/presence");
+  if (!url) return null;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ id, action }),
+      keepalive,
+    });
+    if (!res.ok) return null;
+    return snapshotFromServerPayload(await res.json());
+  } catch {
+    return null;
+  }
+}
+
 /** Read current activity for the dashboard (does not write a heartbeat). */
 export async function fetchPresence(): Promise<PresenceSnapshot> {
+  const fromServer = await fetchServerPresence();
+  if (fromServer) return fromServer;
   try {
     return snapshotOf(await fetchStore(), "online");
   } catch {
@@ -312,6 +393,12 @@ export async function fetchPresence(): Promise<PresenceSnapshot> {
 export async function sendHeartbeat(): Promise<PresenceSnapshot | null> {
   const id = sessionId();
   return enqueueWrite(async () => {
+    const fromServer = await postServerPresence(id, "heartbeat");
+    if (fromServer) {
+      // Best-effort mirror to public blob (does not gate the dashboard).
+      void mutatePresenceOnce((remote, now) => applyHeartbeat(remote, id, now)).catch(() => undefined);
+      return fromServer;
+    }
     try {
       const store = await mutatePresenceOnce((remote, now) => applyHeartbeat(remote, id, now));
       return snapshotOf(store, "online");
@@ -334,6 +421,7 @@ export async function endPresenceSession(): Promise<void> {
     })();
   if (!id) return;
   await enqueueWrite(async () => {
+    await postServerPresence(id, "leave", true);
     try {
       await mutatePresenceOnce((remote, now) => applyLeave(remote, id, now), { keepalive: true });
     } catch {

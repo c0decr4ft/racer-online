@@ -3,11 +3,17 @@
 export const NET_TICK_HZ = 20;
 export const NET_TICK_MS = 1000 / NET_TICK_HZ;
 export const MAX_PLAYERS = 8;
+export const MIN_PLAYERS = 2;
+
+export type NetVehicleKind = "car" | "bike";
+export type LobbyPhase = "lobby" | "racing";
 
 export type PlayerPose = {
   id: string;
   name: string;
   color: number;
+  accent?: number;
+  kind?: NetVehicleKind;
   x: number;
   z: number;
   h: number; // heading
@@ -17,17 +23,67 @@ export type PlayerPose = {
 };
 
 export type ClientMsg =
-  | { t: "join"; name: string; room?: string }
-  | { t: "pose"; x: number; z: number; h: number; s: number; g: string; lap: number }
+  | {
+      t: "create";
+      name: string;
+      room: string;
+      password?: string;
+      maxPlayers?: number;
+      trackId?: string;
+      kind?: NetVehicleKind;
+      color?: number;
+      accent?: number;
+    }
+  | {
+      t: "join";
+      name: string;
+      room?: string;
+      password?: string;
+      color?: number;
+      accent?: number;
+    }
+  | {
+      t: "pose";
+      x: number;
+      z: number;
+      h: number;
+      s: number;
+      g: string;
+      lap: number;
+      kind?: NetVehicleKind;
+      color?: number;
+      accent?: number;
+    }
+  | { t: "start" }
   | { t: "ready" }
   | { t: "ping"; n: number };
 
 export type ServerMsg =
-  | { t: "welcome"; id: string; room: string; players: PlayerPose[]; you: PlayerPose }
+  | {
+      t: "welcome";
+      id: string;
+      room: string;
+      players: PlayerPose[];
+      you: PlayerPose;
+      hostId: string;
+      trackId: string;
+      kind: NetVehicleKind;
+      maxPlayers: number;
+      phase: LobbyPhase;
+    }
   | { t: "join"; player: PlayerPose }
-  | { t: "leave"; id: string }
+  | { t: "leave"; id: string; hostId?: string }
+  | { t: "notice"; text: string }
+  | {
+      t: "lobby";
+      players: PlayerPose[];
+      trackId: string;
+      kind: NetVehicleKind;
+      hostId: string;
+      maxPlayers: number;
+    }
   | { t: "state"; players: PlayerPose[]; serverTime: number }
-  | { t: "start"; at: number }
+  | { t: "start"; at: number; trackId: string; kind: NetVehicleKind }
   | { t: "pong"; n: number; serverTime: number }
   | { t: "error"; message: string };
 
