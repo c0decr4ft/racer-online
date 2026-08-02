@@ -78,8 +78,9 @@ const GRID = [
   { offset: 2.6, t: -0.006, skill: 2.35 }, // front — pace setter, still behind SF
 ];
 
-/** Multiplayer start-line lanes (lateral). Rows sit just behind the SF line. */
-const ONLINE_LANE_OFFSETS = [-3.4, -1.15, 1.15, 3.4];
+/** Multiplayer grid uses up to four evenly spaced cars per row. */
+const ONLINE_GRID_HALF_WIDTH = 3.4;
+const ONLINE_GRID_MAX_COLUMNS = 4;
 /** Track-t of the front row — behind start/finish, facing race direction. */
 const ONLINE_START_T = -0.016;
 const ONLINE_ROW_GAP_T = 0.011;
@@ -139,6 +140,10 @@ export class Game {
   private pauseTotal = 0;
   private pauseBegan = 0;
   private lastFrame = performance.now();
+  /** Separate render cadence keeps online mode near 60fps on 120/144Hz displays. */
+  private lastOnlineFrame = 0;
+  private lastOnlineHudAt = 0;
+  private lastOnlineShadowAt = 0;
   private camPos = new THREE.Vector3();
   private camLook = new THREE.Vector3();
   /** Last known track-t per vehicle/remote — keeps projection sticky so it
@@ -257,7 +262,7 @@ export class Game {
     this.renderer = new THREE.WebGLRenderer({
       canvas,
       antialias: true,
-      powerPreference: "high-performance",
+      powerPreference: "default",
     });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.25));
     const boot = viewportSize();
@@ -302,6 +307,8 @@ export class Game {
         this.renderLobby();
       },
       onStart: (_at, trackId, kind) => this.beginOnlineRace(trackId, kind),
+      onRaceResult: (winnerId, winnerName, timeMs) =>
+        this.finishRace({ winnerId, winnerName, officialTimeMs: timeMs }),
       onState: (players) => this.onNetState(players),
       onError: (message) => {
         this.setNetStatus(message, "bad");
@@ -1168,6 +1175,7 @@ export class Game {
   }
 
   private onNetState(players: PlayerPose[]) {
+    if (this.gridHeld) return;
     const now = performance.now();
     const seen = new Set<string>();
     const roomKind: VehicleKind = this.net.kind === "bike" ? "bike" : "car";
@@ -1262,13 +1270,18 @@ export class Game {
     return [...new Set(ids)].sort();
   }
 
-  private onlineGridSlot(index: number): { t: number; offset: number } {
-    const cols = ONLINE_LANE_OFFSETS.length;
+  private onlineGridSlot(index: number, total: number): { t: number; offset: number } {
+    const cols = Math.min(Math.max(1, total), ONLINE_GRID_MAX_COLUMNS);
     const col = ((index % cols) + cols) % cols;
     const row = Math.floor(Math.max(0, index) / cols);
+    const rowCount = Math.min(cols, Math.max(1, total - row * cols));
+    const offset =
+      rowCount === 1
+        ? 0
+        : -ONLINE_GRID_HALF_WIDTH + (col * ONLINE_GRID_HALF_WIDTH * 2) / (rowCount - 1);
     return {
       t: ONLINE_START_T - row * ONLINE_ROW_GAP_T,
-      offset: ONLINE_LANE_OFFSETS[col]!,
+      offset,
     };
   }
 
@@ -1283,7 +1296,7 @@ export class Game {
 
     const myIndex = ids.indexOf(this.net.id);
     if (myIndex >= 0) {
-      const slot = this.onlineGridSlot(myIndex);
+      const slot = this.onlineGridSlot(myIndex, ids.length);
       const { pos, heading } = this.spawnPose(slot.t, slot.offset);
       this.player.reset(pos, heading);
       this.player.state.speed = 0;
@@ -1297,9 +1310,9 @@ export class Game {
       const idx = ids.indexOf(id);
       if (idx < 0) continue;
       const lobby = this.lobbyPlayers.find((p) => p.id === id);
-      const slot = this.onlineGridSlot(idx);
+      const slot = this.onlineGridSlot(idx, ids.length);
       const { pos, heading } = this.spawnPose(slot.t, slot.offset);
-      remote.push(
+      remote.snap(
         {
           id,
           name: remote.name,
@@ -1314,23 +1327,6 @@ export class Game {
           lap: 1,
         },
         now,
-      );
-      // Lock interpolation on the grid pose for this frame
-      remote.push(
-        {
-          id,
-          name: remote.name,
-          color: lobby?.color ?? 0xe4eaf2,
-          accent: lobby?.accent,
-          kind: this.net.kind === "bike" ? "bike" : "car",
-          x: pos.x,
-          z: pos.z,
-          h: heading,
-          s: 0,
-          g: "1",
-          lap: 1,
-        },
-        now + 1,
       );
     }
   }
@@ -1599,14 +1595,28 @@ export class Game {
     // Hidden tab: skip sim + both scene passes (no GPU work, no dt spike on return)
     if (document.visibilityState === "hidden") {
       this.lastFrame = now;
+      this.lastOnlineFrame = now;
       return;
+    }
+    if (this.online) {
+      const interval = 1000 / 60;
+      const elapsed = now - this.lastOnlineFrame;
+      if (elapsed < interval) return;
+      // Preserve the fractional remainder for a stable average on 90/144Hz screens.
+      this.lastOnlineFrame = now - (elapsed % interval);
+    } else {
+      this.lastOnlineFrame = now;
     }
     const dt = Math.min((now - this.lastFrame) / 1000, 0.05);
     this.lastFrame = now;
 
     // Always interpolate remotes (cheap) even if paused locally
-    for (const remote of this.remotes.values()) {
-      remote.update(now, this.camera, this.renderer);
+    if (this.remotes.size > 0) {
+      const remoteViewportWidth = this.renderer.domElement.clientWidth;
+      const remoteViewportHeight = this.renderer.domElement.clientHeight;
+      for (const remote of this.remotes.values()) {
+        remote.update(now, this.camera, remoteViewportWidth, remoteViewportHeight);
+      }
     }
 
     const inputPeek = this.input.getState();
@@ -1628,14 +1638,7 @@ export class Game {
         if (this.countingDown) this.tickCountdown(now);
 
         if (this.gridHeld) {
-          // Frozen on grid through 3-2-1 — keep online racers on the start line
-          if (this.online) {
-            this.snapOnlineStartingGrid();
-            // Re-apply mesh after snap (remote.update already ran with stale poses)
-            for (const remote of this.remotes.values()) {
-              remote.update(now, this.camera, this.renderer);
-            }
-          }
+          // Frozen on grid through 3-2-1. Network poses are ignored until GO.
           this.updateHud();
           this.updateCamera(dt);
           this.syncAudio(inputPeek, true);
@@ -1674,9 +1677,6 @@ export class Game {
               s: this.player.state.speed,
               g: this.player.gearLabel,
               lap: this.lap,
-              kind: this.net.kind || this.garage.kind,
-              color: this.garage.primary,
-              accent: this.garage.accent,
             });
             this.resolveRemoteCollisions();
             this.pingTimer += dt;
@@ -1753,10 +1753,17 @@ export class Game {
     this.renderer.setScissorTest(false);
     this.renderer.setViewport(0, 0, w, h);
     this.renderer.autoClear = true;
-    // Live race: one shadow rebuild per frame; rearview reuses the same maps.
+    // Live race: rearview reuses the main pass shadow map. Online mode refreshes
+    // moving shadows at 30Hz to reduce GPU power without affecting car motion.
     // Home/pause/finish: casters are still — skip rebuilds after a warmup.
     const liveShadows = this.running && !this.paused && !this.finished;
-    this.renderer.shadowMap.needsUpdate = liveShadows || this.shadowNeedsWarmup;
+    let refreshShadows = liveShadows;
+    if (this.online && liveShadows) {
+      const now = performance.now();
+      refreshShadows = now - this.lastOnlineShadowAt >= 1000 / 30;
+      if (refreshShadows) this.lastOnlineShadowAt = now;
+    }
+    this.renderer.shadowMap.needsUpdate = refreshShadows || this.shadowNeedsWarmup;
     if (this.shadowNeedsWarmup) this.shadowNeedsWarmup = false;
     this.renderer.render(this.scene, this.camera);
 
@@ -2135,7 +2142,24 @@ export class Game {
     }
   }
 
-  private finishRace() {
+  private applyOnlineResult(winnerId: string, winnerName: string) {
+    const field = this.remotes.size + 1;
+    const won = winnerId === this.net.id;
+    const place = won ? 1 : Math.max(2, this.playerFinishPlace());
+    this.el.finalPlace.textContent = `${Math.min(place, field)}/${field}`;
+    this.el.finishEyebrow.textContent = won ? "RACE WINNER" : `${winnerName} WINS`;
+    this.el.finishTitle.textContent = won ? "YOU WIN" : "YOU LOST";
+  }
+
+  private finishRace(result?: {
+    winnerId: string;
+    winnerName: string;
+    officialTimeMs: number;
+  }) {
+    if (this.finished) {
+      if (this.online && result) this.applyOnlineResult(result.winnerId, result.winnerName);
+      return;
+    }
     this.finished = true;
     this.running = false;
     this.paused = false;
@@ -2152,6 +2176,9 @@ export class Game {
     this.syncTouchControls();
     this.syncMuteBtn();
     this.pendingFinishMs = this.raceNow() - this.raceStart;
+    if (this.online && !result) {
+      this.net.reportFinish(this.pendingFinishMs, this.bestLap);
+    }
     this.el.finalTime.textContent = formatTime(this.pendingFinishMs);
     this.el.finalBest.textContent = formatTime(this.bestLap);
     this.el.nameEntry.classList.add("hidden");
@@ -2164,7 +2191,9 @@ export class Game {
         ? 1
         : this.rivals.length + 1;
     this.el.finalPlace.textContent = `${place}/${field}`;
-    if (place === 1) {
+    if (this.online && result) {
+      this.applyOnlineResult(result.winnerId, result.winnerName);
+    } else if (place === 1) {
       this.el.finishEyebrow.textContent = "RACE WINNER";
       this.el.finishTitle.textContent = "YOU WIN";
     } else {
@@ -2174,7 +2203,8 @@ export class Game {
 
     this.el.finish.classList.remove("hidden");
     // Solo Race: finish UI only — no leaderboard qualify / name entry
-    if (!this.solo) void this.checkLeaderboardQualify();
+    const wonOnline = !this.online || !result || result.winnerId === this.net.id;
+    if (!this.solo && wonOnline) void this.checkLeaderboardQualify();
   }
 
   /**
@@ -2206,6 +2236,9 @@ export class Game {
   }
 
   private updateHud() {
+    const hudNow = performance.now();
+    if (this.online && hudNow - this.lastOnlineHudAt < 50) return;
+    this.lastOnlineHudAt = hudNow;
     this.el.speed.textContent = String(Math.round(this.player.kmh));
     this.el.gear.textContent = this.player.gearLabel;
     // Practice: current lap clock; race: total race time — frozen at 0 during grid hold

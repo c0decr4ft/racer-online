@@ -131,6 +131,23 @@ function wsOnce(payload, waitFor = "welcome", timeoutMs = 2500) {
   });
 }
 
+function waitForWsEvent(ws, type, timeoutMs = 2500) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      ws.off("message", onMessage);
+      resolve(null);
+    }, timeoutMs);
+    function onMessage(data) {
+      const msg = JSON.parse(String(data));
+      if (msg.t !== type) return;
+      clearTimeout(timer);
+      ws.off("message", onMessage);
+      resolve(msg);
+    }
+    ws.on("message", onMessage);
+  });
+}
+
 async function main() {
   console.log("\n=== RACER ONLINE FULL SUITE ===\n");
 
@@ -185,6 +202,17 @@ async function main() {
     host.ws.send(JSON.stringify({ t: "start" }));
     await new Promise((r) => setTimeout(r, 200));
     ok("ws:host-start-sent");
+    if (guest.ws) {
+      const hostResult = waitForWsEvent(host.ws, "raceResult");
+      const guestResult = waitForWsEvent(guest.ws, "raceResult");
+      host.ws.send(JSON.stringify({ t: "finish", timeMs: 65432, bestLapMs: 21000 }));
+      const [a, b] = await Promise.all([hostResult, guestResult]);
+      assert(
+        "ws:finish-broadcast",
+        a?.winnerId === host.last?.id && b?.winnerId === host.last?.id,
+        `host=${a?.winnerName || "none"} guest=${b?.winnerName || "none"}`,
+      );
+    }
     try {
       host.ws.close();
     } catch {
