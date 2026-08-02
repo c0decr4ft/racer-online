@@ -523,6 +523,26 @@ async function main() {
   );
   await measureFps(page, "mp-race-host", 2000);
   await measureFps(page2, "mp-race-guest", 2000);
+  await page2.keyboard.down("KeyW");
+  await page2.waitForTimeout(1200);
+  await page2.keyboard.up("KeyW");
+  await page.waitForTimeout(200);
+  const [guestPosition, hostViewOfGuest] = await Promise.all([
+    page2.evaluate(() => {
+      const p = window.__game?.player?.state?.position;
+      return p ? { x: p.x, z: p.z } : null;
+    }),
+    page.evaluate(() => {
+      const remote = window.__game?.remotes?.values?.().next?.().value;
+      const p = remote?.mesh?.position;
+      return p ? { x: p.x, z: p.z } : null;
+    }),
+  ]);
+  const trackingError =
+    guestPosition && hostViewOfGuest
+      ? Math.hypot(guestPosition.x - hostViewOfGuest.x, guestPosition.z - hostViewOfGuest.z)
+      : Infinity;
+  assert("mp:remote-position-current", trackingError < 3, `error=${trackingError.toFixed(2)}m`);
 
   // Server-announced finish opens all-six-map voting on every client.
   await page.evaluate(() => window.__game?.net?.reportFinish?.(65432, 21000));

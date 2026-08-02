@@ -1,6 +1,6 @@
-/** Shared wire protocol — keep payloads tiny for 20Hz sync. */
+/** Shared wire protocol — compact 30Hz pose sync for responsive remote racers. */
 
-export const NET_TICK_HZ = 20;
+export const NET_TICK_HZ = 30;
 export const NET_TICK_MS = 1000 / NET_TICK_HZ;
 export const MAX_PLAYERS = 8;
 export const MIN_PLAYERS = 2;
