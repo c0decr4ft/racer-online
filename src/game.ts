@@ -140,8 +140,6 @@ export class Game {
   private pauseTotal = 0;
   private pauseBegan = 0;
   private lastFrame = performance.now();
-  /** Separate render cadence keeps online mode near 60fps on 120/144Hz displays. */
-  private lastOnlineFrame = 0;
   private lastOnlineHudAt = 0;
   private lastOnlineShadowAt = 0;
   private camPos = new THREE.Vector3();
@@ -1595,17 +1593,7 @@ export class Game {
     // Hidden tab: skip sim + both scene passes (no GPU work, no dt spike on return)
     if (document.visibilityState === "hidden") {
       this.lastFrame = now;
-      this.lastOnlineFrame = now;
       return;
-    }
-    if (this.online) {
-      const interval = 1000 / 60;
-      const elapsed = now - this.lastOnlineFrame;
-      if (elapsed < interval) return;
-      // Preserve the fractional remainder for a stable average on 90/144Hz screens.
-      this.lastOnlineFrame = now - (elapsed % interval);
-    } else {
-      this.lastOnlineFrame = now;
     }
     const dt = Math.min((now - this.lastFrame) / 1000, 0.05);
     this.lastFrame = now;
@@ -1620,7 +1608,10 @@ export class Game {
     }
 
     const inputPeek = this.input.getState();
-    this.wantRearview = this.running && !this.paused && !this.finished && !this.exploding;
+    // Online mode skips the second full scene render; smooth input/physics matter
+    // more than the rearview inset and this roughly halves race rendering work.
+    this.wantRearview =
+      !this.online && this.running && !this.paused && !this.finished && !this.exploding;
     if (inputPeek.pause) {
       if (this.paused) this.resume();
       else if (this.running && !this.finished && !this.exploding) this.pause();
