@@ -184,6 +184,29 @@ const refuseWipe =
     : emptyRemote;
 check("guard refuses publishing empty over non-empty", storeEntryCount(refuseWipe) === 3);
 
+/** Mirrors publishMergedStore: never PUT a partial store when remote read fails. */
+function publishWithoutRemoteOrThrow(localPartial) {
+  // Remote fetch failed — even a non-empty local subset must not replace worldwide.
+  if (storeEntryCount(localPartial) === 0) {
+    throw new Error("refusing empty publish without remote");
+  }
+  throw new Error("refusing publish without remote snapshot");
+}
+
+const partialLocal = emptyStore();
+partialLocal["forest-loop"] = [{ name: "SOLO", timeMs: 99000, at: 50 }];
+let refusedBlindPut = false;
+try {
+  publishWithoutRemoteOrThrow(partialLocal);
+} catch (err) {
+  refusedBlindPut = String(err?.message || err).includes("without remote");
+}
+check(
+  "guard refuses blind PUT of partial local when remote unread",
+  refusedBlindPut,
+  "partial local must not overwrite worldwide on failed GET",
+);
+
 const parsed = parseStore({
   byTrack: {
     "forest-loop": [{ name: "A", timeMs: 1000, at: 1 }],

@@ -327,9 +327,11 @@ async function publishMergedStore(store: BoardStore): Promise<BoardStore> {
   try {
     latest = await fetchPublicBlobStore();
   } catch {
-    // If we cannot read remote, only write when we actually have scores to preserve.
-    if (storeEntryCount(store) === 0) throw new Error("refusing empty publish without remote");
-    return putPublicBlobStore(store);
+    // Never PUT without a successful remote read. A local/partial store can look
+    // "non-empty" while still missing other players' worldwide times — writing it
+    // would wipe the public board (e.g. GET timeout/5xx then PUT succeeds).
+    // Callers already fall back to local/server when publish throws.
+    throw new Error("refusing publish without remote snapshot");
   }
 
   const merged = mergeBoardStores(latest, store);
