@@ -1,8 +1,12 @@
 import { defineConfig } from "vite";
 
+// GitHub Pages project site needs /racer-online/.
+// Render sets RENDER=true — serve the game from the service root instead.
+const onRender = Boolean(process.env.RENDER);
+const base = process.env.VITE_BASE || (onRender ? "/" : "/racer-online/");
+
 export default defineConfig({
-  // Project Pages: https://c0decr4ft.github.io/racer-online/
-  base: "/racer-online/",
+  base,
   server: {
     host: "127.0.0.1",
     port: 5173,
