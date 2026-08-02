@@ -219,10 +219,11 @@ async function main() {
         JSON.stringify(options),
       );
       if (options.length >= 2) {
-        const hostVoteResult = waitForWsEvent(host.ws, "voteResult");
-        const guestVoteResult = waitForWsEvent(guest.ws, "voteResult");
-        const hostNextStart = waitForWsEvent(host.ws, "start", 4000);
-        const guestNextStart = waitForWsEvent(guest.ws, "start", 4000);
+        const voteStartedAt = Date.now();
+        const hostVoteResult = waitForWsEvent(host.ws, "voteResult", 24000);
+        const guestVoteResult = waitForWsEvent(guest.ws, "voteResult", 24000);
+        const hostNextStart = waitForWsEvent(host.ws, "start", 26000);
+        const guestNextStart = waitForWsEvent(guest.ws, "start", 26000);
         host.ws.send(JSON.stringify({ t: "vote", trackId: options[0] }));
         await new Promise((r) => setTimeout(r, 30));
         guest.ws.send(JSON.stringify({ t: "vote", trackId: options[1] }));
@@ -232,6 +233,11 @@ async function main() {
           hostNextStart,
           guestNextStart,
         ]);
+        assert(
+          "ws:vote-waits-twenty-seconds",
+          Date.now() - voteStartedAt >= 19_500,
+          `elapsed=${Date.now() - voteStartedAt}ms`,
+        );
         assert(
           "ws:vote-tie-first-vote-wins",
           hostChoice?.trackId === options[0] && guestChoice?.trackId === options[0],
@@ -527,10 +533,16 @@ async function main() {
     "mp:vote-five-options",
     (await page.locator("#mp-map-vote-grid .mp-vote-option").count()) === 5,
   );
+  const voteThumb = await page.locator("#mp-map-vote-grid .mp-vote-option").first().boundingBox();
+  assert("mp:vote-large-previews", (voteThumb?.width ?? 0) >= 100, `width=${voteThumb?.width ?? 0}`);
+  assert(
+    "mp:vote-timer-visible",
+    (await page.locator("#mp-map-vote-status").textContent())?.includes("20s"),
+  );
   await page.keyboard.press("Digit1");
   await page.waitForTimeout(40);
   await page2.keyboard.press("Digit2");
-  await page.waitForTimeout(2400);
+  await page.waitForTimeout(22400);
   assert(
     "mp:voted-round-host-running",
     await page.evaluate(() => window.__game?.running && !window.__game?.finished),

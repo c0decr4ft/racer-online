@@ -23,6 +23,7 @@ const STATIC_BASE = (
       : "/racer-online"
 ).replace(/\/$/, "");
 const NET_TICK_MS = 50; // 20 Hz
+const MAP_VOTE_MS = 20_000;
 const MAX_PLAYERS = 8;
 const PLAYER_COLORS = [0xe4eaf2, 0xe23b2e, 0x2a66f0, 0xf0c020, 0x1dbf6a, 0xb44dff, 0xff6b9d, 0x00d4ff];
 const DIR = dirname(fileURLToPath(import.meta.url));
@@ -79,7 +80,7 @@ function normalizeSessionId(raw) {
 /** @typedef {{ id: string, name: string, color: number, accent: number, kind: string, x: number, z: number, h: number, s: number, g: string, lap: number }} Pose */
 /** @typedef {{ id: string, name: string, color: number, room: string, ws: import('ws').WebSocket, pose: Pose, lastPoseAt: number }} Client */
 /** @typedef {{ trackId: string, order: number }} TrackVote */
-/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, clients: Map<string, Client> }} Room */
+/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, clients: Map<string, Client> }} Room */
 /** @typedef {{ name: string, timeMs: number, bestLapMs?: number, at: number, trackId?: string }} BoardEntry */
 /** @typedef {Record<string, BoardEntry[]>} BoardStore */
 /** @typedef {{ buckets: Record<string, number>, sessions: Record<string, number>, updatedAt: number, historyEpoch: number }} PresenceStore */
@@ -515,9 +516,7 @@ function broadcastVoteState(room) {
 
 /** Select highest votes; equal counts go to the map that received its first vote first. */
 function resolveMapVote(room) {
-  if (room.phase !== "finished" || room.clients.size === 0 || room.votes.size < room.clients.size) {
-    return;
-  }
+  if (room.phase !== "finished" || room.clients.size === 0) return;
   const ranked = room.voteOptions.map((trackId, optionIndex) => {
     let count = 0;
     let firstOrder = Infinity;
@@ -548,6 +547,7 @@ function resolveMapVote(room) {
     room.voteOptions = [];
     room.votes.clear();
     room.voteOrder = 0;
+    room.voteEndsAt = 0;
     for (const client of room.clients.values()) {
       client.pose.s = 0;
       client.pose.g = "1";
@@ -615,6 +615,7 @@ function admitClient(ws, msg, mode) {
       voteOptions: [],
       votes: new Map(),
       voteOrder: 0,
+      voteEndsAt: 0,
       clients: new Map(),
     };
     rooms.set(roomName, room);
@@ -915,6 +916,7 @@ wss.on("connection", (ws) => {
       room.voteOptions = [];
       room.votes.clear();
       room.voteOrder = 0;
+      room.voteEndsAt = 0;
       const at = Date.now() + 250;
       broadcast(room, { t: "start", at, trackId: room.trackId, kind: room.kind });
       console.log(`[start] ${room.name} by ${client.name} → ${room.trackId} ${room.kind} (${room.clients.size}p)`);
@@ -952,15 +954,18 @@ wss.on("connection", (ws) => {
       room.voteOptions = shuffledNextTracks(room.trackId);
       room.votes.clear();
       room.voteOrder = 0;
+      room.voteEndsAt = Date.now() + MAP_VOTE_MS;
       broadcast(room, {
         t: "raceResult",
         winnerId: client.id,
         winnerName: client.name,
         timeMs,
         trackOptions: room.voteOptions,
+        voteEndsAt: room.voteEndsAt,
       });
       console.log(`[finish] ${room.name} won by ${client.name} in ${timeMs}ms`);
       broadcastVoteState(room);
+      setTimeout(() => resolveMapVote(room), MAP_VOTE_MS);
       return;
     }
 
@@ -970,7 +975,6 @@ wss.on("connection", (ws) => {
       if (!room.voteOptions.includes(trackId)) return;
       room.votes.set(client.id, { trackId, order: ++room.voteOrder });
       broadcastVoteState(room);
-      resolveMapVote(room);
     }
   });
 
@@ -995,7 +999,6 @@ wss.on("connection", (ws) => {
       if (room.phase === "lobby") broadcast(room, lobbySnapshot(room));
       if (room.phase === "finished") {
         broadcastVoteState(room);
-        resolveMapVote(room);
       }
     }
     client = null;

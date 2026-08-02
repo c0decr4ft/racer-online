@@ -1474,7 +1474,7 @@ html.touch-mode [contenteditable="true"] {
   display: flex;
   flex-direction: column;
   align-items: center;
-  width: min(100%, 20rem);
+  width: min(100%, 30rem);
 }
 
 .finish-stat {
@@ -1486,7 +1486,7 @@ html.touch-mode [contenteditable="true"] {
 }
 
 .mp-map-vote {
-  width: min(100%, 22rem);
+  width: min(100%, 30rem);
   margin: 0 0 0.9rem;
 }
 
@@ -1496,8 +1496,8 @@ html.touch-mode [contenteditable="true"] {
 
 .mp-map-vote-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 0.4rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
   margin: 0.45rem 0;
 }
 
@@ -1540,6 +1540,12 @@ html.touch-mode [contenteditable="true"] {
 .mp-map-vote-status {
   min-height: 1.2em;
   margin: 0.35rem 0 0 !important;
+}
+
+@media (max-width: 520px) {
+  .mp-map-vote-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .name-entry {
@@ -1597,6 +1603,7 @@ html.touch-mode [contenteditable="true"] {
   gap: 0.65rem;
   align-items: stretch;
   width: 100%;
+  max-width: 20rem;
 }
 
 #player-tags {

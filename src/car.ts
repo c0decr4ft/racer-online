@@ -228,7 +228,7 @@ export function createCar(
   box(car, 0.58, 0.08, 0.05, tail, -0.56, 0.58, -2.28);
   box(car, 0.58, 0.08, 0.05, tail, 0.56, 0.58, -2.28);
   box(car, 0.18, 0.05, 0.04, lite, 0, 0.58, -2.28);
-  box(car, 0.1, 0.26, 3.75, accent, 0, 0.56, 0.04);
+  box(car, 0.16, 0.27, 3.82, accent, 0, 0.565, 0.04);
   const numMat = mat(0xffffff, { metal: 0.1, rough: 0.55 });
   box(car, 0.52, 0.32, 0.02, numMat, 0, 0.7, -1.52);
   const n = Math.max(1, Math.min(99, raceNumber));
@@ -345,7 +345,7 @@ export function createBike(
   box(bike, 0.5, 0.26, 0.68, body, 0, 0.8, 0.18);
   box(bike, 0.42, 0.14, 0.5, body, 0, 0.96, 0.12);
   box(bike, 0.36, 0.1, 0.28, body, 0, 0.9, 0.42, 0.25);
-  box(bike, 0.07, 0.16, 0.62, accent, 0, 0.88, 0.16);
+  box(bike, 0.09, 0.17, 0.65, accent, 0, 0.885, 0.16);
 
   // Nose fairing + windscreen
   box(bike, 0.58, 0.38, 0.52, body, 0, 0.76, 1.12);
@@ -368,7 +368,7 @@ export function createBike(
   box(bike, 0.3, 0.14, 0.42, body, 0, 0.98, -1.42);
   box(bike, 0.18, 0.08, 0.22, body, 0, 1.04, -1.62);
   box(bike, 0.2, 0.07, 0.05, tail, 0, 0.88, -1.76);
-  box(bike, 0.05, 0.12, 0.58, accent, 0, 0.92, -1.18);
+  box(bike, 0.065, 0.13, 0.61, accent, 0, 0.925, -1.18);
 
   // Swingarm + hugger
   box(bike, 0.07, 0.07, 0.72, chrome, 0.11, 0.4, -0.88);

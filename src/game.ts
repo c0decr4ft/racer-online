@@ -217,6 +217,10 @@ export class Game {
   private pendingFinishMs = 0;
   private mapVoteOptions: string[] = [];
   private mapVoteTrackId = "";
+  private mapVoteEndsAt = 0;
+  private mapVoteReceived = 0;
+  private mapVoteTotal = 0;
+  private mapVoteTimer = 0;
   private scoreSaveInFlight = false;
   private bestFlashUntil = 0;
   /** Ignore stale async board fetches when switching maps quickly. */
@@ -314,12 +318,13 @@ export class Game {
         this.renderLobby();
       },
       onStart: (_at, trackId, kind) => this.beginOnlineRace(trackId, kind),
-      onRaceResult: (winnerId, winnerName, timeMs, trackOptions) =>
+      onRaceResult: (winnerId, winnerName, timeMs, trackOptions, voteEndsAt) =>
         this.finishRace({
           winnerId,
           winnerName,
           officialTimeMs: timeMs,
           trackOptions,
+          voteEndsAt,
         }),
       onVoteUpdate: (votes, received, total) =>
         this.updateMapVote(votes, received, total),
@@ -2140,17 +2145,25 @@ export class Game {
   }
 
   private resetMapVote() {
+    if (this.mapVoteTimer) window.clearInterval(this.mapVoteTimer);
     this.mapVoteOptions = [];
     this.mapVoteTrackId = "";
+    this.mapVoteEndsAt = 0;
+    this.mapVoteReceived = 0;
+    this.mapVoteTotal = 0;
+    this.mapVoteTimer = 0;
     this.el.mpMapVote.classList.add("hidden");
     this.el.mpMapVoteGrid.replaceChildren();
     this.el.restartBtn.classList.remove("hidden");
   }
 
-  private showMapVote(trackOptions: string[]) {
+  private showMapVote(trackOptions: string[], voteEndsAt: number) {
     this.mapVoteOptions = trackOptions
       .filter((id, index) => index < 5 && TRACKS.some((track) => track.id === id));
     this.mapVoteTrackId = "";
+    this.mapVoteEndsAt = voteEndsAt;
+    this.mapVoteReceived = 0;
+    this.mapVoteTotal = this.remotes.size + 1;
     if (!this.online || this.mapVoteOptions.length === 0) {
       this.resetMapVote();
       return;
@@ -2158,7 +2171,6 @@ export class Game {
 
     this.el.restartBtn.classList.add("hidden");
     this.el.mpMapVote.classList.remove("hidden");
-    this.el.mpMapVoteStatus.textContent = "Press 1–5 or choose a map";
     this.el.mpMapVoteGrid.replaceChildren();
 
     this.mapVoteOptions.forEach((trackId, index) => {
@@ -2183,6 +2195,8 @@ export class Game {
       this.el.mpMapVoteGrid.appendChild(button);
       requestAnimationFrame(() => drawTrackPreview(canvas, trackId));
     });
+    this.renderMapVoteStatus();
+    this.mapVoteTimer = window.setInterval(() => this.renderMapVoteStatus(), 250);
   }
 
   private castMapVote(trackId: string) {
@@ -2197,10 +2211,12 @@ export class Game {
       button.classList.toggle("selected", selected);
       button.setAttribute("aria-selected", selected ? "true" : "false");
     }
-    this.el.mpMapVoteStatus.textContent = `Vote locked: ${getTrackDef(trackId).name}`;
+    this.renderMapVoteStatus();
   }
 
   private updateMapVote(votes: Record<string, number>, received: number, total: number) {
+    this.mapVoteReceived = received;
+    this.mapVoteTotal = total;
     for (const button of this.el.mpMapVoteGrid.querySelectorAll<HTMLElement>(
       ".mp-vote-option",
     )) {
@@ -2208,12 +2224,20 @@ export class Game {
       const count = button.querySelector(".mp-vote-count");
       if (count) count.textContent = String(votes[trackId] ?? 0);
     }
-    if (!this.mapVoteTrackId) {
-      this.el.mpMapVoteStatus.textContent = `${received}/${total} voted · press 1–5`;
-    }
+    this.renderMapVoteStatus();
+  }
+
+  private renderMapVoteStatus() {
+    const seconds = Math.max(0, Math.ceil((this.mapVoteEndsAt - Date.now()) / 1000));
+    const tally = `${this.mapVoteReceived}/${this.mapVoteTotal} voted`;
+    this.el.mpMapVoteStatus.textContent = this.mapVoteTrackId
+      ? `${seconds}s · ${tally} · Vote locked: ${getTrackDef(this.mapVoteTrackId).name}`
+      : `${seconds}s · ${tally} · Press 1–5`;
   }
 
   private showMapVoteResult(trackId: string) {
+    if (this.mapVoteTimer) window.clearInterval(this.mapVoteTimer);
+    this.mapVoteTimer = 0;
     const track = getTrackDef(trackId);
     for (const button of this.el.mpMapVoteGrid.querySelectorAll<HTMLButtonElement>(
       ".mp-vote-option",
@@ -2240,11 +2264,12 @@ export class Game {
     winnerName: string;
     officialTimeMs: number;
     trackOptions: string[];
+    voteEndsAt: number;
   }) {
     if (this.finished) {
       if (this.online && result) {
         this.applyOnlineResult(result.winnerId, result.winnerName);
-        this.showMapVote(result.trackOptions);
+        this.showMapVote(result.trackOptions, result.voteEndsAt);
       }
       return;
     }
@@ -2280,7 +2305,7 @@ export class Game {
     this.el.finalPlace.textContent = `${place}/${field}`;
     if (this.online && result) {
       this.applyOnlineResult(result.winnerId, result.winnerName);
-      this.showMapVote(result.trackOptions);
+      this.showMapVote(result.trackOptions, result.voteEndsAt);
     } else if (place === 1) {
       this.el.finishEyebrow.textContent = "RACE WINNER";
       this.el.finishTitle.textContent = "YOU WIN";
