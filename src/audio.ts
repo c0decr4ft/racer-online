@@ -4,13 +4,6 @@
  * Speaker toggle mutes everything via a top-level gain (persisted in localStorage).
  */
 
-export type EngineAudioState = {
-  rpm: number;
-  speed: number;
-  throttle: number;
-  gear: string | number;
-};
-
 type MusicMode = "off" | "menu" | "drive";
 
 const MENU_VOL = 0.28;
@@ -205,15 +198,6 @@ export class GameAudio {
     this.playNoiseBurst(0.35, 0.42, 1400);
     this.playNoiseBurst(0.18, 0.28, 420);
   }
-
-  /** No-op — shift SFX left off. */
-  playShift(): void {}
-
-  /** No-op — engine loop removed. */
-  updateEngine(_state: EngineAudioState, _active: boolean): void {}
-
-  /** Reset gear tracker (kept for game.ts call sites). */
-  resetGear(): void {}
 
   private get ready(): boolean {
     return this.unlocked && !this.muted && !!this.ctx && !!this.master;

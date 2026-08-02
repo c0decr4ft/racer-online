@@ -14,7 +14,6 @@ export type VehicleState = {
   speed: number;
   steerAngle: number;
   gear: Gear;
-  rpm: number;
 };
 
 /**
@@ -68,7 +67,6 @@ export class Vehicle {
       speed: 0,
       steerAngle: 0,
       gear: 1,
-      rpm: 1200,
     };
     this.syncMesh();
   }
@@ -79,7 +77,6 @@ export class Vehicle {
     this.state.speed = 0;
     this.state.steerAngle = 0;
     this.state.gear = 1;
-    this.state.rpm = 1200;
     this.shiftTimer = 0;
     this.powerMul = 1;
     this.syncMesh();
@@ -172,14 +169,6 @@ export class Vehicle {
     const roll = ROLL * Math.sign(s.speed || 0);
     s.speed -= (drag + roll) * dt;
     if (Math.abs(s.speed) < 0.1 && input.throttle === 0) s.speed = 0;
-
-    if (gear === "N") {
-      s.rpm = THREE.MathUtils.lerp(s.rpm, 800 + input.throttle * 1400, 0.12);
-    } else {
-      const stats = GEAR_STATS[gear];
-      const ratio = Math.min(1, Math.abs(s.speed) / stats.max);
-      s.rpm = 1000 + ratio * 5500;
-    }
 
     const speedFactor = THREE.MathUtils.clamp(0.4 + Math.abs(s.speed) / 36, 0.4, 1.2);
     const turnRate = s.steerAngle * speedFactor * (s.speed >= 0 ? 1 : -1) * 1.9;

@@ -1485,6 +1485,63 @@ html.touch-mode [contenteditable="true"] {
   margin-bottom: 1.15rem !important;
 }
 
+.mp-map-vote {
+  width: min(100%, 22rem);
+  margin: 0 0 0.9rem;
+}
+
+.mp-map-vote.hidden {
+  display: none !important;
+}
+
+.mp-map-vote-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.4rem;
+  margin: 0.45rem 0;
+}
+
+.mp-vote-option {
+  position: relative;
+  width: 100%;
+  margin: 0;
+}
+
+.mp-vote-key,
+.mp-vote-count {
+  position: absolute;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  min-width: 1.15rem;
+  height: 1.15rem;
+  border-radius: 999px;
+  background: rgba(8, 12, 20, 0.9);
+  color: #fff;
+  font: 700 0.72rem/1 var(--font-ui);
+}
+
+.mp-vote-key {
+  top: 0.2rem;
+  left: 0.2rem;
+}
+
+.mp-vote-count {
+  right: 0.2rem;
+  bottom: 0.2rem;
+  color: #ffc857;
+}
+
+.mp-vote-option:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.mp-map-vote-status {
+  min-height: 1.2em;
+  margin: 0.35rem 0 0 !important;
+}
+
 .name-entry {
   display: flex;
   flex-direction: column;
