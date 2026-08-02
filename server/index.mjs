@@ -22,7 +22,7 @@ const STATIC_BASE = (
       ? ""
       : "/racer-online"
 ).replace(/\/$/, "");
-const NET_TICK_MS = 50; // 20 Hz
+const NET_TICK_MS = 1000 / 30;
 const MAP_VOTE_MS = 20_000;
 const MAX_PLAYERS = 8;
 const PLAYER_COLORS = [0xe4eaf2, 0xe23b2e, 0x2a66f0, 0xf0c020, 0x1dbf6a, 0xb44dff, 0xff6b9d, 0x00d4ff];
@@ -926,7 +926,7 @@ wss.on("connection", (ws) => {
     if (msg.t === "pose") {
       if (room.phase !== "racing") return;
       const now = Date.now();
-      if (now - client.lastPoseAt < 32) return; // ~30Hz max ingest
+      if (now - client.lastPoseAt < 24) return; // accept jitter around the 30Hz client cadence
       client.lastPoseAt = now;
       const p = client.pose;
       p.x = +msg.x || 0;

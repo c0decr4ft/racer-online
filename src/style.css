@@ -1555,6 +1555,7 @@ html.touch-mode [contenteditable="true"] {
   align-items: stretch;
   margin: 0 0 0.85rem;
   width: 100%;
+  max-width: 20rem;
 }
 
 .name-entry.hidden {

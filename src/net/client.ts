@@ -97,27 +97,45 @@ export class RemotePlayer {
     this.lastVisualAt = at;
   }
 
-  /** Smooth toward a short prediction of the latest 20Hz network snapshot. */
-  update(now: number, camera: THREE.Camera, viewportWidth: number, viewportHeight: number) {
+  /** Predict the latest server snapshot forward so remotes stay near their real position. */
+  update(
+    now: number,
+    camera: THREE.Camera,
+    viewportWidth: number,
+    viewportHeight: number,
+    latencyMs = 0,
+  ) {
     if (!this.to) return;
     const prev = this.from ?? this.to;
     const next = this.to;
     const span = Math.max(NET_TICK_MS, next.at - prev.at);
     const a = prev.pose;
     const b = next.pose;
-    // Continue the latest measured movement briefly instead of freezing between packets.
-    const predict = Math.min(1.25, Math.max(0, (now - next.at) / span));
-    const targetX = b.x + (b.x - a.x) * predict;
-    const targetZ = b.z + (b.z - a.z) * predict;
+    // A received pose is already old by the server tick plus roughly one network
+    // round trip (sender→server→viewer). Advance it to the current render time.
+    const leadMs = Math.min(
+      200,
+      Math.max(0, now - next.at) + NET_TICK_MS * 0.5 + Math.min(150, latencyMs),
+    );
+    const spanSeconds = span / 1000;
+    const measuredVx = (b.x - a.x) / spanSeconds;
+    const measuredVz = (b.z - a.z) / spanSeconds;
+    const reportedVx = Math.sin(b.h) * b.s;
+    const reportedVz = Math.cos(b.h) * b.s;
+    const velocityBlend = Math.abs(b.s) < 0.5 ? 1 : 0.55;
+    const vx = THREE.MathUtils.lerp(measuredVx, reportedVx, velocityBlend);
+    const vz = THREE.MathUtils.lerp(measuredVz, reportedVz, velocityBlend);
+    const targetX = b.x + vx * (leadMs / 1000);
+    const targetZ = b.z + vz * (leadMs / 1000);
     let dh = b.h - a.h;
     while (dh > Math.PI) dh -= Math.PI * 2;
     while (dh < -Math.PI) dh += Math.PI * 2;
-    const targetH = b.h + dh * predict;
+    const targetH = b.h + dh * Math.min(4, leadMs / span);
 
     const visualDt = this.lastVisualAt > 0 ? Math.min(0.1, (now - this.lastVisualAt) / 1000) : 0.05;
     this.lastVisualAt = now;
-    const alpha = 1 - Math.exp(-visualDt / 0.035);
-    const farAway = this.mesh.position.distanceToSquared(this.labelPoint.set(targetX, 0, targetZ)) > 144;
+    const alpha = 1 - Math.exp(-visualDt / 0.02);
+    const farAway = this.mesh.position.distanceToSquared(this.labelPoint.set(targetX, 0, targetZ)) > 36;
     if (farAway) {
       this.mesh.position.set(targetX, 0, targetZ);
       this.mesh.rotation.y = targetH;
@@ -496,7 +514,7 @@ export class NetClient {
     this.ws.send(JSON.stringify({ t: "vote", trackId }));
   }
 
-  /** Call from render loop; only sends at ~20Hz during a live race. */
+  /** Call from render loop; sends at ~30Hz during a live race. */
   maybeSendPose(
     dt: number,
     pose: {
@@ -512,7 +530,7 @@ export class NetClient {
     if (this.phase !== "racing") return;
     this.sendAcc += dt * 1000;
     if (this.sendAcc < NET_TICK_MS) return;
-    this.sendAcc = 0;
+    this.sendAcc = Math.min(this.sendAcc - NET_TICK_MS, NET_TICK_MS);
     this.ws.send(
       JSON.stringify({
         t: "pose",

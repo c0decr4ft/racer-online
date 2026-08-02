@@ -1637,7 +1637,13 @@ export class Game {
       const remoteViewportWidth = this.renderer.domElement.clientWidth;
       const remoteViewportHeight = this.renderer.domElement.clientHeight;
       for (const remote of this.remotes.values()) {
-        remote.update(now, this.camera, remoteViewportWidth, remoteViewportHeight);
+        remote.update(
+          now,
+          this.camera,
+          remoteViewportWidth,
+          remoteViewportHeight,
+          this.net.latency,
+        );
       }
     }
 
