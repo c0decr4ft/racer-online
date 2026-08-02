@@ -493,7 +493,7 @@ export class Game {
     });
     document.addEventListener("keydown", (e) => {
       if (!this.online || !this.finished || this.el.mpMapVote.classList.contains("hidden")) return;
-      const match = /^(?:Digit|Numpad)([1-5])$/.exec(e.code);
+      const match = /^(?:Digit|Numpad)([1-6])$/.exec(e.code);
       if (!match) return;
       const trackId = this.mapVoteOptions[Number(match[1]) - 1];
       if (!trackId) return;
@@ -2159,7 +2159,7 @@ export class Game {
 
   private showMapVote(trackOptions: string[], voteEndsAt: number) {
     this.mapVoteOptions = trackOptions
-      .filter((id, index) => index < 5 && TRACKS.some((track) => track.id === id));
+      .filter((id, index) => index < 6 && TRACKS.some((track) => track.id === id));
     this.mapVoteTrackId = "";
     this.mapVoteEndsAt = voteEndsAt;
     this.mapVoteReceived = 0;
@@ -2232,7 +2232,7 @@ export class Game {
     const tally = `${this.mapVoteReceived}/${this.mapVoteTotal} voted`;
     this.el.mpMapVoteStatus.textContent = this.mapVoteTrackId
       ? `${seconds}s · ${tally} · Vote locked: ${getTrackDef(this.mapVoteTrackId).name}`
-      : `${seconds}s · ${tally} · Press 1–5`;
+      : `${seconds}s · ${tally} · Press 1–6`;
   }
 
   private showMapVoteResult(trackId: string) {

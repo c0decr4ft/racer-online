@@ -214,8 +214,8 @@ async function main() {
       );
       const options = Array.isArray(a?.trackOptions) ? a.trackOptions : [];
       assert(
-        "ws:vote-five-other-tracks",
-        options.length === 5 && !options.includes("harbor-circuit"),
+        "ws:vote-all-six-tracks",
+        options.length === 6 && options.includes("harbor-circuit"),
         JSON.stringify(options),
       );
       if (options.length >= 2) {
@@ -524,14 +524,14 @@ async function main() {
   await measureFps(page, "mp-race-host", 2000);
   await measureFps(page2, "mp-race-guest", 2000);
 
-  // Server-announced finish opens five-map voting on every client.
+  // Server-announced finish opens all-six-map voting on every client.
   await page.evaluate(() => window.__game?.net?.reportFinish?.(65432, 21000));
   await page.waitForTimeout(400);
   assert("mp:vote-host-visible", await visible(page, "#mp-map-vote"));
   assert("mp:vote-guest-visible", await visible(page2, "#mp-map-vote"));
   assert(
-    "mp:vote-five-options",
-    (await page.locator("#mp-map-vote-grid .mp-vote-option").count()) === 5,
+    "mp:vote-six-options",
+    (await page.locator("#mp-map-vote-grid .mp-vote-option").count()) === 6,
   );
   const voteThumb = await page.locator("#mp-map-vote-grid .mp-vote-option").first().boundingBox();
   assert("mp:vote-large-previews", (voteThumb?.width ?? 0) >= 100, `width=${voteThumb?.width ?? 0}`);
