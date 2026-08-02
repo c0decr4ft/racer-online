@@ -6,13 +6,22 @@ import { fileURLToPath } from "node:url";
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "0.0.0.0";
+const ON_RENDER = Boolean(process.env.RENDER);
 /** When set (or when ../dist exists), serve the built web client from this process. */
 const DIST_DIR = process.env.STATIC_DIR
   ? process.env.STATIC_DIR
   : existsSync(join(dirname(fileURLToPath(import.meta.url)), "..", "dist"))
     ? join(dirname(fileURLToPath(import.meta.url)), "..", "dist")
     : null;
-const STATIC_BASE = (process.env.STATIC_BASE || "/racer-online").replace(/\/$/, "") || "";
+// Render builds with Vite base `/` — serve the game at the service root.
+// Local/Pages builds use `/racer-online/`.
+const STATIC_BASE = (
+  process.env.STATIC_BASE !== undefined
+    ? process.env.STATIC_BASE
+    : ON_RENDER
+      ? ""
+      : "/racer-online"
+).replace(/\/$/, "");
 const NET_TICK_MS = 50; // 20 Hz
 const MAX_PLAYERS = 8;
 const PLAYER_COLORS = [0xe4eaf2, 0xe23b2e, 0x2a66f0, 0xf0c020, 0x1dbf6a, 0xb44dff, 0xff6b9d, 0x00d4ff];
@@ -357,30 +366,34 @@ function sendStaticFile(res, filePath) {
   }
 }
 
-/** Serve Vite `dist` under STATIC_BASE (default `/racer-online`). */
+/** Serve Vite `dist` (under STATIC_BASE when set, else from `/`). */
 function tryServeStatic(urlPath, res) {
-  if (!DIST_DIR) return false;
+  if (!DIST_DIR) {
+    console.warn("[static] dist/ missing — run npm run build before start");
+    return false;
+  }
   let path = urlPath.split("?")[0] || "/";
-  if (STATIC_BASE && (path === STATIC_BASE || path.startsWith(`${STATIC_BASE}/`))) {
-    path = path.slice(STATIC_BASE.length) || "/";
-  } else if (STATIC_BASE && path !== "/" && path !== "/index.html") {
-    // Also allow bare `/` → redirect hint via index when STATIC_BASE set
-    if (path === "/") {
+  if (STATIC_BASE) {
+    if (path === STATIC_BASE || path.startsWith(`${STATIC_BASE}/`)) {
+      path = path.slice(STATIC_BASE.length) || "/";
+    } else if (path === "/" || path === "") {
       res.writeHead(302, { Location: `${STATIC_BASE}/` });
       res.end();
       return true;
+    } else {
+      return false;
     }
   }
-  if (path.endsWith("/")) path += "index.html";
-  const rel = normalize(path).replace(/^(\.\.(\/|\\|$))+/, "");
-  const filePath = join(DIST_DIR, rel);
+  if (path === "/" || path.endsWith("/")) path = `${path.replace(/\/$/, "")}/index.html`;
+  const rel = normalize(path).replace(/^(\.\.(\/|\\|$))+/, "").replace(/^\//, "");
+  const filePath = join(DIST_DIR, rel || "index.html");
   if (!filePath.startsWith(DIST_DIR)) return false;
   if (existsSync(filePath) && statSync(filePath).isFile()) {
     return sendStaticFile(res, filePath);
   }
-  // SPA fallback
+  // SPA fallback for client routes
   const index = join(DIST_DIR, "index.html");
-  if (existsSync(index)) return sendStaticFile(res, index);
+  if (existsSync(index) && !rel.includes(".")) return sendStaticFile(res, index);
   return false;
 }
 
@@ -639,13 +652,6 @@ const httpServer = createServer(async (req, res) => {
   if (url.pathname === "/healthz" || url.pathname === "/api/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: true, uptime: process.uptime() }));
-    return;
-  }
-
-  // Convenience: open the game from the service root
-  if ((url.pathname === "/" || url.pathname === "") && DIST_DIR && STATIC_BASE) {
-    res.writeHead(302, { Location: `${STATIC_BASE}/` });
-    res.end();
     return;
   }
 

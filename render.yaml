@@ -7,7 +7,7 @@ services:
     plan: free
     region: oregon
     buildCommand: npm ci && npm run build
-    startCommand: node server/index.mjs
+    startCommand: npm start
     healthCheckPath: /healthz
     envVars:
       - key: NODE_ENV
@@ -16,5 +16,3 @@ services:
         value: 0.0.0.0
       - key: PORT
         value: 10000
-      - key: STATIC_BASE
-        value: /racer-online
