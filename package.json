@@ -13,7 +13,8 @@
     "start": "node server/index.mjs",
     "start:prod": "node server/index.mjs",
     "start:local": "npm run dev:online",
-    "test:full": "node scripts/full-suite.mjs"
+    "test:full": "node scripts/full-suite.mjs",
+    "test:api-abort": "node scripts/verify-api-abort.mjs"
   },
   "devDependencies": {
     "@types/three": "^0.185.1",
