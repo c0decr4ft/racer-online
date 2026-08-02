@@ -91,6 +91,7 @@ export type ServerMsg =
       winnerName: string;
       timeMs: number;
       trackOptions: string[];
+      voteEndsAt: number;
     }
   | { t: "voteUpdate"; votes: Record<string, number>; received: number; total: number }
   | { t: "voteResult"; trackId: string }

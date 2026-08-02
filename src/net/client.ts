@@ -188,6 +188,7 @@ export type NetHandlers = {
     winnerName: string,
     timeMs: number,
     trackOptions: string[],
+    voteEndsAt: number,
   ) => void;
   onVoteUpdate: (votes: Record<string, number>, received: number, total: number) => void;
   onVoteResult: (trackId: string) => void;
@@ -377,6 +378,7 @@ export class NetClient {
           msg.winnerName,
           msg.timeMs,
           msg.trackOptions,
+          msg.voteEndsAt,
         );
       } else if (msg.t === "voteUpdate") {
         this.handlers.onVoteUpdate(msg.votes, msg.received, msg.total);
