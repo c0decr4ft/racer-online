@@ -78,6 +78,12 @@ const GRID = [
   { offset: 2.6, t: -0.006, skill: 2.35 }, // front — pace setter, still behind SF
 ];
 
+/** Multiplayer start-line lanes (lateral). Rows sit just behind the SF line. */
+const ONLINE_LANE_OFFSETS = [-3.4, -1.15, 1.15, 3.4];
+/** Track-t of the front row — behind start/finish, facing race direction. */
+const ONLINE_START_T = -0.016;
+const ONLINE_ROW_GAP_T = 0.011;
+
 export class Game {
   renderer: THREE.WebGLRenderer;
   scene = new THREE.Scene();
@@ -1249,6 +1255,86 @@ export class Game {
     };
   }
 
+  /** Stable order shared by every client — same grid for everyone. */
+  private sortedOnlineIds(): string[] {
+    const ids = this.lobbyPlayers.map((p) => p.id);
+    if (this.net.id && !ids.includes(this.net.id)) ids.push(this.net.id);
+    return [...new Set(ids)].sort();
+  }
+
+  private onlineGridSlot(index: number): { t: number; offset: number } {
+    const cols = ONLINE_LANE_OFFSETS.length;
+    const col = ((index % cols) + cols) % cols;
+    const row = Math.floor(Math.max(0, index) / cols);
+    return {
+      t: ONLINE_START_T - row * ONLINE_ROW_GAP_T,
+      offset: ONLINE_LANE_OFFSETS[col]!,
+    };
+  }
+
+  /**
+   * Place every racer on the start line in a neat grid (not smashed / not mid-track).
+   * Call on race start and each countdown frame so late pose packets can't drag people away.
+   */
+  private snapOnlineStartingGrid() {
+    if (!this.online || !this.player) return;
+    const ids = this.sortedOnlineIds();
+    const now = performance.now();
+
+    const myIndex = ids.indexOf(this.net.id);
+    if (myIndex >= 0) {
+      const slot = this.onlineGridSlot(myIndex);
+      const { pos, heading } = this.spawnPose(slot.t, slot.offset);
+      this.player.reset(pos, heading);
+      this.player.state.speed = 0;
+      this.player.state.steerAngle = 0;
+      this.player.syncCollision();
+      this.resetSticky(this.player);
+      this.lastT = this.projectSticky(this.player, this.player.state.position).t;
+    }
+
+    for (const [id, remote] of this.remotes) {
+      const idx = ids.indexOf(id);
+      if (idx < 0) continue;
+      const lobby = this.lobbyPlayers.find((p) => p.id === id);
+      const slot = this.onlineGridSlot(idx);
+      const { pos, heading } = this.spawnPose(slot.t, slot.offset);
+      remote.push(
+        {
+          id,
+          name: remote.name,
+          color: lobby?.color ?? 0xe4eaf2,
+          accent: lobby?.accent,
+          kind: this.net.kind === "bike" ? "bike" : "car",
+          x: pos.x,
+          z: pos.z,
+          h: heading,
+          s: 0,
+          g: "1",
+          lap: 1,
+        },
+        now,
+      );
+      // Lock interpolation on the grid pose for this frame
+      remote.push(
+        {
+          id,
+          name: remote.name,
+          color: lobby?.color ?? 0xe4eaf2,
+          accent: lobby?.accent,
+          kind: this.net.kind === "bike" ? "bike" : "car",
+          x: pos.x,
+          z: pos.z,
+          h: heading,
+          s: 0,
+          g: "1",
+          lap: 1,
+        },
+        now + 1,
+      );
+    }
+  }
+
   private disposeVehicleMesh(vehicle: Vehicle | undefined) {
     if (!vehicle) return;
     this.scene.remove(vehicle.mesh);
@@ -1341,16 +1427,16 @@ export class Game {
     this.clearExplode(true);
     this.resetWallHits();
 
-    const slotIndex = this.online ? Math.min(this.remotes.size, 5) : 0;
-    const gridSlot = GRID[0]!;
-    // Offline: player rearmost on GRID. Online: stagger further behind SF.
-    const startT = this.online ? gridSlot.t - slotIndex * 0.008 : gridSlot.t;
-    const offset = this.online ? (slotIndex % 2 === 0 ? -3.2 : 3.2) : gridSlot.offset;
-    const { pos: spawn, heading } = this.spawnPose(startT, offset);
-
-    this.player.reset(spawn, heading);
-    this.resetSticky(this.player);
-    this.lastT = this.projectSticky(this.player, this.player.state.position).t;
+    if (this.online) {
+      // Shared start-line grid for every human (sorted ids → same slots on all clients)
+      this.snapOnlineStartingGrid();
+    } else {
+      const gridSlot = GRID[0]!;
+      const { pos: spawn, heading } = this.spawnPose(gridSlot.t, gridSlot.offset);
+      this.player.reset(spawn, heading);
+      this.resetSticky(this.player);
+      this.lastT = this.projectSticky(this.player, this.player.state.position).t;
+    }
     // Spawned behind SF facing race direction — first armed wrap after a full lap
     this.crossedOnce = true;
     this.gates.reset();
@@ -1542,7 +1628,14 @@ export class Game {
         if (this.countingDown) this.tickCountdown(now);
 
         if (this.gridHeld) {
-          // Frozen on grid through 3-2-1 — HUD/camera only (held throttle launches on GO)
+          // Frozen on grid through 3-2-1 — keep online racers on the start line
+          if (this.online) {
+            this.snapOnlineStartingGrid();
+            // Re-apply mesh after snap (remote.update already ran with stale poses)
+            for (const remote of this.remotes.values()) {
+              remote.update(now, this.camera, this.renderer);
+            }
+          }
           this.updateHud();
           this.updateCamera(dt);
           this.syncAudio(inputPeek, true);

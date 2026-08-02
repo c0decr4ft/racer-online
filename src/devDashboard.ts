@@ -216,10 +216,14 @@ async function refreshDashboard(): Promise<void> {
   const fbSource = document.getElementById("dev-feedback-source");
   if (list instanceof HTMLElement) renderFeedbackList(list, feedback.messages);
   if (fbSource instanceof HTMLElement) {
+    const n = feedback.messages.length;
+    const count = `${n} message${n === 1 ? "" : "s"}`;
     fbSource.textContent =
-      feedback.source === "online"
-        ? `${feedback.messages.length} message${feedback.messages.length === 1 ? "" : "s"} · live`
-        : `${feedback.messages.length} message${feedback.messages.length === 1 ? "" : "s"} · local cache`;
+      feedback.source === "server"
+        ? `${count} · game server`
+        : feedback.source === "online"
+          ? `${count} · live`
+          : `${count} · local cache`;
   }
 }
 

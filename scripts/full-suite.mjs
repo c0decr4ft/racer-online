@@ -135,7 +135,7 @@ async function main() {
   console.log("\n=== RACER ONLINE FULL SUITE ===\n");
 
   // --- API smoke ---
-  for (const path of ["/api/leaderboard", "/api/presence"]) {
+  for (const path of ["/api/leaderboard", "/api/presence", "/api/feedback"]) {
     try {
       const res = await fetch(`http://127.0.0.1:8787${path}`);
       const data = await res.json();
