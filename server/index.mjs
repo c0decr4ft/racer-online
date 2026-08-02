@@ -28,7 +28,11 @@ const PLAYER_COLORS = [0xe4eaf2, 0xe23b2e, 0x2a66f0, 0xf0c020, 0x1dbf6a, 0xb44df
 const DIR = dirname(fileURLToPath(import.meta.url));
 const LEADERBOARD_PATH = join(DIR, "leaderboard.json");
 const PRESENCE_PATH = join(DIR, "presence.json");
+const FEEDBACK_PATH = join(DIR, "feedback.json");
 const MAX_BOARD = 10;
+const MAX_FEEDBACK = 80;
+const FEEDBACK_TEXT_MAX = 500;
+const FEEDBACK_NAME_MAX = 24;
 const NAME_MAX = 10;
 const PRESENCE_STALE_MS = 75_000;
 const PRESENCE_KEEP_HOURS = 14 * 24;
@@ -291,6 +295,75 @@ function savePresence(store) {
   return body;
 }
 
+function sanitizeFeedbackText(raw) {
+  return String(raw ?? "")
+    .normalize("NFKC")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, FEEDBACK_TEXT_MAX);
+}
+
+function sanitizeFeedbackName(raw) {
+  if (raw == null) return undefined;
+  const cleaned = String(raw)
+    .normalize("NFKC")
+    .replace(/[^\p{L}\p{N} _\-.]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, FEEDBACK_NAME_MAX)
+    .trim();
+  return cleaned || undefined;
+}
+
+function normalizeFeedbackMessage(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const text = sanitizeFeedbackText(raw.text);
+  if (!text) return null;
+  const createdAt =
+    typeof raw.createdAt === "number" && Number.isFinite(raw.createdAt)
+      ? Math.round(raw.createdAt)
+      : Date.now();
+  const id = String(raw.id ?? "").trim() || `fb-${Date.now().toString(36)}`;
+  const name = sanitizeFeedbackName(raw.name);
+  return name ? { id, text, createdAt, name } : { id, text, createdAt };
+}
+
+function loadFeedback() {
+  try {
+    if (!existsSync(FEEDBACK_PATH)) return { messages: [] };
+    const raw = JSON.parse(readFileSync(FEEDBACK_PATH, "utf8"));
+    const list = Array.isArray(raw?.messages) ? raw.messages : [];
+    const seen = new Set();
+    const messages = [];
+    for (const row of list) {
+      const msg = normalizeFeedbackMessage(row);
+      if (!msg || seen.has(msg.id)) continue;
+      seen.add(msg.id);
+      messages.push(msg);
+    }
+    messages.sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
+    return { messages: messages.slice(0, MAX_FEEDBACK) };
+  } catch {
+    return { messages: [] };
+  }
+}
+
+/** @param {{ messages: object[] }} store */
+function saveFeedback(store) {
+  const seen = new Set();
+  const messages = [];
+  for (const row of store.messages || []) {
+    const msg = normalizeFeedbackMessage(row);
+    if (!msg || seen.has(msg.id)) continue;
+    seen.add(msg.id);
+    messages.push(msg);
+  }
+  messages.sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
+  const body = { messages: messages.slice(0, MAX_FEEDBACK) };
+  writeFileSync(FEEDBACK_PATH, JSON.stringify(body, null, 2));
+  return body;
+}
+
 /** @param {PresenceStore} store @param {number} [now] */
 function activePresenceCount(store, now = Date.now()) {
   let n = 0;
@@ -513,6 +586,7 @@ function admitClient(ws, msg, mode) {
   const kind = room.kind;
   const id = Math.random().toString(36).slice(2, 10);
   const color = normalizeColor(msg.color, pickColor(room));
+  // Placeholder pose — clients snap everyone to a shared start-line grid on race start.
   const slot = room.clients.size;
   /** @type {Pose} */
   const pose = {
@@ -521,9 +595,9 @@ function admitClient(ws, msg, mode) {
     color,
     accent,
     kind,
-    x: 8 + (slot % 2 === 0 ? -3.2 : 3.2),
-    z: -95 + slot * 2.4,
-    h: -Math.PI / 2,
+    x: (slot % 4) * 2.3 - 3.4,
+    z: -2 - Math.floor(slot / 4) * 3.5,
+    h: 0,
     s: 0,
     g: "1",
     lap: 1,
@@ -642,6 +716,41 @@ const httpServer = createServer(async (req, res) => {
       presence = savePresence(presence);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(presenceSnapshot(presence)));
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "bad json" }));
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/feedback" && req.method === "GET") {
+    const store = loadFeedback();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true, messages: store.messages, source: "server" }));
+    return;
+  }
+
+  if (url.pathname === "/api/feedback" && req.method === "POST") {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    try {
+      const data = JSON.parse(body || "{}");
+      const msg = normalizeFeedbackMessage({
+        id: data.id,
+        text: data.text,
+        createdAt: data.createdAt ?? Date.now(),
+        name: data.name,
+      });
+      if (!msg) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "bad feedback" }));
+        return;
+      }
+      const store = loadFeedback();
+      store.messages = [msg, ...store.messages.filter((m) => m.id !== msg.id)];
+      const saved = saveFeedback(store);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, messages: saved.messages, source: "server" }));
     } catch {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "bad json" }));

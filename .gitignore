@@ -13,6 +13,7 @@ dist-ssr
 *.local
 server/leaderboard.json
 server/presence.json
+server/feedback.json
 
 # Editor directories and files
 .vscode/*

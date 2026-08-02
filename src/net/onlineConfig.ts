@@ -11,6 +11,10 @@ export type OnlineConfig = {
   wsUrl: string | null;
 };
 
+/** Default cloud game server (Render) — used by GitHub Pages and any host without secrets. */
+export const DEFAULT_CLOUD_API = "https://racer-online.onrender.com/api";
+export const DEFAULT_CLOUD_WS = "wss://racer-online.onrender.com";
+
 let loaded: OnlineConfig = { apiBase: null, wsUrl: null };
 
 function envString(key: string): string {
@@ -89,6 +93,19 @@ export async function loadOnlineConfig(): Promise<OnlineConfig> {
     }
   } catch {
     /* offline / missing file — local-dev fallbacks still apply */
+  }
+
+  // Pages / any static host: fall back to the Render game server so board,
+  // presence, feedback, and multiplayer stay online without a local PC.
+  if (!loaded.apiBase && !loaded.wsUrl) {
+    const host = typeof location !== "undefined" ? location.hostname || "" : "";
+    const local = host === "localhost" || host === "127.0.0.1";
+    if (!local) {
+      loaded = {
+        apiBase: normalizeApiBase(DEFAULT_CLOUD_API),
+        wsUrl: normalizeWsUrl(DEFAULT_CLOUD_WS),
+      };
+    }
   }
   return loaded;
 }

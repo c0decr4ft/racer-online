@@ -1,12 +1,9 @@
 /**
- * Append-only player feedback store (JSONBlob), same pattern as the leaderboard.
- *
- * Public blob (read/write):
- *   https://jsonblob.com/api/jsonBlob/019f8e7b-0678-7e10-bbd6-74574f05ea78
- *
- * Shape: { messages: [{ id, text, createdAt, name? }] }
- * Newest-first; capped at MAX_MESSAGES.
+ * Player feedback — prefers the durable Render/game server (`/api/feedback`),
+ * then JSONBlob, then local cache.
  */
+
+import { apiUrl } from "./apiBase";
 
 const PUBLIC_BLOB_URL =
   "https://jsonblob.com/api/jsonBlob/019fbe1c-6eab-7997-bff4-46ce4bfc7d97";
@@ -24,7 +21,7 @@ export type FeedbackMessage = {
 
 export type FeedbackSnapshot = {
   messages: FeedbackMessage[];
-  source: "online" | "local";
+  source: "server" | "online" | "local";
 };
 
 type FeedbackStore = { messages: FeedbackMessage[] };
@@ -88,7 +85,7 @@ function normalizeStore(data: unknown): FeedbackStore {
   return store;
 }
 
-async function fetchStore(): Promise<FeedbackStore> {
+async function fetchBlobStore(): Promise<FeedbackStore> {
   const res = await fetch(PUBLIC_BLOB_URL, {
     cache: "no-store",
     headers: { Accept: "application/json" },
@@ -97,7 +94,7 @@ async function fetchStore(): Promise<FeedbackStore> {
   return normalizeStore(await res.json());
 }
 
-async function putStore(store: FeedbackStore): Promise<FeedbackStore> {
+async function putBlobStore(store: FeedbackStore): Promise<FeedbackStore> {
   const body = normalizeStore(store);
   const res = await fetch(PUBLIC_BLOB_URL, {
     method: "PUT",
@@ -112,6 +109,34 @@ async function putStore(store: FeedbackStore): Promise<FeedbackStore> {
     return normalizeStore(await res.json());
   } catch {
     return body;
+  }
+}
+
+async function fetchServerFeedback(): Promise<FeedbackStore | null> {
+  const url = apiUrl("/feedback");
+  if (!url) return null;
+  try {
+    const res = await fetch(url, { cache: "no-store", headers: { Accept: "application/json" } });
+    if (!res.ok) return null;
+    return normalizeStore(await res.json());
+  } catch {
+    return null;
+  }
+}
+
+async function postServerFeedback(msg: FeedbackMessage): Promise<FeedbackStore | null> {
+  const url = apiUrl("/feedback");
+  if (!url) return null;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(msg),
+    });
+    if (!res.ok) return null;
+    return normalizeStore(await res.json());
+  } catch {
+    return null;
   }
 }
 
@@ -136,8 +161,13 @@ function writeLocal(messages: FeedbackMessage[]) {
 }
 
 export async function fetchFeedback(): Promise<FeedbackSnapshot> {
+  const fromServer = await fetchServerFeedback();
+  if (fromServer) {
+    writeLocal(fromServer.messages);
+    return { messages: fromServer.messages, source: "server" };
+  }
   try {
-    const store = await fetchStore();
+    const store = await fetchBlobStore();
     writeLocal(store.messages);
     return { messages: store.messages, source: "online" };
   } catch {
@@ -145,10 +175,7 @@ export async function fetchFeedback(): Promise<FeedbackSnapshot> {
   }
 }
 
-export async function submitFeedback(
-  text: string,
-  name?: string,
-): Promise<FeedbackSnapshot> {
+export async function submitFeedback(text: string, name?: string): Promise<FeedbackSnapshot> {
   const msg = normalizeMessage({
     id: newId(),
     text,
@@ -159,19 +186,18 @@ export async function submitFeedback(
     return fetchFeedback();
   }
 
+  const fromServer = await postServerFeedback(msg);
+  if (fromServer) {
+    writeLocal(fromServer.messages);
+    // Best-effort mirror to public blob
+    void putBlobStore(fromServer).catch(() => undefined);
+    return { messages: fromServer.messages, source: "server" };
+  }
+
   try {
-    let store = await fetchStore();
+    let store = await fetchBlobStore();
     store.messages = [msg, ...store.messages];
-    store = await putStore(store);
-    try {
-      const latest = await fetchStore();
-      if (!latest.messages.some((m) => m.id === msg.id)) {
-        latest.messages = [msg, ...latest.messages];
-        store = await putStore(latest);
-      }
-    } catch {
-      /* keep first write */
-    }
+    store = await putBlobStore(store);
     writeLocal(store.messages);
     return { messages: store.messages, source: "online" };
   } catch {

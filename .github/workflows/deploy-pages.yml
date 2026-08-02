@@ -33,17 +33,19 @@ jobs:
         run: |
           node -e '
             const fs = require("fs");
+            const DEFAULT_API = "https://racer-online.onrender.com/api";
+            const DEFAULT_WS = "wss://racer-online.onrender.com";
             const body = {
-              apiBase: (process.env.VITE_API_BASE || "").trim(),
-              wsUrl: (process.env.VITE_WS_URL || "").trim(),
+              apiBase: (process.env.VITE_API_BASE || "").trim() || DEFAULT_API,
+              wsUrl: (process.env.VITE_WS_URL || "").trim() || DEFAULT_WS,
             };
             fs.writeFileSync("public/online.json", JSON.stringify(body, null, 2) + "\n");
             console.log("online.json →", body);
           '
       - name: Build
         env:
-          VITE_API_BASE: ${{ secrets.VITE_API_BASE }}
-          VITE_WS_URL: ${{ secrets.VITE_WS_URL }}
+          VITE_API_BASE: ${{ secrets.VITE_API_BASE || 'https://racer-online.onrender.com/api' }}
+          VITE_WS_URL: ${{ secrets.VITE_WS_URL || 'wss://racer-online.onrender.com' }}
         run: npm run build
       - name: Add .nojekyll
         run: touch dist/.nojekyll
