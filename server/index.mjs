@@ -78,7 +78,7 @@ function normalizeSessionId(raw) {
 
 /** @typedef {{ id: string, name: string, color: number, accent: number, kind: string, x: number, z: number, h: number, s: number, g: string, lap: number }} Pose */
 /** @typedef {{ id: string, name: string, color: number, room: string, ws: import('ws').WebSocket, pose: Pose, lastPoseAt: number }} Client */
-/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, hostId: string, phase: 'lobby' | 'racing', clients: Map<string, Client> }} Room */
+/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, hostId: string, phase: 'lobby' | 'racing' | 'finished', winnerId: string, clients: Map<string, Client> }} Room */
 /** @typedef {{ name: string, timeMs: number, bestLapMs?: number, at: number, trackId?: string }} BoardEntry */
 /** @typedef {Record<string, BoardEntry[]>} BoardStore */
 /** @typedef {{ buckets: Record<string, number>, sessions: Record<string, number>, updatedAt: number, historyEpoch: number }} PresenceStore */
@@ -540,6 +540,7 @@ function admitClient(ws, msg, mode) {
       kind: normalizeKind(msg.kind),
       hostId: "",
       phase: "lobby",
+      winnerId: "",
       clients: new Map(),
     };
     rooms.set(roomName, room);
@@ -836,6 +837,7 @@ wss.on("connection", (ws) => {
       if (room.phase === "racing") return;
       if (msg.trackId != null) room.trackId = normalizeTrackId(msg.trackId);
       room.phase = "racing";
+      room.winnerId = "";
       const at = Date.now() + 250;
       broadcast(room, { t: "start", at, trackId: room.trackId, kind: room.kind });
       console.log(`[start] ${room.name} by ${client.name} → ${room.trackId} ${room.kind} (${room.clients.size}p)`);
@@ -863,6 +865,20 @@ wss.on("connection", (ws) => {
       if (Number.isFinite(Number(msg.accent)) && Number(msg.accent) > 0) {
         p.accent = Math.round(Number(msg.accent)) & 0xffffff;
       }
+    }
+
+    if (msg.t === "finish") {
+      if (room.phase !== "racing" || room.winnerId) return;
+      const timeMs = Math.max(1_000, Math.min(3_600_000, Math.round(Number(msg.timeMs) || 0)));
+      room.winnerId = client.id;
+      room.phase = "finished";
+      broadcast(room, {
+        t: "raceResult",
+        winnerId: client.id,
+        winnerName: client.name,
+        timeMs,
+      });
+      console.log(`[finish] ${room.name} won by ${client.name} in ${timeMs}ms`);
     }
   });
 

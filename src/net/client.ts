@@ -28,6 +28,10 @@ export class RemotePlayer {
   private scene: THREE.Scene;
   private color: number;
   private accent: number;
+  private readonly labelPoint = new THREE.Vector3();
+  private lastVisualAt = 0;
+  private lastLabelTransform = "";
+  private labelVisible = true;
 
   constructor(pose: PlayerPose, scene: THREE.Scene, labelRoot: HTMLElement) {
     this.id = pose.id;
@@ -69,8 +73,10 @@ export class RemotePlayer {
   }
 
   push(pose: PlayerPose, at = performance.now()) {
-    this.name = pose.name;
-    this.label.textContent = pose.name;
+    if (pose.name !== this.name) {
+      this.name = pose.name;
+      this.label.textContent = pose.name;
+    }
     const nextKind = poseKind(pose);
     const nextColor = pose.color ?? this.color;
     const nextAccent = pose.accent ?? this.accent;
@@ -81,41 +87,65 @@ export class RemotePlayer {
     this.to = { at, pose: { ...pose } };
   }
 
-  /** Interpolate between last two snapshots for smooth 60fps motion. */
-  update(now: number, camera: THREE.Camera, renderer: THREE.WebGLRenderer) {
+  /** Immediately place a remote (used once for the synchronized starting grid). */
+  snap(pose: PlayerPose, at = performance.now()) {
+    this.from = { at, pose: { ...pose } };
+    this.to = { at, pose: { ...pose } };
+    this.mesh.position.set(pose.x, 0, pose.z);
+    this.mesh.rotation.y = pose.h;
+    this.lastVisualAt = at;
+  }
+
+  /** Smooth toward a short prediction of the latest 20Hz network snapshot. */
+  update(now: number, camera: THREE.Camera, viewportWidth: number, viewportHeight: number) {
     if (!this.to) return;
     const prev = this.from ?? this.to;
     const next = this.to;
     const span = Math.max(NET_TICK_MS, next.at - prev.at);
-    // Render slightly in the past for smoother interp
-    const renderAt = now - NET_TICK_MS * 1.25;
-    let t = (renderAt - prev.at) / span;
-    t = Math.min(1.25, Math.max(0, t));
-
     const a = prev.pose;
     const b = next.pose;
-    const x = a.x + (b.x - a.x) * Math.min(1, t);
-    const z = a.z + (b.z - a.z) * Math.min(1, t);
+    // Continue the latest measured movement briefly instead of freezing between packets.
+    const predict = Math.min(1.25, Math.max(0, (now - next.at) / span));
+    const targetX = b.x + (b.x - a.x) * predict;
+    const targetZ = b.z + (b.z - a.z) * predict;
     let dh = b.h - a.h;
     while (dh > Math.PI) dh -= Math.PI * 2;
     while (dh < -Math.PI) dh += Math.PI * 2;
-    const h = a.h + dh * Math.min(1, t);
+    const targetH = b.h + dh * predict;
 
-    this.mesh.position.set(x, 0, z);
-    this.mesh.rotation.order = "YXZ";
-    this.mesh.rotation.y = h;
-    this.mesh.rotation.z = 0;
-    this.mesh.rotation.x = 0;
+    const visualDt = this.lastVisualAt > 0 ? Math.min(0.1, (now - this.lastVisualAt) / 1000) : 0.05;
+    this.lastVisualAt = now;
+    const alpha = 1 - Math.exp(-visualDt / 0.035);
+    const farAway = this.mesh.position.distanceToSquared(this.labelPoint.set(targetX, 0, targetZ)) > 144;
+    if (farAway) {
+      this.mesh.position.set(targetX, 0, targetZ);
+      this.mesh.rotation.y = targetH;
+    } else {
+      this.mesh.position.x += (targetX - this.mesh.position.x) * alpha;
+      this.mesh.position.z += (targetZ - this.mesh.position.z) * alpha;
+      let visualDh = targetH - this.mesh.rotation.y;
+      while (visualDh > Math.PI) visualDh -= Math.PI * 2;
+      while (visualDh < -Math.PI) visualDh += Math.PI * 2;
+      this.mesh.rotation.y += visualDh * alpha;
+    }
 
     // Project name tag
-    const v = new THREE.Vector3(x, 2.2, z).project(camera);
-    const w = renderer.domElement.clientWidth;
-    const ht = renderer.domElement.clientHeight;
+    const v = this.labelPoint.set(this.mesh.position.x, 2.2, this.mesh.position.z).project(camera);
     if (v.z > 1) {
-      this.label.style.display = "none";
+      if (this.labelVisible) {
+        this.label.style.display = "none";
+        this.labelVisible = false;
+      }
     } else {
-      this.label.style.display = "block";
-      this.label.style.transform = `translate(-50%, -100%) translate(${(v.x * 0.5 + 0.5) * w}px, ${(-v.y * 0.5 + 0.5) * ht}px)`;
+      if (!this.labelVisible) {
+        this.label.style.display = "block";
+        this.labelVisible = true;
+      }
+      const transform = `translate(-50%, -100%) translate(${Math.round((v.x * 0.5 + 0.5) * viewportWidth)}px, ${Math.round((-v.y * 0.5 + 0.5) * viewportHeight)}px)`;
+      if (transform !== this.lastLabelTransform) {
+        this.label.style.transform = transform;
+        this.lastLabelTransform = transform;
+      }
     }
   }
 
@@ -150,6 +180,7 @@ export type NetHandlers = {
     maxPlayers: number;
   }) => void;
   onStart: (at: number, trackId: string, kind: NetVehicleKind) => void;
+  onRaceResult: (winnerId: string, winnerName: string, timeMs: number) => void;
   onState: (players: PlayerPose[]) => void;
   onError: (message: string) => void;
   onStatus: (text: string) => void;
@@ -186,6 +217,7 @@ export class NetClient {
   phase: LobbyPhase | "" = "";
   /** Bumps on each connect/disconnect so stale socket handlers are ignored. */
   private connGen = 0;
+  private finishSent = false;
 
   constructor(handlers: NetHandlers) {
     this.handlers = handlers;
@@ -324,9 +356,13 @@ export class NetClient {
         this.handlers.onLobby(msg);
       } else if (msg.t === "start") {
         this.phase = "racing";
+        this.finishSent = false;
         this.trackId = msg.trackId;
         this.kind = msg.kind === "bike" ? "bike" : "car";
         this.handlers.onStart(msg.at, msg.trackId, this.kind);
+      } else if (msg.t === "raceResult") {
+        this.phase = "finished";
+        this.handlers.onRaceResult(msg.winnerId, msg.winnerName, msg.timeMs);
       } else if (msg.t === "state") {
         this.handlers.onState(msg.players);
       } else if (msg.t === "pong") {
@@ -389,6 +425,7 @@ export class NetClient {
     this.kind = "car";
     this.maxPlayers = 8;
     this.phase = "";
+    this.finishSent = false;
     this.pending = null;
     try {
       ws?.close();
@@ -411,6 +448,27 @@ export class NetClient {
     this.ws.send(JSON.stringify({ t: "start" }));
   }
 
+  /** Report a local finish once; the server decides and broadcasts the winner. */
+  reportFinish(timeMs: number, bestLapMs: number) {
+    if (
+      this.finishSent ||
+      !this.ws ||
+      this.ws.readyState !== WebSocket.OPEN ||
+      !this.myId ||
+      this.phase !== "racing"
+    ) {
+      return;
+    }
+    this.finishSent = true;
+    this.ws.send(
+      JSON.stringify({
+        t: "finish",
+        timeMs: Math.max(0, Math.round(timeMs)),
+        bestLapMs: Number.isFinite(bestLapMs) ? Math.max(0, Math.round(bestLapMs)) : 0,
+      }),
+    );
+  }
+
   /** Call from render loop; only sends at ~20Hz during a live race. */
   maybeSendPose(
     dt: number,
@@ -421,9 +479,6 @@ export class NetClient {
       s: number;
       g: string;
       lap: number;
-      kind?: NetVehicleKind;
-      color?: number;
-      accent?: number;
     },
   ) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.myId) return;
@@ -440,9 +495,6 @@ export class NetClient {
         s: +pose.s.toFixed(3),
         g: pose.g,
         lap: pose.lap,
-        kind: pose.kind,
-        color: pose.color,
-        accent: pose.accent,
       }),
     );
   }

@@ -6,7 +6,7 @@ export const MAX_PLAYERS = 8;
 export const MIN_PLAYERS = 2;
 
 export type NetVehicleKind = "car" | "bike";
-export type LobbyPhase = "lobby" | "racing";
+export type LobbyPhase = "lobby" | "racing" | "finished";
 
 export type PlayerPose = {
   id: string;
@@ -54,6 +54,7 @@ export type ClientMsg =
       color?: number;
       accent?: number;
     }
+  | { t: "finish"; timeMs: number; bestLapMs: number }
   | { t: "start" }
   | { t: "ready" }
   | { t: "ping"; n: number };
@@ -84,6 +85,7 @@ export type ServerMsg =
     }
   | { t: "state"; players: PlayerPose[]; serverTime: number }
   | { t: "start"; at: number; trackId: string; kind: NetVehicleKind }
+  | { t: "raceResult"; winnerId: string; winnerName: string; timeMs: number }
   | { t: "pong"; n: number; serverTime: number }
   | { t: "error"; message: string };
 
