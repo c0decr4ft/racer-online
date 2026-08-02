@@ -40,6 +40,29 @@ export function configuredWsUrl(): string | null {
   return fromEnv || loaded.wsUrl;
 }
 
+/** True for static GitHub Pages hosts that cannot run the WebSocket server. */
+export function isGitHubPagesHost(): boolean {
+  if (typeof location === "undefined") return false;
+  return /\.github\.io$/i.test(location.hostname || "");
+}
+
+/**
+ * When the game is served from the same Node process as the API/WS (Render, Fly, VPS),
+ * use this host for `/api` and `wss://…` without needing secrets.
+ */
+export function sameOriginOnline(): OnlineConfig | null {
+  if (typeof location === "undefined") return null;
+  const host = location.hostname || "";
+  if (!host || host === "localhost" || host === "127.0.0.1") return null;
+  if (isGitHubPagesHost()) return null;
+  const http = location.protocol === "https:" ? "https:" : "http:";
+  const ws = location.protocol === "https:" ? "wss:" : "ws:";
+  return {
+    apiBase: `${http}//${location.host}/api`,
+    wsUrl: `${ws}//${location.host}`,
+  };
+}
+
 /**
  * Load optional `online.json` from the site root (Vite `base` aware).
  * Safe to call once at boot before constructing `Game`.

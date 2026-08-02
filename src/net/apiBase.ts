@@ -7,7 +7,7 @@
  * 3. Direct local game server :8787/api
  */
 
-import { configuredApiBase } from "./onlineConfig";
+import { configuredApiBase, sameOriginOnline } from "./onlineConfig";
 
 export function apiBase(): string | null {
   const configured = configuredApiBase();
@@ -21,7 +21,9 @@ export function apiBase(): string | null {
     }
     return `http://${host || "127.0.0.1"}:8787/api`;
   }
-  return null;
+
+  // Render / Fly / any host that serves API + game together
+  return sameOriginOnline()?.apiBase ?? null;
 }
 
 /** Build a full URL for an API path like `/leaderboard` or `/api/presence`. */

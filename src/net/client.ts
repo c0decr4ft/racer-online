@@ -8,7 +8,7 @@ import {
   type PlayerPose,
   type ServerMsg,
 } from "./protocol";
-import { configuredApiBase, configuredWsUrl } from "./onlineConfig";
+import { configuredApiBase, configuredWsUrl, sameOriginOnline } from "./onlineConfig";
 
 type Snapshot = { at: number; pose: PlayerPose };
 
@@ -213,7 +213,7 @@ export class NetClient {
     const hosted = configuredWsUrl();
     // Derive WS from API host when only apiBase is configured (Pages → cloud server).
     let fromApi: string | null = null;
-    const api = configuredApiBase();
+    const api = configuredApiBase() || sameOriginOnline()?.apiBase || null;
     if (!hosted && api) {
       try {
         const u = new URL(api, location.href);
@@ -222,7 +222,8 @@ export class NetClient {
         fromApi = null;
       }
     }
-    const url = hosted || fromApi || direct || proxied;
+    const sameOrigin = sameOriginOnline()?.wsUrl ?? null;
+    const url = hosted || fromApi || sameOrigin || direct || proxied;
     if (!url) {
       this.handlers.onStatus("Online server not configured — multiplayer needs a hosted game server");
       this.handlers.onError("Online server not configured");
