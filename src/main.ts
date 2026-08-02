@@ -1,5 +1,4 @@
 import "./style.css";
-import { initDevDashboard } from "./devDashboard";
 import { initFeedbackCompose } from "./feedbackCompose";
 import { Game } from "./game";
 import { loadOnlineConfig, configuredApiBase, configuredWsUrl } from "./net/onlineConfig";
@@ -15,7 +14,6 @@ if (!(canvas instanceof HTMLCanvasElement)) {
 await loadOnlineConfig();
 
 initVersionSwitcher();
-initDevDashboard();
 initFeedbackCompose();
 startPresenceHeartbeat();
 

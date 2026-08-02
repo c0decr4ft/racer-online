@@ -30,7 +30,8 @@ export class RemotePlayer {
   private accent: number;
   private readonly labelPoint = new THREE.Vector3();
   private lastVisualAt = 0;
-  private lastLabelTransform = "";
+  private labelX = Number.NaN;
+  private labelY = Number.NaN;
   private labelVisible = true;
 
   constructor(pose: PlayerPose, scene: THREE.Scene, labelRoot: HTMLElement) {
@@ -141,10 +142,12 @@ export class RemotePlayer {
         this.label.style.display = "block";
         this.labelVisible = true;
       }
-      const transform = `translate(-50%, -100%) translate(${Math.round((v.x * 0.5 + 0.5) * viewportWidth)}px, ${Math.round((-v.y * 0.5 + 0.5) * viewportHeight)}px)`;
-      if (transform !== this.lastLabelTransform) {
-        this.label.style.transform = transform;
-        this.lastLabelTransform = transform;
+      const x = Math.round((v.x * 0.5 + 0.5) * viewportWidth);
+      const y = Math.round((-v.y * 0.5 + 0.5) * viewportHeight);
+      if (x !== this.labelX || y !== this.labelY) {
+        this.label.style.transform = `translate(-50%, -100%) translate(${x}px, ${y}px)`;
+        this.labelX = x;
+        this.labelY = y;
       }
     }
   }
@@ -180,7 +183,14 @@ export type NetHandlers = {
     maxPlayers: number;
   }) => void;
   onStart: (at: number, trackId: string, kind: NetVehicleKind) => void;
-  onRaceResult: (winnerId: string, winnerName: string, timeMs: number) => void;
+  onRaceResult: (
+    winnerId: string,
+    winnerName: string,
+    timeMs: number,
+    trackOptions: string[],
+  ) => void;
+  onVoteUpdate: (votes: Record<string, number>, received: number, total: number) => void;
+  onVoteResult: (trackId: string) => void;
   onState: (players: PlayerPose[]) => void;
   onError: (message: string) => void;
   onStatus: (text: string) => void;
@@ -362,7 +372,17 @@ export class NetClient {
         this.handlers.onStart(msg.at, msg.trackId, this.kind);
       } else if (msg.t === "raceResult") {
         this.phase = "finished";
-        this.handlers.onRaceResult(msg.winnerId, msg.winnerName, msg.timeMs);
+        this.handlers.onRaceResult(
+          msg.winnerId,
+          msg.winnerName,
+          msg.timeMs,
+          msg.trackOptions,
+        );
+      } else if (msg.t === "voteUpdate") {
+        this.handlers.onVoteUpdate(msg.votes, msg.received, msg.total);
+      } else if (msg.t === "voteResult") {
+        this.phase = "starting";
+        this.handlers.onVoteResult(msg.trackId);
       } else if (msg.t === "state") {
         this.handlers.onState(msg.players);
       } else if (msg.t === "pong") {
@@ -467,6 +487,11 @@ export class NetClient {
         bestLapMs: Number.isFinite(bestLapMs) ? Math.max(0, Math.round(bestLapMs)) : 0,
       }),
     );
+  }
+
+  voteForTrack(trackId: string) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.phase !== "finished") return;
+    this.ws.send(JSON.stringify({ t: "vote", trackId }));
   }
 
   /** Call from render loop; only sends at ~20Hz during a live race. */

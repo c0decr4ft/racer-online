@@ -380,6 +380,11 @@ export async function fetchLeaderboard(
 
   // Durable game server first, then public blob, then local cache.
   const fromServer = await fetchLocalServerStore();
+  if (fromServer) {
+    const merged = mergeBoardStores(local, fromServer);
+    cacheStoreLocally(merged);
+    return { entries: entriesFor(merged, tid), source: "server" };
+  }
 
   let fromPublic: BoardStore | null = null;
   try {
@@ -388,13 +393,8 @@ export async function fetchLeaderboard(
     fromPublic = null;
   }
 
-  // Merge every source so an empty server never hides / wipes worldwide scores.
-  const merged = mergeBoardStores(local, fromServer ?? emptyStore(), fromPublic ?? emptyStore());
+  const merged = mergeBoardStores(local, fromPublic ?? emptyStore());
   cacheStoreLocally(merged);
-
-  if (fromServer) {
-    return { entries: entriesFor(merged, tid), source: "server" };
-  }
 
   if (fromPublic) {
     // Heal a wiped/empty remote from local or server scores when we have more.

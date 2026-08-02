@@ -1,5 +1,24 @@
 export type Gear = "R" | "N" | 1 | 2 | 3 | 4 | 5;
 
+const GEAR_BY_KEY: Readonly<Record<string, Gear>> = {
+  Digit0: "N",
+  Numpad0: "N",
+  KeyN: "N",
+  Digit1: 1,
+  Numpad1: 1,
+  Digit2: 2,
+  Numpad2: 2,
+  Digit3: 3,
+  Numpad3: 3,
+  Digit4: 4,
+  Numpad4: 4,
+  Digit5: 5,
+  Numpad5: 5,
+  KeyR: "R",
+};
+const DRIVE_KEYS = ["KeyW", "KeyA", "KeyS", "KeyD", "ArrowLeft", "ArrowRight", "Space"] as const;
+const BLOCKED_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"]);
+
 /** True when focus is in a text field — don't steal keys for driving/gears. */
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -57,33 +76,16 @@ export class Input {
         e.preventDefault();
       }
 
-      const gearMap: Record<string, Gear> = {
-        Digit0: "N",
-        Numpad0: "N",
-        KeyN: "N",
-        Digit1: 1,
-        Numpad1: 1,
-        Digit2: 2,
-        Numpad2: 2,
-        Digit3: 3,
-        Numpad3: 3,
-        Digit4: 4,
-        Numpad4: 4,
-        Digit5: 5,
-        Numpad5: 5,
-        KeyR: "R",
-      };
-      if (e.code in gearMap) {
-        this.gearPress = gearMap[e.code];
+      const gear = GEAR_BY_KEY[e.code];
+      if (gear !== undefined) {
+        this.gearPress = gear;
         e.preventDefault();
       }
 
       if (e.code === "ArrowUp" && !e.repeat) this.shiftPress = 1;
       if (e.code === "ArrowDown" && !e.repeat) this.shiftPress = -1;
 
-      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(e.code)) {
-        e.preventDefault();
-      }
+      if (BLOCKED_KEYS.has(e.code)) e.preventDefault();
     });
     window.addEventListener("keyup", (e) => {
       if (isTypingTarget(e.target)) return;
@@ -93,9 +95,7 @@ export class Input {
 
   /** Clear held drive keys so resume doesn't surge. */
   clearDriveKeys() {
-    for (const code of ["KeyW", "KeyA", "KeyS", "KeyD", "ArrowLeft", "ArrowRight", "Space"]) {
-      this.keys.delete(code);
-    }
+    for (const code of DRIVE_KEYS) this.keys.delete(code);
     this.clearTouchDrive();
   }
 

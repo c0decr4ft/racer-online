@@ -212,6 +212,37 @@ async function main() {
         a?.winnerId === host.last?.id && b?.winnerId === host.last?.id,
         `host=${a?.winnerName || "none"} guest=${b?.winnerName || "none"}`,
       );
+      const options = Array.isArray(a?.trackOptions) ? a.trackOptions : [];
+      assert(
+        "ws:vote-five-other-tracks",
+        options.length === 5 && !options.includes("harbor-circuit"),
+        JSON.stringify(options),
+      );
+      if (options.length >= 2) {
+        const hostVoteResult = waitForWsEvent(host.ws, "voteResult");
+        const guestVoteResult = waitForWsEvent(guest.ws, "voteResult");
+        const hostNextStart = waitForWsEvent(host.ws, "start", 4000);
+        const guestNextStart = waitForWsEvent(guest.ws, "start", 4000);
+        host.ws.send(JSON.stringify({ t: "vote", trackId: options[0] }));
+        await new Promise((r) => setTimeout(r, 30));
+        guest.ws.send(JSON.stringify({ t: "vote", trackId: options[1] }));
+        const [hostChoice, guestChoice, hostStart, guestStart] = await Promise.all([
+          hostVoteResult,
+          guestVoteResult,
+          hostNextStart,
+          guestNextStart,
+        ]);
+        assert(
+          "ws:vote-tie-first-vote-wins",
+          hostChoice?.trackId === options[0] && guestChoice?.trackId === options[0],
+          `selected=${hostChoice?.trackId || "none"} first=${options[0]}`,
+        );
+        assert(
+          "ws:voted-next-round-starts",
+          hostStart?.trackId === options[0] && guestStart?.trackId === options[0],
+          `host=${hostStart?.trackId || "none"} guest=${guestStart?.trackId || "none"}`,
+        );
+      }
     }
     try {
       host.ws.close();
@@ -486,6 +517,28 @@ async function main() {
   );
   await measureFps(page, "mp-race-host", 2000);
   await measureFps(page2, "mp-race-guest", 2000);
+
+  // Server-announced finish opens five-map voting on every client.
+  await page.evaluate(() => window.__game?.net?.reportFinish?.(65432, 21000));
+  await page.waitForTimeout(400);
+  assert("mp:vote-host-visible", await visible(page, "#mp-map-vote"));
+  assert("mp:vote-guest-visible", await visible(page2, "#mp-map-vote"));
+  assert(
+    "mp:vote-five-options",
+    (await page.locator("#mp-map-vote-grid .mp-vote-option").count()) === 5,
+  );
+  await page.keyboard.press("Digit1");
+  await page.waitForTimeout(40);
+  await page2.keyboard.press("Digit2");
+  await page.waitForTimeout(2400);
+  assert(
+    "mp:voted-round-host-running",
+    await page.evaluate(() => window.__game?.running && !window.__game?.finished),
+  );
+  assert(
+    "mp:voted-round-guest-running",
+    await page2.evaluate(() => window.__game?.running && !window.__game?.finished),
+  );
 
   await page.keyboard.press("Escape");
   await page.waitForTimeout(150);

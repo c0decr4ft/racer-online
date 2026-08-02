@@ -78,7 +78,8 @@ function normalizeSessionId(raw) {
 
 /** @typedef {{ id: string, name: string, color: number, accent: number, kind: string, x: number, z: number, h: number, s: number, g: string, lap: number }} Pose */
 /** @typedef {{ id: string, name: string, color: number, room: string, ws: import('ws').WebSocket, pose: Pose, lastPoseAt: number }} Client */
-/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, hostId: string, phase: 'lobby' | 'racing' | 'finished', winnerId: string, clients: Map<string, Client> }} Room */
+/** @typedef {{ trackId: string, order: number }} TrackVote */
+/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, clients: Map<string, Client> }} Room */
 /** @typedef {{ name: string, timeMs: number, bestLapMs?: number, at: number, trackId?: string }} BoardEntry */
 /** @typedef {Record<string, BoardEntry[]>} BoardStore */
 /** @typedef {{ buckets: Record<string, number>, sessions: Record<string, number>, updatedAt: number, historyEpoch: number }} PresenceStore */
@@ -489,6 +490,76 @@ function broadcast(room, msg, except) {
   }
 }
 
+function shuffledNextTracks(currentTrackId) {
+  const options = TRACK_IDS.filter((id) => id !== currentTrackId);
+  for (let i = options.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [options[i], options[j]] = [options[j], options[i]];
+  }
+  return options;
+}
+
+/** @param {Room} room */
+function broadcastVoteState(room) {
+  const votes = Object.fromEntries(room.voteOptions.map((id) => [id, 0]));
+  for (const vote of room.votes.values()) {
+    if (vote.trackId in votes) votes[vote.trackId] += 1;
+  }
+  broadcast(room, {
+    t: "voteUpdate",
+    votes,
+    received: room.votes.size,
+    total: room.clients.size,
+  });
+}
+
+/** Select highest votes; equal counts go to the map that received its first vote first. */
+function resolveMapVote(room) {
+  if (room.phase !== "finished" || room.clients.size === 0 || room.votes.size < room.clients.size) {
+    return;
+  }
+  const ranked = room.voteOptions.map((trackId, optionIndex) => {
+    let count = 0;
+    let firstOrder = Infinity;
+    for (const vote of room.votes.values()) {
+      if (vote.trackId !== trackId) continue;
+      count += 1;
+      firstOrder = Math.min(firstOrder, vote.order);
+    }
+    return { trackId, count, firstOrder, optionIndex };
+  });
+  ranked.sort(
+    (a, b) =>
+      b.count - a.count ||
+      a.firstOrder - b.firstOrder ||
+      a.optionIndex - b.optionIndex,
+  );
+  const selected = ranked[0]?.trackId;
+  if (!selected) return;
+
+  room.phase = "starting";
+  room.trackId = selected;
+  broadcast(room, { t: "voteResult", trackId: selected });
+
+  setTimeout(() => {
+    if (rooms.get(room.name) !== room || room.phase !== "starting") return;
+    room.phase = "racing";
+    room.winnerId = "";
+    room.voteOptions = [];
+    room.votes.clear();
+    room.voteOrder = 0;
+    for (const client of room.clients.values()) {
+      client.pose.s = 0;
+      client.pose.g = "1";
+      client.pose.lap = 1;
+      client.lastPoseAt = 0;
+    }
+    const at = Date.now() + 250;
+    broadcast(room, { t: "start", at, trackId: room.trackId, kind: room.kind });
+    console.log(`[next] ${room.name} → ${room.trackId} (${room.clients.size}p)`);
+  }, 1800);
+}
+
 /** @param {Room} room */
 function pickColor(room) {
   const used = new Set([...room.clients.values()].map((c) => c.color));
@@ -541,6 +612,9 @@ function admitClient(ws, msg, mode) {
       hostId: "",
       phase: "lobby",
       winnerId: "",
+      voteOptions: [],
+      votes: new Map(),
+      voteOrder: 0,
       clients: new Map(),
     };
     rooms.set(roomName, room);
@@ -554,7 +628,7 @@ function admitClient(ws, msg, mode) {
       }
       return null;
     }
-    if (room.phase === "racing") {
+    if (room.phase !== "lobby") {
       send(ws, { t: "error", message: "race already started" });
       try {
         ws.close();
@@ -808,7 +882,7 @@ wss.on("connection", (ws) => {
     }
 
     if (msg.t === "ping") {
-      send(ws, { t: "pong", n: msg.n, serverTime: Date.now() });
+      send(ws, { t: "pong", n: msg.n });
       return;
     }
 
@@ -834,10 +908,13 @@ wss.on("connection", (ws) => {
         send(ws, { t: "error", message: "only the host can start" });
         return;
       }
-      if (room.phase === "racing") return;
+      if (room.phase !== "lobby") return;
       if (msg.trackId != null) room.trackId = normalizeTrackId(msg.trackId);
       room.phase = "racing";
       room.winnerId = "";
+      room.voteOptions = [];
+      room.votes.clear();
+      room.voteOrder = 0;
       const at = Date.now() + 250;
       broadcast(room, { t: "start", at, trackId: room.trackId, kind: room.kind });
       console.log(`[start] ${room.name} by ${client.name} → ${room.trackId} ${room.kind} (${room.clients.size}p)`);
@@ -872,13 +949,28 @@ wss.on("connection", (ws) => {
       const timeMs = Math.max(1_000, Math.min(3_600_000, Math.round(Number(msg.timeMs) || 0)));
       room.winnerId = client.id;
       room.phase = "finished";
+      room.voteOptions = shuffledNextTracks(room.trackId);
+      room.votes.clear();
+      room.voteOrder = 0;
       broadcast(room, {
         t: "raceResult",
         winnerId: client.id,
         winnerName: client.name,
         timeMs,
+        trackOptions: room.voteOptions,
       });
       console.log(`[finish] ${room.name} won by ${client.name} in ${timeMs}ms`);
+      broadcastVoteState(room);
+      return;
+    }
+
+    if (msg.t === "vote") {
+      if (room.phase !== "finished" || room.votes.has(client.id)) return;
+      const trackId = String(msg.trackId || "");
+      if (!room.voteOptions.includes(trackId)) return;
+      room.votes.set(client.id, { trackId, order: ++room.voteOrder });
+      broadcastVoteState(room);
+      resolveMapVote(room);
     }
   });
 
@@ -890,6 +982,7 @@ wss.on("connection", (ws) => {
       return;
     }
     room.clients.delete(client.id);
+    room.votes.delete(client.id);
     console.log(`[leave] ${client.name}`);
     if (room.clients.size === 0) {
       rooms.delete(client.room);
@@ -900,17 +993,20 @@ wss.on("connection", (ws) => {
       broadcast(room, { t: "leave", id: client.id, hostId: room.hostId });
       broadcast(room, { t: "notice", text: `${client.name} left` });
       if (room.phase === "lobby") broadcast(room, lobbySnapshot(room));
+      if (room.phase === "finished") {
+        broadcastVoteState(room);
+        resolveMapVote(room);
+      }
     }
     client = null;
   });
 });
 
 setInterval(() => {
-  const serverTime = Date.now();
   for (const room of rooms.values()) {
     if (room.phase !== "racing" || room.clients.size === 0) continue;
     const players = roomPlayers(room);
-    const raw = JSON.stringify({ t: "state", players, serverTime });
+    const raw = JSON.stringify({ t: "state", players });
     for (const c of room.clients.values()) {
       if (c.ws.readyState === 1) c.ws.send(raw);
     }

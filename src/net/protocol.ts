@@ -6,7 +6,7 @@ export const MAX_PLAYERS = 8;
 export const MIN_PLAYERS = 2;
 
 export type NetVehicleKind = "car" | "bike";
-export type LobbyPhase = "lobby" | "racing" | "finished";
+export type LobbyPhase = "lobby" | "racing" | "finished" | "starting";
 
 export type PlayerPose = {
   id: string;
@@ -55,8 +55,8 @@ export type ClientMsg =
       accent?: number;
     }
   | { t: "finish"; timeMs: number; bestLapMs: number }
+  | { t: "vote"; trackId: string }
   | { t: "start" }
-  | { t: "ready" }
   | { t: "ping"; n: number };
 
 export type ServerMsg =
@@ -83,10 +83,18 @@ export type ServerMsg =
       hostId: string;
       maxPlayers: number;
     }
-  | { t: "state"; players: PlayerPose[]; serverTime: number }
+  | { t: "state"; players: PlayerPose[] }
   | { t: "start"; at: number; trackId: string; kind: NetVehicleKind }
-  | { t: "raceResult"; winnerId: string; winnerName: string; timeMs: number }
-  | { t: "pong"; n: number; serverTime: number }
+  | {
+      t: "raceResult";
+      winnerId: string;
+      winnerName: string;
+      timeMs: number;
+      trackOptions: string[];
+    }
+  | { t: "voteUpdate"; votes: Record<string, number>; received: number; total: number }
+  | { t: "voteResult"; trackId: string }
+  | { t: "pong"; n: number }
   | { t: "error"; message: string };
 
 export const PLAYER_COLORS = [0xe4eaf2, 0xe23b2e, 0x2a66f0, 0xf0c020, 0x1dbf6a, 0xb44dff, 0xff6b9d, 0x00d4ff];

@@ -116,6 +116,7 @@ export class Game {
   solo = false;
   online = false;
   private remotes = new Map<string, RemotePlayer>();
+  private readonly seenRemoteIds = new Set<string>();
   private net: NetClient;
   private pingTimer = 0;
   private labelRoot = document.getElementById("player-tags")!;
@@ -140,8 +141,8 @@ export class Game {
   private pauseTotal = 0;
   private pauseBegan = 0;
   private lastFrame = performance.now();
-  private lastOnlineHudAt = 0;
-  private lastOnlineShadowAt = 0;
+  private lastHudAt = 0;
+  private lastShadowAt = 0;
   private camPos = new THREE.Vector3();
   private camLook = new THREE.Vector3();
   /** Last known track-t per vehicle/remote — keeps projection sticky so it
@@ -163,6 +164,10 @@ export class Game {
     finishEyebrow: document.getElementById("finish-eyebrow")!,
     finishTitle: document.getElementById("finish-title")!,
     finalPlace: document.getElementById("final-place")!,
+    mpMapVote: document.getElementById("mp-map-vote")!,
+    mpMapVoteGrid: document.getElementById("mp-map-vote-grid")!,
+    mpMapVoteStatus: document.getElementById("mp-map-vote-status")!,
+    restartBtn: document.getElementById("restart-btn") as HTMLButtonElement,
     position: document.getElementById("position"),
     netStatus: document.getElementById("net-status")!,
     wrongWay: document.getElementById("wrong-way")!,
@@ -210,6 +215,8 @@ export class Game {
   };
 
   private pendingFinishMs = 0;
+  private mapVoteOptions: string[] = [];
+  private mapVoteTrackId = "";
   private scoreSaveInFlight = false;
   private bestFlashUntil = 0;
   /** Ignore stale async board fetches when switching maps quickly. */
@@ -246,6 +253,7 @@ export class Game {
   private readonly _camIdeal = new THREE.Vector3();
   private readonly _camLookTarget = new THREE.Vector3();
   private readonly _wallN = new THREE.Vector3();
+  private readonly _lapTangent = new THREE.Vector3();
   private readonly _explodeGeo = new THREE.BoxGeometry(0.28, 0.28, 0.28);
   /** Reused pack list for AI update + local collisions (no per-frame alloc). */
   private readonly _pack: Vehicle[] = [];
@@ -254,6 +262,7 @@ export class Game {
     (c) => `#${c.toString(16).padStart(6, "0")}`,
   );
   private _rearAspect = 0;
+  private viewport = viewportSize();
 
   constructor(canvas: HTMLCanvasElement) {
     // Cap DPR for stable FPS on retina displays
@@ -263,7 +272,7 @@ export class Game {
       powerPreference: "default",
     });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.25));
-    const boot = viewportSize();
+    const boot = this.viewport;
     this.renderer.setSize(boot.w, boot.h);
     this.renderer.setClearColor(0x87a0bc, 1);
     this.renderer.shadowMap.enabled = true;
@@ -305,8 +314,16 @@ export class Game {
         this.renderLobby();
       },
       onStart: (_at, trackId, kind) => this.beginOnlineRace(trackId, kind),
-      onRaceResult: (winnerId, winnerName, timeMs) =>
-        this.finishRace({ winnerId, winnerName, officialTimeMs: timeMs }),
+      onRaceResult: (winnerId, winnerName, timeMs, trackOptions) =>
+        this.finishRace({
+          winnerId,
+          winnerName,
+          officialTimeMs: timeMs,
+          trackOptions,
+        }),
+      onVoteUpdate: (votes, received, total) =>
+        this.updateMapVote(votes, received, total),
+      onVoteResult: (trackId) => this.showMapVoteResult(trackId),
       onState: (players) => this.onNetState(players),
       onError: (message) => {
         this.setNetStatus(message, "bad");
@@ -469,6 +486,16 @@ export class Game {
         .slice(0, 10);
       if (cleaned !== this.el.driverName.value) this.el.driverName.value = cleaned;
     });
+    document.addEventListener("keydown", (e) => {
+      if (!this.online || !this.finished || this.el.mpMapVote.classList.contains("hidden")) return;
+      const match = /^(?:Digit|Numpad)([1-5])$/.exec(e.code);
+      if (!match) return;
+      const trackId = this.mapVoteOptions[Number(match[1]) - 1];
+      if (!trackId) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.castMapVote(trackId);
+    });
 
     this.bindMuteBtn();
   }
@@ -497,11 +524,10 @@ export class Game {
     btn.querySelector(".mute-icon-on")!.classList.toggle("hidden", muted);
     btn.querySelector(".mute-icon-off")!.classList.toggle("hidden", !muted);
     // Homepage (incl. BOARD) or pause overlay — not mid-race / countdown / finish
-    const visible = this.onHomeOrBoard() || this.paused;
-    btn.classList.toggle("hidden", !visible);
+    const onHome = this.onHomeOrBoard();
+    btn.classList.toggle("hidden", !(onHome || this.paused));
     // Version: home + finish/results (hidden while racing / countdown / pause)
     // Feedback: homepage/menu only
-    const onHome = this.onHomeOrBoard();
     setVersionSwitcherVisible(onHome || this.finished);
     setFeedbackBtnVisible(onHome);
   }
@@ -1009,9 +1035,9 @@ export class Game {
     this.clearCountdown();
     this.clearExplode(true);
     this.resetWallHits();
+    this.resetMapVote();
     this.audio.mute();
     this.audio.stopDriveMusic();
-    this.audio.resetGear();
     this.input.clearDriveKeys();
     this.el.pause.classList.add("hidden");
     this.el.finish.classList.add("hidden");
@@ -1175,17 +1201,18 @@ export class Game {
   private onNetState(players: PlayerPose[]) {
     if (this.gridHeld) return;
     const now = performance.now();
-    const seen = new Set<string>();
+    const seen = this.seenRemoteIds;
+    seen.clear();
     const roomKind: VehicleKind = this.net.kind === "bike" ? "bike" : "car";
     for (const p of players) {
       if (p.id === this.net.id) continue;
       seen.add(p.id);
-      const pose = { ...p, kind: roomKind };
+      p.kind = roomKind;
       const remote = this.remotes.get(p.id);
-      if (remote) remote.push(pose, now);
-      else this.spawnRemote(pose);
+      if (remote) remote.push(p, now);
+      else this.spawnRemote(p);
     }
-    for (const id of [...this.remotes.keys()]) {
+    for (const id of this.remotes.keys()) {
       if (!seen.has(id)) this.removeRemote(id);
     }
   }
@@ -1211,7 +1238,8 @@ export class Game {
   }
 
   private clearRemotes() {
-    for (const id of [...this.remotes.keys()]) this.removeRemote(id);
+    for (const remote of this.remotes.values()) remote.dispose(this.scene);
+    this.remotes.clear();
   }
 
   private setAiVisible(visible: boolean) {
@@ -1401,6 +1429,7 @@ export class Game {
     this.el.leaderboard.classList.add("hidden");
     this.el.nameEntry.classList.add("hidden");
     this.el.bestFlash.classList.add("hidden");
+    this.resetMapVote();
     this.el.pauseBtn.classList.remove("hidden");
     this.el.finishEyebrow.textContent = "SESSION COMPLETE";
     this.el.finishTitle.textContent = "FINISH";
@@ -1458,7 +1487,6 @@ export class Game {
     canvas.tabIndex = 0;
     canvas.focus({ preventScroll: true });
 
-    this.audio.resetGear();
     this.audio.stopMusic();
     this.audio.unmute();
     this.syncMuteBtn();
@@ -1581,7 +1609,8 @@ export class Game {
   }
 
   private onResize() {
-    const { w, h } = viewportSize();
+    this.viewport = viewportSize();
+    const { w, h } = this.viewport;
     this.camera.aspect = w / Math.max(1, h);
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
@@ -1621,7 +1650,6 @@ export class Game {
       if (this.exploding) {
         this.updateExplode(dt);
         this.updateCamera(dt);
-        this.syncAudio(inputPeek, false);
         if (performance.now() >= this.explodeRestartAt) {
           this.startRace({ practice: this.practice, solo: this.solo, trackId: this.trackId });
         }
@@ -1632,7 +1660,6 @@ export class Game {
           // Frozen on grid through 3-2-1. Network poses are ignored until GO.
           this.updateHud();
           this.updateCamera(dt);
-          this.syncAudio(inputPeek, true);
         } else {
           const input = inputPeek;
           if (input.reset) {
@@ -1684,49 +1711,23 @@ export class Game {
             this.updateLaps();
             this.updateHud();
             this.updateCamera(dt);
-            this.syncAudio(input, true);
           } else {
             this.updateCamera(dt);
-            this.syncAudio(input, false);
           }
         }
       }
     } else if (this.paused) {
       this.updateCamera(0);
-      this.syncAudio(inputPeek, false);
     } else if (!this.running && !this.finished) {
       const t = now * 0.0002;
       const p = this.track.startPosition;
       this.camera.position.set(p.x + Math.cos(t) * 18, 7, p.z + Math.sin(t) * 18);
       this.camera.lookAt(p.x, 1.2, p.z);
-      this.syncAudio(inputPeek, false);
     } else if (this.finished) {
       this.updateCamera(dt);
-      this.syncAudio(inputPeek, false);
     }
 
     this.renderViews();
-  }
-
-  /** Push vehicle telemetry into the synth; silent when not driving. */
-  private syncAudio(input: { throttle: number }, active: boolean) {
-    if (!this.player) {
-      this.audio.updateEngine({ rpm: 800, speed: 0, throttle: 0, gear: 1 }, false);
-      return;
-    }
-    // On the grid cars are frozen — still allow throttle to rev the synth
-    const rpm = this.gridHeld
-      ? 1200 + input.throttle * 2800
-      : this.player.state.rpm;
-    this.audio.updateEngine(
-      {
-        rpm,
-        speed: this.gridHeld ? 0 : this.player.state.speed,
-        throttle: input.throttle,
-        gear: this.player.state.gear,
-      },
-      active,
-    );
   }
 
   /** Player + rivals into reused `_pack` (AI neighbors + collision pairs). */
@@ -1740,19 +1741,19 @@ export class Game {
 
   /** Main chase cam + always-on bottom-right rearview mirror inset while driving. */
   private renderViews() {
-    const { w, h } = viewportSize();
+    const { w, h } = this.viewport;
     this.renderer.setScissorTest(false);
     this.renderer.setViewport(0, 0, w, h);
     this.renderer.autoClear = true;
-    // Live race: rearview reuses the main pass shadow map. Online mode refreshes
-    // moving shadows at 30Hz to reduce GPU power without affecting car motion.
+    // Rearview reuses the main pass shadow map. Moving shadows only need 30Hz;
+    // car motion and controls still render at the display refresh rate.
     // Home/pause/finish: casters are still — skip rebuilds after a warmup.
     const liveShadows = this.running && !this.paused && !this.finished;
     let refreshShadows = liveShadows;
-    if (this.online && liveShadows) {
+    if (liveShadows) {
       const now = performance.now();
-      refreshShadows = now - this.lastOnlineShadowAt >= 1000 / 30;
-      if (refreshShadows) this.lastOnlineShadowAt = now;
+      refreshShadows = now - this.lastShadowAt >= 1000 / 30;
+      if (refreshShadows) this.lastShadowAt = now;
     }
     this.renderer.shadowMap.needsUpdate = refreshShadows || this.shadowNeedsWarmup;
     if (this.shadowNeedsWarmup) this.shadowNeedsWarmup = false;
@@ -2070,7 +2071,12 @@ export class Game {
   }
 
   private updateLaps() {
-    const { t, tangent } = this.projectSticky(this.player, this.player.state.position);
+    // keepOnTrack() already projected the player this frame. Reuse that t and
+    // sample only the tangent instead of repeating the 48-sample nearest search.
+    const t =
+      this.stickyT.get(this.player) ??
+      this.projectSticky(this.player, this.player.state.position).t;
+    const tangent = this.track.path.getTangentAt(t, this._lapTangent).normalize();
     const speed = this.player.state.speed;
     const align = this.trackAlign(this.player.state.heading, tangent);
     // Travel direction along the path (reverse gear / negative speed flips)
@@ -2133,6 +2139,93 @@ export class Game {
     }
   }
 
+  private resetMapVote() {
+    this.mapVoteOptions = [];
+    this.mapVoteTrackId = "";
+    this.el.mpMapVote.classList.add("hidden");
+    this.el.mpMapVoteGrid.replaceChildren();
+    this.el.restartBtn.classList.remove("hidden");
+  }
+
+  private showMapVote(trackOptions: string[]) {
+    this.mapVoteOptions = trackOptions
+      .filter((id, index) => index < 5 && TRACKS.some((track) => track.id === id));
+    this.mapVoteTrackId = "";
+    if (!this.online || this.mapVoteOptions.length === 0) {
+      this.resetMapVote();
+      return;
+    }
+
+    this.el.restartBtn.classList.add("hidden");
+    this.el.mpMapVote.classList.remove("hidden");
+    this.el.mpMapVoteStatus.textContent = "Press 1–5 or choose a map";
+    this.el.mpMapVoteGrid.replaceChildren();
+
+    this.mapVoteOptions.forEach((trackId, index) => {
+      const track = getTrackDef(trackId);
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "map-thumb mp-vote-option";
+      button.dataset.trackId = trackId;
+      button.setAttribute("role", "option");
+      button.setAttribute("aria-label", `${index + 1}: ${track.name}`);
+      button.setAttribute("aria-selected", "false");
+
+      const canvas = document.createElement("canvas");
+      const key = document.createElement("span");
+      const count = document.createElement("span");
+      key.className = "mp-vote-key";
+      key.textContent = String(index + 1);
+      count.className = "mp-vote-count";
+      count.textContent = "0";
+      button.append(canvas, key, count);
+      button.onclick = () => this.castMapVote(trackId);
+      this.el.mpMapVoteGrid.appendChild(button);
+      requestAnimationFrame(() => drawTrackPreview(canvas, trackId));
+    });
+  }
+
+  private castMapVote(trackId: string) {
+    if (this.mapVoteTrackId || !this.mapVoteOptions.includes(trackId)) return;
+    this.mapVoteTrackId = trackId;
+    this.net.voteForTrack(trackId);
+    for (const button of this.el.mpMapVoteGrid.querySelectorAll<HTMLButtonElement>(
+      ".mp-vote-option",
+    )) {
+      const selected = button.dataset.trackId === trackId;
+      button.disabled = true;
+      button.classList.toggle("selected", selected);
+      button.setAttribute("aria-selected", selected ? "true" : "false");
+    }
+    this.el.mpMapVoteStatus.textContent = `Vote locked: ${getTrackDef(trackId).name}`;
+  }
+
+  private updateMapVote(votes: Record<string, number>, received: number, total: number) {
+    for (const button of this.el.mpMapVoteGrid.querySelectorAll<HTMLElement>(
+      ".mp-vote-option",
+    )) {
+      const trackId = button.dataset.trackId || "";
+      const count = button.querySelector(".mp-vote-count");
+      if (count) count.textContent = String(votes[trackId] ?? 0);
+    }
+    if (!this.mapVoteTrackId) {
+      this.el.mpMapVoteStatus.textContent = `${received}/${total} voted · press 1–5`;
+    }
+  }
+
+  private showMapVoteResult(trackId: string) {
+    const track = getTrackDef(trackId);
+    for (const button of this.el.mpMapVoteGrid.querySelectorAll<HTMLButtonElement>(
+      ".mp-vote-option",
+    )) {
+      const selected = button.dataset.trackId === trackId;
+      button.disabled = true;
+      button.classList.toggle("selected", selected);
+      button.setAttribute("aria-selected", selected ? "true" : "false");
+    }
+    this.el.mpMapVoteStatus.textContent = `${track.name} wins · next race starting…`;
+  }
+
   private applyOnlineResult(winnerId: string, winnerName: string) {
     const field = this.remotes.size + 1;
     const won = winnerId === this.net.id;
@@ -2146,9 +2239,13 @@ export class Game {
     winnerId: string;
     winnerName: string;
     officialTimeMs: number;
+    trackOptions: string[];
   }) {
     if (this.finished) {
-      if (this.online && result) this.applyOnlineResult(result.winnerId, result.winnerName);
+      if (this.online && result) {
+        this.applyOnlineResult(result.winnerId, result.winnerName);
+        this.showMapVote(result.trackOptions);
+      }
       return;
     }
     this.finished = true;
@@ -2158,7 +2255,6 @@ export class Game {
     this.clearExplode(true);
     this.audio.mute();
     this.audio.stopDriveMusic();
-    this.audio.resetGear();
     this.el.wrongWay.classList.add("hidden");
     this.el.explodeFlash.classList.add("hidden");
     this.el.pause.classList.add("hidden");
@@ -2184,6 +2280,7 @@ export class Game {
     this.el.finalPlace.textContent = `${place}/${field}`;
     if (this.online && result) {
       this.applyOnlineResult(result.winnerId, result.winnerName);
+      this.showMapVote(result.trackOptions);
     } else if (place === 1) {
       this.el.finishEyebrow.textContent = "RACE WINNER";
       this.el.finishTitle.textContent = "YOU WIN";
@@ -2228,8 +2325,8 @@ export class Game {
 
   private updateHud() {
     const hudNow = performance.now();
-    if (this.online && hudNow - this.lastOnlineHudAt < 50) return;
-    this.lastOnlineHudAt = hudNow;
+    if (hudNow - this.lastHudAt < 50) return;
+    this.lastHudAt = hudNow;
     this.el.speed.textContent = String(Math.round(this.player.kmh));
     this.el.gear.textContent = this.player.gearLabel;
     // Practice: current lap clock; race: total race time — frozen at 0 during grid hold
@@ -2249,7 +2346,9 @@ export class Game {
       if (this.solo) {
         this.el.position.textContent = "1/1";
       } else {
-        const playerProgress = this.lap - 1 + this.raceProgress(this.player);
+        const playerT =
+          this.stickyT.get(this.player) ?? this.raceProgress(this.player);
+        const playerProgress = this.lap - 1 + playerT;
         let place = 1;
         if (this.online) {
           const total = this.remotes.size + 1;

@@ -93,12 +93,24 @@ export function isCurrentVersion(v: PlayableVersion): boolean {
   return v.id === GAME_VERSION;
 }
 
+let dashboardModule: Promise<typeof import("./devDashboard")> | null = null;
+
+function loadDashboard() {
+  dashboardModule ??= import("./devDashboard").then((module) => {
+    module.initDevDashboard();
+    return module;
+  });
+  return dashboardModule;
+}
+
 function openDash(): void {
-  void import("./devDashboard").then((m) => m.openDevDashboard());
+  void loadDashboard().then((module) => module.openDevDashboard());
 }
 
 function closeDash(): void {
-  void import("./devDashboard").then((m) => m.closeDevDashboard());
+  if (dashboardModule) {
+    void dashboardModule.then((module) => module.closeDevDashboard());
+  }
 }
 
 /** Show on homepage/menu; hide (and close gate/dashboard) during a race session. */

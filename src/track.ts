@@ -437,7 +437,6 @@ export function disposeTrack(track: TrackData) {
 
 export type TrackProjection = {
   t: number;
-  point: THREE.Vector3;
   distanceFromCenter: number;
   tangent: THREE.Vector3;
 };
@@ -445,6 +444,12 @@ export type TrackProjection = {
 /** Scratch for projection sample loops — avoid per-sample Vector3 GC. */
 const _projScratch = new THREE.Vector3();
 const _projTangent = new THREE.Vector3();
+const _projPoint = new THREE.Vector3();
+const _projResult: TrackProjection = {
+  t: 0,
+  distanceFromCenter: 0,
+  tangent: _projTangent,
+};
 
 /**
  * Invisible sequential progress gates along the circuit (fractional path t).
@@ -489,7 +494,6 @@ function finishProjection(
   position: THREE.Vector3,
   bestT: number,
   bestDist: number,
-  bestPoint: THREE.Vector3,
   refineStep: number,
 ): TrackProjection {
   for (let k = -6; k <= 6; k++) {
@@ -499,16 +503,18 @@ function finishProjection(
     if (d < bestDist) {
       bestDist = d;
       bestT = t;
-      bestPoint.copy(_projScratch);
+      _projPoint.copy(_projScratch);
     }
   }
 
   path.getTangentAt(bestT, _projTangent).normalize();
   const nx = -_projTangent.z;
   const nz = _projTangent.x;
-  const distanceFromCenter = (position.x - bestPoint.x) * nx + (position.z - bestPoint.z) * nz;
-  // tangent aliases module scratch — callers must read it before the next project*
-  return { t: bestT, point: bestPoint, distanceFromCenter, tangent: _projTangent };
+  _projResult.t = bestT;
+  _projResult.distanceFromCenter =
+    (position.x - _projPoint.x) * nx + (position.z - _projPoint.z) * nz;
+  // Result vectors are shared scratch — callers must consume them before the next projection.
+  return _projResult;
 }
 
 /** Global nearest-point search. Only safe for spawn/reset: on a circuit whose
@@ -521,7 +527,6 @@ export function projectOnTrack(
 ): TrackProjection {
   let bestT = 0;
   let bestDist = Infinity;
-  const bestPoint = new THREE.Vector3();
 
   for (let i = 0; i < samples; i++) {
     const t = i / samples;
@@ -530,11 +535,11 @@ export function projectOnTrack(
     if (d < bestDist) {
       bestDist = d;
       bestT = t;
-      bestPoint.copy(_projScratch);
+      _projPoint.copy(_projScratch);
     }
   }
 
-  return finishProjection(path, position, bestT, bestDist, bestPoint, 1 / samples);
+  return finishProjection(path, position, bestT, bestDist, 1 / samples);
 }
 
 /** Sticky projection: search only a window of the path around tHint so the
@@ -548,7 +553,6 @@ export function projectOnTrackNear(
 ): TrackProjection {
   let bestT = tHint;
   let bestDist = Infinity;
-  const bestPoint = new THREE.Vector3();
   const step = (2 * window) / samples;
 
   for (let i = 0; i <= samples; i++) {
@@ -558,11 +562,11 @@ export function projectOnTrackNear(
     if (d < bestDist) {
       bestDist = d;
       bestT = t;
-      bestPoint.copy(_projScratch);
+      _projPoint.copy(_projScratch);
     }
   }
 
-  return finishProjection(path, position, bestT, bestDist, bestPoint, step);
+  return finishProjection(path, position, bestT, bestDist, step);
 }
 
 /**
