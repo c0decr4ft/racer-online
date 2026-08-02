@@ -632,7 +632,73 @@ function admitClient(ws, msg, mode) {
 
 let presence = loadPresence();
 
+const MAX_JSON_BODY = 256_000;
+
+/**
+ * Read a request body safely. Returns null when the client aborts/disconnects
+ * mid-stream — callers should stop without writing a response.
+ * @param {import('node:http').IncomingMessage} req
+ * @param {number} [limit]
+ * @returns {Promise<string | null>}
+ */
+async function readRequestBody(req, limit = MAX_JSON_BODY) {
+  try {
+    let body = "";
+    for await (const chunk of req) {
+      body += chunk;
+      if (body.length > limit) {
+        req.destroy();
+        const err = new Error("body too large");
+        /** @type {Error & { code?: string }} */ (err).code = "PAYLOAD_TOO_LARGE";
+        throw err;
+      }
+    }
+    return body;
+  } catch (err) {
+    const code = /** @type {{ code?: string, message?: string }} */ (err)?.code;
+    const message = String(/** @type {{ message?: string }} */ (err)?.message || err || "");
+    // Client went away while we were reading — not a server fault.
+    if (
+      code === "ECONNRESET" ||
+      code === "ABORT_ERR" ||
+      code === "EPIPE" ||
+      message === "aborted" ||
+      /aborted|ECONNRESET/i.test(message)
+    ) {
+      return null;
+    }
+    throw err;
+  }
+}
+
 const httpServer = createServer(async (req, res) => {
+  try {
+    await handleHttpRequest(req, res);
+  } catch (err) {
+    // Never let a single bad/aborted request tear down WS + /api/*.
+    console.error("[http]", err);
+    if (!res.headersSent) {
+      try {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "server error" }));
+      } catch {
+        /* ignore */
+      }
+    } else {
+      try {
+        res.end();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+});
+
+/**
+ * @param {import('node:http').IncomingMessage} req
+ * @param {import('node:http').ServerResponse} res
+ */
+async function handleHttpRequest(req, res) {
   cors(res);
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 
@@ -656,8 +722,8 @@ const httpServer = createServer(async (req, res) => {
   }
 
   if (url.pathname === "/api/leaderboard" && req.method === "POST") {
-    let body = "";
-    for await (const chunk of req) body += chunk;
+    const body = await readRequestBody(req);
+    if (body == null) return;
     try {
       const data = JSON.parse(body || "{}");
       const tid = normalizeTrackId(data.trackId);
@@ -693,8 +759,8 @@ const httpServer = createServer(async (req, res) => {
   }
 
   if (url.pathname === "/api/presence" && req.method === "POST") {
-    let body = "";
-    for await (const chunk of req) body += chunk;
+    const body = await readRequestBody(req);
+    if (body == null) return;
     try {
       const data = JSON.parse(body || "{}");
       const id = normalizeSessionId(data.id);
@@ -732,8 +798,8 @@ const httpServer = createServer(async (req, res) => {
   }
 
   if (url.pathname === "/api/feedback" && req.method === "POST") {
-    let body = "";
-    for await (const chunk of req) body += chunk;
+    const body = await readRequestBody(req);
+    if (body == null) return;
     try {
       const data = JSON.parse(body || "{}");
       const msg = normalizeFeedbackMessage({
@@ -790,7 +856,7 @@ const httpServer = createServer(async (req, res) => {
 
   res.writeHead(404, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ ok: false, error: "not found" }));
-});
+}
 
 const wss = new WebSocketServer({ server: httpServer });
 
