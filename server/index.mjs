@@ -491,8 +491,8 @@ function broadcast(room, msg, except) {
   }
 }
 
-function shuffledNextTracks(currentTrackId) {
-  const options = TRACK_IDS.filter((id) => id !== currentTrackId);
+function shuffledVoteTracks() {
+  const options = [...TRACK_IDS];
   for (let i = options.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [options[i], options[j]] = [options[j], options[i]];
@@ -951,7 +951,7 @@ wss.on("connection", (ws) => {
       const timeMs = Math.max(1_000, Math.min(3_600_000, Math.round(Number(msg.timeMs) || 0)));
       room.winnerId = client.id;
       room.phase = "finished";
-      room.voteOptions = shuffledNextTracks(room.trackId);
+      room.voteOptions = shuffledVoteTracks();
       room.votes.clear();
       room.voteOrder = 0;
       room.voteEndsAt = Date.now() + MAP_VOTE_MS;
