@@ -1981,6 +1981,7 @@ button:active {
 .touch-btn {
   appearance: none;
   -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
   touch-action: none;
   user-select: none;
   border: 1px solid rgba(242, 245, 250, 0.28);

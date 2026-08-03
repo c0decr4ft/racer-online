@@ -273,7 +273,7 @@ async function main() {
   const pageErrors = [];
   page.on("pageerror", (e) => pageErrors.push(String(e)));
 
-  await page.goto(BASE, { waitUntil: "networkidle", timeout: 45000 });
+  await page.goto(BASE, { waitUntil: "domcontentloaded", timeout: 45000 });
   await page.waitForFunction(() => window.__game, null, { timeout: 15000 });
   assert("boot:game-ready", true);
   await measureFps(page, "home", 1500);
@@ -292,6 +292,25 @@ async function main() {
     "garage:bike",
     await page.locator("#garage-kind-bike").evaluate((el) => el.classList.contains("is-active")),
   );
+  await page.click("#garage-save-btn");
+  await page.waitForTimeout(150);
+  const bikeLean = await page.evaluate(() => {
+    const game = window.__game;
+    if (!game?.player) return null;
+    game.player.state.speed = 35;
+    game.player.state.steerAngle = 0.5;
+    game.player.syncCollision();
+    return {
+      kind: game.player.mesh.userData.kind,
+      lean: game.player.mesh.rotation.z,
+    };
+  });
+  assert(
+    "garage:bike-leans-in-turns",
+    bikeLean?.kind === "bike" && Math.abs(bikeLean.lean) > 0.2,
+    JSON.stringify(bikeLean),
+  );
+  await page.click("#home-garage-btn");
   await page.click("#garage-kind-car");
   await page.click("#garage-primary-swatch");
   await page.waitForTimeout(100);
@@ -458,7 +477,7 @@ async function main() {
 
   // Guest joins via second page
   const page2 = await browser.newPage({ viewport: { width: 1280, height: 800 } });
-  await page2.goto(BASE, { waitUntil: "networkidle", timeout: 45000 });
+  await page2.goto(BASE, { waitUntil: "domcontentloaded", timeout: 45000 });
   await page2.waitForFunction(() => window.__game, null, { timeout: 15000 });
   await page2.click("#multiplayer-btn");
   await page2.click("#mp-goto-join");
@@ -625,6 +644,55 @@ async function main() {
   assert("pageerrors:none", pageErrors.length === 0, pageErrors.slice(0, 3).join(" | "));
 
   await page2.close();
+  const mobile = await browser.newPage({
+    viewport: { width: 390, height: 844 },
+    deviceScaleFactor: 2,
+    isMobile: true,
+    hasTouch: true,
+  });
+  const mobileErrors = [];
+  mobile.on("pageerror", (e) => mobileErrors.push(String(e)));
+  await mobile.goto(BASE, { waitUntil: "domcontentloaded", timeout: 45000 });
+  await mobile.waitForFunction(() => window.__game, null, { timeout: 15000 });
+  assert(
+    "mobile:touch-mode",
+    await mobile.evaluate(() => document.documentElement.classList.contains("touch-mode")),
+  );
+  await mobile.click("#solo-race-btn");
+  await mobile.click("#map-grid .map-thumb");
+  await mobile.waitForTimeout(4500);
+  assert("mobile:controls-visible", await visible(mobile, "#touch-controls"));
+  const gas = mobile.locator('[data-touch="gas"]');
+  await gas.dispatchEvent("pointerdown", {
+    pointerId: 41,
+    pointerType: "touch",
+    isPrimary: true,
+    button: 0,
+  });
+  await mobile.waitForTimeout(700);
+  const mobileSpeed = await mobile.evaluate(() => window.__game?.player?.state?.speed ?? 0);
+  assert("mobile:touch-gas", mobileSpeed > 0.5, `speed=${mobileSpeed.toFixed(2)}`);
+  await mobile.evaluate(() => window.dispatchEvent(new Event("blur")));
+  assert(
+    "mobile:blur-clears-input",
+    await mobile.evaluate(
+      () =>
+        window.__game?.input?.getState?.().throttle === 0 &&
+        !document.querySelector("#touch-controls .is-active"),
+    ),
+  );
+  await mobile.setViewportSize({ width: 844, height: 390 });
+  await mobile.waitForTimeout(250);
+  const controlsInsideViewport = await mobile.locator("#touch-controls .touch-btn").evaluateAll(
+    (buttons) =>
+      buttons.every((button) => {
+        const box = button.getBoundingClientRect();
+        return box.left >= 0 && box.top >= 0 && box.right <= innerWidth && box.bottom <= innerHeight;
+      }),
+  );
+  assert("mobile:landscape-controls-fit", controlsInsideViewport);
+  assert("mobile:pageerrors-none", mobileErrors.length === 0, mobileErrors.slice(0, 3).join(" | "));
+  await mobile.close();
   await browser.close();
 
   console.log("\n=== SUMMARY ===");
