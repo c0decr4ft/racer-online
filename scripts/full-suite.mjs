@@ -276,6 +276,10 @@ async function main() {
   await page.goto(BASE, { waitUntil: "domcontentloaded", timeout: 45000 });
   await page.waitForFunction(() => window.__game, null, { timeout: 15000 });
   assert("boot:game-ready", true);
+  assert(
+    "boot:cpp-wasm-physics",
+    (await page.evaluate(() => window.__physicsBackend)) === "cpp-wasm",
+  );
   await measureFps(page, "home", 1500);
 
   // --- Mute ---
@@ -636,9 +640,14 @@ async function main() {
   // Presence API after traffic
   try {
     const pres = await fetch("http://127.0.0.1:8787/api/presence").then((r) => r.json());
-    assert("api:presence-shape", Array.isArray(pres.buckets) || typeof pres.now === "number", JSON.stringify(pres).slice(0, 120));
+    const latest = Array.isArray(pres.samples) ? pres.samples.at(-1) : null;
+    assert(
+      "api:presence-live-history",
+      typeof pres.now === "number" && latest?.count === pres.now,
+      JSON.stringify(pres).slice(0, 160),
+    );
   } catch (e) {
-    fail("api:presence-shape", String(e.message || e));
+    fail("api:presence-live-history", String(e.message || e));
   }
 
   assert("pageerrors:none", pageErrors.length === 0, pageErrors.slice(0, 3).join(" | "));

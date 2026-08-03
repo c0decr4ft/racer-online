@@ -1,5 +1,5 @@
 import { fetchFeedback, type FeedbackMessage } from "./net/feedback";
-import { fetchPresence, type PresenceBucket, type PresenceSnapshot } from "./net/presence";
+import { fetchPresence, type PresenceSample, type PresenceSnapshot } from "./net/presence";
 import {
   isCurrentVersion,
   loadPlayableVersions,
@@ -26,14 +26,15 @@ function formatWhen(ms: number): string {
   }
 }
 
-function formatBucketLabel(key: string): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2})$/.exec(key);
-  if (!m) return key;
-  return `${m[1]}-${m[2]}-${m[3]} ${m[4]}h`;
+function formatChartLabel(ms: number, span: number): string {
+  const date = new Date(ms);
+  return span > 24 * 3_600_000
+    ? date.toLocaleDateString(undefined, { month: "short", day: "numeric" })
+    : date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
 /** Simple SVG line chart — no chart library. */
-function renderActivityChart(svg: SVGSVGElement, buckets: PresenceBucket[]): void {
+function renderActivityChart(svg: SVGSVGElement, samples: PresenceSample[]): void {
   const W = 560;
   const H = 160;
   const padL = 36;
@@ -51,7 +52,7 @@ function renderActivityChart(svg: SVGSVGElement, buckets: PresenceBucket[]): voi
   bg.setAttribute("fill", "rgba(255,255,255,0.03)");
   svg.appendChild(bg);
 
-  if (!buckets.length) {
+  if (!samples.length) {
     const empty = document.createElementNS("http://www.w3.org/2000/svg", "text");
     empty.setAttribute("x", String(W / 2));
     empty.setAttribute("y", String(H / 2));
@@ -64,16 +65,20 @@ function renderActivityChart(svg: SVGSVGElement, buckets: PresenceBucket[]): voi
     return;
   }
 
-  // Prefer last 48 hours if we have more; otherwise all kept buckets
+  // Live count changes over the last 48 hours, including the exact current count.
   const cutoff = Date.now() - 48 * 3_600_000;
-  let series = buckets.filter((b) => b.at >= cutoff);
-  if (series.length < 2) series = buckets.slice(-48);
+  let series = samples.filter((sample) => sample.at >= cutoff);
+  if (!series.length) series = samples.slice(-1);
 
-  const maxY = Math.max(1, ...series.map((b) => b.count));
+  const maxY = Math.max(1, ...series.map((sample) => sample.count));
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
+  const minAt = series[0]!.at;
+  const maxAt = series.at(-1)!.at;
+  const span = maxAt - minAt;
 
-  const xAt = (i: number) => padL + (series.length <= 1 ? plotW / 2 : (i / (series.length - 1)) * plotW);
+  const xAt = (at: number) =>
+    padL + (span <= 0 ? plotW / 2 : ((at - minAt) / span) * plotW);
   const yAt = (v: number) => padT + plotH - (v / maxY) * plotH;
 
   // Grid + y labels
@@ -99,12 +104,14 @@ function renderActivityChart(svg: SVGSVGElement, buckets: PresenceBucket[]): voi
     svg.appendChild(label);
   }
 
-  const points = series.map((b, i) => `${xAt(i).toFixed(1)},${yAt(b.count).toFixed(1)}`).join(" ");
+  const points = series
+    .map((sample) => `${xAt(sample.at).toFixed(1)},${yAt(sample.count).toFixed(1)}`)
+    .join(" ");
 
   const area = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
   area.setAttribute(
     "points",
-    `${xAt(0).toFixed(1)},${(padT + plotH).toFixed(1)} ${points} ${xAt(series.length - 1).toFixed(1)},${(padT + plotH).toFixed(1)}`,
+    `${xAt(minAt).toFixed(1)},${(padT + plotH).toFixed(1)} ${points} ${xAt(maxAt).toFixed(1)},${(padT + plotH).toFixed(1)}`,
   );
   area.setAttribute("fill", "rgba(255, 59, 46, 0.14)");
   area.setAttribute("stroke", "none");
@@ -119,6 +126,16 @@ function renderActivityChart(svg: SVGSVGElement, buckets: PresenceBucket[]): voi
   path.setAttribute("stroke-linecap", "round");
   svg.appendChild(path);
 
+  const current = series.at(-1)!;
+  const currentDot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  currentDot.setAttribute("cx", String(xAt(current.at)));
+  currentDot.setAttribute("cy", String(yAt(current.count)));
+  currentDot.setAttribute("r", "3.5");
+  currentDot.setAttribute("fill", "#ff3b2e");
+  currentDot.setAttribute("stroke", "#fff");
+  currentDot.setAttribute("stroke-width", "1");
+  svg.appendChild(currentDot);
+
   // Sparse x labels
   const labelIdx = new Set<number>([0, series.length - 1]);
   if (series.length > 4) {
@@ -130,13 +147,13 @@ function renderActivityChart(svg: SVGSVGElement, buckets: PresenceBucket[]): voi
     const b = series[i];
     if (!b) continue;
     const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    label.setAttribute("x", String(xAt(i)));
+    label.setAttribute("x", String(xAt(b.at)));
     label.setAttribute("y", String(H - 8));
     label.setAttribute("text-anchor", "middle");
     label.setAttribute("fill", "rgba(168,180,196,0.85)");
     label.setAttribute("font-size", "9");
     label.setAttribute("font-family", "Rajdhani, sans-serif");
-    label.textContent = formatBucketLabel(b.key);
+    label.textContent = formatChartLabel(b.at, span);
     svg.appendChild(label);
   }
 }
@@ -206,7 +223,7 @@ function applyPresence(snap: PresenceSnapshot): void {
       sourceEl.textContent = `Updated ${formatWhen(snap.updatedAt || Date.now())} via ${via} · humans only (1 tab = 1) · AI never counted${racing}`;
     }
   }
-  if (svg instanceof SVGSVGElement) renderActivityChart(svg, snap.buckets);
+  if (svg instanceof SVGSVGElement) renderActivityChart(svg, snap.samples);
 }
 
 async function refreshDashboard(): Promise<void> {

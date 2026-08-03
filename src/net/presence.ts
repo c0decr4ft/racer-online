@@ -4,7 +4,7 @@
  * Prefer the durable game server (`/api/presence`) when available. Fall back to
  * JSONBlob for static hosting without a backend (blob TTLs are short ~24h).
  *
- * Shape: { buckets: { "YYYY-MM-DDTHH": peakCount }, sessions: { id: lastSeenMs }, updatedAt, historyEpoch? }
+ * Shape: { buckets, samples: [{ at, count }], sessions, updatedAt, historyEpoch? }
  *
  * Counts unique browser tabs only (one session id per tab). AI / race-grid cars are never written
  * or counted. Clients heartbeat every ~40s while visible; hidden/closed tabs leave immediately.
@@ -22,6 +22,7 @@ const HEARTBEAT_MS = 40_000;
 /** Drop sessions that haven't heartbeated within this window (~1 heartbeat miss + margin). */
 const STALE_MS = 75_000;
 const KEEP_HOURS = 14 * 24;
+const MAX_SAMPLES = 2_000;
 const WRITE_ATTEMPTS = 4;
 /**
  * Bump to discard historically inflated peak buckets (ghost-session races / agent tabs).
@@ -31,9 +32,11 @@ const HISTORY_EPOCH = 2;
 const STARTED_FLAG = "__racerPresenceHeartbeatStarted";
 
 export type PresenceBucket = { key: string; count: number; at: number };
+export type PresenceSample = { at: number; count: number };
 export type PresenceSnapshot = {
   now: number;
   buckets: PresenceBucket[];
+  samples: PresenceSample[];
   updatedAt: number;
   source: "online" | "server" | "local";
   racing?: number;
@@ -41,13 +44,14 @@ export type PresenceSnapshot = {
 
 type PresenceStore = {
   buckets: Record<string, number>;
+  samples: PresenceSample[];
   sessions: Record<string, number>;
   updatedAt: number;
   historyEpoch: number;
 };
 
 function emptyStore(): PresenceStore {
-  return { buckets: {}, sessions: {}, updatedAt: 0, historyEpoch: HISTORY_EPOCH };
+  return { buckets: {}, samples: [], sessions: {}, updatedAt: 0, historyEpoch: HISTORY_EPOCH };
 }
 
 function hourKey(ms: number): string {
@@ -83,6 +87,23 @@ function parseStore(data: unknown): PresenceStore {
       }
     }
   }
+  if (Array.isArray(obj.samples)) {
+    for (const row of obj.samples) {
+      if (
+        row &&
+        typeof row.at === "number" &&
+        Number.isFinite(row.at) &&
+        row.at > 0 &&
+        typeof row.count === "number" &&
+        Number.isFinite(row.count) &&
+        row.count >= 0
+      ) {
+        store.samples.push({ at: Math.round(row.at), count: Math.round(row.count) });
+      }
+    }
+    store.samples.sort((a, b) => a.at - b.at);
+    store.samples = store.samples.slice(-MAX_SAMPLES);
+  }
 
   if (obj.sessions && typeof obj.sessions === "object") {
     for (const [id, at] of Object.entries(obj.sessions)) {
@@ -113,6 +134,7 @@ function pruneStore(store: PresenceStore, now = Date.now()): PresenceStore {
   }
   return {
     buckets,
+    samples: store.samples.filter((sample) => sample.at >= cutoff).slice(-MAX_SAMPLES),
     sessions,
     updatedAt: store.updatedAt,
     historyEpoch: Math.max(store.historyEpoch, HISTORY_EPOCH),
@@ -147,8 +169,19 @@ function recordPeak(store: PresenceStore, now = Date.now()): void {
   const peak = activeCount(store, now);
   const key = hourKey(now);
   store.buckets[key] = Math.max(store.buckets[key] ?? 0, peak);
+  recordSample(store, now, peak);
   store.updatedAt = now;
   store.historyEpoch = HISTORY_EPOCH;
+}
+
+function recordSample(store: PresenceStore, now = Date.now(), count = activeCount(store, now)): void {
+  const last = store.samples.at(-1);
+  if (!last || last.count !== count) {
+    store.samples.push({ at: now, count });
+    if (store.samples.length > MAX_SAMPLES) {
+      store.samples.splice(0, store.samples.length - MAX_SAMPLES);
+    }
+  }
 }
 
 function applyHeartbeat(store: PresenceStore, id: string, now = Date.now()): PresenceStore {
@@ -161,7 +194,8 @@ function applyHeartbeat(store: PresenceStore, id: string, now = Date.now()): Pre
 function applyLeave(store: PresenceStore, id: string, now = Date.now()): PresenceStore {
   const next = pruneStore(store, now);
   delete next.sessions[id];
-  // Do not rewrite hourly peaks on leave — peaks are historical maxima.
+  recordSample(next, now);
+  // Keep hourly peaks as historical maxima while live samples show the drop.
   next.updatedAt = now;
   next.historyEpoch = HISTORY_EPOCH;
   return next;
@@ -173,9 +207,17 @@ function snapshotOf(
   racing?: number,
 ): PresenceSnapshot {
   const pruned = pruneStore(store);
+  const nowAt = Date.now();
+  const now = activeCount(pruned, nowAt);
+  const samples = pruned.samples.slice();
+  const last = samples.at(-1);
+  if (!last || last.count !== now || nowAt - last.at > 1_000) {
+    samples.push({ at: nowAt, count: now });
+  }
   return {
-    now: activeCount(pruned),
+    now,
     buckets: toBuckets(pruned),
+    samples,
     updatedAt: pruned.updatedAt,
     source,
     racing,
@@ -187,12 +229,14 @@ function snapshotFromServerPayload(data: unknown): PresenceSnapshot | null {
   const obj = data as {
     now?: unknown;
     buckets?: unknown;
+    samples?: unknown;
     updatedAt?: unknown;
     racing?: unknown;
     ok?: unknown;
   };
   if (typeof obj.now !== "number" || !Number.isFinite(obj.now)) return null;
   const buckets: PresenceBucket[] = [];
+  const samples: PresenceSample[] = [];
   if (Array.isArray(obj.buckets)) {
     for (const row of obj.buckets) {
       if (!row || typeof row !== "object") continue;
@@ -205,9 +249,34 @@ function snapshotFromServerPayload(data: unknown): PresenceSnapshot | null {
       });
     }
   }
+  if (Array.isArray(obj.samples)) {
+    for (const row of obj.samples) {
+      if (!row || typeof row !== "object") continue;
+      const sample = row as { at?: unknown; count?: unknown };
+      if (
+        typeof sample.at === "number" &&
+        Number.isFinite(sample.at) &&
+        sample.at > 0 &&
+        typeof sample.count === "number" &&
+        Number.isFinite(sample.count)
+      ) {
+        samples.push({
+          at: Math.round(sample.at),
+          count: Math.max(0, Math.round(sample.count)),
+        });
+      }
+    }
+  }
+  samples.sort((a, b) => a.at - b.at);
+  const now = Math.max(0, Math.round(obj.now));
+  const last = samples.at(-1);
+  if (!last || last.count !== now) {
+    samples.push({ at: Date.now(), count: now });
+  }
   return {
-    now: Math.max(0, Math.round(obj.now)),
+    now,
     buckets: buckets.filter((b) => b.at > 0).sort((a, b) => a.at - b.at),
+    samples: samples.slice(-MAX_SAMPLES),
     updatedAt:
       typeof obj.updatedAt === "number" && Number.isFinite(obj.updatedAt)
         ? Math.round(obj.updatedAt)
@@ -385,11 +454,11 @@ export async function fetchPresence(): Promise<PresenceSnapshot> {
   try {
     return snapshotOf(await fetchStore(), "online");
   } catch {
-    return { now: 0, buckets: [], updatedAt: 0, source: "local" };
+    return { now: 0, buckets: [], samples: [], updatedAt: 0, source: "local" };
   }
 }
 
-/** Ping once — update this tab's session + current hour peak. */
+/** Ping once — update this tab's session, current peak, and live timeline. */
 export async function sendHeartbeat(): Promise<PresenceSnapshot | null> {
   const id = sessionId();
   return enqueueWrite(async () => {

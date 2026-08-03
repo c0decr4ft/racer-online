@@ -1,5 +1,7 @@
 import * as THREE from "three";
 import type { Gear, InputState } from "./input";
+import { stepVehiclePhysics } from "./physics/vehiclePhysics";
+import { GEAR_STATS } from "./physics/vehicleTuning";
 import {
   LapGateProgress,
   OffsetRacingLine,
@@ -25,28 +27,14 @@ export type VehicleState = {
  * previously capped EVERY gear at ~60 km/h, making shifts feel like they did
  * nothing. The per-gear rev limiter (not drag) is the intended speed cap.
  */
-export const GEAR_STATS: Record<Exclude<Gear, "N">, { max: number; accel: number; pullFrom: number }> = {
-  R: { max: 11, accel: 1.5, pullFrom: 0 }, // ~40 km/h backing up
-  1: { max: 15.5, accel: 2.2, pullFrom: 0 }, // ~56 km/h — launch only
-  2: { max: 31, accel: 1.6, pullFrom: 7 }, // ~112 km/h
-  3: { max: 48, accel: 1.2, pullFrom: 16 }, // ~173 km/h
-  4: { max: 66, accel: 0.95, pullFrom: 28 }, // ~238 km/h
-  5: { max: 86, accel: 0.75, pullFrom: 42 }, // ~310 km/h
-};
+export { GEAR_STATS };
 
 /** Gear ceiling in km/h — identical for player and AI. */
 export function gearMaxKmh(gear: Exclude<Gear, "N" | "R">): number {
   return GEAR_STATS[gear].max * 3.6;
 }
 
-const BRAKE = 62;
-const DRAG = 0.002;
-const ROLL = 1.1;
-const ENGINE_BRAKE = 0.4;
-const MAX_STEER = 0.68;
-const STEER_SPEED = 4.0;
 const SHIFT_COOLDOWN = 0.1;
-const ACCEL_BASE = 46;
 
 const GEAR_SEQUENCE: Gear[] = ["R", "N", 1, 2, 3, 4, 5];
 
@@ -112,71 +100,7 @@ export class Vehicle {
       this.setGear(1);
     }
 
-    const targetSteer = input.steer * MAX_STEER;
-    s.steerAngle += (targetSteer - s.steerAngle) * Math.min(1, STEER_SPEED * dt * 3);
-
-    const gear = s.gear;
-    if (gear === "N") {
-      if (input.brake > 0) {
-        s.speed -= Math.sign(s.speed || 1) * BRAKE * input.brake * dt;
-      }
-    } else {
-      const stats = GEAR_STATS[gear];
-      const forward = gear !== "R";
-      const absSpeed = Math.abs(s.speed);
-      const cap = stats.max * this.powerMul;
-
-      if (input.throttle > 0 && absSpeed < cap) {
-        // Lug when the gear is too high for current speed (weak, chuggy pull)
-        const belowBand = absSpeed < stats.pullFrom;
-        const lug = belowBand
-          ? THREE.MathUtils.clamp(absSpeed / Math.max(1, stats.pullFrom), 0.08, 0.35)
-          : 1;
-        // Power softens near redline; the hard cut below is the rev limiter
-        const nearLimit = absSpeed / cap;
-        const taper = nearLimit > 0.85 ? Math.max(0.55, 1 - (nearLimit - 0.85) * 3) : 1;
-        // 1st gets extra launch punch from standstill
-        const launch = gear === 1 && absSpeed < 5 ? 1.3 : 1;
-        const force = ACCEL_BASE * stats.accel * this.powerMul * input.throttle * lug * taper * launch;
-        s.speed += (forward ? 1 : -1) * force * dt;
-        // Rev limiter cut: engine never powers past the gear ceiling
-        if (forward) s.speed = Math.min(s.speed, cap);
-        else s.speed = Math.max(s.speed, -cap);
-      } else if (input.throttle === 0 && absSpeed > 0.5) {
-        // Engine braking when coasting in gear
-        s.speed -= Math.sign(s.speed) * ENGINE_BRAKE * absSpeed * dt;
-      }
-
-      if (input.brake > 0) {
-        if (absSpeed > 0.4) {
-          s.speed -= Math.sign(s.speed) * BRAKE * input.brake * dt;
-        } else {
-          s.speed = 0;
-        }
-      }
-
-      // Rev limiter: hard per-gear ceiling. Holding throttle in a low gear pins
-      // speed here (engine choke); after a downshift, speed bleeds down to it.
-      if (forward && s.speed > cap) {
-        s.speed = Math.max(cap, s.speed - (30 + (s.speed - cap) * 2.5) * dt);
-      }
-      if (!forward && s.speed < -stats.max) {
-        s.speed = Math.min(-stats.max, s.speed + (30 + (-stats.max - s.speed) * 2.5) * dt);
-      }
-    }
-
-    const drag = DRAG * s.speed * Math.abs(s.speed);
-    const roll = ROLL * Math.sign(s.speed || 0);
-    s.speed -= (drag + roll) * dt;
-    if (Math.abs(s.speed) < 0.1 && input.throttle === 0) s.speed = 0;
-
-    const speedFactor = THREE.MathUtils.clamp(0.4 + Math.abs(s.speed) / 36, 0.4, 1.2);
-    const turnRate = s.steerAngle * speedFactor * (s.speed >= 0 ? 1 : -1) * 1.9;
-    s.heading += turnRate * dt;
-
-    s.position.x += Math.sin(s.heading) * s.speed * dt;
-    s.position.z += Math.cos(s.heading) * s.speed * dt;
-    s.position.y = 0;
+    stepVehiclePhysics(s, dt, input, this.powerMul);
 
     this.syncMesh();
     this.animateWheels(dt);

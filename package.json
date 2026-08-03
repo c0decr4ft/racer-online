@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "wasm:build": "node scripts/build-wasm.mjs",
+    "wasm:verify": "node scripts/verify-vehicle-wasm.mjs",
     "server": "node server/index.mjs",
     "dev:online": "concurrently -k -n web,ws -c cyan,magenta \"vite\" \"node server/index.mjs\"",
     "build": "tsc && vite build",
