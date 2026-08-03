@@ -38,6 +38,7 @@ const NAME_MAX = 10;
 const PRESENCE_STALE_MS = 75_000;
 const PRESENCE_KEEP_HOURS = 14 * 24;
 const PRESENCE_HISTORY_EPOCH = 2;
+const PRESENCE_MAX_SAMPLES = 2_000;
 
 const TRACK_IDS = [
   "forest-loop",
@@ -83,7 +84,8 @@ function normalizeSessionId(raw) {
 /** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, clients: Map<string, Client> }} Room */
 /** @typedef {{ name: string, timeMs: number, bestLapMs?: number, at: number, trackId?: string }} BoardEntry */
 /** @typedef {Record<string, BoardEntry[]>} BoardStore */
-/** @typedef {{ buckets: Record<string, number>, sessions: Record<string, number>, updatedAt: number, historyEpoch: number }} PresenceStore */
+/** @typedef {{ at: number, count: number }} PresenceSample */
+/** @typedef {{ buckets: Record<string, number>, samples: PresenceSample[], sessions: Record<string, number>, updatedAt: number, historyEpoch: number }} PresenceStore */
 
 /** @type {Map<string, Room>} */
 const rooms = new Map();
@@ -221,7 +223,7 @@ function hourKeyToMs(key) {
 
 /** @returns {PresenceStore} */
 function emptyPresence() {
-  return { buckets: {}, sessions: {}, updatedAt: 0, historyEpoch: PRESENCE_HISTORY_EPOCH };
+  return { buckets: {}, samples: [], sessions: {}, updatedAt: 0, historyEpoch: PRESENCE_HISTORY_EPOCH };
 }
 
 /** @returns {PresenceStore} */
@@ -251,6 +253,23 @@ function parsePresence(data) {
         store.buckets[k] = Math.max(0, Math.round(v));
       }
     }
+  }
+  if (Array.isArray(obj.samples)) {
+    for (const row of obj.samples) {
+      if (
+        row &&
+        typeof row.at === "number" &&
+        Number.isFinite(row.at) &&
+        row.at > 0 &&
+        typeof row.count === "number" &&
+        Number.isFinite(row.count) &&
+        row.count >= 0
+      ) {
+        store.samples.push({ at: Math.round(row.at), count: Math.round(row.count) });
+      }
+    }
+    store.samples.sort((a, b) => a.at - b.at);
+    store.samples = store.samples.slice(-PRESENCE_MAX_SAMPLES);
   }
   if (obj.sessions && typeof obj.sessions === "object") {
     for (const [id, at] of Object.entries(obj.sessions)) {
@@ -283,6 +302,9 @@ function prunePresence(store, now = Date.now()) {
   }
   return {
     buckets,
+    samples: store.samples
+      .filter((sample) => sample.at >= cutoff)
+      .slice(-PRESENCE_MAX_SAMPLES),
     sessions,
     updatedAt: store.updatedAt,
     historyEpoch: Math.max(store.historyEpoch, PRESENCE_HISTORY_EPOCH),
@@ -380,8 +402,20 @@ function recordPresencePeak(store, now = Date.now()) {
   const peak = activePresenceCount(store, now);
   const key = hourKey(now);
   store.buckets[key] = Math.max(store.buckets[key] ?? 0, peak);
+  recordPresenceSample(store, now, peak);
   store.updatedAt = now;
   store.historyEpoch = PRESENCE_HISTORY_EPOCH;
+}
+
+/** Record changes rather than hourly peaks so the graph can move down and back up. */
+function recordPresenceSample(store, now = Date.now(), count = activePresenceCount(store, now)) {
+  const last = store.samples.at(-1);
+  if (!last || last.count !== count) {
+    store.samples.push({ at: now, count });
+    if (store.samples.length > PRESENCE_MAX_SAMPLES) {
+      store.samples.splice(0, store.samples.length - PRESENCE_MAX_SAMPLES);
+    }
+  }
 }
 
 /** @param {PresenceStore} store */
@@ -391,10 +425,18 @@ function presenceSnapshot(store) {
     .map(([key, count]) => ({ key, count, at: hourKeyToMs(key) }))
     .filter((b) => b.at > 0)
     .sort((a, b) => a.at - b.at);
+  const nowAt = Date.now();
+  const now = activePresenceCount(pruned, nowAt);
+  const samples = pruned.samples.slice();
+  const last = samples.at(-1);
+  if (!last || last.count !== now || nowAt - last.at > 1_000) {
+    samples.push({ at: nowAt, count: now });
+  }
   return {
     ok: true,
-    now: activePresenceCount(pruned),
+    now,
     buckets,
+    samples,
     updatedAt: pruned.updatedAt,
     source: "server",
     racing: [...rooms.values()].reduce((n, room) => n + room.clients.size, 0),
@@ -783,6 +825,7 @@ const httpServer = createServer(async (req, res) => {
       const action = String(data.action || "heartbeat").toLowerCase();
       if (action === "leave") {
         delete presence.sessions[id];
+        recordPresenceSample(presence, now);
         presence.updatedAt = now;
         presence.historyEpoch = PRESENCE_HISTORY_EPOCH;
       } else {
@@ -1020,6 +1063,7 @@ setInterval(() => {
 setInterval(() => {
   const next = prunePresence(presence);
   if (Object.keys(next.sessions).length !== Object.keys(presence.sessions).length) {
+    recordPresenceSample(next);
     presence = savePresence(next);
   } else {
     presence = next;
