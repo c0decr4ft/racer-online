@@ -567,6 +567,68 @@ async function main() {
       : Infinity;
   assert("mp:remote-position-current", trackingError < 3, `error=${trackingError.toFixed(2)}m`);
 
+  // Mid-race leave must drop lobbyPlayers — next map-vote round reuses that roster.
+  const leavePrune = await page.evaluate(() => {
+    const g = window.__game;
+    if (!g?.net?.handlers?.onLeave) return { ok: false, reason: "no-handler" };
+    const ghostId = "ghost-mid-race";
+    const ghost = {
+      id: ghostId,
+      name: "Ghost",
+      color: 0xff0000,
+      accent: 0xffffff,
+      kind: "car",
+      x: 0,
+      z: 0,
+      h: 0,
+      s: 0,
+      g: "1",
+      lap: 1,
+    };
+    g.lobbyPlayers.push(ghost);
+    g.spawnRemote(ghost);
+    g.net.handlers.onLeave(ghostId, g.net.hostId);
+    return {
+      ok: true,
+      lobbyHasGhost: g.lobbyPlayers.some((p) => p.id === ghostId),
+      remoteHasGhost: g.remotes.has(ghostId),
+    };
+  });
+  assert("mp:mid-race-leave-prunes-lobby", leavePrune.ok && !leavePrune.lobbyHasGhost, JSON.stringify(leavePrune));
+  assert("mp:mid-race-leave-removes-remote", leavePrune.ok && !leavePrune.remoteHasGhost, JSON.stringify(leavePrune));
+
+  // Online wall-explode must soft-recover, not locally restart the shared race.
+  const explodeGuard = await page.evaluate(() => {
+    const g = window.__game;
+    if (!g?.triggerExplode) return { ok: false, reason: "no-explode" };
+    g.lap = 2;
+    const raceStart = g.raceStart;
+    g.triggerExplode();
+    g.explodeRestartAt = 0;
+    return { ok: true, raceStart };
+  });
+  await page.waitForTimeout(120);
+  const afterExplode = await page.evaluate(() => {
+    const g = window.__game;
+    return {
+      lap: g?.lap,
+      raceStart: g?.raceStart,
+      exploding: g?.exploding,
+      running: g?.running,
+      finished: g?.finished,
+    };
+  });
+  assert(
+    "mp:online-explode-keeps-lap",
+    explodeGuard.ok && afterExplode.lap === 2 && afterExplode.raceStart === explodeGuard.raceStart,
+    JSON.stringify({ explodeGuard, afterExplode }),
+  );
+  assert(
+    "mp:online-explode-no-local-restart",
+    explodeGuard.ok && afterExplode.running && !afterExplode.finished && !afterExplode.exploding,
+    JSON.stringify(afterExplode),
+  );
+
   // Server-announced finish opens all-six-map voting on every client.
   await page.evaluate(() => window.__game?.net?.reportFinish?.(65432, 21000));
   await page.waitForTimeout(400);
