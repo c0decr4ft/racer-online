@@ -299,9 +299,12 @@ export class Game {
         else if (this.running) this.spawnRemote(p);
       },
       onLeave: (id, hostId) => {
+        // Always drop leavers from the lobby roster — beginOnlineRace / grid
+        // placement reuse this list for the next map-vote round. Keeping a
+        // mid-race disconnect here respawns a ghost car on the next start.
+        this.lobbyPlayers = this.lobbyPlayers.filter((p) => p.id !== id);
+        if (hostId) this.net.hostId = hostId;
         if (this.inLobby) {
-          this.lobbyPlayers = this.lobbyPlayers.filter((p) => p.id !== id);
-          if (hostId) this.net.hostId = hostId;
           this.renderLobby();
         } else {
           this.removeRemote(id);
@@ -422,16 +425,22 @@ export class Game {
     document.getElementById("map-select-back")!.onclick = () => this.closeMapSelect();
     document.getElementById("restart-btn")!.onclick = () => {
       void this.audio.unlock().then(() => {
+        // Online rounds are server-authoritative (map vote → shared start).
+        // A local restart would desync laps and let reportFinish steal the win.
+        if (this.online) return;
         this.audio.stopMusic();
-        // AI race again → new random map; solo/online keep chosen course
-        const trackId =
-          this.online || this.solo || this.practice ? this.trackId : randomTrackId();
+        // AI race again → new random map; solo keeps chosen course
+        const trackId = this.solo || this.practice ? this.trackId : randomTrackId();
         this.startRace({ solo: this.solo, trackId });
       });
     };
     document.getElementById("resume-btn")!.onclick = () => this.resume();
     document.getElementById("pause-restart-btn")!.onclick = () => {
       void this.audio.unlock().then(() => {
+        if (this.online) {
+          this.resume();
+          return;
+        }
         this.audio.stopMusic();
         this.startRace({ practice: this.practice, solo: this.solo, trackId: this.trackId });
       });
@@ -1670,7 +1679,14 @@ export class Game {
         this.updateExplode(dt);
         this.updateCamera(dt);
         if (performance.now() >= this.explodeRestartAt) {
-          this.startRace({ practice: this.practice, solo: this.solo, trackId: this.trackId });
+          if (this.online) {
+            // Soft recover into the same shared race. A full local startRace
+            // resets laps/timer while the room is still "racing", so finishing
+            // again would reportFinish and crown a false winner.
+            this.recoverOnlineAfterExplode();
+          } else {
+            this.startRace({ practice: this.practice, solo: this.solo, trackId: this.trackId });
+          }
         }
       } else {
         if (this.countingDown) this.tickCountdown(now);
@@ -1924,6 +1940,25 @@ export class Game {
     this.audio.stopDriveMusic();
     this.audio.playBoom();
     this.spawnExplodeFx();
+  }
+
+  /** Put the local racer back on the shared grid without resetting race progress. */
+  private recoverOnlineAfterExplode() {
+    this.clearExplode(true);
+    this.resetWallHits();
+    this.input.clearDriveKeys();
+    const ids = this.sortedOnlineIds();
+    const myIndex = ids.indexOf(this.net.id);
+    const slot = this.onlineGridSlot(myIndex >= 0 ? myIndex : 0, Math.max(1, ids.length));
+    const { pos, heading } = this.spawnPose(slot.t, slot.offset);
+    this.player.reset(pos, heading);
+    this.player.mesh.visible = true;
+    this.resetSticky(this.player);
+    this.lastT = this.projectSticky(this.player, this.player.state.position).t;
+    this.el.wrongWay.classList.add("hidden");
+    this.snapCamera();
+    this.syncTouchControls();
+    if (!this.paused && !this.gridHeld) this.audio.playDriveMusic();
   }
 
   private spawnExplodeFx() {
