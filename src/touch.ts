@@ -82,22 +82,9 @@ export class TouchControls {
       };
 
       const onUp = (e: PointerEvent) => {
-        const tracked = this.pointers.get(e.pointerId);
+        const tracked = this.releasePointer(e.pointerId);
         if (!tracked) return;
         e.preventDefault();
-        this.pointers.delete(e.pointerId);
-        // Only release if no other pointer still holding the same action
-        let still = false;
-        for (const a of this.pointers.values()) {
-          if (a === tracked) {
-            still = true;
-            break;
-          }
-        }
-        if (!still) {
-          el.classList.remove("is-active");
-          this.applyAction(tracked, false);
-        }
       };
 
       el.addEventListener("pointerdown", onDown);
@@ -107,6 +94,30 @@ export class TouchControls {
       // Block context menu / callout on long-press
       el.addEventListener("contextmenu", (e) => e.preventDefault());
     });
+
+    // Mobile browsers can release a pointer outside its button or interrupt the
+    // page without delivering pointerup to the captured element.
+    window.addEventListener("pointerup", (e) => this.releasePointer(e.pointerId));
+    window.addEventListener("pointercancel", (e) => this.releasePointer(e.pointerId));
+    window.addEventListener("blur", () => this.clearAll());
+    window.addEventListener("pagehide", () => this.clearAll());
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) this.clearAll();
+    });
+  }
+
+  private releasePointer(pointerId: number): TouchAction | undefined {
+    const action = this.pointers.get(pointerId);
+    if (!action) return undefined;
+    this.pointers.delete(pointerId);
+    for (const held of this.pointers.values()) {
+      if (held === action) return action;
+    }
+    this.root
+      ?.querySelectorAll<HTMLElement>(`[data-touch="${action}"]`)
+      .forEach((el) => el.classList.remove("is-active"));
+    this.applyAction(action, false);
+    return action;
   }
 
   private applyAction(action: TouchAction, down: boolean) {
@@ -144,6 +155,9 @@ export class TouchControls {
   private clearAll() {
     this.left = this.right = this.gas = this.brake = false;
     this.pointers.clear();
+    this.root
+      ?.querySelectorAll<HTMLElement>("[data-touch].is-active")
+      .forEach((el) => el.classList.remove("is-active"));
     this.input.clearTouchDrive();
   }
 }

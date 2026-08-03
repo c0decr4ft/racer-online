@@ -131,6 +131,15 @@ export class RemotePlayer {
     while (dh > Math.PI) dh -= Math.PI * 2;
     while (dh < -Math.PI) dh += Math.PI * 2;
     const targetH = b.h + dh * Math.min(4, leadMs / span);
+    const turnRate = dh / spanSeconds;
+    const targetLean =
+      this.kind === "bike"
+        ? THREE.MathUtils.clamp(
+            -Math.atan((Math.abs(b.s) * turnRate) / 9.81) * 0.72,
+            -0.42,
+            0.42,
+          )
+        : 0;
 
     const visualDt = this.lastVisualAt > 0 ? Math.min(0.1, (now - this.lastVisualAt) / 1000) : 0.05;
     this.lastVisualAt = now;
@@ -139,6 +148,7 @@ export class RemotePlayer {
     if (farAway) {
       this.mesh.position.set(targetX, 0, targetZ);
       this.mesh.rotation.y = targetH;
+      this.mesh.rotation.z = targetLean;
     } else {
       this.mesh.position.x += (targetX - this.mesh.position.x) * alpha;
       this.mesh.position.z += (targetZ - this.mesh.position.z) * alpha;
@@ -146,6 +156,7 @@ export class RemotePlayer {
       while (visualDh > Math.PI) visualDh -= Math.PI * 2;
       while (visualDh < -Math.PI) visualDh += Math.PI * 2;
       this.mesh.rotation.y += visualDh * alpha;
+      this.mesh.rotation.z += (targetLean - this.mesh.rotation.z) * alpha;
     }
 
     // Project name tag

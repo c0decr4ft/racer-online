@@ -370,11 +370,18 @@ export class Game {
       setTimeout(() => {
         this.refreshTouchMode();
         this.onResize();
-      }, 120);
+      }, 250);
     });
     window.visualViewport?.addEventListener("resize", () => this.onResize());
     window.matchMedia("(pointer: coarse)").addEventListener("change", () => this.refreshTouchMode());
     window.matchMedia("(hover: none)").addEventListener("change", () => this.refreshTouchMode());
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        this.input.clearDriveKeys();
+      } else if (this.running && !this.paused && !this.finished) {
+        void this.audio.unlock();
+      }
+    });
     this.renderer.setAnimationLoop(() => this.frame());
   }
 
@@ -1616,6 +1623,7 @@ export class Game {
   private onResize() {
     this.viewport = viewportSize();
     const { w, h } = this.viewport;
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.25));
     this.camera.aspect = w / Math.max(1, h);
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);

@@ -232,7 +232,14 @@ export class Vehicle {
     this.mesh.position.copy(s.position);
     this.mesh.rotation.order = "YXZ";
     this.mesh.rotation.y = s.heading;
-    this.mesh.rotation.z = THREE.MathUtils.clamp(-s.steerAngle * (Math.abs(s.speed) / 50), -0.14, 0.14);
+    const isBike = this.mesh.userData.kind === "bike";
+    const leanLimit = isBike ? 0.42 : 0.14;
+    const leanSpeed = isBike ? 34 : 50;
+    this.mesh.rotation.z = THREE.MathUtils.clamp(
+      -s.steerAngle * (Math.abs(s.speed) / leanSpeed),
+      -leanLimit,
+      leanLimit,
+    );
     this.mesh.rotation.x = THREE.MathUtils.clamp(-s.speed * 0.00055, -0.045, 0.03);
   }
 
