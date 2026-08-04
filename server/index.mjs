@@ -24,6 +24,8 @@ const STATIC_BASE = (
 ).replace(/\/$/, "");
 const NET_TICK_MS = 1000 / 30;
 const MAP_VOTE_MS = 20_000;
+/** Must cover the client 3→2→1→GO hold (3×1000ms before GO releases controls). */
+const RACE_COUNTDOWN_MS = 3_000;
 const MAX_PLAYERS = 8;
 const PLAYER_COLORS = [0xe4eaf2, 0xe23b2e, 0x2a66f0, 0xf0c020, 0x1dbf6a, 0xb44dff, 0xff6b9d, 0x00d4ff];
 const DIR = dirname(fileURLToPath(import.meta.url));
@@ -81,7 +83,7 @@ function normalizeSessionId(raw) {
 /** @typedef {{ id: string, name: string, color: number, accent: number, kind: string, x: number, z: number, h: number, s: number, g: string, lap: number }} Pose */
 /** @typedef {{ id: string, name: string, color: number, room: string, ws: import('ws').WebSocket, pose: Pose, lastPoseAt: number }} Client */
 /** @typedef {{ trackId: string, order: number }} TrackVote */
-/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, clients: Map<string, Client> }} Room */
+/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, raceOpenAt: number, clients: Map<string, Client> }} Room */
 /** @typedef {{ name: string, timeMs: number, bestLapMs?: number, at: number, trackId?: string }} BoardEntry */
 /** @typedef {Record<string, BoardEntry[]>} BoardStore */
 /** @typedef {{ at: number, count: number }} PresenceSample */
@@ -596,7 +598,9 @@ function resolveMapVote(room) {
       client.pose.lap = 1;
       client.lastPoseAt = 0;
     }
-    const at = Date.now() + 250;
+    const now = Date.now();
+    room.raceOpenAt = now + RACE_COUNTDOWN_MS;
+    const at = now + 250;
     broadcast(room, { t: "start", at, trackId: room.trackId, kind: room.kind });
     console.log(`[next] ${room.name} → ${room.trackId} (${room.clients.size}p)`);
   }, 1800);
@@ -658,6 +662,7 @@ function admitClient(ws, msg, mode) {
       votes: new Map(),
       voteOrder: 0,
       voteEndsAt: 0,
+      raceOpenAt: 0,
       clients: new Map(),
     };
     rooms.set(roomName, room);
@@ -960,7 +965,10 @@ wss.on("connection", (ws) => {
       room.votes.clear();
       room.voteOrder = 0;
       room.voteEndsAt = 0;
-      const at = Date.now() + 250;
+      const now = Date.now();
+      // Clients still run a local 3-2-1-GO hold; reject finishes until that window ends.
+      room.raceOpenAt = now + RACE_COUNTDOWN_MS;
+      const at = now + 250;
       broadcast(room, { t: "start", at, trackId: room.trackId, kind: room.kind });
       console.log(`[start] ${room.name} by ${client.name} → ${room.trackId} ${room.kind} (${room.clients.size}p)`);
       return;
@@ -991,6 +999,9 @@ wss.on("connection", (ws) => {
 
     if (msg.t === "finish") {
       if (room.phase !== "racing" || room.winnerId) return;
+      // Block countdown-window finishes — otherwise any client can crown themselves
+      // before GO while everyone else is still frozen on the grid.
+      if (Date.now() < (room.raceOpenAt || 0)) return;
       const timeMs = Math.max(1_000, Math.min(3_600_000, Math.round(Number(msg.timeMs) || 0)));
       room.winnerId = client.id;
       room.phase = "finished";
