@@ -203,6 +203,20 @@ async function main() {
     await new Promise((r) => setTimeout(r, 200));
     ok("ws:host-start-sent");
     if (guest.ws) {
+      // Countdown hold (3→2→1→GO) must reject finishes — otherwise any client
+      // can steal the race while others are still frozen on the grid.
+      const earlyHost = waitForWsEvent(host.ws, "raceResult", 900);
+      const earlyGuest = waitForWsEvent(guest.ws, "raceResult", 900);
+      host.ws.send(JSON.stringify({ t: "finish", timeMs: 1000, bestLapMs: 1000 }));
+      const [earlyA, earlyB] = await Promise.all([earlyHost, earlyGuest]);
+      assert(
+        "ws:finish-rejected-during-countdown",
+        !earlyA && !earlyB,
+        `early host=${earlyA?.winnerName || "none"} guest=${earlyB?.winnerName || "none"}`,
+      );
+
+      // Matches server RACE_COUNTDOWN_MS (3s) plus a small margin after start.
+      await new Promise((r) => setTimeout(r, 3_100));
       const hostResult = waitForWsEvent(host.ws, "raceResult");
       const guestResult = waitForWsEvent(guest.ws, "raceResult");
       host.ws.send(JSON.stringify({ t: "finish", timeMs: 65432, bestLapMs: 21000 }));
