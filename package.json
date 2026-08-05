@@ -15,6 +15,7 @@
     "start": "node server/index.mjs",
     "start:prod": "node server/index.mjs",
     "start:local": "npm run dev:online",
+    "test:feedback": "node scripts/verify-feedback.mjs",
     "test:full": "node scripts/full-suite.mjs"
   },
   "devDependencies": {
