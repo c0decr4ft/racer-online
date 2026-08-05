@@ -112,6 +112,39 @@ async function putBlobStore(store: FeedbackStore): Promise<FeedbackStore> {
   }
 }
 
+/** Union message lists by id (newest-first order preserved by normalizeStore). */
+export function mergeFeedbackStores(...stores: FeedbackStore[]): FeedbackStore {
+  const messages: FeedbackMessage[] = [];
+  for (const store of stores) {
+    if (Array.isArray(store?.messages) && store.messages.length) {
+      messages.push(...store.messages);
+    }
+  }
+  return normalizeStore({ messages });
+}
+
+/**
+ * Mirror a store to the public blob after merging with the latest remote.
+ * Prevents a freshly restarted empty game server from wiping worldwide feedback.
+ */
+async function publishMergedFeedback(store: FeedbackStore): Promise<FeedbackStore> {
+  let latest: FeedbackStore;
+  try {
+    latest = await fetchBlobStore();
+  } catch {
+    if (store.messages.length === 0) {
+      throw new Error("refusing empty feedback publish without remote");
+    }
+    return putBlobStore(store);
+  }
+
+  const merged = mergeFeedbackStores(latest, store);
+  if (latest.messages.length > 0 && merged.messages.length === 0) {
+    return latest;
+  }
+  return putBlobStore(merged);
+}
+
 async function fetchServerFeedback(): Promise<FeedbackStore | null> {
   const url = apiUrl("/feedback");
   if (!url) return null;
@@ -189,15 +222,17 @@ export async function submitFeedback(text: string, name?: string): Promise<Feedb
   const fromServer = await postServerFeedback(msg);
   if (fromServer) {
     writeLocal(fromServer.messages);
-    // Best-effort mirror to public blob
-    void putBlobStore(fromServer).catch(() => undefined);
+    // Merge with the public blob — never replace a fuller worldwide history with a
+    // sparse post-restart server store.
+    void publishMergedFeedback(fromServer).catch(() => undefined);
     return { messages: fromServer.messages, source: "server" };
   }
 
   try {
-    let store = await fetchBlobStore();
-    store.messages = [msg, ...store.messages];
-    store = await putBlobStore(store);
+    const remote = await fetchBlobStore();
+    const store = await publishMergedFeedback(
+      normalizeStore({ messages: [msg, ...remote.messages] }),
+    );
     writeLocal(store.messages);
     return { messages: store.messages, source: "online" };
   } catch {
