@@ -154,7 +154,7 @@ function attachHeadBeams(
 ) {
   const beams: THREE.SpotLight[] = [];
   for (const m of mounts) {
-    const light = new THREE.SpotLight(0xfff0d0, 0, 40, 0.46, 0.45, 1.1);
+    const light = new THREE.SpotLight(0xfff2c8, 0, 55, 0.52, 0.42, 1.05);
     light.position.set(m.x, m.y, m.z);
     light.castShadow = false;
     const target = new THREE.Object3D();
@@ -173,21 +173,21 @@ export function setVehicleHeadlights(root: THREE.Group | undefined, on: boolean)
   if (!root) return;
   const beams = root.userData.headBeams as THREE.SpotLight[] | undefined;
   if (beams) {
-    for (const b of beams) b.intensity = on ? 3.6 : 0;
+    for (const b of beams) b.intensity = on ? 6.8 : 0;
   }
   const heads = root.userData.headLightMaterials as THREE.MeshStandardMaterial[] | undefined;
   const headIdle = root.userData.kind === "bike" ? 0.85 : 0.9;
   if (heads) {
     for (const m of heads) {
-      m.emissiveIntensity = on ? 3.4 : headIdle;
-      m.emissive.setHex(on ? 0xfff6dd : 0xf7fafc);
-      m.color.setHex(on ? 0xfffaf0 : 0xf7fafc);
+      m.emissiveIntensity = on ? 5.4 : headIdle;
+      m.emissive.setHex(on ? 0xffefb0 : 0xf7fafc);
+      m.color.setHex(on ? 0xfff6d8 : 0xf7fafc);
     }
   }
   const tails = root.userData.tailLightMaterials as THREE.MeshStandardMaterial[] | undefined;
   const tailIdle = root.userData.kind === "bike" ? 0.65 : 0.7;
   if (tails) {
-    for (const m of tails) m.emissiveIntensity = on ? 1.7 : tailIdle;
+    for (const m of tails) m.emissiveIntensity = on ? 2.25 : tailIdle;
   }
 }
 
