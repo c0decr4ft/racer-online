@@ -1,4 +1,5 @@
 import type { Gear, InputState } from "../input";
+import { getSurfaceGrip } from "../weather";
 import {
   ACCEL_BASE,
   BRAKE,
@@ -84,6 +85,22 @@ export function vehiclePhysicsBackend(): "cpp-wasm" | "typescript" {
   return core && result ? "cpp-wasm" : "typescript";
 }
 
+/** Scale controls for wet/night grip without rebuilding Wasm. */
+function gripAdjustedInput(input: InputState, grip: number): {
+  throttle: number;
+  brake: number;
+  steer: number;
+  powerScale: number;
+} {
+  const g = clamp(grip, 0.55, 1);
+  return {
+    throttle: input.throttle,
+    brake: input.brake * (0.62 + 0.38 * g),
+    steer: input.steer * (0.7 + 0.3 * g),
+    powerScale: 0.82 + 0.18 * g,
+  };
+}
+
 function stepWithWasm(
   state: PhysicsVehicleState,
   dt: number,
@@ -91,6 +108,7 @@ function stepWithWasm(
   powerMultiplier: number,
 ): boolean {
   if (!core || !result) return false;
+  const wet = gripAdjustedInput(input, getSurfaceGrip());
   core.vehicle_step(
     dt,
     state.position.x,
@@ -99,10 +117,10 @@ function stepWithWasm(
     state.speed,
     state.steerAngle,
     gearCode(state.gear),
-    powerMultiplier,
-    input.throttle,
-    input.brake,
-    input.steer,
+    powerMultiplier * wet.powerScale,
+    wet.throttle,
+    wet.brake,
+    wet.steer,
   );
   state.position.set ? state.position.set(result[0], 0, result[1]) : Object.assign(state.position, {
     x: result[0],
@@ -121,22 +139,24 @@ function stepWithTypeScript(
   input: InputState,
   powerMultiplier: number,
 ) {
-  const targetSteer = input.steer * MAX_STEER;
+  const wet = gripAdjustedInput(input, getSurfaceGrip());
+  const power = powerMultiplier * wet.powerScale;
+  const targetSteer = wet.steer * MAX_STEER;
   state.steerAngle +=
     (targetSteer - state.steerAngle) * Math.min(1, STEER_SPEED * dt * 3);
 
   const gear = state.gear;
   if (gear === "N") {
-    if (input.brake > 0) {
-      state.speed -= Math.sign(state.speed || 1) * BRAKE * input.brake * dt;
+    if (wet.brake > 0) {
+      state.speed -= Math.sign(state.speed || 1) * BRAKE * wet.brake * dt;
     }
   } else {
     const stats = GEAR_STATS[gear];
     const forward = gear !== "R";
     const absSpeed = Math.abs(state.speed);
-    const cap = stats.max * powerMultiplier;
+    const cap = stats.max * power;
 
-    if (input.throttle > 0 && absSpeed < cap) {
+    if (wet.throttle > 0 && absSpeed < cap) {
       const belowBand = absSpeed < stats.pullFrom;
       const lug = belowBand
         ? clamp(absSpeed / Math.max(1, stats.pullFrom), 0.08, 0.35)
@@ -146,16 +166,16 @@ function stepWithTypeScript(
         nearLimit > 0.85 ? Math.max(0.55, 1 - (nearLimit - 0.85) * 3) : 1;
       const launch = gear === 1 && absSpeed < 5 ? 1.3 : 1;
       const force =
-        ACCEL_BASE * stats.accel * powerMultiplier * input.throttle * lug * taper * launch;
+        ACCEL_BASE * stats.accel * power * wet.throttle * lug * taper * launch;
       state.speed += (forward ? 1 : -1) * force * dt;
       state.speed = forward ? Math.min(state.speed, cap) : Math.max(state.speed, -cap);
-    } else if (input.throttle === 0 && absSpeed > 0.5) {
+    } else if (wet.throttle === 0 && absSpeed > 0.5) {
       state.speed -= Math.sign(state.speed) * ENGINE_BRAKE * absSpeed * dt;
     }
 
-    if (input.brake > 0) {
+    if (wet.brake > 0) {
       if (absSpeed > 0.4) {
-        state.speed -= Math.sign(state.speed) * BRAKE * input.brake * dt;
+        state.speed -= Math.sign(state.speed) * BRAKE * wet.brake * dt;
       } else {
         state.speed = 0;
       }

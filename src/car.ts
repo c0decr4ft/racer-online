@@ -147,6 +147,50 @@ function paintable(root: THREE.Group, body: THREE.MeshStandardMaterial, accent: 
   root.userData.accentColor = (accent.color as THREE.Color).getHex();
 }
 
+/** Spot beams parented to the vehicle so they steer with the nose. */
+function attachHeadBeams(
+  root: THREE.Group,
+  mounts: { x: number; y: number; z: number }[],
+) {
+  const beams: THREE.SpotLight[] = [];
+  for (const m of mounts) {
+    const light = new THREE.SpotLight(0xfff0d0, 0, 40, 0.46, 0.45, 1.1);
+    light.position.set(m.x, m.y, m.z);
+    light.castShadow = false;
+    const target = new THREE.Object3D();
+    // Aim down onto the asphalt a short way ahead of the nose
+    target.position.set(m.x * 0.15, -0.35, m.z + 10);
+    root.add(target);
+    light.target = target;
+    root.add(light);
+    beams.push(light);
+  }
+  root.userData.headBeams = beams;
+}
+
+/** Toggle lamp glow + beams (night driving). */
+export function setVehicleHeadlights(root: THREE.Group | undefined, on: boolean) {
+  if (!root) return;
+  const beams = root.userData.headBeams as THREE.SpotLight[] | undefined;
+  if (beams) {
+    for (const b of beams) b.intensity = on ? 3.6 : 0;
+  }
+  const heads = root.userData.headLightMaterials as THREE.MeshStandardMaterial[] | undefined;
+  const headIdle = root.userData.kind === "bike" ? 0.85 : 0.9;
+  if (heads) {
+    for (const m of heads) {
+      m.emissiveIntensity = on ? 3.4 : headIdle;
+      m.emissive.setHex(on ? 0xfff6dd : 0xf7fafc);
+      m.color.setHex(on ? 0xfffaf0 : 0xf7fafc);
+    }
+  }
+  const tails = root.userData.tailLightMaterials as THREE.MeshStandardMaterial[] | undefined;
+  const tailIdle = root.userData.kind === "bike" ? 0.65 : 0.7;
+  if (tails) {
+    for (const m of tails) m.emissiveIntensity = on ? 1.7 : tailIdle;
+  }
+}
+
 /** Sleeker GT coupe — lower stance, clearer cabin glass, richer detailing. */
 export function createCar(
   bodyColor = 0xd0d7e0,
@@ -158,7 +202,8 @@ export function createCar(
   const dark = mat(0x12161c, { metal: 0.55, rough: 0.42 });
   const carbon = mat(0x1c222b, { metal: 0.42, rough: 0.52 });
   const glass = mat(0x0a1520, { metal: 0.2, rough: 0.05 });
-  const lite = mat(0xf7fafc, { metal: 0.15, rough: 0.25, emissive: 0xf7fafc, emit: 0.9 });
+  const head = mat(0xf7fafc, { metal: 0.15, rough: 0.25, emissive: 0xf7fafc, emit: 0.9 });
+  const lite = mat(0xf7fafc, { metal: 0.15, rough: 0.25, emissive: 0xf7fafc, emit: 0.55 });
   const tail = mat(0xff2418, { metal: 0.25, rough: 0.35, emissive: 0xff2418, emit: 0.7 });
   const chrome = mat(0xb0b8c2, { metal: 1, rough: 0.14 });
   const accent = paintMat(accentColor, { metal: 0.32, rough: 0.4, emit: 0.16 });
@@ -173,8 +218,8 @@ export function createCar(
   box(car, 2.12, 0.07, 0.52, carbon, 0, 0.17, 2.2);
   box(car, 1.55, 0.12, 0.18, dark, 0, 0.32, 2.34);
   // Headlights (angled pods)
-  box(car, 0.48, 0.1, 0.08, lite, -0.7, 0.52, 2.36, 0, 0.08);
-  box(car, 0.48, 0.1, 0.08, lite, 0.7, 0.52, 2.36, 0, -0.08);
+  box(car, 0.48, 0.1, 0.08, head, -0.7, 0.52, 2.36, 0, 0.08);
+  box(car, 0.48, 0.1, 0.08, head, 0.7, 0.52, 2.36, 0, -0.08);
   box(car, 0.1, 0.05, 0.05, accent, -0.96, 0.4, 2.28);
   box(car, 0.1, 0.05, 0.05, accent, 0.96, 0.4, 2.28);
 
@@ -259,6 +304,12 @@ export function createCar(
   );
   paintable(car, body, accent);
   car.userData.kind = "car";
+  car.userData.headLightMaterials = [head];
+  car.userData.tailLightMaterials = [tail];
+  attachHeadBeams(car, [
+    { x: -0.7, y: 0.52, z: 2.36 },
+    { x: 0.7, y: 0.52, z: 2.36 },
+  ]);
   return car;
 }
 
@@ -324,7 +375,7 @@ export function createBike(
   const carbon = mat(0x1a1f28, { metal: 0.4, rough: 0.55 });
   const chrome = mat(0xc0c8d2, { metal: 1, rough: 0.16 });
   const glass = mat(0x0a1520, { metal: 0.2, rough: 0.06 });
-  const lite = mat(0xf7fafc, { metal: 0.15, rough: 0.25, emissive: 0xf7fafc, emit: 0.85 });
+  const head = mat(0xf7fafc, { metal: 0.15, rough: 0.25, emissive: 0xf7fafc, emit: 0.85 });
   const tail = mat(0xff2418, { metal: 0.25, rough: 0.35, emissive: 0xff2418, emit: 0.65 });
   const accent = paintMat(accentColor, { metal: 0.3, rough: 0.42, emit: 0.18 });
   const seat = mat(0x1a1210, { metal: 0.15, rough: 0.85 });
@@ -352,8 +403,8 @@ export function createBike(
   box(bike, 0.48, 0.22, 0.28, body, 0, 0.92, 1.0, -0.2);
   box(bike, 0.66, 0.1, 0.32, carbon, 0, 0.5, 1.26);
   box(bike, 0.46, 0.2, 0.06, glass, 0, 0.98, 1.28, -0.42);
-  box(bike, 0.18, 0.07, 0.05, lite, -0.2, 0.7, 1.4);
-  box(bike, 0.18, 0.07, 0.05, lite, 0.2, 0.7, 1.4);
+  box(bike, 0.18, 0.07, 0.05, head, -0.2, 0.7, 1.4);
+  box(bike, 0.18, 0.07, 0.05, head, 0.2, 0.7, 1.4);
   box(bike, 0.05, 0.04, 0.04, accent, 0, 0.6, 1.4);
 
   // Side panels
@@ -416,6 +467,12 @@ export function createBike(
 
   paintable(bike, body, accent);
   bike.userData.kind = "bike";
+  bike.userData.headLightMaterials = [head];
+  bike.userData.tailLightMaterials = [tail];
+  attachHeadBeams(bike, [
+    { x: -0.2, y: 0.7, z: 1.4 },
+    { x: 0.2, y: 0.7, z: 1.4 },
+  ]);
   return bike;
 }
 

@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { createVehicle, CAR_PALETTE } from "./car";
+import { createVehicle, CAR_PALETTE, setVehicleHeadlights } from "./car";
 import {
   createTrack,
   disposeTrack,
@@ -39,6 +39,7 @@ import {
   type VehicleKind,
 } from "./garage";
 import { setVersionSwitcherVisible } from "./versions";
+import { pickWeather, WeatherController } from "./weather";
 
 function formatTime(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "--:--.---";
@@ -217,6 +218,7 @@ export class Game {
     mpStartBtn: document.getElementById("mp-start-btn") as HTMLButtonElement,
   };
 
+  private weather!: WeatherController;
   private pendingFinishMs = 0;
   private mapVoteOptions: string[] = [];
   private mapVoteTrackId = "";
@@ -1007,6 +1009,7 @@ export class Game {
     this.trackId = this.track.id;
     this.boardTrackId = this.track.id;
     this.scene.add(this.track.group);
+    this.weather?.setTrackRoot(this.track.group);
     // Invalidate minimap bake — new path reference
     this.minimapPath = null;
     this.minimapPts = [];
@@ -1075,6 +1078,8 @@ export class Game {
     this.shadowNeedsWarmup = true;
     this.audio.playMenuMusic();
     this.syncMuteBtn();
+    this.weather.setMode("dry");
+    setVehicleHeadlights(this.player?.mesh, false);
   }
 
   private renderBoardList(entries: LeaderboardEntry[]) {
@@ -1273,9 +1278,8 @@ export class Game {
 
   private buildWorld() {
     this.scene.add(this.track.group);
-    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x4a6040, 0.9));
-    this.scene.add(new THREE.AmbientLight(0xffffff, 0.4));
-
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x4a6040, 0.9);
+    const ambient = new THREE.AmbientLight(0xffffff, 0.4);
     const sun = new THREE.DirectionalLight(0xfff5e6, 1.85);
     sun.position.set(40, 80, 20);
     sun.castShadow = true;
@@ -1286,7 +1290,12 @@ export class Game {
     sun.shadow.camera.right = 120;
     sun.shadow.camera.top = 120;
     sun.shadow.camera.bottom = -120;
+    this.scene.add(hemi);
+    this.scene.add(ambient);
     this.scene.add(sun);
+    this.weather = new WeatherController(this.renderer, this.scene, { hemi, ambient, sun });
+    this.weather.setTrackRoot(this.track.group);
+    this.weather.setMode("dry");
   }
 
   private spawnPose(t: number, offset: number) {
@@ -1464,6 +1473,12 @@ export class Game {
     this.input.clearDriveKeys();
     this.clearExplode(true);
     this.resetWallHits();
+    // Conditions are chosen by the game — no player weather picker
+    this.weather.setTrackRoot(this.track.group);
+    const weatherSeed = this.online
+      ? `${this.net.room || "online"}:${this.trackId}:${this.net.hostId || ""}`
+      : undefined;
+    this.weather.setMode(pickWeather(weatherSeed));
 
     if (this.online) {
       // Shared start-line grid for every human (sorted ids → same slots on all clients)
@@ -1751,6 +1766,13 @@ export class Game {
       this.camera.lookAt(p.x, 1.2, p.z);
     } else if (this.finished) {
       this.updateCamera(dt);
+    }
+
+    if (this.weather) {
+      const racing = this.running && !this.paused && !this.finished;
+      const pos = this.player?.state.position ?? this.track.startPosition;
+      const heading = this.player?.state.heading ?? this.track.startHeading;
+      this.weather.update(dt, pos, heading, racing, this.player?.mesh);
     }
 
     this.renderViews();
