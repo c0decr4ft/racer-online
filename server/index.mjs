@@ -751,7 +751,15 @@ let presence = loadPresence();
 
 const httpServer = createServer(async (req, res) => {
   cors(res);
-  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  // Host is attacker-controlled; a malformed value must not kill the process.
+  let url;
+  try {
+    url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  } catch {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: false, error: "bad request" }));
+    return;
+  }
 
   if (req.method === "OPTIONS") {
     res.writeHead(204);
