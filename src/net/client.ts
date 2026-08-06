@@ -5,9 +5,11 @@ import {
   NET_TICK_MS,
   type LobbyPhase,
   type NetVehicleKind,
+  type NetWeatherMode,
   type PlayerPose,
   type ServerMsg,
 } from "./protocol";
+import { applyWireWeather, normalizeWeatherMode } from "../weather";
 import { configuredApiBase, configuredWsUrl, sameOriginOnline } from "./onlineConfig";
 
 type Snapshot = { at: number; pose: PlayerPose };
@@ -195,6 +197,7 @@ export type WelcomeInfo = {
   hostId: string;
   trackId: string;
   kind: NetVehicleKind;
+  weather: NetWeatherMode;
   maxPlayers: number;
   phase: LobbyPhase;
 };
@@ -208,10 +211,11 @@ export type NetHandlers = {
     players: PlayerPose[];
     trackId: string;
     kind: NetVehicleKind;
+    weather: NetWeatherMode;
     hostId: string;
     maxPlayers: number;
   }) => void;
-  onStart: (at: number, trackId: string, kind: NetVehicleKind) => void;
+  onStart: (at: number, trackId: string, kind: NetVehicleKind, weather: NetWeatherMode) => void;
   /** Another (or local) driver crashed — reset everyone to the start grid. */
   onCrashReset: (byId: string, byName: string) => void;
   onRaceResult: (
@@ -234,6 +238,8 @@ export type RoomConnectOpts = {
   password?: string;
   /** Host-only on create — ignored for join (server forces room kind). */
   kind?: NetVehicleKind;
+  /** Host-only on create — room weather for every racer. */
+  weather?: NetWeatherMode;
   color?: number;
   accent?: number;
   maxPlayers?: number;
@@ -255,6 +261,8 @@ export class NetClient {
   trackId = "";
   /** Room vehicle class — set by host at create, forced for everyone. */
   kind: NetVehicleKind = "car";
+  /** Room weather — set by host at create, forced for everyone. */
+  weather: NetWeatherMode = "dry";
   maxPlayers = 8;
   phase: LobbyPhase | "" = "";
   /** Bumps on each connect/disconnect so stale socket handlers are ignored. */
@@ -266,10 +274,12 @@ export class NetClient {
   }
 
   createRoom(opts: Omit<RoomConnectOpts, "mode">) {
+    // Cache host choice immediately — welcome/start must not fall back to dry.
+    this.weather = normalizeWeatherMode(opts.weather);
     this.connect({ ...opts, mode: "create" });
   }
 
-  joinRoom(opts: Omit<RoomConnectOpts, "mode" | "maxPlayers" | "trackId" | "kind">) {
+  joinRoom(opts: Omit<RoomConnectOpts, "mode" | "maxPlayers" | "trackId" | "kind" | "weather">) {
     this.connect({ ...opts, mode: "join" });
   }
 
@@ -337,6 +347,7 @@ export class NetClient {
               maxPlayers: opts.maxPlayers,
               trackId: opts.trackId,
               kind: opts.kind === "bike" ? "bike" : "car",
+              weather: normalizeWeatherMode(opts.weather),
               color: opts.color,
               accent: opts.accent,
             }
@@ -368,6 +379,7 @@ export class NetClient {
         this.hostId = msg.hostId;
         this.trackId = msg.trackId;
         this.kind = msg.kind === "bike" ? "bike" : "car";
+        this.weather = applyWireWeather(msg.weather, this.weather);
         this.maxPlayers = msg.maxPlayers;
         this.phase = msg.phase;
         this.pending = null;
@@ -380,6 +392,7 @@ export class NetClient {
           hostId: msg.hostId,
           trackId: msg.trackId,
           kind: this.kind,
+          weather: this.weather,
           maxPlayers: msg.maxPlayers,
           phase: msg.phase,
         });
@@ -394,14 +407,16 @@ export class NetClient {
         this.hostId = msg.hostId;
         this.trackId = msg.trackId;
         this.kind = msg.kind === "bike" ? "bike" : "car";
+        this.weather = applyWireWeather(msg.weather, this.weather);
         this.maxPlayers = msg.maxPlayers;
-        this.handlers.onLobby(msg);
+        this.handlers.onLobby({ ...msg, weather: this.weather });
       } else if (msg.t === "start") {
         this.phase = "racing";
         this.finishSent = false;
         this.trackId = msg.trackId;
         this.kind = msg.kind === "bike" ? "bike" : "car";
-        this.handlers.onStart(msg.at, msg.trackId, this.kind);
+        this.weather = applyWireWeather(msg.weather, this.weather);
+        this.handlers.onStart(msg.at, msg.trackId, this.kind, this.weather);
       } else if (msg.t === "crashReset") {
         this.finishSent = false;
         this.handlers.onCrashReset(msg.byId, msg.byName);
@@ -501,7 +516,8 @@ export class NetClient {
   /** Host-only: begin the race for everyone in the lobby. */
   startRace() {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.myId) return;
-    this.ws.send(JSON.stringify({ t: "start" }));
+    // Re-assert room weather so play cannot drift from the create-room choice.
+    this.ws.send(JSON.stringify({ t: "start", weather: normalizeWeatherMode(this.weather) }));
   }
 
   /** Local wall-explode — server tells every racer to reset to the start grid. */

@@ -6,6 +6,8 @@ export const MAX_PLAYERS = 8;
 export const MIN_PLAYERS = 2;
 
 export type NetVehicleKind = "car" | "bike";
+/** Host-chosen at room create — same modes as WeatherController. */
+export type NetWeatherMode = "dry" | "night" | "rain";
 export type LobbyPhase = "lobby" | "racing" | "finished" | "starting";
 
 export type PlayerPose = {
@@ -31,6 +33,8 @@ export type ClientMsg =
       maxPlayers?: number;
       trackId?: string;
       kind?: NetVehicleKind;
+      /** Host-only — room weather for every racer. */
+      weather?: NetWeatherMode;
       color?: number;
       accent?: number;
     }
@@ -57,7 +61,8 @@ export type ClientMsg =
   | { t: "finish"; timeMs: number; bestLapMs: number }
   | { t: "crash" }
   | { t: "vote"; trackId: string }
-  | { t: "start" }
+  /** Host-only. Optional weather re-asserts the room setting on play. */
+  | { t: "start"; weather?: NetWeatherMode }
   | { t: "ping"; n: number };
 
 export type ServerMsg =
@@ -70,6 +75,7 @@ export type ServerMsg =
       hostId: string;
       trackId: string;
       kind: NetVehicleKind;
+      weather: NetWeatherMode;
       maxPlayers: number;
       phase: LobbyPhase;
     }
@@ -81,11 +87,12 @@ export type ServerMsg =
       players: PlayerPose[];
       trackId: string;
       kind: NetVehicleKind;
+      weather: NetWeatherMode;
       hostId: string;
       maxPlayers: number;
     }
   | { t: "state"; players: PlayerPose[] }
-  | { t: "start"; at: number; trackId: string; kind: NetVehicleKind }
+  | { t: "start"; at: number; trackId: string; kind: NetVehicleKind; weather: NetWeatherMode }
   /** One driver exploded — everyone resets to the start grid. */
   | { t: "crashReset"; byId: string; byName: string }
   | {

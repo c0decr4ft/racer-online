@@ -101,7 +101,7 @@
           aria-controls="dev-dashboard"
           aria-label="Developer tools"
         >
-          v2.8
+          v2.9
         </button>
       </div>
 
@@ -346,10 +346,18 @@
                 </div>
               </div>
               <div class="mp-field">
+                <span>Weather</span>
+                <div class="garage-kind mp-kind mp-weather" role="group" aria-label="Weather">
+                  <button id="mp-create-weather-dry" class="garage-kind-btn is-active" type="button" data-weather="dry">DRY</button>
+                  <button id="mp-create-weather-rain" class="garage-kind-btn" type="button" data-weather="rain">RAIN</button>
+                  <button id="mp-create-weather-night" class="garage-kind-btn" type="button" data-weather="night">NIGHT</button>
+                </div>
+              </div>
+              <div class="mp-field">
                 <span>Track</span>
                 <div id="mp-create-track-grid" class="map-grid mp-track-grid" role="listbox" aria-label="Tracks"></div>
               </div>
-              <p id="mp-create-status" class="tagline mp-status">Your vehicle class applies to everyone in the room</p>
+              <p id="mp-create-status" class="tagline mp-status">Vehicle class and weather apply to everyone in the room</p>
               <button type="submit">CREATE &amp; ENTER LOBBY</button>
               <button id="mp-create-back" class="btn-ghost" type="button">BACK</button>
             </form>
@@ -372,7 +380,7 @@
                 <span>Password</span>
                 <input id="mp-join-pass" type="password" maxlength="32" placeholder="Room password" autocomplete="current-password" />
               </label>
-              <p id="mp-join-status" class="tagline mp-status">Vehicle class is set by the host · garage paint still applies</p>
+              <p id="mp-join-status" class="tagline mp-status">Vehicle class and weather are set by the host · garage paint still applies</p>
               <button type="submit">ENTER LOBBY</button>
               <button id="mp-join-back" class="btn-ghost" type="button">BACK</button>
             </form>

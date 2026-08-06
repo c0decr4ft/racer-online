@@ -71,6 +71,11 @@ function normalizeKind(raw) {
   return String(raw ?? "").toLowerCase() === "bike" ? "bike" : "car";
 }
 
+function normalizeWeather(raw) {
+  const m = String(raw ?? "").toLowerCase();
+  return m === "night" || m === "rain" ? m : "dry";
+}
+
 function normalizeSessionId(raw) {
   const id = String(raw ?? "").trim();
   if (id.length < 8 || id.length > 80) return null;
@@ -81,7 +86,7 @@ function normalizeSessionId(raw) {
 /** @typedef {{ id: string, name: string, color: number, accent: number, kind: string, x: number, z: number, h: number, s: number, g: string, lap: number }} Pose */
 /** @typedef {{ id: string, name: string, color: number, room: string, ws: import('ws').WebSocket, pose: Pose, lastPoseAt: number }} Client */
 /** @typedef {{ trackId: string, order: number }} TrackVote */
-/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, lastCrashAt: number, clients: Map<string, Client> }} Room */
+/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, lastCrashAt: number, clients: Map<string, Client> }} Room */
 /** @typedef {{ name: string, timeMs: number, bestLapMs?: number, at: number, trackId?: string }} BoardEntry */
 /** @typedef {Record<string, BoardEntry[]>} BoardStore */
 /** @typedef {{ at: number, count: number }} PresenceSample */
@@ -597,8 +602,8 @@ function resolveMapVote(room) {
       client.lastPoseAt = 0;
     }
     const at = Date.now() + 250;
-    broadcast(room, { t: "start", at, trackId: room.trackId, kind: room.kind });
-    console.log(`[next] ${room.name} → ${room.trackId} (${room.clients.size}p)`);
+    broadcast(room, { t: "start", at, trackId: room.trackId, kind: room.kind, weather: room.weather });
+    console.log(`[next] ${room.name} → ${room.trackId} ${room.weather} (${room.clients.size}p)`);
   }, 1800);
 }
 
@@ -615,6 +620,7 @@ function lobbySnapshot(room) {
     players: roomPlayers(room),
     trackId: room.trackId,
     kind: room.kind,
+    weather: room.weather || "dry",
     hostId: room.hostId,
     maxPlayers: room.maxPlayers,
   };
@@ -651,6 +657,7 @@ function admitClient(ws, msg, mode) {
       maxPlayers: clampMaxPlayers(msg.maxPlayers),
       trackId: normalizeTrackId(msg.trackId),
       kind: normalizeKind(msg.kind),
+      weather: normalizeWeather(msg.weather),
       hostId: "",
       phase: "lobby",
       winnerId: "",
@@ -736,6 +743,7 @@ function admitClient(ws, msg, mode) {
     hostId: room.hostId,
     trackId: room.trackId,
     kind: room.kind,
+    weather: room.weather || "dry",
     maxPlayers: room.maxPlayers,
     phase: room.phase,
   });
@@ -743,7 +751,7 @@ function admitClient(ws, msg, mode) {
   broadcast(room, { t: "notice", text: `${name} joined` });
   broadcast(room, lobbySnapshot(room));
   console.log(
-    `[${mode}] ${name} (${kind}) → ${roomName} (${room.clients.size}/${room.maxPlayers}) track=${room.trackId}`,
+    `[${mode}] ${name} (${kind}) → ${roomName} (${room.clients.size}/${room.maxPlayers}) track=${room.trackId} weather=${room.weather || "dry"}`,
   );
   return client;
 }
@@ -955,6 +963,10 @@ wss.on("connection", (ws) => {
       }
       if (room.phase !== "lobby") return;
       if (msg.trackId != null) room.trackId = normalizeTrackId(msg.trackId);
+      // Host may re-assert create-room weather on play (belt-and-suspenders).
+      if (msg.weather != null && msg.weather !== "") {
+        room.weather = normalizeWeather(msg.weather);
+      }
       room.phase = "racing";
       room.winnerId = "";
       room.voteOptions = [];
@@ -962,8 +974,14 @@ wss.on("connection", (ws) => {
       room.voteOrder = 0;
       room.voteEndsAt = 0;
       const at = Date.now() + 250;
-      broadcast(room, { t: "start", at, trackId: room.trackId, kind: room.kind });
-      console.log(`[start] ${room.name} by ${client.name} → ${room.trackId} ${room.kind} (${room.clients.size}p)`);
+      broadcast(room, {
+        t: "start",
+        at,
+        trackId: room.trackId,
+        kind: room.kind,
+        weather: room.weather || "dry",
+      });
+      console.log(`[start] ${room.name} by ${client.name} → ${room.trackId} ${room.kind} ${room.weather || "dry"} (${room.clients.size}p)`);
       return;
     }
 

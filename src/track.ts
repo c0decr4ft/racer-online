@@ -33,6 +33,37 @@ function hash2(ix: number, iz: number) {
   return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
 }
 
+/** Streetlamp bulb — WeatherController boosts emissiveIntensity at night. */
+function makeNightLampMaterial(dayEmit = 0.28, nightEmit = 5.8) {
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0xfff0c8,
+    emissive: 0xffe8a0,
+    emissiveIntensity: dayEmit,
+    roughness: 0.35,
+  });
+  mat.userData.nightLamp = true;
+  mat.userData.emissiveDay = dayEmit;
+  mat.userData.emissiveNight = nightEmit;
+  return mat;
+}
+
+/** Local warm street glow — intensity 0 until night mode. */
+function makeNightPointLight(
+  x: number,
+  y: number,
+  z: number,
+  nightIntensity = 1.6,
+  distance = 22,
+) {
+  const light = new THREE.PointLight(0xffe0a8, 0, distance, 2);
+  light.position.set(x, y, z);
+  light.castShadow = false;
+  light.visible = false;
+  light.userData.nightLamp = true;
+  light.userData.nightIntensity = nightIntensity;
+  return light;
+}
+
 /** Shared materials — cloned per biome so colors stay distinct. */
 function makeTreeMats(trunk: number, canopies: number[]) {
   return {
@@ -44,7 +75,8 @@ function makeTreeMats(trunk: number, canopies: number[]) {
 }
 
 const VEG_MATS = {
-  trees: makeTreeMats(0x5a3a22, [0x2a8a32, 0x247a2c, 0x33963a]),
+  // Forest / simple deciduous: one trunk + one canopy green (uniform look)
+  trees: makeTreeMats(0x5a3a22, [0x2a8a32]),
   pines: makeTreeMats(0x3a2a18, [0x1a4a28, 0x163e22, 0x245a32]),
   // Sandy trunk + tropical frond greens (deeper / olive, not lawn green)
   palms: makeTreeMats(0xc4a06a, [0x1e7a36, 0x2a9142, 0x3aa850]),
@@ -62,6 +94,8 @@ type TreePose = { x: number; z: number; scale: number; jitter: number };
 
 /** Soft cap so large multi-map circuits don't plant 6k–10k trees per swap. */
 const MAX_TREES = 1500;
+/** Forest Loop wants a denser stand — higher soft cap for outfield rings. */
+const MAX_TREES_FOREST = 2400;
 
 /** Runoff half-width beyond asphalt centerline (matches createTrack ribbon). */
 const RUNOFF_EXTRA = 4.8;
@@ -159,8 +193,10 @@ function collectPlantPoses(
   roadHalf: number,
   density: number,
   clearance = makePathClearance(path, roadHalf),
+  opts?: { forest?: boolean },
 ): { poses: TreePose[]; bounds: ReturnType<typeof pathBounds>; clearance: PathClearance } {
   const bounds = pathBounds(path);
+  const forest = !!opts?.forest;
 
   const poses: TreePose[] = [];
   const tryPlant = (x: number, z: number, scale: number) => {
@@ -177,11 +213,13 @@ function collectPlantPoses(
   };
 
   // Lateral rings — skip the infield (negative offsets) so the middle stays empty
-  const ringOffsets = [22, 30, 40, 52, 68, 88, 112, 140];
-  const ringSteps = 160;
+  const ringOffsets = forest
+    ? [18, 24, 30, 38, 48, 60, 74, 90, 108, 128, 150]
+    : [22, 30, 40, 52, 68, 88, 112, 140];
+  const ringSteps = forest ? 220 : 160;
   const ringTan = new THREE.Vector3();
   const ringN = new THREE.Vector3();
-  const skipChance = 1 - Math.max(0.12, Math.min(1, density));
+  const skipChance = 1 - Math.max(forest ? 0.04 : 0.12, Math.min(1, density));
   for (const offset of ringOffsets) {
     for (let i = 0; i < ringSteps; i++) {
       const t = i / ringSteps;
@@ -189,7 +227,7 @@ function collectPlantPoses(
       ringTan.copy(path.getTangentAt(t)).normalize();
       ringN.set(-ringTan.z, 0, ringTan.x);
       const h = hash2(i, Math.round(offset * 10));
-      if (h < 0.28 + skipChance * 0.5) continue;
+      if (h < (forest ? 0.12 : 0.28) + skipChance * 0.5) continue;
       // Plant both outer laterals (±) but sceneryOk drops any infield hits
       for (const sign of [-1, 1] as const) {
         const lat = sign * (offset + (h - 0.5) * 3.2);
@@ -201,18 +239,19 @@ function collectPlantPoses(
     }
   }
 
-  const step = density > 0.7 ? 8.5 : density > 0.4 ? 11.5 : 15;
+  const step = forest ? 5.2 : density > 0.7 ? 8.5 : density > 0.4 ? 11.5 : 15;
   for (let ix = bounds.minX; ix <= bounds.maxX; ix += step) {
     for (let iz = bounds.minZ; iz <= bounds.maxZ; iz += step) {
       const h = hash2(Math.round(ix * 3), Math.round(iz * 3));
-      if (h < 0.22 + skipChance * 0.55) continue;
+      if (h < (forest ? 0.1 : 0.22) + skipChance * 0.55) continue;
       const x = ix + (h - 0.5) * 5.2;
       const z = iz + (hash2(Math.round(iz * 5), Math.round(ix * 5)) - 0.5) * 5.2;
       tryPlant(x, z, 0.55 + h * 0.85);
     }
   }
 
-  const cap = Math.max(80, Math.round(MAX_TREES * density));
+  const maxTrees = forest ? MAX_TREES_FOREST : MAX_TREES;
+  const cap = Math.max(80, Math.round(maxTrees * density));
   if (poses.length > cap) {
     const keep: TreePose[] = [];
     for (let i = 0; i < poses.length; i++) {
@@ -455,7 +494,9 @@ function plantVegetation(
           : biome.vegetation === "sparse"
             ? VEG_MATS.sparse
             : VEG_MATS.trees;
-  const collected = collectPlantPoses(path, roadHalf, biome.density, clearance);
+  const collected = collectPlantPoses(path, roadHalf, biome.density, clearance, {
+    forest: biome.id === "forest",
+  });
   const clear = clearance ?? collected.clearance;
   // Coast: keep palms on sand — shoreline dips into the sea past the local beach width
   const poses =
@@ -660,15 +701,25 @@ function createFoothillGeometry(): THREE.BufferGeometry {
 }
 
 /**
- * Minimum beach width past runoff (meters). Closest shoreline approach must
- * still read as clear sand between water and the grey shoulder — also cushions
- * strip chords that cut inward at tight bends.
+ * Minimum beach width past runoff (meters). Large sand buffer so the sea never
+ * reads against the grey shoulder — also cushions strip chords at tight bends.
  */
-const COAST_BEACH_MIN = 16;
+const COAST_BEACH_MIN = 28;
+/**
+ * Inland clearance for palms vs local shoreline (meters).
+ * Includes slack for Euclidean-vs-lateral path distance on bends.
+ */
+const COAST_PALM_WATER_CLEAR = 18;
+/**
+ * Morphological half-window (path samples) for shoreline latitudes.
+ * Max-dilate fills concave outer bays so ring-strip chords cannot cut across
+ * sand / asphalt (those chords were the dark diagonal artifact lines).
+ */
+const COAST_SHORE_DILATE_HALF = 40;
 
 /**
  * Beach width past runoff along the coast circuit (meters).
- * Low = sea nearer (still past COAST_BEACH_MIN); high = wide sand.
+ * Low = nearer sea (still past COAST_BEACH_MIN); high = wide sand.
  * Never returns below COAST_BEACH_MIN (water must stay off runoff / asphalt).
  */
 function coastBeachExtra(t: number): number {
@@ -678,7 +729,7 @@ function coastBeachExtra(t: number): number {
   const i = Math.floor(t * 320) % 320;
   const jagged = hash2(i, 77) * 0.4 + hash2((i + 1) % 320, 77) * 0.6;
 
-  // Soft inlets — sea draws closer, but never collapses onto the shoulder.
+  // Soft bays — sea draws a little closer, but never collapses onto the shoulder.
   let inlet = 0;
   const inlets = [0.08, 0.27, 0.49, 0.66, 0.91];
   for (const d of inlets) {
@@ -689,113 +740,122 @@ function coastBeachExtra(t: number): number {
     }
   }
 
-  // Closest stretches keep a wide sand buffer past runoff (~16–24m).
-  const near = COAST_BEACH_MIN + jagged * 8;
-  const far = 36 + b * 28; // ~36–64m
+  // Closest stretches keep a wide sand buffer past runoff (~28–40m).
+  const near = COAST_BEACH_MIN + jagged * 12;
+  const far = 52 + b * 36; // ~52–88m
   const mix = Math.pow(0.2 + 0.8 * (0.5 * c + 0.3 * a + 0.2 * b), 1.25);
   let extra = near * (1 - mix) + far * mix;
   // Inlet pull is capped so soft bays stay outside the hard beach floor.
-  extra = extra * (1 - inlet * 0.55) + near * inlet;
+  extra = extra * (1 - inlet * 0.35) + near * inlet;
   return Math.max(COAST_BEACH_MIN, extra);
 }
 
-/** Push shoreline vertices outward until every point clears the beach floor. */
-function enforceCoastShoreClearance(
-  inner: { x: number; z: number }[],
+/** Sliding-window max — fills narrow shoreline concavities that spawn cutting chords. */
+function dilateCoastExtras(extras: number[], halfWin: number): number[] {
+  const n = extras.length;
+  const out = new Array<number>(n);
+  for (let i = 0; i < n; i++) {
+    let m = 0;
+    for (let k = -halfWin; k <= halfWin; k++) {
+      const v = extras[(i + k + n * 8) % n]!;
+      if (v > m) m = v;
+    }
+    out[i] = m;
+  }
+  return out;
+}
+
+/**
+ * Inflate path-normal latitudes until every shoreline vertex AND every chord
+ * sample clears the beach floor. Latitudes stay the source of truth so verts
+ * cannot drift into folded / diagonal strip edges.
+ */
+function enforceCoastShoreLatitudes(
+  lats: number[],
+  anchors: { x: number; z: number }[],
   outDir: { x: number; z: number }[],
   clearance: PathClearance,
   minWaterR2: number,
 ) {
-  const n = inner.length;
-  const fracs = [0.15, 0.3, 0.45, 0.5, 0.55, 0.7, 0.85];
-
-  // Per-vertex floor (normals can undershoot on sharp bends).
-  for (let i = 0; i < n; i++) {
-    const p = inner[i]!;
+  const n = lats.length;
+  const fracs = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9];
+  const inner = (i: number) => {
+    const a = anchors[i]!;
     const d = outDir[i]!;
-    let guard = 0;
-    while (clearance.minDist2(p.x, p.z) < minWaterR2 && guard < 48) {
-      p.x += d.x * 1.5;
-      p.z += d.z * 1.5;
-      guard++;
-    }
-  }
+    const lat = lats[i]!;
+    return { x: a.x + d.x * lat, z: a.z + d.z * lat };
+  };
 
-  // Chord / polygon edges cut toward the ribbon on concave bends — sample
-  // several points along each edge and push endpoints outward until clear.
-  for (let pass = 0; pass < 16; pass++) {
+  const pointBad = (x: number, z: number) =>
+    clearance.minDist2(x, z) < minWaterR2 || clearance.insideLoop(x, z);
+
+  for (let pass = 0; pass < 64; pass++) {
     let moved = false;
     for (let i = 0; i < n; i++) {
-      const a = inner[i]!;
-      const b = inner[(i + 1) % n]!;
-      const d0 = outDir[i]!;
-      const d1 = outDir[(i + 1) % n]!;
-      let needsPush = clearance.minDist2(a.x, a.z) < minWaterR2
-        || clearance.minDist2(b.x, b.z) < minWaterR2;
-      if (!needsPush) {
+      const p = inner(i);
+      if (!pointBad(p.x, p.z)) continue;
+      lats[i]! += 3;
+      moved = true;
+    }
+    for (let i = 0; i < n; i++) {
+      const a = inner(i);
+      const b = inner((i + 1) % n);
+      let needs = pointBad(a.x, a.z) || pointBad(b.x, b.z);
+      if (!needs) {
         for (const f of fracs) {
           const mx = a.x + (b.x - a.x) * f;
           const mz = a.z + (b.z - a.z) * f;
-          if (clearance.minDist2(mx, mz) < minWaterR2) {
-            needsPush = true;
+          if (pointBad(mx, mz)) {
+            needs = true;
             break;
           }
         }
       }
-      if (!needsPush) continue;
-      a.x += d0.x * 2.25;
-      a.z += d0.z * 2.25;
-      b.x += d1.x * 2.25;
-      b.z += d1.z * 2.25;
+      if (!needs) continue;
+      lats[i]! += 3.5;
+      lats[(i + 1) % n]! += 3.5;
       moved = true;
     }
     if (!moved) break;
   }
 }
 
-/** Far ocean + irregular coastal strip so the sea approaches the track in places. */
+/**
+ * Coastal ocean as an outer annular strip only — never a square AABB plane
+ * under the circuit. Hole = beach + asphalt + infield (sand stays dry).
+ */
 function plantCoastWater(
   group: THREE.Group,
   path: THREE.CatmullRomCurve3,
   clearance: PathClearance,
   bounds: ReturnType<typeof pathBounds>,
 ) {
+  // Fully opaque — transparent water + depthWrite was z-fighting sand and
+  // drawing dark shoreline-chord seams across beach / asphalt.
   const waterMat = new THREE.MeshStandardMaterial({
     color: 0x1a6a9a,
     metalness: 0.35,
     roughness: 0.22,
-    transparent: true,
-    opacity: 0.88,
-    depthWrite: false,
+    transparent: false,
+    depthWrite: true,
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
   });
 
-  // Far ocean well below sand (−0.12). Kept modestly larger than the AABB so
-  // the horizon reads as sea past the shoreline strip — not a cover for the
-  // racing ribbon (sand + runoff sit above it).
-  const span = Math.max(bounds.spanX, bounds.spanZ) * 1.35;
-  const ocean = new THREE.Mesh(new THREE.PlaneGeometry(span, span), waterMat);
-  ocean.rotation.x = -Math.PI / 2;
-  ocean.position.set(bounds.cx, -0.55, bounds.cz);
-  ocean.receiveShadow = false;
-  ocean.userData.surface = "water";
-  ocean.renderOrder = -2;
-  group.add(ocean);
-
-  // Shoreline strip above the sand: inner edge follows a wavy beach width so
-  // the water comes nearer in inlets and stays farther on wide beaches.
-  // Hard floor: water geometry stays outside runoff + COAST_BEACH_MIN.
   const pathLen = path.getLength();
-  const samples = Math.max(480, Math.min(960, Math.ceil(pathLen / 1.25)));
+  const samples = Math.max(520, Math.min(1100, Math.ceil(pathLen / 1.15)));
   const minWaterR = clearance.runoffClear + COAST_BEACH_MIN;
   const minWaterR2 = minWaterR * minWaterR;
-  // Absolute reject for residual chords that still nick the shoulder ribbon.
-  const ribbonR2 = clearance.runoffClear * clearance.runoffClear;
-  const inner: { x: number; z: number }[] = [];
-  const outer: { x: number; z: number }[] = [];
+  // Absolute reject: never nick runoff / asphalt, and never enter the infield.
+  const ribbonR2 = (clearance.runoffClear + 2) * (clearance.runoffClear + 2);
+  const anchors: { x: number; z: number }[] = [];
   const outDir: { x: number; z: number }[] = [];
+  const rawExtra: number[] = [];
   const tan = new THREE.Vector3();
   const n = new THREE.Vector3();
-  const outerLat = Math.max(bounds.spanX, bounds.spanZ) * 0.72;
+  // Outer horizon ring — far past the beach, still path-following (not a square fill).
+  const outerLat = Math.max(bounds.spanX, bounds.spanZ) * 0.95;
   for (let i = 0; i < samples; i++) {
     const t = i / samples;
     const p = path.getPointAt(t);
@@ -804,68 +864,66 @@ function plantCoastWater(
     const probe = clearance.runoffClear + 2;
     // Outward = opposite of the infield side
     const outSign = clearance.insideLoop(p.x + n.x * probe, p.z + n.z * probe) ? -1 : 1;
-    const ox = n.x * outSign;
-    const oz = n.z * outSign;
-    let latIn = clearance.runoffClear + coastBeachExtra(t);
-    // Push past ribbon if lateral offset lands inside hard beach floor
-    // (sharp bends / sample aliasing can undershoot).
-    let ix = p.x + ox * latIn;
-    let iz = p.z + oz * latIn;
-    let guard = 0;
-    while (clearance.minDist2(ix, iz) < minWaterR2 && guard < 40) {
-      latIn += 1.5;
-      ix = p.x + ox * latIn;
-      iz = p.z + oz * latIn;
-      guard++;
-    }
-    const latOut = Math.max(latIn + 28, outerLat);
-    inner.push({ x: ix, z: iz });
-    outer.push({
-      x: p.x + ox * latOut,
-      z: p.z + oz * latOut,
-    });
-    outDir.push({ x: ox, z: oz });
+    anchors.push({ x: p.x, z: p.z });
+    outDir.push({ x: n.x * outSign, z: n.z * outSign });
+    rawExtra.push(coastBeachExtra(t));
   }
 
-  enforceCoastShoreClearance(inner, outDir, clearance, minWaterR2);
-  // Second pass against runoff itself (stricter than beach floor on bad chords).
-  enforceCoastShoreClearance(inner, outDir, clearance, ribbonR2);
+  // Dilate beach widths so concave outer pockets cannot create strip chords
+  // that slash across sand and the racing ribbon.
+  const dilated = dilateCoastExtras(rawExtra, COAST_SHORE_DILATE_HALF);
+  const lats = dilated.map((e) => clearance.runoffClear + e);
 
-  // Keep outer ring outside the cleared inner edge.
+  enforceCoastShoreLatitudes(lats, anchors, outDir, clearance, minWaterR2);
+  enforceCoastShoreLatitudes(lats, anchors, outDir, clearance, ribbonR2);
+
+  const inner: { x: number; z: number }[] = [];
+  const outer: { x: number; z: number }[] = [];
   for (let i = 0; i < samples; i++) {
-    const inn = inner[i]!;
+    const a = anchors[i]!;
     const d = outDir[i]!;
-    const out = outer[i]!;
-    const dx = out.x - inn.x;
-    const dz = out.z - inn.z;
-    const along = dx * d.x + dz * d.z;
-    if (along < 24) {
-      out.x = inn.x + d.x * 28;
-      out.z = inn.z + d.z * 28;
-    }
+    const latIn = lats[i]!;
+    inner.push({ x: a.x + d.x * latIn, z: a.z + d.z * latIn });
+    const latOut = Math.max(latIn + 48, outerLat);
+    outer.push({ x: a.x + d.x * latOut, z: a.z + d.z * latOut });
   }
 
-  // Above sand (−0.12), well below runoff (−0.02) so shoulder always wins if
-  // any residual overlap remains.
-  const shore = new THREE.Mesh(ringStripGeometry(inner, outer, -0.1), waterMat.clone());
+  // Above sand (−0.12), below runoff (−0.02). Opaque + polygonOffset so any
+  // residual shoreline edge cannot z-fight into dark artifact lines.
+  const shore = new THREE.Mesh(ringStripGeometry(inner, outer, -0.1), waterMat);
   shore.receiveShadow = false;
   shore.userData.surface = "water";
   shore.renderOrder = -1;
   group.add(shore);
 }
 
-/** Keep coast palms on sand — drop any that sit past the local shoreline into the sea. */
+/**
+ * Keep coast palms on beach sand only — never on asphalt/runoff, never in/over water.
+ * Uses the same dilated shoreline extras as the water mesh so planting matches the sea.
+ */
 function filterPosesToCoastSand(
   poses: TreePose[],
   path: THREE.CatmullRomCurve3,
   clearance: PathClearance,
 ): TreePose[] {
-  const sampleN = 128;
+  const sampleN = 256;
   const samples: THREE.Vector3[] = [];
-  for (let i = 0; i < sampleN; i++) samples.push(path.getPointAt(i / sampleN));
+  const rawExtra: number[] = [];
+  for (let i = 0; i < sampleN; i++) {
+    const t = i / sampleN;
+    samples.push(path.getPointAt(t));
+    rawExtra.push(coastBeachExtra(t));
+  }
+  // Match water mesh dilation (scaled to this coarser sample count).
+  const halfWin = Math.max(8, Math.round(COAST_SHORE_DILATE_HALF * (sampleN / 900)));
+  const dilated = dilateCoastExtras(rawExtra, halfWin);
 
   return poses.filter((pose) => {
-    if (clearance.insideLoop(pose.x, pose.z)) return true;
+    // Outfield only — infield palms come from plantInfieldGrove.
+    if (clearance.insideLoop(pose.x, pose.z)) return false;
+    // Hard reject anything that still sits on the racing ribbon.
+    if (!clearance.outsideRunoff(pose.x, pose.z, pose.scale * 1.8)) return false;
+
     let bestI = 0;
     let bestD = Infinity;
     for (let i = 0; i < sampleN; i++) {
@@ -876,10 +934,16 @@ function filterPosesToCoastSand(
         bestI = i;
       }
     }
-    const beachR = clearance.runoffClear + coastBeachExtra(bestI / sampleN);
-    // Keep palms on sand inward of the shoreline; never plant into the sea strip.
-    const limit = Math.max(clearance.runoffClear + COAST_BEACH_MIN * 0.5, beachR - pose.scale * 1.2);
-    return bestD <= limit * limit;
+    const dilatedR = clearance.runoffClear + dilated[bestI]!;
+    // Also respect the undilated local beach — dilation fills bays for water
+    // chords, but palms should not march into those filled pockets.
+    const localR = clearance.runoffClear + coastBeachExtra(bestI / sampleN);
+    const shoreR = Math.min(dilatedR, localR + 8);
+    // Sand band: past runoff pad, well inland of shoreline (+ trunk footprint).
+    const sandMin = clearance.baseClear + pose.scale * 0.8;
+    const sandMax = shoreR - COAST_PALM_WATER_CLEAR - pose.scale * 1.5;
+    if (sandMax <= sandMin) return false;
+    return bestD >= sandMin * sandMin && bestD <= sandMax * sandMax;
   });
 }
 
@@ -1066,12 +1130,7 @@ function plantBiomeProps(
 
   if (biome.props === "lights") {
     const postMat = new THREE.MeshStandardMaterial({ color: 0x2a3038, metalness: 0.6, roughness: 0.4 });
-    const lampMat = new THREE.MeshStandardMaterial({
-      color: 0xfff0c8,
-      emissive: 0xffe8a0,
-      emissiveIntensity: 1.4,
-      roughness: 0.35,
-    });
+    const lampMat = makeNightLampMaterial(0.3, 5.2);
     const postGeo = new THREE.CylinderGeometry(0.12, 0.16, 6.5, 5);
     const lampGeo = new THREE.SphereGeometry(0.35, 6, 6);
     const lightCount = Math.min(80, Math.max(24, Math.floor(poses.length * 0.08)));
@@ -1093,6 +1152,10 @@ function plantBiomeProps(
       dummy.position.set(p.x, 6.55, p.z);
       dummy.updateMatrix();
       lamps.setMatrixAt(lamps.count++, dummy.matrix);
+      // Sparse point lights (every other pole) — enough glow without lighting budget blow-up
+      if (lamps.count % 2 === 1) {
+        group.add(makeNightPointLight(p.x, 6.2, p.z, 1.35, 20));
+      }
     }
     posts.instanceMatrix.needsUpdate = true;
     lamps.instanceMatrix.needsUpdate = true;
@@ -1558,15 +1621,22 @@ function plantCity(
     const map = s.map.clone();
     map.repeat.set(1, s.repeatY);
     map.needsUpdate = true;
-    // Map already carries wall + window colors; keep albedo white so it isn't double-tinted
-    return new THREE.MeshStandardMaterial({
+    // Map already carries wall + window colors; keep albedo white so it isn't double-tinted.
+    // emissiveMap reuses the facade so lit windows glow at night (dark panes stay dark).
+    const dayEmit = s.emissiveIntensity ?? 0;
+    const mat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       map,
       roughness: s.roughness,
       metalness: s.metalness,
-      emissive: s.emissive ?? 0x000000,
-      emissiveIntensity: s.emissiveIntensity ?? 0,
+      emissive: s.emissive ?? 0xffe8a0,
+      emissiveMap: map,
+      emissiveIntensity: dayEmit,
     });
+    mat.userData.nightLamp = true;
+    mat.userData.emissiveDay = dayEmit;
+    mat.userData.emissiveNight = Math.max(0.85, dayEmit + 0.95);
+    return mat;
   });
 
   const glassMat = new THREE.MeshStandardMaterial({
@@ -1593,12 +1663,7 @@ function plantCity(
   const accentMat = new THREE.MeshStandardMaterial({ color: 0x6a7888, roughness: 0.55, metalness: 0.4 });
   const curbMat = new THREE.MeshStandardMaterial({ color: 0x5a6068, roughness: 0.9, metalness: 0.05 });
   const postMat = new THREE.MeshStandardMaterial({ color: 0x2a3038, metalness: 0.55, roughness: 0.45 });
-  const lampMat = new THREE.MeshStandardMaterial({
-    color: 0xfff0c8,
-    emissive: 0xffe8a0,
-    emissiveIntensity: 1.5,
-    roughness: 0.35,
-  });
+  const lampMat = makeNightLampMaterial(0.28, 6.0);
 
   const outfieldSign = (t: number, lat: number) => {
     const p = path.getPointAt(t);
@@ -1634,7 +1699,7 @@ function plantCity(
   curbs.computeBoundingSphere();
   group.add(curbs);
 
-  // Streetlights along the outer curb
+  // Streetlights along the outer curb — emissive bulbs + PointLights (night via WeatherController)
   const lightN = 36;
   const posts = new THREE.InstancedMesh(poleGeo, postMat, lightN);
   const lamps = new THREE.InstancedMesh(new THREE.SphereGeometry(0.32, 6, 6), lampMat, lightN);
@@ -1659,6 +1724,7 @@ function plantCity(
     dummy.scale.set(1, 1, 1);
     dummy.updateMatrix();
     lamps.setMatrixAt(lamps.count++, dummy.matrix);
+    group.add(makeNightPointLight(x, 6.5, z, 1.75, 24));
   }
   posts.instanceMatrix.needsUpdate = true;
   lamps.instanceMatrix.needsUpdate = true;
@@ -2234,8 +2300,9 @@ function plantCityPark(
 }
 
 /**
- * Forest Loop infield — dense mixed deciduous + pine grove in the middle of
- * the circuit, clear of asphalt / runoff (outfield planting stays outside).
+ * Forest Loop infield — dense stand of one simple deciduous tree type
+ * (cylinder trunk + sphere canopy). Outfield uses the same via plantVegetation.
+ * Clear of asphalt / runoff via PathClearance.
  */
 function plantForestInfieldGrove(
   group: THREE.Group,
@@ -2244,121 +2311,52 @@ function plantForestInfieldGrove(
   bounds: ReturnType<typeof pathBounds>,
 ) {
   const points = collectSpacedInfieldPoints(path, clearance, bounds, {
-    count: 72,
-    minSep: 6.5,
-    clearFoot: 2.4,
+    count: 260,
+    minSep: 4.2,
+    clearFoot: 2.5,
   });
   if (!points.length) return;
 
-  const decidMats = VEG_MATS.trees;
-  const pineMats = VEG_MATS.pines;
-  const decidTrunkGeo = new THREE.CylinderGeometry(0.22, 0.3, 1.2, 5);
-  const pineTrunkGeo = new THREE.CylinderGeometry(0.2, 0.28, 2.2, 5);
-  const decidCanopyGeo = new THREE.SphereGeometry(1.35, 6, 6);
-  const pineCanopyGeo = new THREE.ConeGeometry(1.1, 2.6, 6);
-
-  // ~65% broadleaf / ~35% pine so the infield reads as a real forest stand
-  const decidPts = points.filter((_, idx) => hash2(idx, 19) >= 0.35);
-  const pinePts = points.filter((_, idx) => hash2(idx, 19) < 0.35);
+  const mats = VEG_MATS.trees;
+  const trunkGeo = new THREE.CylinderGeometry(0.22, 0.3, 1.2, 5);
+  const canopyGeo = new THREE.SphereGeometry(1.35, 6, 6);
+  const canopyMat = mats.canopy[0]!;
   const dummy = new THREE.Object3D();
 
-  const decidN = Math.max(1, decidPts.length);
-  const decidTrunks = new THREE.InstancedMesh(decidTrunkGeo, decidMats.trunk, decidN);
-  decidTrunks.count = 0;
-  decidTrunks.castShadow = false;
-  decidTrunks.userData.sharedVegMat = true;
-  const decidCanopies = decidMats.canopy.map((mat) => {
-    const mesh = new THREE.InstancedMesh(decidCanopyGeo, mat, decidN);
-    mesh.count = 0;
-    mesh.castShadow = false;
-    mesh.userData.sharedVegMat = true;
-    return mesh;
-  });
+  const n = points.length;
+  const trunks = new THREE.InstancedMesh(trunkGeo, mats.trunk, n);
+  trunks.count = 0;
+  trunks.castShadow = false;
+  trunks.userData.sharedVegMat = true;
+  const canopies = new THREE.InstancedMesh(canopyGeo, canopyMat, n);
+  canopies.count = 0;
+  canopies.castShadow = false;
+  canopies.userData.sharedVegMat = true;
 
-  for (const { x, z, i } of decidPts) {
+  for (const { x, z, i } of points) {
     const scale = 0.85 + hash2(i, 7) * 0.75;
     dummy.position.set(x, 0.6 * scale, z);
     dummy.scale.set(scale, scale, scale);
     dummy.rotation.set(0, hash2(i, 11) * 6, 0);
     dummy.updateMatrix();
-    decidTrunks.setMatrixAt(decidTrunks.count++, dummy.matrix);
+    trunks.setMatrixAt(trunks.count++, dummy.matrix);
 
-    const ci = Math.floor(hash2(i, 13) * decidCanopies.length) % decidCanopies.length;
-    const canopy = decidCanopies[ci]!;
     const cr = scale * (1.15 + hash2(i, 17) * 0.3);
     dummy.position.set(x, 2.05 * scale, z);
     dummy.scale.set(cr, cr * 1.05, cr);
     dummy.updateMatrix();
-    canopy.setMatrixAt(canopy.count++, dummy.matrix);
+    canopies.setMatrixAt(canopies.count++, dummy.matrix);
   }
 
-  if (decidTrunks.count) {
-    decidTrunks.instanceMatrix.needsUpdate = true;
-    decidTrunks.computeBoundingSphere();
-    group.add(decidTrunks);
+  if (trunks.count) {
+    trunks.instanceMatrix.needsUpdate = true;
+    trunks.computeBoundingSphere();
+    group.add(trunks);
   }
-  for (const canopy of decidCanopies) {
-    if (!canopy.count) continue;
-    canopy.instanceMatrix.needsUpdate = true;
-    canopy.computeBoundingSphere();
-    group.add(canopy);
-  }
-
-  if (!pinePts.length) return;
-
-  const pineN = pinePts.length;
-  const pineTrunks = new THREE.InstancedMesh(pineTrunkGeo, pineMats.trunk, pineN);
-  pineTrunks.count = 0;
-  pineTrunks.castShadow = false;
-  pineTrunks.userData.sharedVegMat = true;
-  const pineCanopies = pineMats.canopy.map((mat) => {
-    const mesh = new THREE.InstancedMesh(pineCanopyGeo, mat, pineN);
-    mesh.count = 0;
-    mesh.castShadow = false;
-    mesh.userData.sharedVegMat = true;
-    return mesh;
-  });
-  const pineTops = pineMats.canopy.map((mat) => {
-    const mesh = new THREE.InstancedMesh(pineCanopyGeo, mat, pineN);
-    mesh.count = 0;
-    mesh.castShadow = false;
-    mesh.userData.sharedVegMat = true;
-    return mesh;
-  });
-
-  for (const { x, z, i } of pinePts) {
-    const scale = 0.8 + hash2(i, 7) * 0.7;
-    dummy.position.set(x, 1.1 * scale, z);
-    dummy.scale.set(scale, scale, scale);
-    dummy.rotation.set(0, hash2(i, 11) * 6, 0);
-    dummy.updateMatrix();
-    pineTrunks.setMatrixAt(pineTrunks.count++, dummy.matrix);
-
-    const ci = Math.floor(hash2(i, 13) * pineCanopies.length) % pineCanopies.length;
-    const canopy = pineCanopies[ci]!;
-    const cr = scale * (1.05 + hash2(i, 17) * 0.25);
-    dummy.position.set(x, 2.2 * scale, z);
-    dummy.scale.set(cr, cr * 1.25, cr);
-    dummy.updateMatrix();
-    canopy.setMatrixAt(canopy.count++, dummy.matrix);
-
-    const top = pineTops[ci]!;
-    dummy.position.set(x, 2.2 * scale + 1.15 * scale, z);
-    dummy.scale.set(cr * 0.62, cr * 0.95, cr * 0.62);
-    dummy.updateMatrix();
-    top.setMatrixAt(top.count++, dummy.matrix);
-  }
-
-  if (pineTrunks.count) {
-    pineTrunks.instanceMatrix.needsUpdate = true;
-    pineTrunks.computeBoundingSphere();
-    group.add(pineTrunks);
-  }
-  for (const mesh of [...pineCanopies, ...pineTops]) {
-    if (!mesh.count) continue;
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.computeBoundingSphere();
-    group.add(mesh);
+  if (canopies.count) {
+    canopies.instanceMatrix.needsUpdate = true;
+    canopies.computeBoundingSphere();
+    group.add(canopies);
   }
 }
 
@@ -2374,7 +2372,7 @@ function plantInfieldGrove(
   if (biome.props === "city" || biome.props === "mountains") return;
   if (biome.vegetation === "none") return;
 
-  // Forest Loop — dedicated mixed grove in the circuit middle
+  // Forest Loop — dense simple deciduous grove in the infield
   if (biome.id === "forest") {
     plantForestInfieldGrove(group, path, clearance, bounds);
     return;
