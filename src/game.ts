@@ -1,5 +1,10 @@
 import * as THREE from "three";
-import { createVehicle, CAR_PALETTE, setVehicleHeadlights } from "./car";
+import {
+  createVehicle,
+  CAR_PALETTE,
+  setVehicleHeadlights,
+  enableHeadlightCameras,
+} from "./car";
 import {
   createTrack,
   disposeTrack,
@@ -39,7 +44,13 @@ import {
   type VehicleKind,
 } from "./garage";
 import { setVersionSwitcherVisible } from "./versions";
-import { pickWeather, WeatherController } from "./weather";
+import {
+  applyWireWeather,
+  normalizeWeatherMode,
+  pickWeather,
+  WeatherController,
+  type WeatherMode,
+} from "./weather";
 
 function formatTime(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "--:--.---";
@@ -136,6 +147,9 @@ export class Game {
   private lobbyPlayers: PlayerPose[] = [];
   private mpCreateTrackId = DEFAULT_TRACK_ID;
   private mpCreateKind: VehicleKind = "car";
+  private mpCreateWeather: WeatherMode = "dry";
+  /** Create-room / lobby: show weather on the menu track before the race starts. */
+  private mpWeatherPreview = false;
 
   private lap = 1;
   private lastT = 0;
@@ -271,6 +285,8 @@ export class Game {
   private readonly _explodeGeo = new THREE.BoxGeometry(0.28, 0.28, 0.28);
   /** Reused pack list for AI update + local collisions (no per-frame alloc). */
   private readonly _pack: Vehicle[] = [];
+  /** Scratch list for night emissive lamps on AI/remotes (no SpotLights). */
+  private readonly _lampMeshes: THREE.Group[] = [];
   /** Cached rival minimap CSS colors — avoid hex string alloc every HUD frame. */
   private readonly _rivalCss = CAR_PALETTE.rivals.map(
     (c) => `#${c.toString(16).padStart(6, "0")}`,
@@ -299,6 +315,8 @@ export class Game {
 
     this.camera = new THREE.PerspectiveCamera(55, boot.w / boot.h, 0.1, 700);
     this.rearCamera = new THREE.PerspectiveCamera(70, 1.6, 0.2, 400);
+    // SpotLights share HEADLIGHT_LAYER; cameras must include it to collect them.
+    enableHeadlightCameras(this.camera, this.rearCamera);
     this.scene.background = new THREE.Color(0x87a0bc);
     this.scene.fog = new THREE.Fog(0x87a0bc, 160, 520);
 
@@ -324,10 +342,12 @@ export class Game {
         this.net.hostId = info.hostId;
         this.net.trackId = info.trackId;
         this.net.kind = info.kind === "bike" ? "bike" : "car";
+        this.net.weather = normalizeWeatherMode(info.weather);
         this.net.maxPlayers = info.maxPlayers;
+        this.applyMenuWeatherPreview(this.net.weather);
         this.renderLobby();
       },
-      onStart: (_at, trackId, kind) => this.beginOnlineRace(trackId, kind),
+      onStart: (_at, trackId, kind, weather) => this.beginOnlineRace(trackId, kind, weather),
       onCrashReset: (_byId, byName) => this.applyOnlineCrashReset(byName),
       onRaceResult: (winnerId, winnerName, timeMs, trackOptions, voteEndsAt) =>
         this.finishRace({
@@ -492,6 +512,9 @@ export class Game {
     });
     document.getElementById("mp-create-kind-car")!.onclick = () => this.setMpCreateKind("car");
     document.getElementById("mp-create-kind-bike")!.onclick = () => this.setMpCreateKind("bike");
+    document.getElementById("mp-create-weather-dry")!.onclick = () => this.setMpCreateWeather("dry");
+    document.getElementById("mp-create-weather-rain")!.onclick = () => this.setMpCreateWeather("rain");
+    document.getElementById("mp-create-weather-night")!.onclick = () => this.setMpCreateWeather("night");
     this.el.overlay.addEventListener("pointerdown", () => {
       void this.unlockAndMaybeMenuMusic();
     });
@@ -748,6 +771,7 @@ export class Game {
     this.el.garage.classList.add("hidden");
     this.garage = loadGarage();
     this.mpCreateKind = this.garage.kind;
+    this.mpCreateWeather = "dry";
     this.mpCreateTrackId = DEFAULT_TRACK_ID;
     // Always start blank — don't autofill a previous name (e.g. "Luca").
     this.el.mpCreateName.value = "";
@@ -756,8 +780,8 @@ export class Game {
     this.el.mpJoinPass.value = "";
     if (!this.el.mpCreateRoom.value.trim()) this.el.mpCreateRoom.value = "circuit";
     if (!this.el.mpJoinRoom.value.trim()) this.el.mpJoinRoom.value = "circuit";
-    this.el.mpCreateStatus.textContent = "Your vehicle class applies to everyone in the room";
-    this.el.mpJoinStatus.textContent = "Vehicle class is set by the host · garage paint still applies";
+    this.el.mpCreateStatus.textContent = "Vehicle class and weather apply to everyone in the room";
+    this.el.mpJoinStatus.textContent = "Vehicle class and weather are set by the host · garage paint still applies";
     this.showMpView("entry");
     this.el.multiplayer.classList.remove("hidden");
     this.syncMuteBtn();
@@ -776,6 +800,7 @@ export class Game {
     this.showMpView("entry");
     // Lobby flow hides the home overlay — always restore it when leaving MP.
     this.el.overlay.classList.remove("hidden");
+    this.clearMenuWeatherPreview();
     this.audio.playMenuMusic();
     this.syncMuteBtn();
   }
@@ -799,7 +824,15 @@ export class Game {
     this.el.mpLobby.classList.toggle("hidden", view !== "lobby");
     if (view === "create") {
       this.syncMpCreateKindUi();
+      this.syncMpCreateWeatherUi();
       this.renderMpCreateTracks();
+      this.applyMenuWeatherPreview(this.mpCreateWeather);
+    } else if (view === "lobby") {
+      // Keep host choice / room weather visible behind the lobby panel
+      this.applyMenuWeatherPreview(normalizeWeatherMode(this.net.weather || this.mpCreateWeather));
+    } else {
+      // Left create/lobby flow (entry or join) — don't leave rain/night stuck on the menu
+      this.clearMenuWeatherPreview();
     }
     this.syncMuteBtn();
   }
@@ -812,6 +845,32 @@ export class Game {
   private syncMpCreateKindUi() {
     document.getElementById("mp-create-kind-car")?.classList.toggle("is-active", this.mpCreateKind === "car");
     document.getElementById("mp-create-kind-bike")?.classList.toggle("is-active", this.mpCreateKind === "bike");
+  }
+
+  private setMpCreateWeather(mode: WeatherMode) {
+    this.mpCreateWeather = normalizeWeatherMode(mode);
+    this.syncMpCreateWeatherUi();
+    this.applyMenuWeatherPreview(this.mpCreateWeather);
+  }
+
+  private syncMpCreateWeatherUi() {
+    document.getElementById("mp-create-weather-dry")?.classList.toggle("is-active", this.mpCreateWeather === "dry");
+    document.getElementById("mp-create-weather-rain")?.classList.toggle("is-active", this.mpCreateWeather === "rain");
+    document.getElementById("mp-create-weather-night")?.classList.toggle("is-active", this.mpCreateWeather === "night");
+  }
+
+  /** Immediate visual weather on the home/menu track (create room + lobby). */
+  private applyMenuWeatherPreview(mode: WeatherMode) {
+    if (!this.weather || this.running) return;
+    this.mpWeatherPreview = true;
+    this.weather.setParticlesEnabled(true);
+    this.weather.setMode(normalizeWeatherMode(mode));
+  }
+
+  private clearMenuWeatherPreview() {
+    if (!this.weather || this.running) return;
+    this.mpWeatherPreview = false;
+    this.weather.setMode("dry");
   }
 
   private renderMpCreateTracks() {
@@ -862,6 +921,7 @@ export class Game {
       maxPlayers,
       trackId: this.mpCreateTrackId,
       kind: this.mpCreateKind,
+      weather: this.mpCreateWeather,
       color: this.garage.primary,
       accent: this.garage.accent,
     });
@@ -927,8 +987,10 @@ export class Game {
   private renderLobby() {
     const trackName = getTrackDef(this.net.trackId || this.mpCreateTrackId).name;
     const vehicle = this.net.kind === "bike" ? "BIKES" : "CARS";
+    const weather =
+      this.net.weather === "rain" ? "RAIN" : this.net.weather === "night" ? "NIGHT" : "DRY";
     this.el.mpLobbyTitle.textContent = this.net.room.toUpperCase();
-    this.el.mpLobbyMeta.textContent = `${trackName} · ${vehicle} · ${this.lobbyPlayers.length}/${this.net.maxPlayers}`;
+    this.el.mpLobbyMeta.textContent = `${trackName} · ${vehicle} · ${weather} · ${this.lobbyPlayers.length}/${this.net.maxPlayers}`;
     this.el.mpLobbyPlayers.innerHTML = this.lobbyPlayers
       .map((p) => {
         const host = p.id === this.net.hostId ? "HOST" : "RACER";
@@ -1079,6 +1141,9 @@ export class Game {
     this.el.rearview.classList.add("hidden");
     this.syncTouchControls();
     this.el.overlay.classList.remove("hidden");
+    // Reset weather before rebuilding the menu track
+    this.mpWeatherPreview = false;
+    this.weather.setMode("dry");
     // Always show map one (Forest Loop) behind the home menu
     this.setActiveTrack(DEFAULT_TRACK_ID);
     this.applyGarageToWorld();
@@ -1090,7 +1155,6 @@ export class Game {
     this.shadowNeedsWarmup = true;
     this.audio.playMenuMusic();
     this.syncMuteBtn();
-    this.weather.setMode("dry");
     setVehicleHeadlights(this.player?.mesh, false);
   }
 
@@ -1194,6 +1258,7 @@ export class Game {
       accent: info.you.accent ?? this.garage.accent,
     };
     this.net.kind = kind;
+    this.net.weather = normalizeWeatherMode(info.weather);
     this.setNetStatus(`Lobby · ${info.room}`, "ok");
     this.el.overlay.classList.add("hidden");
     this.el.mpLobbyFeed.innerHTML = "";
@@ -1205,7 +1270,7 @@ export class Game {
   }
 
   /** Host pressed Start Race (or we received the shared start). */
-  private beginOnlineRace(trackId: string, kindHint?: VehicleKind) {
+  private beginOnlineRace(trackId: string, kindHint?: VehicleKind, weatherHint?: WeatherMode) {
     if (!this.online) return;
     this.inLobby = false;
     this.el.multiplayer.classList.add("hidden");
@@ -1215,6 +1280,12 @@ export class Game {
       kindHint === "bike" || this.net.kind === "bike" || this.garage.kind === "bike" ? "bike" : "car";
     this.garage = { ...this.garage, kind };
     this.net.kind = kind;
+    // Prefer start packet → stored room weather → host create-room choice.
+    const weather = applyWireWeather(
+      weatherHint,
+      applyWireWeather(this.net.weather, this.mpCreateWeather),
+    );
+    this.net.weather = weather;
     this.disposeVehicleMesh(this.player);
     const mesh = createVehicle(kind, this.garage.primary, 7, this.garage.accent, {
       headlights: true,
@@ -1229,7 +1300,10 @@ export class Game {
       this.spawnRemote({ ...p, kind });
     }
     this.setNetStatus(`Racing · ${this.net.room}`, "ok");
-    this.startRace({ trackId: trackId || this.net.trackId || this.trackId });
+    this.startRace({
+      trackId: trackId || this.net.trackId || this.trackId,
+      weather,
+    });
   }
 
   private onNetState(players: PlayerPose[]) {
@@ -1399,6 +1473,10 @@ export class Game {
     if (!vehicle) return;
     this.scene.remove(vehicle.mesh);
     vehicle.mesh.traverse((obj) => {
+      if (obj instanceof THREE.Light) {
+        obj.dispose();
+        return;
+      }
       if (!(obj instanceof THREE.Mesh)) return;
       obj.geometry?.dispose();
       const mat = obj.material;
@@ -1456,8 +1534,14 @@ export class Game {
 
   /** @param opts.practice Test Drive — same world, no finish / podium.
    *  @param opts.solo Timed race with no AI rivals.
-   *  @param opts.trackId Course to load; AI Start Race should pass a random id. */
-  startRace(opts: { practice?: boolean; solo?: boolean; trackId?: string } = {}) {
+   *  @param opts.trackId Course to load; AI Start Race should pass a random id.
+   *  @param opts.weather Online only — host-committed room weather (never pickWeather). */
+  startRace(opts: {
+    practice?: boolean;
+    solo?: boolean;
+    trackId?: string;
+    weather?: WeatherMode;
+  } = {}) {
     this.practice = !!opts.practice;
     this.solo = !!opts.solo && !this.practice;
     const nextId = opts.trackId ?? this.trackId ?? DEFAULT_TRACK_ID;
@@ -1493,14 +1577,17 @@ export class Game {
     this.input.clearDriveKeys();
     this.clearExplode(true);
     this.resetWallHits();
-    // Conditions are chosen by the game — no player weather picker
+    // Online: host-chosen weather only. Solo/practice: random pick.
+    // Never call pickWeather() while online — that used to overwrite the room choice.
+    this.mpWeatherPreview = false;
     this.weather.setTrackRoot(this.track.group);
     // Light local rain (~320 pts) — online and solo share the same budget
     this.weather.setParticlesEnabled(true);
-    const weatherSeed = this.online
-      ? `${this.net.room || "online"}:${this.trackId}:${this.net.hostId || ""}`
-      : undefined;
-    this.weather.setMode(pickWeather(weatherSeed));
+    const raceWeather = this.online
+      ? normalizeWeatherMode(opts.weather ?? this.net.weather)
+      : pickWeather();
+    if (this.online) this.net.weather = raceWeather;
+    this.weather.setMode(raceWeather);
 
     if (this.online) {
       // Shared start-line grid for every human (sorted ids → same slots on all clients)
@@ -1748,7 +1835,9 @@ export class Game {
             const playerT = this.stickyT.get(this.player) ?? this.projectSticky(this.player, this.player.state.position).t;
             const cars = this.fillPack();
             for (const r of this.rivals) r.update(dt, this.track.path, playerT, now * 0.001, cars);
-            for (const r of this.rivals) this.keepOnTrack(r.vehicle);
+            for (const r of this.rivals) {
+              this.keepOnTrack(r.vehicle);
+            }
             // Race mode: AI that complete TOTAL_LAPS finish ahead; practice never ends for them
             if (!this.practice) {
               for (const r of this.rivals) {
@@ -1797,11 +1886,21 @@ export class Game {
     }
 
     if (this.weather) {
-      const racing = this.running && !this.paused && !this.finished;
+      // Keep night headlights on while paused (not only while unpaused "racing").
+      const sessionLive = this.running && !this.finished;
       const pos = this.player?.state.position ?? this.track.startPosition;
       const heading = this.player?.state.heading ?? this.track.startHeading;
-      this.weather.update(dt, pos, heading, racing, this.player?.mesh, {
+      // AI + remotes: emissive lamps only (player SpotLights come from createVehicle opts)
+      const lamps = this._lampMeshes;
+      lamps.length = 0;
+      for (const r of this.rivals) {
+        if (r.vehicle.mesh.visible) lamps.push(r.vehicle.mesh);
+      }
+      for (const remote of this.remotes.values()) lamps.push(remote.mesh);
+      this.weather.update(dt, pos, heading, sessionLive, this.player?.mesh, {
         particles: true,
+        lampMeshes: lamps,
+        preview: this.mpWeatherPreview && !sessionLive,
       });
     }
 

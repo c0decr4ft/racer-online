@@ -92,7 +92,23 @@ export function getSurfaceGrip(): number {
   return surfaceGrip;
 }
 
-/** Game picks dry / night / rain — no player control. */
+/** Coerce wire / UI values to a known mode (default dry). */
+export function normalizeWeatherMode(raw: unknown): WeatherMode {
+  const m = String(raw ?? "").toLowerCase();
+  return m === "night" || m === "rain" ? m : "dry";
+}
+
+/**
+ * Apply a wire weather field only when present.
+ * Missing/empty values keep `prior` so a start packet without weather
+ * cannot wipe the room choice already stored from welcome/lobby.
+ */
+export function applyWireWeather(raw: unknown, prior: WeatherMode): WeatherMode {
+  if (raw == null || raw === "") return prior;
+  return normalizeWeatherMode(raw);
+}
+
+/** Solo/practice: random (or seeded) dry / night / rain. Online uses host choice. */
 export function pickWeather(seed?: string): WeatherMode {
   if (!seed) {
     return WEATHER_POOL[Math.floor(Math.random() * WEATHER_POOL.length)]!;
@@ -147,6 +163,7 @@ export class WeatherController {
   setTrackRoot(root: THREE.Object3D | null) {
     this.trackRoot = root;
     this.tintSurfaces(PRESETS[this.mode]);
+    this.applyNightLamps(this.mode === "night");
   }
 
   setMode(mode: WeatherMode) {
@@ -165,16 +182,27 @@ export class WeatherController {
     if (this.mode === "rain") this.ensureRain(true);
   }
 
-  /** Rain particles + night headlights on the player vehicle. */
+  /**
+   * Rain particles + night headlights.
+   * Player gets SpotLight beams; `lampMeshes` (AI/remotes) get emissive lamps only.
+   * `preview` (create-room / lobby): atmosphere rain + night lamps.
+   */
   update(
     dt: number,
     playerPos: THREE.Vector3,
     _playerHeading: number,
     active: boolean,
     playerMesh?: THREE.Group,
-    opts?: { particles?: boolean },
+    opts?: {
+      particles?: boolean;
+      lampMeshes?: THREE.Group[];
+      /** Menu preview — animate rain / night look while not racing. */
+      preview?: boolean;
+    },
   ) {
-    const lightsOn = this.mode === "night" && active;
+    const preview = !!opts?.preview;
+    // Night only: on for live sessions (incl. pause) and create-room / lobby preview.
+    const lightsOn = this.mode === "night" && (active || preview);
     if (playerMesh) {
       const meshChanged = this.lastHeadlightMesh !== playerMesh;
       if (meshChanged || this.lastHeadlightsOn !== lightsOn) {
@@ -185,12 +213,24 @@ export class WeatherController {
         syncVehicleHeadlights(playerMesh);
       }
     } else if (this.lastHeadlightsOn) {
+      // Player mesh gone — clear cache so the next mesh is forced to sync.
+      if (this.lastHeadlightMesh) setVehicleHeadlights(this.lastHeadlightMesh, false);
       this.lastHeadlightsOn = false;
       this.lastHeadlightMesh = null;
     }
 
+    // Emissive lamps on field cars — no SpotLights (GPU). Re-apply when a mesh joins mid-race.
+    const peers = opts?.lampMeshes;
+    if (peers) {
+      for (const mesh of peers) {
+        if (mesh.userData.headlightsOn !== lightsOn) {
+          setVehicleHeadlights(mesh, lightsOn);
+        }
+      }
+    }
+
     const wantParticles = this.particlesEnabled && opts?.particles !== false;
-    if (this.mode === "rain" && active && wantParticles) this.tickRain(dt, playerPos);
+    if (this.mode === "rain" && wantParticles && (active || preview)) this.tickRain(dt, playerPos);
     else if (this.rain) this.rain.visible = false;
   }
 
@@ -210,7 +250,42 @@ export class WeatherController {
     this.sun.position.set(...p.sunPos);
 
     this.tintSurfaces(p);
+    this.applyNightLamps(this.mode === "night");
     this.ensureRain(this.mode === "rain");
+  }
+
+  /**
+   * Streetlamps / facade glow: emissive + PointLights tagged in track scenery.
+   * Day keeps a faint bulb; night punches them up like vehicle headlights.
+   */
+  private applyNightLamps(on: boolean) {
+    if (!this.trackRoot) return;
+    this.trackRoot.traverse((obj) => {
+      if (obj instanceof THREE.PointLight && obj.userData.nightLamp) {
+        const intensity =
+          typeof obj.userData.nightIntensity === "number"
+            ? (obj.userData.nightIntensity as number)
+            : 1.6;
+        obj.intensity = on ? intensity : 0;
+        obj.visible = on;
+        return;
+      }
+      if (!(obj instanceof THREE.Mesh)) return;
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      for (const raw of mats) {
+        if (!(raw instanceof THREE.MeshStandardMaterial)) continue;
+        if (!raw.userData.nightLamp) continue;
+        const day =
+          typeof raw.userData.emissiveDay === "number"
+            ? (raw.userData.emissiveDay as number)
+            : 0.35;
+        const night =
+          typeof raw.userData.emissiveNight === "number"
+            ? (raw.userData.emissiveNight as number)
+            : 5.5;
+        raw.emissiveIntensity = on ? night : day;
+      }
+    });
   }
 
   /**

@@ -1212,6 +1212,10 @@ html.touch-mode [contenteditable="true"] {
   margin: 0;
 }
 
+.mp-weather {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+
 .mp-track-grid {
   width: 100%;
   max-height: 9.5rem;
