@@ -120,6 +120,8 @@ export class WeatherController {
   private rainVel: Float32Array | null = null;
   private trackRoot: THREE.Object3D | null = null;
   private lastHeadlightsOn: boolean | null = null;
+  /** Rain Points are expensive — keep fog/grip only unless explicitly enabled. */
+  private particlesEnabled = false;
 
   constructor(
     renderer: THREE.WebGLRenderer,
@@ -149,6 +151,11 @@ export class WeatherController {
     this.applyAtmosphere();
   }
 
+  setParticlesEnabled(on: boolean) {
+    this.particlesEnabled = on;
+    if (!on && this.rain) this.rain.visible = false;
+  }
+
   /** Rain particles + night headlights on the player vehicle. */
   update(
     dt: number,
@@ -156,6 +163,7 @@ export class WeatherController {
     _playerHeading: number,
     active: boolean,
     playerMesh?: THREE.Group,
+    opts?: { particles?: boolean },
   ) {
     const lightsOn = this.mode === "night" && active;
     if (playerMesh && this.lastHeadlightsOn !== lightsOn) {
@@ -165,7 +173,8 @@ export class WeatherController {
       this.lastHeadlightsOn = false;
     }
 
-    if (this.mode === "rain" && active) this.tickRain(dt, playerPos);
+    const wantParticles = opts?.particles !== false;
+    if (this.mode === "rain" && active && wantParticles) this.tickRain(dt, playerPos);
     else if (this.rain) this.rain.visible = false;
   }
 
@@ -208,7 +217,7 @@ export class WeatherController {
   }
 
   private ensureRain(on: boolean) {
-    if (!on) {
+    if (!on || !this.particlesEnabled) {
       if (this.rain) this.rain.visible = false;
       return;
     }
@@ -216,7 +225,7 @@ export class WeatherController {
       this.rain.visible = true;
       return;
     }
-    const count = 1400;
+    const count = 900;
     const positions = new Float32Array(count * 3);
     const vel = new Float32Array(count);
     for (let i = 0; i < count; i++) {

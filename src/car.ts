@@ -147,16 +147,24 @@ function paintable(root: THREE.Group, body: THREE.MeshStandardMaterial, accent: 
   root.userData.accentColor = (accent.color as THREE.Color).getHex();
 }
 
-/** Spot beams parented to the vehicle so they steer with the nose. */
+/** Road-only lighting layer — keeps spots off the forest MeshStandard flood. */
+export const HEADLIGHT_LAYER = 1;
+
+/** Spot beams — local player only. Remotes/AI must not get these (GPU cost). */
 function attachHeadBeams(
   root: THREE.Group,
   mounts: { x: number; y: number; z: number }[],
 ) {
   const beams: THREE.SpotLight[] = [];
   for (const m of mounts) {
-    const light = new THREE.SpotLight(0xfff2c8, 0, 55, 0.52, 0.42, 1.05);
+    const light = new THREE.SpotLight(0xfff2c8, 0, 32, 0.5, 0.45, 1.2);
     light.position.set(m.x, m.y, m.z);
     light.castShadow = false;
+    // Off lights must be invisible — intensity 0 still hits the fragment shader.
+    light.visible = false;
+    // Only light objects on HEADLIGHT_LAYER (asphalt), not 2400 trees.
+    light.layers.disableAll();
+    light.layers.enable(HEADLIGHT_LAYER);
     const target = new THREE.Object3D();
     // Aim down onto the asphalt a short way ahead of the nose
     target.position.set(m.x * 0.15, -0.35, m.z + 10);
@@ -166,6 +174,10 @@ function attachHeadBeams(
     beams.push(light);
   }
   root.userData.headBeams = beams;
+  // Let beams catch the player's own body/nose
+  root.traverse((obj) => {
+    obj.layers.enable(HEADLIGHT_LAYER);
+  });
 }
 
 /** Toggle lamp glow + beams (night driving). */
@@ -173,7 +185,10 @@ export function setVehicleHeadlights(root: THREE.Group | undefined, on: boolean)
   if (!root) return;
   const beams = root.userData.headBeams as THREE.SpotLight[] | undefined;
   if (beams) {
-    for (const b of beams) b.intensity = on ? 6.8 : 0;
+    for (const b of beams) {
+      b.intensity = on ? 6.8 : 0;
+      b.visible = on;
+    }
   }
   const heads = root.userData.headLightMaterials as THREE.MeshStandardMaterial[] | undefined;
   const headIdle = root.userData.kind === "bike" ? 0.85 : 0.9;
@@ -191,11 +206,17 @@ export function setVehicleHeadlights(root: THREE.Group | undefined, on: boolean)
   }
 }
 
+export type CreateVehicleOpts = {
+  /** Real SpotLight beams — only for the local player. */
+  headlights?: boolean;
+};
+
 /** Sleeker GT coupe — lower stance, clearer cabin glass, richer detailing. */
 export function createCar(
   bodyColor = 0xd0d7e0,
   raceNumber = 7,
   accentColor = 0xff3b2e,
+  opts?: CreateVehicleOpts,
 ): THREE.Group {
   const car = new THREE.Group();
   const body = paintMat(bodyColor, { metal: 0.28, rough: 0.38, emit: 0.11 });
@@ -306,10 +327,12 @@ export function createCar(
   car.userData.kind = "car";
   car.userData.headLightMaterials = [head];
   car.userData.tailLightMaterials = [tail];
-  attachHeadBeams(car, [
-    { x: -0.7, y: 0.52, z: 2.36 },
-    { x: 0.7, y: 0.52, z: 2.36 },
-  ]);
+  if (opts?.headlights) {
+    attachHeadBeams(car, [
+      { x: -0.7, y: 0.52, z: 2.36 },
+      { x: 0.7, y: 0.52, z: 2.36 },
+    ]);
+  }
   return car;
 }
 
@@ -368,6 +391,7 @@ export function createBike(
   bodyColor = 0xd0d7e0,
   raceNumber = 7,
   accentColor = 0xff3b2e,
+  opts?: CreateVehicleOpts,
 ): THREE.Group {
   const bike = new THREE.Group();
   const body = paintMat(bodyColor, { metal: 0.26, rough: 0.4, emit: 0.11 });
@@ -469,10 +493,12 @@ export function createBike(
   bike.userData.kind = "bike";
   bike.userData.headLightMaterials = [head];
   bike.userData.tailLightMaterials = [tail];
-  attachHeadBeams(bike, [
-    { x: -0.2, y: 0.7, z: 1.4 },
-    { x: 0.2, y: 0.7, z: 1.4 },
-  ]);
+  if (opts?.headlights) {
+    attachHeadBeams(bike, [
+      { x: -0.2, y: 0.7, z: 1.4 },
+      { x: 0.2, y: 0.7, z: 1.4 },
+    ]);
+  }
   return bike;
 }
 
@@ -481,10 +507,11 @@ export function createVehicle(
   bodyColor = 0xd0d7e0,
   raceNumber = 7,
   accentColor = 0xff3b2e,
+  opts?: CreateVehicleOpts,
 ): THREE.Group {
   return kind === "bike"
-    ? createBike(bodyColor, raceNumber, accentColor)
-    : createCar(bodyColor, raceNumber, accentColor);
+    ? createBike(bodyColor, raceNumber, accentColor, opts)
+    : createCar(bodyColor, raceNumber, accentColor, opts);
 }
 
 export const CAR_PALETTE = {
