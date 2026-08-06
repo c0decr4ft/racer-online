@@ -2,8 +2,10 @@ import * as THREE from "three";
 import {
   createVehicle,
   CAR_PALETTE,
-  setVehicleHeadlights,
+  disposeVehicleGroup,
   enableHeadlightCameras,
+  setVehicleHeadlights,
+  stripVehicleSpotLights,
 } from "./car";
 import {
   createTrack,
@@ -299,7 +301,7 @@ export class Game {
     this.renderer = new THREE.WebGLRenderer({
       canvas,
       antialias: true,
-      powerPreference: "default",
+      powerPreference: "high-performance",
     });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1));
     const boot = this.viewport;
@@ -1328,6 +1330,8 @@ export class Game {
   private spawnRemote(pose: PlayerPose) {
     if (pose.id === this.net.id || this.remotes.has(pose.id)) return;
     const remote = new RemotePlayer(pose, this.scene, this.labelRoot);
+    // Local-only beams: remotes keep emissive lenses, never SpotLights.
+    stripVehicleSpotLights(remote.mesh);
     // Skip shadows on remotes for FPS
     remote.mesh.traverse((o) => {
       if (o instanceof THREE.Mesh) {
@@ -1472,17 +1476,7 @@ export class Game {
   private disposeVehicleMesh(vehicle: Vehicle | undefined) {
     if (!vehicle) return;
     this.scene.remove(vehicle.mesh);
-    vehicle.mesh.traverse((obj) => {
-      if (obj instanceof THREE.Light) {
-        obj.dispose();
-        return;
-      }
-      if (!(obj instanceof THREE.Mesh)) return;
-      obj.geometry?.dispose();
-      const mat = obj.material;
-      if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
-      else mat?.dispose();
-    });
+    disposeVehicleGroup(vehicle.mesh);
   }
 
   /** Rebuild player + AI meshes from garage (bots match player kind; keep own paint). */
@@ -1922,14 +1916,14 @@ export class Game {
     this.renderer.setScissorTest(false);
     this.renderer.setViewport(0, 0, w, h);
     this.renderer.autoClear = true;
-    // Rearview reuses the main pass shadow map. Moving shadows only need 30Hz;
+    // Rearview reuses the main pass shadow map. Moving shadows only need ~12Hz;
     // car motion and controls still render at the display refresh rate.
     // Home/pause/finish: casters are still — skip rebuilds after a warmup.
     const liveShadows = this.running && !this.paused && !this.finished;
     let refreshShadows = liveShadows;
     if (liveShadows) {
       const now = performance.now();
-      refreshShadows = now - this.lastShadowAt >= 1000 / 15;
+      refreshShadows = now - this.lastShadowAt >= 1000 / 12;
       if (refreshShadows) this.lastShadowAt = now;
     }
     this.renderer.shadowMap.needsUpdate = refreshShadows || this.shadowNeedsWarmup;

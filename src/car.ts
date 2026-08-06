@@ -39,7 +39,8 @@ function add(
   m.position.set(x, y, z);
   m.rotation.set(rx, ry, rz);
   m.castShadow = true;
-  m.receiveShadow = true;
+  // Vehicles don't need to sample the sun shadow map on every panel.
+  m.receiveShadow = false;
   parent.add(m);
   return m;
 }
@@ -195,11 +196,6 @@ function attachHeadBeams(
     beams.push(light);
   }
   root.userData.headBeams = beams;
-  // Body also on HEADLIGHT_LAYER (harmless; beams stay visible on the nose).
-  root.traverse((obj) => {
-    if (obj instanceof THREE.Light) return;
-    obj.layers.enable(HEADLIGHT_LAYER);
-  });
 }
 
 /** Ensure cameras can discover headlight SpotLights if they ever leave layer 0. */
@@ -207,16 +203,45 @@ export function enableHeadlightCameras(...cameras: THREE.Camera[]) {
   for (const cam of cameras) cam.layers.enable(HEADLIGHT_LAYER);
 }
 
-/** Keep parented SpotLight targets in sync while driving at night. */
-export function syncVehicleHeadlights(root: THREE.Group | undefined) {
-  if (!root) return;
+/**
+ * Strip SpotLight beams from a vehicle mesh (AI / remotes).
+ * Emissive lamp materials stay — other clients still see glowing lenses.
+ */
+export function stripVehicleSpotLights(root: THREE.Group) {
   const beams = root.userData.headBeams as THREE.SpotLight[] | undefined;
-  if (!beams) return;
-  for (const b of beams) {
-    if (!b.visible) continue;
-    b.updateMatrixWorld();
-    b.target.updateMatrixWorld();
+  if (beams) {
+    for (const b of beams) {
+      b.target.removeFromParent();
+      b.removeFromParent();
+      b.dispose();
+    }
+    root.userData.headBeams = undefined;
   }
+  // Safety: remove any orphan SpotLights (should not exist without headlights opts).
+  const doomed: THREE.SpotLight[] = [];
+  root.traverse((obj) => {
+    if (obj instanceof THREE.SpotLight) doomed.push(obj);
+  });
+  for (const b of doomed) {
+    b.target.removeFromParent();
+    b.removeFromParent();
+    b.dispose();
+  }
+}
+
+/** Free GPU resources for a vehicle group (player, AI, or remote). */
+export function disposeVehicleGroup(root: THREE.Object3D) {
+  root.traverse((obj) => {
+    if (obj instanceof THREE.Light) {
+      obj.dispose();
+      return;
+    }
+    if (!(obj instanceof THREE.Mesh)) return;
+    obj.geometry?.dispose();
+    const mat = obj.material;
+    if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+    else mat?.dispose();
+  });
 }
 
 /** Toggle lamp glow + beams (night driving). Safe on AI/remotes (emissive only). */
@@ -228,10 +253,6 @@ export function setVehicleHeadlights(root: THREE.Group | undefined, on: boolean)
     for (const b of beams) {
       b.intensity = on ? HEAD_BEAM_INTENSITY : 0;
       b.visible = on;
-      if (on) {
-        b.updateMatrixWorld();
-        b.target.updateMatrixWorld();
-      }
     }
   }
   const heads = root.userData.headLightMaterials as THREE.MeshStandardMaterial[] | undefined;

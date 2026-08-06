@@ -29,10 +29,11 @@ body,
   font-family: var(--font-ui);
 }
 
-/* Touch-primary (phones/tablets): lock rubber-band scroll / double-tap zoom */
+/* Touch-primary (phones/tablets): lock rubber-band / text select.
+   Keep touch-action off html/body so menu overlays can pan-y scroll —
+   race canvas (#game) already uses touch-action: none. */
 html.touch-mode,
 html.touch-mode body {
-  touch-action: none;
   overscroll-behavior: none;
   -webkit-user-select: none;
   user-select: none;
@@ -412,18 +413,23 @@ html.touch-mode [contenteditable="true"] {
   position: fixed;
   inset: 0;
   z-index: 10;
-  display: grid;
-  place-items: center;
+  /* Flex + margin:auto (not grid place-items:center): tall panels stay
+     reachable from scrollTop=0 instead of clipping the top half. */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   background:
     radial-gradient(ellipse at 30% 20%, rgba(255, 59, 46, 0.18), transparent 45%),
     radial-gradient(ellipse at 70% 80%, rgba(40, 70, 120, 0.25), transparent 50%),
     linear-gradient(160deg, rgba(6, 8, 12, 0.92), rgba(10, 14, 22, 0.88));
   backdrop-filter: blur(6px);
+  overflow-x: hidden;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   touch-action: pan-y;
-  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
-    env(safe-area-inset-left);
+  padding: max(0.75rem, env(safe-area-inset-top)) max(0.75rem, env(safe-area-inset-right))
+    max(0.75rem, env(safe-area-inset-bottom)) max(0.75rem, env(safe-area-inset-left));
 }
 
 .overlay.hidden {
@@ -1017,6 +1023,16 @@ html.touch-mode [contenteditable="true"] {
   align-items: center;
 }
 
+/* Dense create/join/lobby forms — keep titles readable without eating the viewport */
+.multiplayer-panel h1 {
+  font-size: clamp(1.75rem, 6.5vw, 2.85rem);
+  margin-bottom: 0.55rem;
+}
+
+.multiplayer-panel > .mp-view > .tagline {
+  margin-bottom: 0.85rem;
+}
+
 .mp-view {
   width: 100%;
   display: flex;
@@ -1173,9 +1189,8 @@ html.touch-mode [contenteditable="true"] {
   gap: 0.7rem;
   width: 100%;
   margin-top: 0.75rem;
-  max-height: min(68vh, 36rem);
-  overflow-y: auto;
-  padding-bottom: 0.25rem;
+  /* Scroll the overlay, not a nested form box — weather/track stay reachable */
+  padding-bottom: 0.5rem;
 }
 
 .mp-field {
@@ -1219,7 +1234,11 @@ html.touch-mode [contenteditable="true"] {
 .mp-track-grid {
   width: 100%;
   max-height: 9.5rem;
+  overflow-x: hidden;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.4rem;
 }
@@ -1788,6 +1807,8 @@ html.touch-mode [contenteditable="true"] {
   text-align: center;
   max-width: 34rem;
   padding: 2rem;
+  margin-block: auto;
+  flex-shrink: 0;
   animation: rise 0.7s ease both;
 }
 

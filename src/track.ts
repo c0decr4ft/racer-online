@@ -1724,7 +1724,10 @@ function plantCity(
     dummy.scale.set(1, 1, 1);
     dummy.updateMatrix();
     lamps.setMatrixAt(lamps.count++, dummy.matrix);
-    group.add(makeNightPointLight(x, 6.5, z, 1.75, 24));
+    // Sparse PointLights (every other pole) — emissive bulbs remain on every lamp.
+    if (lamps.count % 2 === 1) {
+      group.add(makeNightPointLight(x, 6.5, z, 1.75, 24));
+    }
   }
   posts.instanceMatrix.needsUpdate = true;
   lamps.instanceMatrix.needsUpdate = true;
@@ -2664,6 +2667,12 @@ export function createTrack(trackId: string = DEFAULT_TRACK_ID): TrackData {
   // Biome vegetation + props — clear of asphalt / runoff / walls
   plantBiomeScenery(group, path, half, biome);
 
+  // Static scenery — skip per-frame matrix walks (vehicles stay auto-updating).
+  group.updateMatrixWorld(true);
+  group.traverse((obj) => {
+    obj.matrixAutoUpdate = false;
+  });
+
   const heading = yawFromTangent(startTan);
 
   return {
@@ -2683,6 +2692,10 @@ export function disposeTrack(track: TrackData) {
   const geos = new Set<THREE.BufferGeometry>();
   const mats = new Set<THREE.Material>();
   track.group.traverse((obj) => {
+    if (obj instanceof THREE.Light) {
+      obj.dispose();
+      return;
+    }
     const mesh = obj as THREE.Mesh & THREE.InstancedMesh;
     if (!mesh.isMesh && !mesh.isInstancedMesh) return;
     if (mesh.geometry) geos.add(mesh.geometry);
