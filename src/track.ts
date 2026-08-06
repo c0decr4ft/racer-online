@@ -18,6 +18,9 @@ export type TrackData = {
   width: number;
 };
 
+/** Shared with car headlights — asphalt receives beams; forest stays on layer 0 only. */
+const HEADLIGHT_LAYER = 1;
+
 function yawFromTangent(tangent: THREE.Vector3) {
   return Math.atan2(tangent.x, tangent.z);
 }
@@ -40,7 +43,7 @@ const TREE_CANOPY = [
 type TreePose = { x: number; z: number; scale: number; jitter: number };
 
 /** Soft cap so large multi-map circuits don't plant 6k–10k trees per swap. */
-const MAX_TREES = 2400;
+const MAX_TREES = 1500;
 
 /**
  * Dense forest on the grass: keep clear of asphalt + runoff (half+4.8) plus a
@@ -331,6 +334,7 @@ export function createTrack(trackId: string = DEFAULT_TRACK_ID): TrackData {
   );
   runoff.userData.surface = "runoff";
   runoff.receiveShadow = true;
+  runoff.layers.enable(HEADLIGHT_LAYER);
   group.add(runoff);
 
   // Clear grey asphalt
@@ -340,6 +344,7 @@ export function createTrack(trackId: string = DEFAULT_TRACK_ID): TrackData {
   );
   road.userData.surface = "asphalt";
   road.receiveShadow = true;
+  road.layers.enable(HEADLIGHT_LAYER);
   group.add(road);
 
   // Continuous white edge stripes — thin ribbons flush with asphalt (no box gaps)
@@ -357,6 +362,7 @@ export function createTrack(trackId: string = DEFAULT_TRACK_ID): TrackData {
     );
     edges.castShadow = false;
     edges.receiveShadow = false;
+    edges.layers.enable(HEADLIGHT_LAYER);
     group.add(edges);
   }
 

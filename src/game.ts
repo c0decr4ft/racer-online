@@ -280,7 +280,7 @@ export class Game {
       antialias: true,
       powerPreference: "default",
     });
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.25));
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1));
     const boot = this.viewport;
     this.renderer.setSize(boot.w, boot.h);
     this.renderer.setClearColor(0x87a0bc, 1);
@@ -1204,7 +1204,9 @@ export class Game {
     this.garage = { ...this.garage, kind };
     this.net.kind = kind;
     this.disposeVehicleMesh(this.player);
-    const mesh = createVehicle(kind, this.garage.primary, 7, this.garage.accent);
+    const mesh = createVehicle(kind, this.garage.primary, 7, this.garage.accent, {
+      headlights: true,
+    });
     this.scene.add(mesh);
     this.player = new Vehicle(mesh, this.track.startPosition.clone(), this.track.startHeading, true);
     this.setAiVisible(false);
@@ -1416,14 +1418,20 @@ export class Game {
     this.disposeVehicleMesh(this.player);
     for (const r of this.rivals) this.disposeVehicleMesh(r.vehicle);
 
-    const playerMesh = createVehicle(kind, this.garage.primary, 7, this.garage.accent);
+    const playerMesh = createVehicle(kind, this.garage.primary, 7, this.garage.accent, {
+      headlights: true,
+    });
     this.scene.add(playerMesh);
     this.player = new Vehicle(playerMesh, playerPos, playerHeading, true);
 
     this.rivals = CAR_PALETTE.rivals.map((color, i) => {
       const slot = GRID[i + 1] ?? GRID[GRID.length - 1];
       const accent = CAR_PALETTE.rivalAccents[i] ?? 0xf0f4f8;
+      // No SpotLight beams on AI — keeps MeshStandard fragment cost low
       const mesh = createVehicle(kind, color, 11 + i * 3, accent);
+      mesh.traverse((o) => {
+        if (o instanceof THREE.Mesh) o.castShadow = false;
+      });
       this.scene.add(mesh);
       const { pos, heading } = this.spawnPose(slot.t, slot.offset);
       return new RivalAI(new Vehicle(mesh, pos, heading, false), slot.offset, slot.skill, i);
@@ -1475,6 +1483,7 @@ export class Game {
     this.resetWallHits();
     // Conditions are chosen by the game — no player weather picker
     this.weather.setTrackRoot(this.track.group);
+    this.weather.setParticlesEnabled(false);
     const weatherSeed = this.online
       ? `${this.net.room || "online"}:${this.trackId}:${this.net.hostId || ""}`
       : undefined;
@@ -1645,7 +1654,7 @@ export class Game {
   private onResize() {
     this.viewport = viewportSize();
     const { w, h } = this.viewport;
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.25));
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1));
     this.camera.aspect = w / Math.max(1, h);
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
@@ -1680,8 +1689,8 @@ export class Game {
     const inputPeek = this.input.getState();
     // Online mode skips the second full scene render; smooth input/physics matter
     // more than the rearview inset and this roughly halves race rendering work.
-    this.wantRearview =
-      !this.online && this.running && !this.paused && !this.finished && !this.exploding;
+    // Rearview is a second full scene pass — keep off for race FPS.
+    this.wantRearview = false;
     if (inputPeek.pause) {
       if (this.paused) this.resume();
       else if (this.running && !this.finished && !this.exploding) this.pause();
@@ -1772,7 +1781,10 @@ export class Game {
       const racing = this.running && !this.paused && !this.finished;
       const pos = this.player?.state.position ?? this.track.startPosition;
       const heading = this.player?.state.heading ?? this.track.startHeading;
-      this.weather.update(dt, pos, heading, racing, this.player?.mesh);
+      this.weather.update(dt, pos, heading, racing, this.player?.mesh, {
+        // Fog/grip only — rain Points were a major CPU hitch
+        particles: false,
+      });
     }
 
     this.renderViews();
@@ -1800,7 +1812,7 @@ export class Game {
     let refreshShadows = liveShadows;
     if (liveShadows) {
       const now = performance.now();
-      refreshShadows = now - this.lastShadowAt >= 1000 / 30;
+      refreshShadows = now - this.lastShadowAt >= 1000 / 15;
       if (refreshShadows) this.lastShadowAt = now;
     }
     this.renderer.shadowMap.needsUpdate = refreshShadows || this.shadowNeedsWarmup;
