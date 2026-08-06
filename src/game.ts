@@ -84,6 +84,9 @@ const ONLINE_GRID_MAX_COLUMNS = 4;
 /** Track-t of the front row — behind start/finish, facing race direction. */
 const ONLINE_START_T = -0.016;
 const ONLINE_ROW_GAP_T = 0.011;
+/** Solo / Test Drive — alone on the line, not the packed AI back row. */
+const SOLO_START_T = -0.006;
+const SOLO_START_OFFSET = 0;
 
 export class Game {
   renderer: THREE.WebGLRenderer;
@@ -1466,7 +1469,11 @@ export class Game {
       // Shared start-line grid for every human (sorted ids → same slots on all clients)
       this.snapOnlineStartingGrid();
     } else {
-      const gridSlot = GRID[0]!;
+      // Solo / Test Drive: front of the line. Full AI race: rearmost GRID slot.
+      const alone = this.solo || this.practice;
+      const gridSlot = alone
+        ? { t: SOLO_START_T, offset: SOLO_START_OFFSET }
+        : GRID[0]!;
       const { pos: spawn, heading } = this.spawnPose(gridSlot.t, gridSlot.offset);
       this.player.reset(spawn, heading);
       this.resetSticky(this.player);
