@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { createVehicle } from "../car";
+import { createVehicle, disposeVehicleGroup, stripVehicleSpotLights } from "../car";
 import type { VehicleKind } from "../garage";
 import {
   NET_TICK_MS,
@@ -43,12 +43,14 @@ export class RemotePlayer {
     this.color = pose.color;
     this.accent = pose.accent ?? 0xff3b2e;
     this.scene = scene;
+    // No SpotLights — each client only renders its own local beams.
     this.mesh = createVehicle(
       this.kind,
       pose.color,
       Math.abs(pose.id.charCodeAt(0) % 90) + 10,
       this.accent,
     );
+    stripVehicleSpotLights(this.mesh);
     this.mesh.position.set(pose.x, 0, pose.z);
     this.mesh.rotation.y = pose.h;
     scene.add(this.mesh);
@@ -68,7 +70,9 @@ export class RemotePlayer {
 
   private rebuildMesh(kind: VehicleKind, color: number, accent: number) {
     this.scene.remove(this.mesh);
+    disposeVehicleGroup(this.mesh);
     this.mesh = createVehicle(kind, color, Math.abs(this.id.charCodeAt(0) % 90) + 10, accent);
+    stripVehicleSpotLights(this.mesh);
     this.scene.add(this.mesh);
     this.kind = kind;
     this.color = color;
@@ -185,6 +189,7 @@ export class RemotePlayer {
 
   dispose(scene: THREE.Scene) {
     scene.remove(this.mesh);
+    disposeVehicleGroup(this.mesh);
     this.label.remove();
   }
 }

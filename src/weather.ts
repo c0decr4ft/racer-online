@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { setVehicleHeadlights, syncVehicleHeadlights } from "./car";
+import { setVehicleHeadlights } from "./car";
 
 export type WeatherMode = "dry" | "night" | "rain";
 
@@ -135,12 +135,17 @@ export class WeatherController {
   private rain: THREE.Points | null = null;
   private rainVel: Float32Array | null = null;
   private trackRoot: THREE.Object3D | null = null;
+  /** Cached street PointLights — toggled by night + distance (not full traverse each frame). */
+  private nightLamps: THREE.PointLight[] = [];
   private lastHeadlightsOn: boolean | null = null;
   private lastHeadlightMesh: THREE.Group | null = null;
+  private lastNightLampActive: boolean | null = null;
   /** Light camera-local rain (~320 pts) — visible without the old 900–1400 hitch. */
   private particlesEnabled = true;
   private static readonly RAIN_COUNT = 320;
   private static readonly RAIN_SPREAD = 48;
+  /** Only street PointLights near the camera contribute (emissive bulbs stay on). */
+  private static readonly NIGHT_LAMP_RANGE_SQ = 85 * 85;
   private readonly _tintScratch = new THREE.Color();
   private readonly _tintMix = new THREE.Color();
 
@@ -162,6 +167,15 @@ export class WeatherController {
 
   setTrackRoot(root: THREE.Object3D | null) {
     this.trackRoot = root;
+    this.nightLamps = [];
+    this.lastNightLampActive = null;
+    if (root) {
+      root.traverse((obj) => {
+        if (obj instanceof THREE.PointLight && obj.userData.nightLamp) {
+          this.nightLamps.push(obj);
+        }
+      });
+    }
     this.tintSurfaces(PRESETS[this.mode]);
     this.applyNightLamps(this.mode === "night");
   }
@@ -170,6 +184,7 @@ export class WeatherController {
     this.mode = mode === "night" || mode === "rain" ? mode : "dry";
     surfaceGrip = PRESETS[this.mode].grip;
     this.lastHeadlightsOn = null;
+    this.lastNightLampActive = null;
     this.applyAtmosphere();
   }
 
@@ -209,9 +224,8 @@ export class WeatherController {
         setVehicleHeadlights(playerMesh, lightsOn);
         this.lastHeadlightsOn = lightsOn;
         this.lastHeadlightMesh = playerMesh;
-      } else if (lightsOn) {
-        syncVehicleHeadlights(playerMesh);
       }
+      // SpotLight targets are parented under the car — scene matrixWorld covers them.
     } else if (this.lastHeadlightsOn) {
       // Player mesh gone — clear cache so the next mesh is forced to sync.
       if (this.lastHeadlightMesh) setVehicleHeadlights(this.lastHeadlightMesh, false);
@@ -229,9 +243,47 @@ export class WeatherController {
       }
     }
 
+    // Street PointLights: only near the player (far poles keep emissive bulbs only).
+    if (lightsOn !== this.lastNightLampActive || lightsOn) {
+      this.cullNightLamps(lightsOn, playerPos);
+      this.lastNightLampActive = lightsOn;
+    }
+
     const wantParticles = this.particlesEnabled && opts?.particles !== false;
     if (this.mode === "rain" && wantParticles && (active || preview)) this.tickRain(dt, playerPos);
     else if (this.rain) this.rain.visible = false;
+  }
+
+  /** Enable only nearby night PointLights so NUM_POINT_LIGHTS stays small in-shader. */
+  private cullNightLamps(on: boolean, playerPos: THREE.Vector3) {
+    const rangeSq = WeatherController.NIGHT_LAMP_RANGE_SQ;
+    const px = playerPos.x;
+    const pz = playerPos.z;
+    for (const lamp of this.nightLamps) {
+      if (!on) {
+        if (lamp.visible || lamp.intensity !== 0) {
+          lamp.intensity = 0;
+          lamp.visible = false;
+        }
+        continue;
+      }
+      const dx = lamp.position.x - px;
+      const dz = lamp.position.z - pz;
+      const near = dx * dx + dz * dz <= rangeSq;
+      const intensity =
+        typeof lamp.userData.nightIntensity === "number"
+          ? (lamp.userData.nightIntensity as number)
+          : 1.6;
+      if (near) {
+        if (!lamp.visible || lamp.intensity !== intensity) {
+          lamp.intensity = intensity;
+          lamp.visible = true;
+        }
+      } else if (lamp.visible || lamp.intensity !== 0) {
+        lamp.intensity = 0;
+        lamp.visible = false;
+      }
+    }
   }
 
   private applyAtmosphere() {
@@ -260,16 +312,18 @@ export class WeatherController {
    */
   private applyNightLamps(on: boolean) {
     if (!this.trackRoot) return;
-    this.trackRoot.traverse((obj) => {
-      if (obj instanceof THREE.PointLight && obj.userData.nightLamp) {
-        const intensity =
-          typeof obj.userData.nightIntensity === "number"
-            ? (obj.userData.nightIntensity as number)
-            : 1.6;
-        obj.intensity = on ? intensity : 0;
-        obj.visible = on;
-        return;
+    // PointLights are distance-culled in update(); force them off here on day / mode change.
+    if (!on) {
+      for (const lamp of this.nightLamps) {
+        lamp.intensity = 0;
+        lamp.visible = false;
       }
+      this.lastNightLampActive = false;
+    } else {
+      // Force a cull pass on the next update (player position known there).
+      this.lastNightLampActive = null;
+    }
+    this.trackRoot.traverse((obj) => {
       if (!(obj instanceof THREE.Mesh)) return;
       const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
       for (const raw of mats) {
