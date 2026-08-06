@@ -12,6 +12,11 @@ export type TrackDef = {
   name: string;
   /** Control points as [x, z] pairs in world meters. */
   points: readonly (readonly [number, number])[];
+  /**
+   * Visual biome for this course (forest / coast / alpine / …).
+   * See src/biomes.ts — defaults to forest if omitted.
+   */
+  biome?: string;
 };
 
 /**
@@ -414,7 +419,7 @@ const CANYON_CUT: readonly (readonly [number, number])[] = [
 ];
 
 /**
- * Oval Circuit — wide rounded-rectangle / paperclip (hand-drawn ref).
+ * City Circuit — urban oval / paperclip through a downtown block.
  * Long top/bottom straights, shorter left/right ends, four quarter-circle
  * corners. SF at mid top straight; race clockwise (eastbound on top).
  */
@@ -485,31 +490,37 @@ export const TRACKS: TrackDef[] = [
   {
     id: "forest-loop",
     name: "Forest Loop",
+    biome: "forest",
     points: scalePts(FOREST_LOOP_RAW, 1.07, 1.15),
   },
   {
     id: "harbor-circuit",
     name: "Harbor Circuit",
+    biome: "coast",
     points: HARBOR_CIRCUIT,
   },
   {
     id: "summit-pass",
     name: "Summit Pass",
+    biome: "alpine",
     points: SUMMIT_PASS,
   },
   {
     id: "meadow-sweep",
     name: "Meadow Sweep",
+    biome: "meadow",
     points: MEADOW_SWEEP,
   },
   {
     id: "canyon-cut",
     name: "Canyon Cut",
+    biome: "canyon",
     points: CANYON_CUT,
   },
   {
     id: "oval-circuit",
-    name: "Oval Circuit",
+    name: "City Circuit",
+    biome: "urban",
     points: OVAL_CIRCUIT,
   },
 ];

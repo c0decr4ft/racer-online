@@ -81,7 +81,7 @@ function normalizeSessionId(raw) {
 /** @typedef {{ id: string, name: string, color: number, accent: number, kind: string, x: number, z: number, h: number, s: number, g: string, lap: number }} Pose */
 /** @typedef {{ id: string, name: string, color: number, room: string, ws: import('ws').WebSocket, pose: Pose, lastPoseAt: number }} Client */
 /** @typedef {{ trackId: string, order: number }} TrackVote */
-/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, clients: Map<string, Client> }} Room */
+/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, lastCrashAt: number, clients: Map<string, Client> }} Room */
 /** @typedef {{ name: string, timeMs: number, bestLapMs?: number, at: number, trackId?: string }} BoardEntry */
 /** @typedef {Record<string, BoardEntry[]>} BoardStore */
 /** @typedef {{ at: number, count: number }} PresenceSample */
@@ -658,6 +658,7 @@ function admitClient(ws, msg, mode) {
       votes: new Map(),
       voteOrder: 0,
       voteEndsAt: 0,
+      lastCrashAt: 0,
       clients: new Map(),
     };
     rooms.set(roomName, room);
@@ -987,6 +988,27 @@ wss.on("connection", (ws) => {
       if (Number.isFinite(Number(msg.accent)) && Number(msg.accent) > 0) {
         p.accent = Math.round(Number(msg.accent)) & 0xffffff;
       }
+    }
+
+    if (msg.t === "crash") {
+      if (room.phase !== "racing" || room.winnerId) return;
+      const now = Date.now();
+      // Debounce so multiple near-simultaneous explodes don't spam resets
+      if (room.lastCrashAt && now - room.lastCrashAt < 2_000) return;
+      room.lastCrashAt = now;
+      for (const c of room.clients.values()) {
+        c.pose.s = 0;
+        c.pose.lap = 1;
+        c.pose.g = "1";
+      }
+      broadcast(room, {
+        t: "crashReset",
+        byId: client.id,
+        byName: client.name,
+      });
+      broadcast(room, { t: "notice", text: `${client.name} crashed — restarting` });
+      console.log(`[crash] ${room.name} by ${client.name} → reset grid`);
+      return;
     }
 
     if (msg.t === "finish") {

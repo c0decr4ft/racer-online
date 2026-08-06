@@ -212,6 +212,8 @@ export type NetHandlers = {
     maxPlayers: number;
   }) => void;
   onStart: (at: number, trackId: string, kind: NetVehicleKind) => void;
+  /** Another (or local) driver crashed — reset everyone to the start grid. */
+  onCrashReset: (byId: string, byName: string) => void;
   onRaceResult: (
     winnerId: string,
     winnerName: string,
@@ -400,6 +402,9 @@ export class NetClient {
         this.trackId = msg.trackId;
         this.kind = msg.kind === "bike" ? "bike" : "car";
         this.handlers.onStart(msg.at, msg.trackId, this.kind);
+      } else if (msg.t === "crashReset") {
+        this.finishSent = false;
+        this.handlers.onCrashReset(msg.byId, msg.byName);
       } else if (msg.t === "raceResult") {
         this.phase = "finished";
         this.handlers.onRaceResult(
@@ -497,6 +502,13 @@ export class NetClient {
   startRace() {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.myId) return;
     this.ws.send(JSON.stringify({ t: "start" }));
+  }
+
+  /** Local wall-explode — server tells every racer to reset to the start grid. */
+  reportCrash() {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.myId) return;
+    if (this.phase !== "racing") return;
+    this.ws.send(JSON.stringify({ t: "crash" }));
   }
 
   /** Report a local finish once; the server decides and broadcasts the winner. */

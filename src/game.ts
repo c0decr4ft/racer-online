@@ -85,9 +85,12 @@ const ONLINE_GRID_MAX_COLUMNS = 4;
 /** Track-t of the front row — behind start/finish, facing race direction. */
 const ONLINE_START_T = -0.016;
 const ONLINE_ROW_GAP_T = 0.011;
-/** Solo / Test Drive — alone on the line, not the packed AI back row. */
+/** Solo Race — alone at the front of the line. */
 const SOLO_START_T = -0.006;
 const SOLO_START_OFFSET = 0;
+/** Test Drive — alone at the end (rearmost) of the start line. */
+const PRACTICE_START_T = GRID[0]!.t;
+const PRACTICE_START_OFFSET = 0;
 
 export class Game {
   renderer: THREE.WebGLRenderer;
@@ -237,6 +240,8 @@ export class Game {
   private wallHitCooldown = 0;
   private exploding = false;
   private explodeRestartAt = 0;
+  /** Prevent double grid-reset from crashReset + local explode timer. */
+  private lastCrashResetAt = 0;
   private explodeParts: {
     mesh: THREE.Mesh;
     vel: THREE.Vector3;
@@ -323,6 +328,7 @@ export class Game {
         this.renderLobby();
       },
       onStart: (_at, trackId, kind) => this.beginOnlineRace(trackId, kind),
+      onCrashReset: (_byId, byName) => this.applyOnlineCrashReset(byName),
       onRaceResult: (winnerId, winnerName, timeMs, trackOptions, voteEndsAt) =>
         this.finishRace({
           winnerId,
@@ -1073,7 +1079,13 @@ export class Game {
     this.el.rearview.classList.add("hidden");
     this.syncTouchControls();
     this.el.overlay.classList.remove("hidden");
+    // Always show map one (Forest Loop) behind the home menu
+    this.setActiveTrack(DEFAULT_TRACK_ID);
     this.applyGarageToWorld();
+    if (this.player) {
+      this.player.reset(this.track.startPosition.clone(), this.track.startHeading);
+      this.resetSticky(this.player);
+    }
     this.setAiVisible(true);
     this.shadowNeedsWarmup = true;
     this.audio.playMenuMusic();
@@ -1483,7 +1495,8 @@ export class Game {
     this.resetWallHits();
     // Conditions are chosen by the game — no player weather picker
     this.weather.setTrackRoot(this.track.group);
-    this.weather.setParticlesEnabled(false);
+    // Light local rain (~320 pts) — online and solo share the same budget
+    this.weather.setParticlesEnabled(true);
     const weatherSeed = this.online
       ? `${this.net.room || "online"}:${this.trackId}:${this.net.hostId || ""}`
       : undefined;
@@ -1493,11 +1506,12 @@ export class Game {
       // Shared start-line grid for every human (sorted ids → same slots on all clients)
       this.snapOnlineStartingGrid();
     } else {
-      // Solo / Test Drive: front of the line. Full AI race: rearmost GRID slot.
-      const alone = this.solo || this.practice;
-      const gridSlot = alone
-        ? { t: SOLO_START_T, offset: SOLO_START_OFFSET }
-        : GRID[0]!;
+      // Test Drive: end of the line. Solo: front. Full AI race: rearmost GRID slot.
+      const gridSlot = this.practice
+        ? { t: PRACTICE_START_T, offset: PRACTICE_START_OFFSET }
+        : this.solo
+          ? { t: SOLO_START_T, offset: SOLO_START_OFFSET }
+          : GRID[0]!;
       const { pos: spawn, heading } = this.spawnPose(gridSlot.t, gridSlot.offset);
       this.player.reset(spawn, heading);
       this.resetSticky(this.player);
@@ -1701,7 +1715,12 @@ export class Game {
         this.updateExplode(dt);
         this.updateCamera(dt);
         if (performance.now() >= this.explodeRestartAt) {
-          this.startRace({ practice: this.practice, solo: this.solo, trackId: this.trackId });
+          // Online: server crashReset handles the shared restart; local fallback if late
+          if (this.online) {
+            this.applyOnlineCrashReset();
+          } else {
+            this.startRace({ practice: this.practice, solo: this.solo, trackId: this.trackId });
+          }
         }
       } else {
         if (this.countingDown) this.tickCountdown(now);
@@ -1782,8 +1801,7 @@ export class Game {
       const pos = this.player?.state.position ?? this.track.startPosition;
       const heading = this.player?.state.heading ?? this.track.startHeading;
       this.weather.update(dt, pos, heading, racing, this.player?.mesh, {
-        // Fog/grip only — rain Points were a major CPU hitch
-        particles: false,
+        particles: true,
       });
     }
 
@@ -1965,6 +1983,46 @@ export class Game {
     this.audio.stopDriveMusic();
     this.audio.playBoom();
     this.spawnExplodeFx();
+    // Multiplayer: tell the room so every driver resets to the start line
+    if (this.online) this.net.reportCrash();
+  }
+
+  /**
+   * Shared MP restart after any racer hits the wall limit — everyone back on the grid.
+   * Idempotent so the exploding client and remote clients can both apply it.
+   */
+  private applyOnlineCrashReset(_byName?: string) {
+    if (!this.online || !this.running || this.finished) return;
+    const now = performance.now();
+    if (now - this.lastCrashResetAt < 1500) return;
+    this.lastCrashResetAt = now;
+    this.clearExplode(true);
+    this.resetWallHits();
+    this.paused = false;
+    this.el.pause.classList.add("hidden");
+    this.el.pauseBtn.classList.remove("hidden");
+    this.el.finish.classList.add("hidden");
+    this.el.wrongWay.classList.add("hidden");
+    this.lap = 1;
+    this.bestLap = Infinity;
+    this.bestFlashUntil = 0;
+    this.pauseTotal = 0;
+    this.pauseBegan = 0;
+    this.raceStart = 0;
+    this.lapStart = 0;
+    this.crossedOnce = true;
+    this.gates.reset();
+    this.input.clearDriveKeys();
+    this.el.lap.innerHTML = `1<span>/${TOTAL_LAPS}</span>`;
+    this.el.best.textContent = "--:--.---";
+    this.el.time.textContent = formatTime(0);
+    this.el.gear.textContent = "1";
+    this.snapOnlineStartingGrid();
+    this.snapCamera();
+    this.audio.unmute();
+    this.beginCountdown();
+    this.syncTouchControls();
+    this.syncMuteBtn();
   }
 
   private spawnExplodeFx() {

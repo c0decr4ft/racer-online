@@ -55,6 +55,7 @@ export type ClientMsg =
       accent?: number;
     }
   | { t: "finish"; timeMs: number; bestLapMs: number }
+  | { t: "crash" }
   | { t: "vote"; trackId: string }
   | { t: "start" }
   | { t: "ping"; n: number };
@@ -85,6 +86,8 @@ export type ServerMsg =
     }
   | { t: "state"; players: PlayerPose[] }
   | { t: "start"; at: number; trackId: string; kind: NetVehicleKind }
+  /** One driver exploded — everyone resets to the start grid. */
+  | { t: "crashReset"; byId: string; byName: string }
   | {
       t: "raceResult";
       winnerId: string;

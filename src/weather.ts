@@ -47,8 +47,8 @@ const PRESETS: Record<WeatherMode, Atmosphere> = {
   night: {
     clear: 0x070b14,
     fog: 0x0a1220,
-    fogNear: 90,
-    fogFar: 380,
+    fogNear: 110,
+    fogFar: 480,
     exposure: 0.95,
     hemiSky: 0x3a4a6a,
     hemiGround: 0x101820,
@@ -121,8 +121,12 @@ export class WeatherController {
   private trackRoot: THREE.Object3D | null = null;
   private lastHeadlightsOn: boolean | null = null;
   private lastHeadlightMesh: THREE.Group | null = null;
-  /** Rain Points are expensive — keep fog/grip only unless explicitly enabled. */
-  private particlesEnabled = false;
+  /** Light camera-local rain (~320 pts) — visible without the old 900–1400 hitch. */
+  private particlesEnabled = true;
+  private static readonly RAIN_COUNT = 320;
+  private static readonly RAIN_SPREAD = 48;
+  private readonly _tintScratch = new THREE.Color();
+  private readonly _tintMix = new THREE.Color();
 
   constructor(
     renderer: THREE.WebGLRenderer,
@@ -154,7 +158,11 @@ export class WeatherController {
 
   setParticlesEnabled(on: boolean) {
     this.particlesEnabled = on;
-    if (!on && this.rain) this.rain.visible = false;
+    if (!on) {
+      if (this.rain) this.rain.visible = false;
+      return;
+    }
+    if (this.mode === "rain") this.ensureRain(true);
   }
 
   /** Rain particles + night headlights on the player vehicle. */
@@ -181,7 +189,7 @@ export class WeatherController {
       this.lastHeadlightMesh = null;
     }
 
-    const wantParticles = opts?.particles !== false;
+    const wantParticles = this.particlesEnabled && opts?.particles !== false;
     if (this.mode === "rain" && active && wantParticles) this.tickRain(dt, playerPos);
     else if (this.rain) this.rain.visible = false;
   }
@@ -205,23 +213,53 @@ export class WeatherController {
     this.ensureRain(this.mode === "rain");
   }
 
+  /**
+   * Wet/night look: prefer mesh userData.baseColor (biome) so weather never
+   * flattens course palette to absolute preset greens/greys.
+   */
   private tintSurfaces(p: Atmosphere) {
     if (!this.trackRoot) return;
+    const mode = this.mode;
     this.trackRoot.traverse((obj) => {
       if (!(obj instanceof THREE.Mesh)) return;
       const kind = obj.userData.surface as string | undefined;
       const mat = obj.material;
       if (!(mat instanceof THREE.MeshStandardMaterial)) return;
+
+      const base =
+        typeof obj.userData.baseColor === "number"
+          ? (obj.userData.baseColor as number)
+          : undefined;
+
       if (kind === "asphalt") {
-        mat.color.setHex(p.asphalt);
+        mat.color.copy(this.weatherTint(base ?? p.asphalt, mode, "asphalt"));
         mat.roughness = p.asphaltRough;
         mat.metalness = p.asphaltRough < 0.5 ? 0.22 : 0.04;
       } else if (kind === "grass") {
-        mat.color.setHex(p.grass);
+        mat.color.copy(this.weatherTint(base ?? p.grass, mode, "ground"));
       } else if (kind === "runoff") {
-        mat.color.setHex(p.runoff);
+        mat.color.copy(this.weatherTint(base ?? p.runoff, mode, "ground"));
       }
     });
+  }
+
+  /** Darken / cool a biome base for night & rain; dry leaves base alone. */
+  private weatherTint(
+    baseHex: number,
+    mode: WeatherMode,
+    kind: "asphalt" | "ground",
+  ): THREE.Color {
+    const c = this._tintScratch.setHex(baseHex);
+    if (mode === "dry") return c;
+    if (mode === "night") {
+      c.multiplyScalar(kind === "asphalt" ? 0.52 : 0.42);
+      c.lerp(this._tintMix.setHex(0x1a2434), 0.18);
+      return c;
+    }
+    // rain — glossy wet darkening, keep hue from biome
+    c.multiplyScalar(kind === "asphalt" ? 0.7 : 0.78);
+    c.lerp(this._tintMix.setHex(0x4a5560), kind === "asphalt" ? 0.22 : 0.12);
+    return c;
   }
 
   private ensureRain(on: boolean) {
@@ -233,44 +271,52 @@ export class WeatherController {
       this.rain.visible = true;
       return;
     }
-    const count = 900;
+    const count = WeatherController.RAIN_COUNT;
+    const spread = WeatherController.RAIN_SPREAD;
     const positions = new Float32Array(count * 3);
     const vel = new Float32Array(count);
     for (let i = 0; i < count; i++) {
-      positions[i * 3] = (Math.random() - 0.5) * 60;
-      positions[i * 3 + 1] = Math.random() * 28;
-      positions[i * 3 + 2] = (Math.random() - 0.5) * 60;
-      vel[i] = 14 + Math.random() * 18;
+      positions[i * 3] = (Math.random() - 0.5) * spread;
+      positions[i * 3 + 1] = Math.random() * 26;
+      positions[i * 3 + 2] = (Math.random() - 0.5) * spread;
+      vel[i] = 16 + Math.random() * 14;
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
     const mat = new THREE.PointsMaterial({
-      color: 0xb8c4d4,
-      size: 0.12,
+      color: 0xc5d0dc,
+      size: 0.16,
       transparent: true,
-      opacity: 0.55,
+      opacity: 0.62,
       depthWrite: false,
+      sizeAttenuation: true,
     });
     this.rain = new THREE.Points(geo, mat);
     this.rain.frustumCulled = false;
+    this.rain.renderOrder = 2;
     this.rainVel = vel;
     this.scene.add(this.rain);
   }
 
   private tickRain(dt: number, playerPos: THREE.Vector3) {
-    if (!this.rain || !this.rainVel) return;
+    if (!this.rain || !this.rainVel) {
+      if (this.particlesEnabled) this.ensureRain(true);
+      if (!this.rain || !this.rainVel) return;
+    }
     this.rain.visible = true;
     this.rain.position.set(playerPos.x, 0, playerPos.z);
     const pos = this.rain.geometry.getAttribute("position") as THREE.BufferAttribute;
     const arr = pos.array as Float32Array;
     const vel = this.rainVel;
+    const spread = WeatherController.RAIN_SPREAD;
+    const dtClamped = Math.min(dt, 0.05);
     for (let i = 0; i < vel.length; i++) {
-      arr[i * 3 + 1]! -= vel[i]! * dt;
-      arr[i * 3]! -= 6 * dt;
+      arr[i * 3 + 1]! -= vel[i]! * dtClamped;
+      arr[i * 3]! -= 7 * dtClamped;
       if (arr[i * 3 + 1]! < 0) {
-        arr[i * 3]! = (Math.random() - 0.5) * 60;
-        arr[i * 3 + 1]! = 18 + Math.random() * 12;
-        arr[i * 3 + 2]! = (Math.random() - 0.5) * 60;
+        arr[i * 3]! = (Math.random() - 0.5) * spread;
+        arr[i * 3 + 1]! = 16 + Math.random() * 12;
+        arr[i * 3 + 2]! = (Math.random() - 0.5) * spread;
       }
     }
     pos.needsUpdate = true;
