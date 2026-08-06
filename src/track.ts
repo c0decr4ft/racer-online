@@ -81,8 +81,8 @@ const VEG_MATS = {
   // Sandy trunk + tropical frond greens (deeper / olive, not lawn green)
   palms: makeTreeMats(0xc4a06a, [0x1e7a36, 0x2a9142, 0x3aa850]),
   cactus: makeTreeMats(0x3a6a2a, [0x3a6a2a, 0x458034, 0x2f5a24]),
-  // Meadow: single canopy green (no multi-tone variation)
-  sparse: makeTreeMats(0x5a3a22, [0x6a9a32]),
+  // Meadow: single canopy green — darker than meadow ground (0x8fbc4a) so groves read clearly
+  sparse: makeTreeMats(0x5a3a22, [0x2f7a24]),
 };
 
 /** Shared mats must not be disposed with a track swap. */
@@ -96,6 +96,8 @@ type TreePose = { x: number; z: number; scale: number; jitter: number };
 const MAX_TREES = 1500;
 /** Forest Loop wants a denser stand — higher soft cap for outfield rings. */
 const MAX_TREES_FOREST = 2400;
+/** Meadow Sweep outfield woods ring — dense park belt around the loop. */
+const MAX_TREES_MEADOW = 2000;
 
 /** Runoff half-width beyond asphalt centerline (matches createTrack ribbon). */
 const RUNOFF_EXTRA = 4.8;
@@ -193,10 +195,11 @@ function collectPlantPoses(
   roadHalf: number,
   density: number,
   clearance = makePathClearance(path, roadHalf),
-  opts?: { forest?: boolean },
+  opts?: { forest?: boolean; meadow?: boolean },
 ): { poses: TreePose[]; bounds: ReturnType<typeof pathBounds>; clearance: PathClearance } {
   const bounds = pathBounds(path);
   const forest = !!opts?.forest;
+  const meadow = !!opts?.meadow;
 
   const poses: TreePose[] = [];
   const tryPlant = (x: number, z: number, scale: number) => {
@@ -215,11 +218,15 @@ function collectPlantPoses(
   // Lateral rings — skip the infield (negative offsets) so the middle stays empty
   const ringOffsets = forest
     ? [18, 24, 30, 38, 48, 60, 74, 90, 108, 128, 150]
-    : [22, 30, 40, 52, 68, 88, 112, 140];
-  const ringSteps = forest ? 220 : 160;
+    : meadow
+      ? [18, 24, 32, 42, 54, 68, 84, 102, 122, 145]
+      : [22, 30, 40, 52, 68, 88, 112, 140];
+  const ringSteps = forest ? 220 : meadow ? 200 : 160;
   const ringTan = new THREE.Vector3();
   const ringN = new THREE.Vector3();
-  const skipChance = 1 - Math.max(forest ? 0.04 : 0.12, Math.min(1, density));
+  const skipFloor = forest ? 0.04 : meadow ? 0.06 : 0.12;
+  const skipChance = 1 - Math.max(skipFloor, Math.min(1, density));
+  const ringSkipBase = forest ? 0.12 : meadow ? 0.14 : 0.28;
   for (const offset of ringOffsets) {
     for (let i = 0; i < ringSteps; i++) {
       const t = i / ringSteps;
@@ -227,31 +234,34 @@ function collectPlantPoses(
       ringTan.copy(path.getTangentAt(t)).normalize();
       ringN.set(-ringTan.z, 0, ringTan.x);
       const h = hash2(i, Math.round(offset * 10));
-      if (h < (forest ? 0.12 : 0.28) + skipChance * 0.5) continue;
+      if (h < ringSkipBase + skipChance * 0.5) continue;
       // Plant both outer laterals (±) but sceneryOk drops any infield hits
       for (const sign of [-1, 1] as const) {
         const lat = sign * (offset + (h - 0.5) * 3.2);
         const along = (hash2(Math.round(offset * 7), i + sign * 17) - 0.5) * 2.4;
         const x = p.x + ringN.x * lat + ringTan.x * along;
         const z = p.z + ringN.z * lat + ringTan.z * along;
-        tryPlant(x, z, 0.65 + h * 0.7);
+        tryPlant(x, z, (meadow ? 0.75 : 0.65) + h * (meadow ? 0.8 : 0.7));
       }
     }
   }
 
-  const step = forest ? 5.2 : density > 0.7 ? 8.5 : density > 0.4 ? 11.5 : 15;
+  const step = forest ? 5.2 : meadow ? 6.8 : density > 0.7 ? 8.5 : density > 0.4 ? 11.5 : 15;
+  const gridSkipBase = forest ? 0.1 : meadow ? 0.12 : 0.22;
   for (let ix = bounds.minX; ix <= bounds.maxX; ix += step) {
     for (let iz = bounds.minZ; iz <= bounds.maxZ; iz += step) {
       const h = hash2(Math.round(ix * 3), Math.round(iz * 3));
-      if (h < (forest ? 0.1 : 0.22) + skipChance * 0.55) continue;
+      if (h < gridSkipBase + skipChance * 0.55) continue;
       const x = ix + (h - 0.5) * 5.2;
       const z = iz + (hash2(Math.round(iz * 5), Math.round(ix * 5)) - 0.5) * 5.2;
-      tryPlant(x, z, 0.55 + h * 0.85);
+      tryPlant(x, z, (meadow ? 0.7 : 0.55) + h * (meadow ? 0.9 : 0.85));
     }
   }
 
-  const maxTrees = forest ? MAX_TREES_FOREST : MAX_TREES;
-  const cap = Math.max(80, Math.round(maxTrees * density));
+  const maxTrees = forest ? MAX_TREES_FOREST : meadow ? MAX_TREES_MEADOW : MAX_TREES;
+  // Meadow uses a high effective density so the woods ring isn't starved by biome.density 0.28
+  const densForCap = meadow ? Math.max(density, 0.92) : density;
+  const cap = Math.max(80, Math.round(maxTrees * densForCap));
   if (poses.length > cap) {
     const keep: TreePose[] = [];
     for (let i = 0; i < poses.length; i++) {
@@ -494,8 +504,12 @@ function plantVegetation(
           : biome.vegetation === "sparse"
             ? VEG_MATS.sparse
             : VEG_MATS.trees;
-  const collected = collectPlantPoses(path, roadHalf, biome.density, clearance, {
+  const isMeadow = biome.id === "meadow";
+  // Meadow biome.density is intentionally low for props feel — outfield trees use a dense park ring
+  const vegDensity = isMeadow ? Math.max(biome.density, 0.92) : biome.density;
+  const collected = collectPlantPoses(path, roadHalf, vegDensity, clearance, {
     forest: biome.id === "forest",
+    meadow: isMeadow,
   });
   const clear = clearance ?? collected.clearance;
   // Coast: keep palms on sand — shoreline dips into the sea past the local beach width
@@ -1330,15 +1344,18 @@ function collectSpacedInfieldPoints(
   const minSep = opts.minSep ?? 7.5;
   const minSep2 = minSep * minSep;
   const clearFoot = opts.clearFoot ?? 2.4;
-  // Aim for ~count candidates across the bbox; insideLoop + clearance thin the set.
+  // Step from target density — do not cap low on large maps (that + early exit
+  // filled only the west lobe of Meadow Sweep before hitting `count`).
   const step = Math.max(
     minSep * 0.9,
-    Math.min(18, Math.sqrt((spanX * spanZ) / Math.max(12, opts.count * 2.2))),
+    Math.sqrt((spanX * spanZ) / Math.max(12, opts.count * 2.2)),
   );
   const out: { x: number; z: number; i: number }[] = [];
   let attempt = 0;
-  for (let gx = minX; gx <= maxX && out.length < opts.count; gx += step) {
-    for (let gz = minZ; gz <= maxZ && out.length < opts.count; gz += step) {
+  // Scan the full AABB first, then subsample — left-to-right early exit left
+  // eastern / central clear infield empty on wide circuits.
+  for (let gx = minX; gx <= maxX; gx += step) {
+    for (let gz = minZ; gz <= maxZ; gz += step) {
       attempt += 1;
       const x = gx + (hash2(attempt, 3) - 0.5) * step * 0.85;
       const z = gz + (hash2(attempt, 5) - 0.5) * step * 0.85;
@@ -1358,7 +1375,13 @@ function collectSpacedInfieldPoints(
       out.push({ x, z, i: attempt });
     }
   }
-  return out;
+  if (out.length <= opts.count) return out;
+  const kept: { x: number; z: number; i: number }[] = [];
+  for (let i = 0; i < opts.count; i++) {
+    const idx = Math.min(out.length - 1, Math.floor(((i + 0.5) * out.length) / opts.count));
+    kept.push(out[idx]!);
+  }
+  return kept;
 }
 
 /** Pine trees in the Summit Pass infield — inside the loop, off the ribbon. */
@@ -2363,6 +2386,557 @@ function plantForestInfieldGrove(
   }
 }
 
+type MeadowFarmPlot = {
+  cx: number;
+  cz: number;
+  halfW: number;
+  halfD: number;
+  yaw: number;
+};
+
+/** Local XZ → world XZ for the meadow farm rect. */
+function meadowFarmWorld(
+  plot: MeadowFarmPlot,
+  lx: number,
+  lz: number,
+): { x: number; z: number } {
+  const c = Math.cos(plot.yaw);
+  const s = Math.sin(plot.yaw);
+  return {
+    x: plot.cx + lx * c - lz * s,
+    z: plot.cz + lx * s + lz * c,
+  };
+}
+
+/** True when (x,z) sits inside the farm clear patch (optional pad). */
+function inMeadowFarmPatch(
+  x: number,
+  z: number,
+  plot: MeadowFarmPlot,
+  pad = 0,
+): boolean {
+  const c = Math.cos(plot.yaw);
+  const s = Math.sin(plot.yaw);
+  const dx = x - plot.cx;
+  const dz = z - plot.cz;
+  const lx = dx * c + dz * s;
+  const lz = -dx * s + dz * c;
+  return Math.abs(lx) <= plot.halfW + pad && Math.abs(lz) <= plot.halfD + pad;
+}
+
+function inAnyMeadowFarmPatch(
+  x: number,
+  z: number,
+  plots: MeadowFarmPlot[],
+  pad = 0,
+): boolean {
+  for (const plot of plots) {
+    if (inMeadowFarmPatch(x, z, plot, pad)) return true;
+  }
+  return false;
+}
+
+/** Axis-aligned overlap in the shared farm yaw frame, with edge padding. */
+function meadowFarmsOverlap(
+  a: MeadowFarmPlot,
+  b: MeadowFarmPlot,
+  pad: number,
+): boolean {
+  const c = Math.cos(a.yaw);
+  const s = Math.sin(a.yaw);
+  const dx = b.cx - a.cx;
+  const dz = b.cz - a.cz;
+  const lx = dx * c + dz * s;
+  const lz = -dx * s + dz * c;
+  return (
+    Math.abs(lx) < a.halfW + b.halfW + pad &&
+    Math.abs(lz) < a.halfD + b.halfD + pad
+  );
+}
+
+/** Min distance² from (x,z) to the racing-line samples (for chase-cam visibility scoring). */
+function meadowPathDist2(path: THREE.CatmullRomCurve3, x: number, z: number): number {
+  let best = Infinity;
+  for (let i = 0; i <= 80; i++) {
+    const p = path.getPointAt(i / 80);
+    const d = (p.x - x) * (p.x - x) + (p.z - z) * (p.z - z);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+/**
+ * Pick up to four clear infield farm rects — prefer spots visible from the
+ * racing line (chase cam). Always returns `target` plots when any infield
+ * exists (aggressive size / clearance fallbacks).
+ */
+function resolveMeadowFarmPlots(
+  path: THREE.CatmullRomCurve3,
+  clearance: PathClearance,
+  bounds: ReturnType<typeof pathBounds>,
+  target = 4,
+): MeadowFarmPlot[] {
+  const yaw = 0.28;
+  const baseW = 14;
+  const baseD = 11;
+  /** Gap between soil pads (and tractor parking margin). */
+  const betweenPad = 5;
+  type Cand = { x: number; z: number; score: number };
+  const candidates: Cand[] = [];
+
+  const scoreCand = (x: number, z: number): number => {
+    // Chase cam reads lateral infield best ~18–42m off asphalt; penalize buried deep lobes.
+    const d = Math.sqrt(meadowPathDist2(path, x, z));
+    const band = d < 16 ? 8 + (16 - d) : d > 48 ? (d - 48) * 1.4 : 0;
+    return d + band;
+  };
+
+  let centroid: { x: number; z: number } | null = null;
+  const outline = sampleInfieldClearOutline(path, clearance, 3.5, 96);
+  if (outline.length >= 8) {
+    let cx = 0;
+    let cz = 0;
+    for (const p of outline) {
+      cx += p.x;
+      cz += p.z;
+    }
+    centroid = { x: cx / outline.length, z: cz / outline.length };
+    candidates.push({ ...centroid, score: scoreCand(centroid.x, centroid.z) });
+    // Outline points hug the clear ribbon — best chase-cam sightlines
+    for (let i = 0; i < outline.length; i += 3) {
+      const p = outline[i]!;
+      candidates.push({ x: p.x, z: p.z, score: scoreCand(p.x, p.z) });
+    }
+  }
+
+  const samples = collectSpacedInfieldPoints(path, clearance, bounds, {
+    count: 96,
+    minSep: 6,
+    clearFoot: 1.6,
+  });
+  if (samples.length) {
+    let ax = 0;
+    let az = 0;
+    for (const p of samples) {
+      ax += p.x;
+      az += p.z;
+    }
+    const mean = { x: ax / samples.length, z: az / samples.length };
+    if (
+      !centroid ||
+      (mean.x - centroid.x) ** 2 + (mean.z - centroid.z) ** 2 > 4
+    ) {
+      candidates.push({ ...mean, score: scoreCand(mean.x, mean.z) });
+    }
+
+    if (centroid) {
+      let maxR = 0;
+      for (const p of samples) {
+        const r = Math.hypot(p.x - centroid.x, p.z - centroid.z);
+        if (r > maxR) maxR = r;
+      }
+      const ring = Math.max(18, maxR * 0.38);
+      const dirs = [
+        [1, 0],
+        [-0.35, 1],
+        [-0.35, -1],
+        [0.2, 0.85],
+        [0.2, -0.85],
+        [-1, 0.15],
+        [0.7, 0.7],
+        [-0.7, 0.7],
+      ] as const;
+      for (const [dx, dz] of dirs) {
+        const len = Math.hypot(dx, dz) || 1;
+        const x = centroid.x + (dx / len) * ring;
+        const z = centroid.z + (dz / len) * ring;
+        candidates.push({ x, z, score: scoreCand(x, z) });
+      }
+    }
+
+    for (const p of samples) {
+      candidates.push({ x: p.x, z: p.z, score: scoreCand(p.x, p.z) });
+    }
+  }
+
+  // Prefer near-track clear pockets first (visible from chase camera)
+  candidates.sort((a, b) => a.score - b.score);
+
+  const probe = [
+    [0, 0],
+    [1, 1],
+    [1, -1],
+    [-1, 1],
+    [-1, -1],
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+  ] as const;
+
+  const fitsClear = (
+    cx: number,
+    cz: number,
+    halfW: number,
+    halfD: number,
+    foot: number,
+    cornersOnly: boolean,
+  ) => {
+    const plot = { cx, cz, halfW, halfD, yaw };
+    if (!clearance.insideLoop(cx, cz)) return false;
+    if (!clearance.clearOf(cx, cz, Math.max(0.4, foot * 0.5))) return false;
+    const checks = cornersOnly
+      ? ([
+          [1, 1],
+          [1, -1],
+          [-1, 1],
+          [-1, -1],
+        ] as const)
+      : probe;
+    for (const [sx, sz] of checks) {
+      const { x, z } = meadowFarmWorld(plot, sx * halfW * 0.92, sz * halfD * 0.92);
+      if (!clearance.insideLoop(x, z) || !clearance.clearOf(x, z, foot)) return false;
+    }
+    return true;
+  };
+
+  const plots: MeadowFarmPlot[] = [];
+  const tried = new Set<string>();
+
+  const tryPlace = (
+    scales: number[],
+    foot: number,
+    pad: number,
+    cornersOnly: boolean,
+  ) => {
+    for (const c of candidates) {
+      if (plots.length >= target) break;
+      const key = `${c.x.toFixed(1)},${c.z.toFixed(1)}`;
+      if (tried.has(key) && foot > 0.5) continue;
+      tried.add(key);
+
+      for (const scale of scales) {
+        const halfW = baseW * scale;
+        const halfD = baseD * scale;
+        if (!fitsClear(c.x, c.z, halfW, halfD, foot, cornersOnly)) continue;
+        const plot: MeadowFarmPlot = { cx: c.x, cz: c.z, halfW, halfD, yaw };
+        let overlaps = false;
+        for (const other of plots) {
+          if (meadowFarmsOverlap(plot, other, pad)) {
+            overlaps = true;
+            break;
+          }
+        }
+        if (overlaps) continue;
+        plots.push(plot);
+        break;
+      }
+    }
+  };
+
+  // Strict → relaxed until we hit the target (never leave Meadow Sweep farm-less)
+  tryPlace([1, 0.9, 0.78, 0.65], 1.2, betweenPad, false);
+  if (plots.length < target) {
+    tried.clear();
+    tryPlace([0.85, 0.7, 0.55, 0.42], 0.55, 3.5, false);
+  }
+  if (plots.length < target) {
+    tried.clear();
+    tryPlace([0.7, 0.55, 0.42, 0.32], 0.2, 2.5, true);
+  }
+
+  // Last resort: pin shrunk plots on the best clear samples (center only)
+  if (plots.length < target) {
+    for (const c of candidates) {
+      if (plots.length >= target) break;
+      if (!clearance.insideLoop(c.x, c.z) || !clearance.clearOf(c.x, c.z, 0.8)) continue;
+      const plot: MeadowFarmPlot = {
+        cx: c.x,
+        cz: c.z,
+        halfW: 7,
+        halfD: 5.5,
+        yaw,
+      };
+      let overlaps = false;
+      for (const other of plots) {
+        if (meadowFarmsOverlap(plot, other, 2)) {
+          overlaps = true;
+          break;
+        }
+      }
+      if (overlaps) continue;
+      plots.push(plot);
+    }
+  }
+
+  return plots;
+}
+
+/**
+ * Brown soil plot + furrow lines + crop plants + low-poly tractor beside the field.
+ * Soil is a raised BoxGeometry (not flatPoly) so FrontSide normals face the sky.
+ * Kept inside the clear infield (caller already validated corners).
+ */
+function plantMeadowFarmPlot(
+  group: THREE.Group,
+  plot: MeadowFarmPlot,
+  clearance: PathClearance,
+  farmIndex = 0,
+) {
+  // Bright plough-brown — reads against meadow ground 0x8fbc4a from chase cam
+  const soilColor = 0xb86836;
+  const soilMat = new THREE.MeshStandardMaterial({
+    color: soilColor,
+    roughness: 0.95,
+    metalness: 0,
+    flatShading: true,
+  });
+  const furrowMat = new THREE.MeshStandardMaterial({
+    color: 0x6e3a14,
+    roughness: 1,
+    metalness: 0,
+    flatShading: true,
+  });
+  const cropMat = new THREE.MeshStandardMaterial({
+    color: 0x2f9a28,
+    roughness: 0.92,
+    metalness: 0,
+    flatShading: true,
+  });
+  const cropLeafMat = new THREE.MeshStandardMaterial({
+    color: 0x6ecf3a,
+    roughness: 0.9,
+    metalness: 0,
+    flatShading: true,
+  });
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color: 0xe23a22,
+    roughness: 0.65,
+    metalness: 0.15,
+    flatShading: true,
+  });
+  const cabinMat = new THREE.MeshStandardMaterial({
+    color: 0x2a333c,
+    roughness: 0.55,
+    metalness: 0.25,
+    flatShading: true,
+  });
+  const wheelMat = new THREE.MeshStandardMaterial({
+    color: 0x1a1a1e,
+    roughness: 0.95,
+    metalness: 0.05,
+    flatShading: true,
+  });
+  const stackMat = new THREE.MeshStandardMaterial({
+    color: 0x4a5058,
+    roughness: 0.6,
+    metalness: 0.35,
+    flatShading: true,
+  });
+
+  const farm = new THREE.Group();
+  farm.name = `farm-${farmIndex}`;
+  farm.position.set(plot.cx, 0, plot.cz);
+  farm.rotation.y = plot.yaw;
+
+  // Raised soil slab — clearly above biome ground (-0.12); BoxGeometry = +Y tops
+  const soilH = 0.32;
+  const soil = new THREE.Mesh(
+    new THREE.BoxGeometry(plot.halfW * 2, soilH, plot.halfD * 2),
+    soilMat,
+  );
+  soil.name = `farm-${farmIndex}-soil`;
+  soil.position.y = 0.06; // top ≈ 0.22 — unmistakable from chase cam
+  soil.receiveShadow = true;
+  soil.userData.surface = "dirt";
+  soil.userData.baseColor = soilColor;
+  farm.add(soil);
+
+  // Furrow / crop lines — raised ridges on the soil pad
+  const furrowCount = 5;
+  const furrowGeo = new THREE.BoxGeometry(plot.halfW * 1.88, 0.12, 0.7);
+  for (let i = 0; i < furrowCount; i++) {
+    const t = (i + 0.5) / furrowCount;
+    const lz = -plot.halfD * 0.8 + t * plot.halfD * 1.6;
+    const furrow = new THREE.Mesh(furrowGeo, furrowMat);
+    furrow.position.set(0, 0.24, lz);
+    furrow.receiveShadow = true;
+    farm.add(furrow);
+  }
+
+  // Plants growing along each furrow row (taller so they peek past the grove)
+  const cropsPerRow = 11;
+  const cropN = furrowCount * cropsPerRow;
+  const stemGeo = new THREE.CylinderGeometry(0.07, 0.1, 0.55, 4);
+  const leafGeo = new THREE.SphereGeometry(0.38, 5, 4);
+  const stems = new THREE.InstancedMesh(stemGeo, cropMat, cropN);
+  const leaves = new THREE.InstancedMesh(leafGeo, cropLeafMat, cropN);
+  stems.count = 0;
+  leaves.count = 0;
+  stems.castShadow = false;
+  leaves.castShadow = false;
+  const dummy = new THREE.Object3D();
+  let plantI = 0;
+  for (let row = 0; row < furrowCount; row++) {
+    const tRow = (row + 0.5) / furrowCount;
+    const lz = -plot.halfD * 0.8 + tRow * plot.halfD * 1.6;
+    for (let col = 0; col < cropsPerRow; col++) {
+      const tCol = (col + 0.5) / cropsPerRow;
+      const lx = -plot.halfW * 0.84 + tCol * plot.halfW * 1.68;
+      const h = 1.05 + hash2(plantI + 3, row * 17 + col) * 0.55;
+      dummy.position.set(lx, 0.28 + 0.28 * h, lz);
+      dummy.scale.set(h, h, h);
+      dummy.rotation.set(0, hash2(col, row + 9) * 6, 0);
+      dummy.updateMatrix();
+      stems.setMatrixAt(stems.count++, dummy.matrix);
+      dummy.position.set(lx, 0.55 + 0.42 * h, lz);
+      dummy.scale.set(h * 0.95, h * 0.85, h * 0.95);
+      dummy.updateMatrix();
+      leaves.setMatrixAt(leaves.count++, dummy.matrix);
+      plantI += 1;
+    }
+  }
+  stems.instanceMatrix.needsUpdate = true;
+  leaves.instanceMatrix.needsUpdate = true;
+  stems.computeBoundingSphere();
+  leaves.computeBoundingSphere();
+  farm.add(stems);
+  farm.add(leaves);
+
+  // Tractor parked beside the field (local +Z edge), still in clear infield
+  const tractor = new THREE.Group();
+  tractor.name = `farm-${farmIndex}-tractor`;
+  const parkLz = plot.halfD + 4.2;
+  const parkLx = plot.halfW * 0.12;
+  const parkWorld = meadowFarmWorld(plot, parkLx, parkLz);
+  if (
+    clearance.insideLoop(parkWorld.x, parkWorld.z) &&
+    clearance.clearOf(parkWorld.x, parkWorld.z, 2.0)
+  ) {
+    tractor.position.set(parkLx, 0, parkLz);
+  } else {
+    const alt = meadowFarmWorld(plot, parkLx, -parkLz);
+    if (clearance.insideLoop(alt.x, alt.z) && clearance.clearOf(alt.x, alt.z, 2.0)) {
+      tractor.position.set(parkLx, 0, -parkLz);
+      tractor.rotation.y = Math.PI;
+    } else {
+      // Park on the soil corner so the red body is never culled off-map
+      tractor.position.set(plot.halfW * 0.55, 0, plot.halfD * 0.55);
+      tractor.rotation.y = Math.PI / 2;
+    }
+  }
+
+  const body = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.9, 1.35), bodyMat);
+  body.position.set(0.15, 1.05, 0);
+  body.castShadow = false;
+  tractor.add(body);
+
+  const hood = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.55, 1.15), bodyMat);
+  hood.position.set(1.05, 0.9, 0);
+  tractor.add(hood);
+
+  const cabin = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.9, 1.05), cabinMat);
+  cabin.position.set(-0.4, 1.65, 0);
+  tractor.add(cabin);
+
+  const stack = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.12, 0.9, 5), stackMat);
+  stack.position.set(0.7, 1.7, 0.35);
+  tractor.add(stack);
+
+  const rearWheelGeo = new THREE.CylinderGeometry(0.7, 0.7, 0.42, 8);
+  const frontWheelGeo = new THREE.CylinderGeometry(0.4, 0.4, 0.34, 8);
+  for (const [x, y, z, geo] of [
+    [-0.55, 0.7, 0.78, rearWheelGeo],
+    [-0.55, 0.7, -0.78, rearWheelGeo],
+    [1.05, 0.4, 0.58, frontWheelGeo],
+    [1.05, 0.4, -0.58, frontWheelGeo],
+  ] as const) {
+    const wheel = new THREE.Mesh(geo, wheelMat);
+    wheel.rotation.z = Math.PI / 2;
+    wheel.position.set(x, y, z);
+    tractor.add(wheel);
+  }
+
+  farm.add(tractor);
+  group.add(farm);
+}
+
+/**
+ * Meadow Sweep infield — dense deciduous grove with four farmer's plots
+ * (center + offset lobes): brown soil, crop rows, tractor. Clear of asphalt / runoff.
+ */
+function plantMeadowInfieldGrove(
+  group: THREE.Group,
+  path: THREE.CatmullRomCurve3,
+  clearance: PathClearance,
+  bounds: ReturnType<typeof pathBounds>,
+) {
+  const farms = resolveMeadowFarmPlots(path, clearance, bounds, 4);
+  // Keep tree trunks/canopies well clear of each soil pad (canopy radius ~2+)
+  const treeClearPad = 7.5;
+
+  const points = collectSpacedInfieldPoints(path, clearance, bounds, {
+    count: 220,
+    minSep: 5.5,
+    clearFoot: 2.4,
+    exclude: farms.length
+      ? (x, z) => inAnyMeadowFarmPatch(x, z, farms, treeClearPad)
+      : undefined,
+  });
+
+  if (points.length) {
+    const mats = VEG_MATS.sparse;
+    const trunkGeo = new THREE.CylinderGeometry(0.22, 0.3, 1.2, 5);
+    const canopyGeo = new THREE.SphereGeometry(1.5, 6, 6);
+    const canopyMat = mats.canopy[0]!;
+    const dummy = new THREE.Object3D();
+
+    const n = points.length;
+    const trunks = new THREE.InstancedMesh(trunkGeo, mats.trunk, n);
+    trunks.count = 0;
+    trunks.castShadow = false;
+    trunks.userData.sharedVegMat = true;
+    const canopies = new THREE.InstancedMesh(canopyGeo, canopyMat, n);
+    canopies.count = 0;
+    canopies.castShadow = false;
+    canopies.userData.sharedVegMat = true;
+
+    for (const { x, z, i } of points) {
+      const scale = 0.95 + hash2(i, 7) * 0.85;
+      dummy.position.set(x, 0.6 * scale, z);
+      dummy.scale.set(scale, scale, scale);
+      dummy.rotation.set(0, hash2(i, 11) * 6, 0);
+      dummy.updateMatrix();
+      trunks.setMatrixAt(trunks.count++, dummy.matrix);
+
+      const cr = scale * (1.2 + hash2(i, 17) * 0.35);
+      dummy.position.set(x, 2.1 * scale, z);
+      dummy.scale.set(cr, cr * 1.05, cr);
+      dummy.updateMatrix();
+      canopies.setMatrixAt(canopies.count++, dummy.matrix);
+    }
+
+    if (trunks.count) {
+      trunks.instanceMatrix.needsUpdate = true;
+      trunks.computeBoundingSphere();
+      group.add(trunks);
+    }
+    if (canopies.count) {
+      canopies.instanceMatrix.needsUpdate = true;
+      canopies.computeBoundingSphere();
+      group.add(canopies);
+    }
+  }
+
+  // Farms after trees so soil/crops/tractors win draw order; always plant all resolved plots
+  for (let i = 0; i < farms.length; i++) {
+    plantMeadowFarmPlot(group, farms[i]!, clearance, i);
+  }
+  if (typeof console !== "undefined" && console.info) {
+    console.info(`[meadow] planted ${farms.length} farm plot(s)`);
+  }
+}
+
 /** Grove / props in the circuit infield — clear of asphalt + runoff. */
 function plantInfieldGrove(
   group: THREE.Group,
@@ -2381,12 +2955,16 @@ function plantInfieldGrove(
     return;
   }
 
-  // Meadow (sparse): denser full-tree grove so the infield reads clearly as trees
-  const isMeadow = biome.vegetation === "sparse";
+  // Meadow Sweep — dense grove + four farmer's plots (trees cleared from each)
+  if (biome.id === "meadow" || biome.vegetation === "sparse") {
+    plantMeadowInfieldGrove(group, path, clearance, bounds);
+    return;
+  }
+
   const isPalm = biome.vegetation === "palms";
   const points = collectSpacedInfieldPoints(path, clearance, bounds, {
-    count: isMeadow ? 78 : isPalm ? 56 : 44,
-    minSep: isMeadow ? 8.5 : isPalm ? 7.8 : 7.5,
+    count: isPalm ? 56 : 44,
+    minSep: isPalm ? 7.8 : 7.5,
     clearFoot: isPalm ? 2.8 : 2.3,
   });
   if (!points.length) return;
@@ -2404,14 +2982,7 @@ function plantInfieldGrove(
 
   const isPine = biome.vegetation === "pines";
   const isCactus = biome.vegetation === "cactus";
-  // Meadow infield must use sparse mats (single canopy) — not forest trees
-  const mats = isPine
-    ? VEG_MATS.pines
-    : isCactus
-      ? VEG_MATS.cactus
-      : isMeadow
-        ? VEG_MATS.sparse
-        : VEG_MATS.trees;
+  const mats = isPine ? VEG_MATS.pines : isCactus ? VEG_MATS.cactus : VEG_MATS.trees;
 
   const trunkGeo = isCactus
     ? new THREE.CylinderGeometry(0.18, 0.22, 2.4, 5)
@@ -2437,7 +3008,7 @@ function plantInfieldGrove(
   const dummy = new THREE.Object3D();
 
   for (const { x, z, i } of points) {
-    const scale = (isMeadow ? 0.85 : 0.7) + hash2(i, 7) * (isMeadow ? 0.7 : 0.6);
+    const scale = 0.7 + hash2(i, 7) * 0.6;
     const trunkH = isCactus || isPine ? 1.1 : 0.6;
     dummy.position.set(x, trunkH * scale, z);
     dummy.scale.set(scale, scale, scale);
