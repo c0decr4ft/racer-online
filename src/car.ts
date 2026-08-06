@@ -150,6 +150,8 @@ function paintable(root: THREE.Group, body: THREE.MeshStandardMaterial, accent: 
 /** Road-only lighting layer — keeps spots off the forest MeshStandard flood. */
 export const HEADLIGHT_LAYER = 1;
 
+const HEAD_BEAM_INTENSITY = 9.5;
+
 /** Spot beams — local player only. Remotes/AI must not get these (GPU cost). */
 function attachHeadBeams(
   root: THREE.Group,
@@ -157,17 +159,17 @@ function attachHeadBeams(
 ) {
   const beams: THREE.SpotLight[] = [];
   for (const m of mounts) {
-    const light = new THREE.SpotLight(0xfff2c8, 0, 32, 0.5, 0.45, 1.2);
+    const light = new THREE.SpotLight(0xfff4cc, 0, 38, 0.55, 0.35, 1.05);
     light.position.set(m.x, m.y, m.z);
     light.castShadow = false;
     // Off lights must be invisible — intensity 0 still hits the fragment shader.
     light.visible = false;
-    // Only light objects on HEADLIGHT_LAYER (asphalt), not 2400 trees.
+    // Only light objects on HEADLIGHT_LAYER (asphalt), not the forest.
     light.layers.disableAll();
     light.layers.enable(HEADLIGHT_LAYER);
     const target = new THREE.Object3D();
-    // Aim down onto the asphalt a short way ahead of the nose
-    target.position.set(m.x * 0.15, -0.35, m.z + 10);
+    // Aim down onto the asphalt ahead of the nose
+    target.position.set(m.x * 0.1, -0.55, m.z + 12);
     root.add(target);
     light.target = target;
     root.add(light);
@@ -176,8 +178,21 @@ function attachHeadBeams(
   root.userData.headBeams = beams;
   // Let beams catch the player's own body/nose
   root.traverse((obj) => {
+    if (obj instanceof THREE.Light) return;
     obj.layers.enable(HEADLIGHT_LAYER);
   });
+}
+
+/** Keep parented SpotLight targets in sync while driving at night. */
+export function syncVehicleHeadlights(root: THREE.Group | undefined) {
+  if (!root) return;
+  const beams = root.userData.headBeams as THREE.SpotLight[] | undefined;
+  if (!beams) return;
+  for (const b of beams) {
+    if (!b.visible) continue;
+    b.updateMatrixWorld();
+    b.target.updateMatrixWorld();
+  }
 }
 
 /** Toggle lamp glow + beams (night driving). */
@@ -186,23 +201,27 @@ export function setVehicleHeadlights(root: THREE.Group | undefined, on: boolean)
   const beams = root.userData.headBeams as THREE.SpotLight[] | undefined;
   if (beams) {
     for (const b of beams) {
-      b.intensity = on ? 6.8 : 0;
+      b.intensity = on ? HEAD_BEAM_INTENSITY : 0;
       b.visible = on;
+      if (on) {
+        b.updateMatrixWorld();
+        b.target.updateMatrixWorld();
+      }
     }
   }
   const heads = root.userData.headLightMaterials as THREE.MeshStandardMaterial[] | undefined;
   const headIdle = root.userData.kind === "bike" ? 0.85 : 0.9;
   if (heads) {
     for (const m of heads) {
-      m.emissiveIntensity = on ? 5.4 : headIdle;
-      m.emissive.setHex(on ? 0xffefb0 : 0xf7fafc);
-      m.color.setHex(on ? 0xfff6d8 : 0xf7fafc);
+      m.emissiveIntensity = on ? 6.2 : headIdle;
+      m.emissive.setHex(on ? 0xfff0b8 : 0xf7fafc);
+      m.color.setHex(on ? 0xfff8e0 : 0xf7fafc);
     }
   }
   const tails = root.userData.tailLightMaterials as THREE.MeshStandardMaterial[] | undefined;
   const tailIdle = root.userData.kind === "bike" ? 0.65 : 0.7;
   if (tails) {
-    for (const m of tails) m.emissiveIntensity = on ? 2.25 : tailIdle;
+    for (const m of tails) m.emissiveIntensity = on ? 2.4 : tailIdle;
   }
 }
 
