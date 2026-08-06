@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { setVehicleHeadlights } from "./car";
+import { setVehicleHeadlights, syncVehicleHeadlights } from "./car";
 
 export type WeatherMode = "dry" | "night" | "rain";
 
@@ -120,6 +120,7 @@ export class WeatherController {
   private rainVel: Float32Array | null = null;
   private trackRoot: THREE.Object3D | null = null;
   private lastHeadlightsOn: boolean | null = null;
+  private lastHeadlightMesh: THREE.Group | null = null;
   /** Rain Points are expensive — keep fog/grip only unless explicitly enabled. */
   private particlesEnabled = false;
 
@@ -166,11 +167,18 @@ export class WeatherController {
     opts?: { particles?: boolean },
   ) {
     const lightsOn = this.mode === "night" && active;
-    if (playerMesh && this.lastHeadlightsOn !== lightsOn) {
-      setVehicleHeadlights(playerMesh, lightsOn);
-      this.lastHeadlightsOn = lightsOn;
-    } else if (!playerMesh && this.lastHeadlightsOn) {
+    if (playerMesh) {
+      const meshChanged = this.lastHeadlightMesh !== playerMesh;
+      if (meshChanged || this.lastHeadlightsOn !== lightsOn) {
+        setVehicleHeadlights(playerMesh, lightsOn);
+        this.lastHeadlightsOn = lightsOn;
+        this.lastHeadlightMesh = playerMesh;
+      } else if (lightsOn) {
+        syncVehicleHeadlights(playerMesh);
+      }
+    } else if (this.lastHeadlightsOn) {
       this.lastHeadlightsOn = false;
+      this.lastHeadlightMesh = null;
     }
 
     const wantParticles = opts?.particles !== false;
