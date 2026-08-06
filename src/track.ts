@@ -314,6 +314,7 @@ export function createTrack(trackId: string = DEFAULT_TRACK_ID): TrackData {
     new THREE.PlaneGeometry(bounds.spanX, bounds.spanZ),
     new THREE.MeshStandardMaterial({ color: 0x4aa83a, roughness: 1 }),
   );
+  ground.userData.surface = "grass";
   ground.rotation.x = -Math.PI / 2;
   ground.position.set(bounds.cx, -0.12, bounds.cz);
   ground.receiveShadow = true;
@@ -328,6 +329,7 @@ export function createTrack(trackId: string = DEFAULT_TRACK_ID): TrackData {
     buildRibbon(path, half + 4.8, -0.02, ribbonSegs),
     new THREE.MeshStandardMaterial({ color: 0xd4b896, roughness: 1, metalness: 0 }),
   );
+  runoff.userData.surface = "runoff";
   runoff.receiveShadow = true;
   group.add(runoff);
 
@@ -336,6 +338,7 @@ export function createTrack(trackId: string = DEFAULT_TRACK_ID): TrackData {
     buildRibbon(path, half, 0.035, ribbonSegs),
     new THREE.MeshStandardMaterial({ color: 0x6a6e74, roughness: 0.92, metalness: 0.04 }),
   );
+  road.userData.surface = "asphalt";
   road.receiveShadow = true;
   group.add(road);
 
