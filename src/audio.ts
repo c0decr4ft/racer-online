@@ -2,6 +2,8 @@
  * Web Audio — countdown beeps / explode boom + looping menu/drive music.
  * Unlocks on first user gesture (Start / BOARD / overlay click).
  * Speaker toggle mutes everything via a top-level gain (persisted in localStorage).
+ *
+ * Explode SFX: public/audio/explode.mp3 — Freesound “explosion-42132” (freesound_community).
  */
 
 type MusicMode = "off" | "menu" | "drive";
@@ -9,6 +11,8 @@ type MusicMode = "off" | "menu" | "drive";
 const MENU_VOL = 0.28;
 const DRIVE_VOL = 0.34;
 const SFX_MASTER_VOL = 0.55;
+/** Sampled wall-explode crash (separate from synthesized animal-hit boom). */
+const EXPLODE_VOL = 0.72;
 const USER_MUTE_KEY = "racer-online-muted";
 
 export class GameAudio {
@@ -27,6 +31,7 @@ export class GameAudio {
 
   private menuBuffer: AudioBuffer | null = null;
   private driveBuffer: AudioBuffer | null = null;
+  private explodeBuffer: AudioBuffer | null = null;
   private menuSource: AudioBufferSourceNode | null = null;
   private driveSource: AudioBufferSourceNode | null = null;
   private musicMode: MusicMode = "off";
@@ -171,7 +176,7 @@ export class GameAudio {
     }
   }
 
-  /** Low boom + noise burst for car explode. */
+  /** Low boom + noise burst — animal hits (and fallback if explode sample missing). */
   playBoom(): void {
     if (!this.ready) return;
     const ctx = this.ctx!;
@@ -197,6 +202,24 @@ export class GameAudio {
 
     this.playNoiseBurst(0.35, 0.42, 1400);
     this.playNoiseBurst(0.18, 0.28, 420);
+  }
+
+  /** Sampled explosion for wall-limit car crash / explode. */
+  playExplode(): void {
+    if (!this.ready) return;
+    if (!this.explodeBuffer) {
+      this.playBoom();
+      return;
+    }
+    const ctx = this.ctx!;
+    const now = ctx.currentTime;
+    const src = ctx.createBufferSource();
+    src.buffer = this.explodeBuffer;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(EXPLODE_VOL, now);
+    src.connect(gain);
+    gain.connect(this.master!);
+    src.start(now);
   }
 
   private get ready(): boolean {
@@ -291,12 +314,17 @@ export class GameAudio {
 
   private async loadTracks(): Promise<void> {
     const base = import.meta.env.BASE_URL;
-    const [menu, drive] = await Promise.all([
+    const [menu, drive, explode] = await Promise.all([
       this.fetchBuffer(`${base}audio/menu.mp3`),
       this.fetchBuffer(`${base}audio/drive.mp3`),
+      this.fetchBuffer(`${base}audio/explode.mp3`).catch((err) => {
+        console.warn("Failed to load explode SFX", err);
+        return null;
+      }),
     ]);
     this.menuBuffer = menu;
     this.driveBuffer = drive;
+    this.explodeBuffer = explode;
   }
 
   private async fetchBuffer(url: string): Promise<AudioBuffer> {
