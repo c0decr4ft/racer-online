@@ -1,4 +1,5 @@
 import "./style.css";
+import { initControlsHelp } from "./controlsHelp";
 import { initFeedbackCompose } from "./feedbackCompose";
 import { Game } from "./game";
 import { loadOnlineConfig, configuredApiBase, configuredWsUrl } from "./net/onlineConfig";
@@ -16,6 +17,7 @@ await Promise.all([loadOnlineConfig(), initVehiclePhysics()]);
 
 initVersionSwitcher();
 initFeedbackCompose();
+initControlsHelp();
 startPresenceHeartbeat();
 
 const game = new Game(canvas);

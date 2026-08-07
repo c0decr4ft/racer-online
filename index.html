@@ -105,22 +105,45 @@
         </button>
       </div>
 
-      <button
-        id="feedback-btn"
-        class="feedback-btn"
-        type="button"
-        aria-haspopup="dialog"
-        aria-controls="feedback-compose"
-        aria-label="Send feedback"
-        title="Send feedback"
-      >
-        <svg class="feedback-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
-          <path
-            fill="currentColor"
-            d="M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4v-4H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm0 2v9h3v2.2L9.8 15H20V6H4z"
-          />
-        </svg>
-      </button>
+      <div id="home-corner-btns" class="home-corner-btns">
+        <button
+          id="feedback-btn"
+          class="feedback-btn"
+          type="button"
+          aria-haspopup="dialog"
+          aria-controls="feedback-compose"
+          aria-label="Send feedback"
+          title="Send feedback"
+        >
+          <svg class="feedback-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              fill="currentColor"
+              d="M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4v-4H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm0 2v9h3v2.2L9.8 15H20V6H4z"
+            />
+          </svg>
+        </button>
+        <button
+          id="controls-btn"
+          class="feedback-btn"
+          type="button"
+          aria-haspopup="dialog"
+          aria-controls="controls-help"
+          aria-label="Controls"
+          title="Controls"
+        >
+          <svg class="feedback-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.75" />
+            <circle cx="12" cy="12" r="2.25" fill="currentColor" />
+            <path
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              stroke-linecap="round"
+              d="M12 3.5v6.25M7.2 16.8l3.3-3.3M16.8 16.8l-3.3-3.3"
+            />
+          </svg>
+        </button>
+      </div>
 
       <div id="version-gate" class="version-gate hidden" role="dialog" aria-modal="true" aria-labelledby="version-gate-title">
         <div class="version-gate-panel">
@@ -173,6 +196,49 @@
               <button id="feedback-compose-cancel" class="btn-ghost" type="button">CANCEL</button>
             </div>
           </form>
+        </div>
+      </div>
+
+      <div id="controls-help" class="feedback-compose hidden" role="dialog" aria-modal="true" aria-labelledby="controls-help-title">
+        <div class="feedback-compose-panel controls-help-panel">
+          <p class="eyebrow" id="controls-help-title">CONTROLS</p>
+          <p class="feedback-compose-hint">How to drive</p>
+          <div class="controls-help-groups">
+            <section class="controls-help-group" aria-labelledby="controls-help-driving">
+              <h3 class="controls-help-group-title" id="controls-help-driving">Driving</h3>
+              <dl class="controls-help-list">
+                <div class="controls-help-row"><dt>A / ←</dt><dd>Steer left</dd></div>
+                <div class="controls-help-row"><dt>D / →</dt><dd>Steer right</dd></div>
+                <div class="controls-help-row"><dt>W</dt><dd>Gas</dd></div>
+                <div class="controls-help-row"><dt>S / Space</dt><dd>Brake</dd></div>
+              </dl>
+            </section>
+            <section class="controls-help-group" aria-labelledby="controls-help-gears">
+              <h3 class="controls-help-group-title" id="controls-help-gears">Gears</h3>
+              <dl class="controls-help-list">
+                <div class="controls-help-row"><dt>↑ / ↓</dt><dd>Shift up / down</dd></div>
+                <div class="controls-help-row"><dt>1–5</dt><dd>Jump to gear</dd></div>
+                <div class="controls-help-row"><dt>0 / N</dt><dd>Neutral</dd></div>
+                <div class="controls-help-row"><dt>R</dt><dd>Reverse</dd></div>
+              </dl>
+            </section>
+            <section class="controls-help-group" aria-labelledby="controls-help-race">
+              <h3 class="controls-help-group-title" id="controls-help-race">Pause &amp; reset</h3>
+              <dl class="controls-help-list">
+                <div class="controls-help-row"><dt>Esc / P</dt><dd>Pause</dd></div>
+                <div class="controls-help-row"><dt>Backspace</dt><dd>Reset car</dd></div>
+              </dl>
+            </section>
+            <section class="controls-help-group" aria-labelledby="controls-help-touch">
+              <h3 class="controls-help-group-title" id="controls-help-touch">Touch</h3>
+              <dl class="controls-help-list">
+                <div class="controls-help-row"><dt>Pads</dt><dd>Gas, brake, steer &amp; shift</dd></div>
+              </dl>
+            </section>
+          </div>
+          <div class="feedback-compose-actions">
+            <button id="controls-help-close" class="btn-ghost" type="button">CLOSE</button>
+          </div>
         </div>
       </div>
 

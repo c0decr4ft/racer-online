@@ -391,11 +391,8 @@ async function main() {
   await page.waitForTimeout(300);
   assert("testdrive:home", await visible(page, "#overlay"));
 
-  // --- Solo race ---
+  // --- Solo race (random track on Play — no map picker) ---
   await page.click("#solo-race-btn");
-  await page.waitForTimeout(200);
-  assert("solo:map-open", await visible(page, "#map-select"));
-  await page.locator("#map-grid .map-thumb").nth(Math.min(1, mapN - 1)).click();
   await page.waitForTimeout(4500);
   assert(
     "solo:running",
@@ -668,7 +665,6 @@ async function main() {
     await mobile.evaluate(() => document.documentElement.classList.contains("touch-mode")),
   );
   await mobile.click("#solo-race-btn");
-  await mobile.click("#map-grid .map-thumb");
   await mobile.waitForTimeout(4500);
   assert("mobile:controls-visible", await visible(mobile, "#touch-controls"));
   const gas = mobile.locator('[data-touch="gas"]');
