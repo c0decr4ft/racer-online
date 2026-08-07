@@ -45,6 +45,8 @@ export class RemotePlayer {
   private labelX = Number.NaN;
   private labelY = Number.NaN;
   private labelVisible = true;
+  private lean = 0;
+  private lastUpdateAt = 0;
 
   constructor(pose: PlayerPose, scene: THREE.Scene, labelRoot: HTMLElement) {
     this.id = pose.id;
@@ -117,8 +119,9 @@ export class RemotePlayer {
       }
     }
     buf.push(snap);
+    // ~0.6s at 60Hz — enough history for jitter without unbounded growth.
     const cutoff = at - 1000;
-    while (buf.length > 24 || (buf.length > 2 && buf[0]!.at < cutoff)) buf.shift();
+    while (buf.length > 40 || (buf.length > 2 && buf[0]!.at < cutoff)) buf.shift();
   }
 
   /** Immediately place a remote (used once for the synchronized starting grid). */
@@ -134,11 +137,14 @@ export class RemotePlayer {
 
   /**
    * Lerp between buffered server snapshots (same path for 2–8 players).
-   * Renders slightly in the past; briefly extrapolates only when the buffer runs dry.
+   * Renders slightly in the past; extrapolates along heading/speed when late.
    */
   update(now: number, camera: THREE.Camera, viewportWidth: number, viewportHeight: number) {
     const buf = this.buffer;
     if (buf.length === 0) return;
+
+    const dt = this.lastUpdateAt > 0 ? Math.min(0.05, (now - this.lastUpdateAt) / 1000) : 0;
+    this.lastUpdateAt = now;
 
     const renderAt = now - INTERP_DELAY_MS;
     let x: number;
@@ -165,19 +171,26 @@ export class RemotePlayer {
         const prev = buf[buf.length - 2]!;
         const span = Math.max(1, newest.at - prev.at);
         const extrapMs = Math.min(MAX_EXTRAPOLATE_MS, renderAt - newest.at);
+        const extrapSec = extrapMs / 1000;
         const spanSec = span / 1000;
-        const measuredVx = (newest.pose.x - prev.pose.x) / spanSec;
-        const measuredVz = (newest.pose.z - prev.pose.z) / spanSec;
-        const reportedVx = Math.sin(newest.pose.h) * newest.pose.s;
-        const reportedVz = Math.cos(newest.pose.h) * newest.pose.s;
-        const blend = Math.abs(newest.pose.s) < 0.5 ? 1 : 0.65;
-        const vx = THREE.MathUtils.lerp(measuredVx, reportedVx, blend);
-        const vz = THREE.MathUtils.lerp(measuredVz, reportedVz, blend);
         const dh = wrapPi(newest.pose.h - prev.pose.h);
         turnRate = dh / spanSec;
-        x = newest.pose.x + vx * (extrapMs / 1000);
-        z = newest.pose.z + vz * (extrapMs / 1000);
-        h = newest.pose.h + dh * (extrapMs / span);
+        // Prefer reported heading×speed; blend a little measured delta to keep coasting honest.
+        const measuredVx = (newest.pose.x - prev.pose.x) / spanSec;
+        const measuredVz = (newest.pose.z - prev.pose.z) / spanSec;
+        const reportBlend = Math.abs(newest.pose.s) < 0.5 ? 0.15 : 0.85;
+        const baseVx = THREE.MathUtils.lerp(measuredVx, Math.sin(newest.pose.h) * newest.pose.s, reportBlend);
+        const baseVz = THREE.MathUtils.lerp(measuredVz, Math.cos(newest.pose.h) * newest.pose.s, reportBlend);
+        // Curve the coast with turn rate so late packets don't skate straight through corners.
+        const midH = newest.pose.h + turnRate * extrapSec * 0.5;
+        const speed = newest.pose.s;
+        const curvedVx = Math.sin(midH) * speed;
+        const curvedVz = Math.cos(midH) * speed;
+        const vx = THREE.MathUtils.lerp(baseVx, curvedVx, 0.65);
+        const vz = THREE.MathUtils.lerp(baseVz, curvedVz, 0.65);
+        x = newest.pose.x + vx * extrapSec;
+        z = newest.pose.z + vz * extrapSec;
+        h = newest.pose.h + turnRate * extrapSec;
         s = newest.pose.s;
       } else {
         let i = 0;
@@ -186,6 +199,7 @@ export class RemotePlayer {
         const b = buf[i + 1]!;
         const span = Math.max(1, b.at - a.at);
         const t = THREE.MathUtils.clamp((renderAt - a.at) / span, 0, 1);
+        // Linear in time — keeps constant-speed coasts even; 60Hz keeps turns smooth.
         x = a.pose.x + (b.pose.x - a.pose.x) * t;
         z = a.pose.z + (b.pose.z - a.pose.z) * t;
         const dh = wrapPi(b.pose.h - a.pose.h);
@@ -195,15 +209,31 @@ export class RemotePlayer {
       }
     }
 
-    const lean =
+    const targetLean =
       this.kind === "bike"
         ? THREE.MathUtils.clamp(-Math.atan((Math.abs(s) * turnRate) / 9.81) * 0.72, -0.42, 0.42)
         : 0;
+    if (dt > 0) {
+      const k = 1 - Math.exp(-14 * dt);
+      this.lean += (targetLean - this.lean) * k;
+    } else {
+      this.lean = targetLean;
+    }
 
-    // Direct sample — no exponential chase (that read as laggy remotes).
+    // Direct sample — no exponential chase on pose (that read as laggy remotes).
     this.mesh.position.set(x, VISUAL_RIDE_Y, z);
     this.mesh.rotation.y = h;
-    this.mesh.rotation.z = lean;
+    this.mesh.rotation.z = this.lean;
+
+    // Spin wheels from interpolated speed so remotes don't look frozen/stuttery.
+    if (dt > 0 && Math.abs(s) > 0.05) {
+      const spinners = this.mesh.userData.spinners as THREE.Group[] | undefined;
+      const radius = (this.mesh.userData.wheelRadius as number) || 0.38;
+      if (spinners) {
+        const spin = (s * dt) / radius;
+        for (const spinner of spinners) spinner.rotateX(-spin);
+      }
+    }
 
     // Project name tag
     const v = this.labelPoint.set(this.mesh.position.x, 2.2, this.mesh.position.z).project(camera);
@@ -340,7 +370,9 @@ export class NetClient {
       this.clockOffset = sample;
       this.clockReady = true;
     } else {
-      this.clockOffset += (sample - this.clockOffset) * 0.05;
+      // Faster lock so jitter doesn't starve the interp buffer (underrun → extrap stutter).
+      const err = sample - this.clockOffset;
+      this.clockOffset += err * (Math.abs(err) > 40 ? 0.25 : 0.08);
     }
     return serverAt + this.clockOffset;
   }
@@ -681,7 +713,7 @@ export class NetClient {
     this.ws.send(JSON.stringify({ t: "vote", trackId }));
   }
 
-  /** Call from render loop; sends at ~30Hz during a live race. */
+  /** Call from render loop; sends at ~60Hz during a live race. */
   maybeSendPose(
     dt: number,
     pose: {
