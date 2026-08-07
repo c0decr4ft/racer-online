@@ -1,11 +1,11 @@
-/** Shared wire protocol — 30Hz pose sync with client-side snapshot interpolation. */
+/** Shared wire protocol — 60Hz pose sync with client-side snapshot interpolation. */
 
-export const NET_TICK_HZ = 30;
+export const NET_TICK_HZ = 60;
 export const NET_TICK_MS = 1000 / NET_TICK_HZ;
 /** Render remotes this far behind local time so we almost always lerp between two snapshots. */
-export const INTERP_DELAY_MS = NET_TICK_MS * 2.5;
+export const INTERP_DELAY_MS = NET_TICK_MS * 1.75;
 /** When the buffer runs dry, coast at most this far past the newest sample. */
-export const MAX_EXTRAPOLATE_MS = NET_TICK_MS * 2;
+export const MAX_EXTRAPOLATE_MS = NET_TICK_MS * 3.5;
 export const MAX_PLAYERS = 8;
 export const MIN_PLAYERS = 2;
 
