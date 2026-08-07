@@ -2177,7 +2177,7 @@ export class Game {
     this.el.explodeFlash.classList.remove("hidden");
     this.syncTouchControls();
     this.audio.stopDriveMusic();
-    this.audio.playBoom();
+    this.audio.playExplode();
     this.spawnExplodeFx();
     // Multiplayer: tell the room so every driver resets to the start line
     if (this.online) this.net.reportCrash();
