@@ -38,6 +38,12 @@ const SHIFT_COOLDOWN = 0.1;
 
 const GEAR_SEQUENCE: Gear[] = ["R", "N", 1, 2, 3, 4, 5];
 
+/**
+ * Visual-only ground clearance. Physics keeps Y=0; asphalt ribbon sits at ~0.035.
+ * Extra lift stops skirts / splitters clipping under pitch & lean without floating absurdly.
+ */
+export const VISUAL_RIDE_Y = 0.08;
+
 export class Vehicle {
   state: VehicleState;
   mesh: THREE.Group;
@@ -170,6 +176,7 @@ export class Vehicle {
   private syncMesh() {
     const s = this.state;
     this.mesh.position.copy(s.position);
+    this.mesh.position.y = VISUAL_RIDE_Y;
     this.mesh.rotation.order = "YXZ";
     this.mesh.rotation.y = s.heading;
     const isBike = this.mesh.userData.kind === "bike";

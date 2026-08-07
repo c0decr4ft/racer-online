@@ -2849,10 +2849,12 @@ function plantForestInfieldGrove(
   path: THREE.CatmullRomCurve3,
   clearance: PathClearance,
   bounds: ReturnType<typeof pathBounds>,
+  sceneryScale = 1,
 ) {
+  const countScale = Math.max(0.25, Math.min(1, sceneryScale));
   const points = collectSpacedInfieldPoints(path, clearance, bounds, {
-    count: 260,
-    minSep: 4.2,
+    count: Math.round(260 * countScale),
+    minSep: 4.2 / Math.sqrt(countScale),
     clearFoot: 2.5,
   });
   if (!points.length) return;
@@ -3458,6 +3460,7 @@ function plantInfieldGrove(
   clearance: PathClearance,
   bounds: ReturnType<typeof pathBounds>,
   biome: BiomeStyle,
+  sceneryScale = 1,
 ) {
   // City + Summit already plant dedicated infield scenery
   if (biome.props === "city" || biome.props === "mountains") return;
@@ -3465,20 +3468,22 @@ function plantInfieldGrove(
 
   // Forest Loop — dense simple deciduous grove in the infield
   if (biome.id === "forest") {
-    plantForestInfieldGrove(group, path, clearance, bounds);
+    plantForestInfieldGrove(group, path, clearance, bounds, sceneryScale);
     return;
   }
 
   // Meadow Sweep — dense grove + four farmer's plots (trees cleared from each)
   if (biome.id === "meadow" || biome.vegetation === "sparse") {
+    if (sceneryScale < 0.55) return; // menu backdrop: skip heavy meadow park
     plantMeadowInfieldGrove(group, path, clearance, bounds);
     return;
   }
 
   const isPalm = biome.vegetation === "palms";
+  const countScale = Math.max(0.25, Math.min(1, sceneryScale));
   const points = collectSpacedInfieldPoints(path, clearance, bounds, {
-    count: isPalm ? 56 : 44,
-    minSep: isPalm ? 7.8 : 7.5,
+    count: Math.round((isPalm ? 56 : 44) * countScale),
+    minSep: (isPalm ? 7.8 : 7.5) / Math.sqrt(countScale),
     clearFoot: isPalm ? 2.8 : 2.3,
   });
   if (!points.length) return;
@@ -3557,13 +3562,18 @@ function plantBiomeScenery(
   path: THREE.CatmullRomCurve3,
   roadHalf: number,
   biome: BiomeStyle,
+  sceneryScale = 1,
 ) {
+  const scale = Math.max(0.15, Math.min(1, sceneryScale));
   const clearance = makePathClearance(path, roadHalf);
-  const density = biome.props === "city" ? 0 : Math.max(0.2, biome.density * 0.7);
+  const density =
+    biome.props === "city" ? 0 : Math.max(0.2, biome.density * 0.7 * scale);
   const { poses, bounds } = collectPlantPoses(path, roadHalf, density, clearance);
   plantBiomeProps(group, path, biome, clearance, poses, bounds);
-  plantVegetation(group, path, roadHalf, biome, clearance);
-  plantInfieldGrove(group, path, clearance, bounds, biome);
+  const vegBiome =
+    scale < 1 ? { ...biome, density: biome.density * scale } : biome;
+  plantVegetation(group, path, roadHalf, vegBiome, clearance);
+  plantInfieldGrove(group, path, clearance, bounds, biome, scale);
 }
 
 function pointsFromDef(def: TrackDef): THREE.Vector3[] {
@@ -3638,10 +3648,19 @@ function buildRibbon(
   return geo;
 }
 
+export type CreateTrackOptions = {
+  /** Vegetation / grove density multiplier. Use <1 for the home-menu backdrop. */
+  sceneryScale?: number;
+};
+
 /** Build a full track scene from a named path definition. */
-export function createTrack(trackId: string = DEFAULT_TRACK_ID): TrackData {
+export function createTrack(
+  trackId: string = DEFAULT_TRACK_ID,
+  opts?: CreateTrackOptions,
+): TrackData {
   const def = getTrackDef(trackId);
   const biome = biomeForTrack(def.biome ?? def.id);
+  const sceneryScale = opts?.sceneryScale ?? 1;
   const group = new THREE.Group();
   const width = 14;
   const half = width / 2;
@@ -3750,7 +3769,7 @@ export function createTrack(trackId: string = DEFAULT_TRACK_ID): TrackData {
   group.add(gantry);
 
   // Biome vegetation + props — clear of asphalt / runoff / walls
-  plantBiomeScenery(group, path, half, biome);
+  plantBiomeScenery(group, path, half, biome, sceneryScale);
 
   // Static scenery — skip per-frame matrix walks (vehicles stay auto-updating).
   group.updateMatrixWorld(true);

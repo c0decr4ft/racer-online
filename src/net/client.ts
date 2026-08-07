@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { createVehicle, disposeVehicleGroup, stripVehicleSpotLights } from "../car";
 import type { VehicleKind } from "../garage";
+import { VISUAL_RIDE_Y } from "../vehicle";
 import {
   NET_TICK_MS,
   type LobbyPhase,
@@ -51,7 +52,7 @@ export class RemotePlayer {
       this.accent,
     );
     stripVehicleSpotLights(this.mesh);
-    this.mesh.position.set(pose.x, 0, pose.z);
+    this.mesh.position.set(pose.x, VISUAL_RIDE_Y, pose.z);
     this.mesh.rotation.y = pose.h;
     scene.add(this.mesh);
 
@@ -98,7 +99,7 @@ export class RemotePlayer {
   snap(pose: PlayerPose, at = performance.now()) {
     this.from = { at, pose: { ...pose } };
     this.to = { at, pose: { ...pose } };
-    this.mesh.position.set(pose.x, 0, pose.z);
+    this.mesh.position.set(pose.x, VISUAL_RIDE_Y, pose.z);
     this.mesh.rotation.y = pose.h;
     this.lastVisualAt = at;
   }
@@ -150,13 +151,14 @@ export class RemotePlayer {
     const visualDt = this.lastVisualAt > 0 ? Math.min(0.1, (now - this.lastVisualAt) / 1000) : 0.05;
     this.lastVisualAt = now;
     const alpha = 1 - Math.exp(-visualDt / 0.02);
-    const farAway = this.mesh.position.distanceToSquared(this.labelPoint.set(targetX, 0, targetZ)) > 36;
+    const farAway = this.mesh.position.distanceToSquared(this.labelPoint.set(targetX, VISUAL_RIDE_Y, targetZ)) > 36;
     if (farAway) {
-      this.mesh.position.set(targetX, 0, targetZ);
+      this.mesh.position.set(targetX, VISUAL_RIDE_Y, targetZ);
       this.mesh.rotation.y = targetH;
       this.mesh.rotation.z = targetLean;
     } else {
       this.mesh.position.x += (targetX - this.mesh.position.x) * alpha;
+      this.mesh.position.y = VISUAL_RIDE_Y;
       this.mesh.position.z += (targetZ - this.mesh.position.z) * alpha;
       let visualDh = targetH - this.mesh.rotation.y;
       while (visualDh > Math.PI) visualDh -= Math.PI * 2;
