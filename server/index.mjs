@@ -24,6 +24,8 @@ const STATIC_BASE = (
 ).replace(/\/$/, "");
 const NET_TICK_MS = 1000 / 30;
 const MAP_VOTE_MS = 20_000;
+/** Must cover the client 3→2→1→GO hold after a shared crashReset (3×1000ms before GO). */
+const RACE_COUNTDOWN_MS = 3_000;
 const MAX_PLAYERS = 8;
 const PLAYER_COLORS = [0xe4eaf2, 0xe23b2e, 0x2a66f0, 0xf0c020, 0x1dbf6a, 0xb44dff, 0xff6b9d, 0x00d4ff];
 const DIR = dirname(fileURLToPath(import.meta.url));
@@ -1031,6 +1033,10 @@ wss.on("connection", (ws) => {
 
     if (msg.t === "finish") {
       if (room.phase !== "racing" || room.winnerId) return;
+      // crashReset puts every client back into a local 3-2-1-GO hold while the
+      // room stays "racing". Without this gate, any finish during that window
+      // crowns a winner while everyone else is still frozen on the grid.
+      if (room.lastCrashAt && Date.now() - room.lastCrashAt < RACE_COUNTDOWN_MS) return;
       const timeMs = Math.max(1_000, Math.min(3_600_000, Math.round(Number(msg.timeMs) || 0)));
       room.winnerId = client.id;
       room.phase = "finished";
