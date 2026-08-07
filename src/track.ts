@@ -1005,6 +1005,324 @@ function plantCoastWater(
   group.add(island);
 }
 
+/** Inland clearance for beach umbrellas vs shoreline (meters) — smaller than palms. */
+const COAST_UMBRELLA_WATER_CLEAR = 10;
+
+/**
+ * Classic low-poly beach umbrellas on Harbor sand — outer beach toward the sea,
+ * between runoff and water (never on asphalt, never in the ocean).
+ */
+function plantCoastBeachUmbrellas(
+  group: THREE.Group,
+  path: THREE.CatmullRomCurve3,
+  clearance: PathClearance,
+) {
+  const poleMat = new THREE.MeshStandardMaterial({
+    color: 0xd8c4a0,
+    roughness: 0.85,
+    metalness: 0.05,
+    flatShading: true,
+  });
+  // Bright solid + pair colors so some read as striped from afar
+  const canopyColors = [
+    0xe84848, // red
+    0xf0f0ee, // white
+    0x2f6fd4, // blue
+    0xf0c020, // yellow
+    0xe86828, // orange
+    0x2aa8a0, // teal
+    0xe84878, // pink
+    0xf0f0ee, // white (pairs with red/blue)
+  ];
+  const canopyMats = canopyColors.map(
+    (c) =>
+      new THREE.MeshStandardMaterial({
+        color: c,
+        roughness: 0.88,
+        metalness: 0.02,
+        flatShading: true,
+        side: THREE.DoubleSide,
+      }),
+  );
+
+  const poleH = 3.4;
+  const poleGeo = new THREE.CylinderGeometry(0.045, 0.06, poleH, 5);
+  // Open canopy: wide cone, tip up (classic beach umbrella silhouette)
+  const canopyGeo = new THREE.ConeGeometry(1.55, 0.95, 7);
+  // Thin wedge for alternating stripe panels on half the umbrellas
+  const stripeGeo = new THREE.ConeGeometry(1.58, 0.96, 7, 1, false, 0, Math.PI / 3.5);
+
+  const maxN = 36;
+  const poles = new THREE.InstancedMesh(poleGeo, poleMat, maxN);
+  poles.count = 0;
+  poles.castShadow = false;
+  poles.receiveShadow = true;
+
+  const canopies = canopyMats.map((mat) => {
+    const mesh = new THREE.InstancedMesh(canopyGeo, mat, maxN);
+    mesh.count = 0;
+    mesh.castShadow = false;
+    mesh.receiveShadow = true;
+    return mesh;
+  });
+  const stripes = canopyMats.map((mat) => {
+    const mesh = new THREE.InstancedMesh(stripeGeo, mat, maxN);
+    mesh.count = 0;
+    mesh.castShadow = false;
+    mesh.receiveShadow = true;
+    return mesh;
+  });
+
+  const dummy = new THREE.Object3D();
+  const pt = new THREE.Vector3();
+  const tan = new THREE.Vector3();
+  const nrm = new THREE.Vector3();
+  const placed: { x: number; z: number }[] = [];
+  const minSep2 = 14 * 14;
+
+  // Dense path samples → thin to spaced outer-beach spots
+  const samples = 72;
+  for (let i = 0; i < samples && poles.count < maxN; i++) {
+    const t = (i + 0.37) / samples;
+    // Skip most candidates — leave clusters of 1–2 with gaps (beach row feel)
+    const keep = hash2(i * 11, 401);
+    if (keep < 0.42) continue;
+
+    path.getPointAt(t, pt);
+    tan.copy(path.getTangentAt(t)).normalize();
+    nrm.set(-tan.z, 0, tan.x);
+    const probe = clearance.runoffClear + 2;
+    const outSign = clearance.insideLoop(pt.x + nrm.x * probe, pt.z + nrm.z * probe)
+      ? -1
+      : 1;
+
+    const beachExtra = coastBeachExtra(t);
+    const shoreR = clearance.runoffClear + beachExtra;
+    // Outer sand toward the sea: past track clear pad, inland of water
+    const sandMin = clearance.baseClear + 1.2;
+    const sandMax = shoreR - COAST_UMBRELLA_WATER_CLEAR;
+    if (sandMax <= sandMin + 2) continue;
+
+    // Bias toward the sea side of the sand band (0.55–0.92 of the way out)
+    const frac = 0.55 + hash2(i * 7, 509) * 0.37;
+    const lat = sandMin + (sandMax - sandMin) * frac;
+    const along = (hash2(i * 3, 613) - 0.5) * 3.2;
+    const x = pt.x + nrm.x * outSign * lat + tan.x * along;
+    const z = pt.z + nrm.z * outSign * lat + tan.z * along;
+
+    if (clearance.insideLoop(x, z)) continue;
+    if (!clearance.outsideRunoff(x, z, 1.6)) continue;
+    // Stay on sand: past scenery clear, short of shoreline water floor
+    const d2 = clearance.minDist2(x, z);
+    if (d2 < sandMin * sandMin) continue;
+    if (d2 > sandMax * sandMax) continue;
+
+    let tooClose = false;
+    for (const p of placed) {
+      const dx = p.x - x;
+      const dz = p.z - z;
+      if (dx * dx + dz * dz < minSep2) {
+        tooClose = true;
+        break;
+      }
+    }
+    if (tooClose) continue;
+
+    const s = 0.88 + hash2(i * 5, 701) * 0.28;
+    const yaw = hash2(i * 17, 809) * Math.PI * 2;
+    const tipY = poleH * s;
+
+    dummy.position.set(x, tipY * 0.5, z);
+    dummy.scale.set(s, s, s);
+    dummy.rotation.set(0, yaw, 0);
+    dummy.updateMatrix();
+    poles.setMatrixAt(poles.count++, dummy.matrix);
+
+    const colorI = Math.floor(hash2(i * 23, 907) * canopyMats.length) % canopyMats.length;
+    // Canopy sits near the top of the pole (slightly below tip)
+    dummy.position.set(x, tipY - 0.15 * s, z);
+    dummy.scale.set(s, s, s);
+    dummy.rotation.set(0, yaw, 0);
+    dummy.updateMatrix();
+    canopies[colorI]!.setMatrixAt(canopies[colorI]!.count++, dummy.matrix);
+
+    // ~half get a contrasting stripe wedge for a striped beach-umbrella read
+    if (hash2(i * 29, 1009) > 0.45) {
+      const stripeI = (colorI + 1 + (hash2(i, 1103) > 0.5 ? 1 : 0)) % canopyMats.length;
+      dummy.rotation.set(0, yaw + Math.PI / 7, 0);
+      dummy.updateMatrix();
+      stripes[stripeI]!.setMatrixAt(stripes[stripeI]!.count++, dummy.matrix);
+    }
+
+    placed.push({ x, z });
+  }
+
+  poles.instanceMatrix.needsUpdate = true;
+  poles.computeBoundingSphere();
+  group.add(poles);
+  for (const mesh of canopies) {
+    if (!mesh.count) continue;
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.computeBoundingSphere();
+    group.add(mesh);
+  }
+  for (const mesh of stripes) {
+    if (!mesh.count) continue;
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.computeBoundingSphere();
+    group.add(mesh);
+  }
+}
+
+/** Inland clearance for beach balls vs shoreline (meters) — smaller props than umbrellas. */
+const COAST_BALL_WATER_CLEAR = 8;
+
+/**
+ * A few low-poly striped beach balls on Harbor outer sand — lying around toward
+ * the sea (never on asphalt, never in the ocean). Whole map gets exactly 3.
+ */
+function plantCoastBeachBalls(
+  group: THREE.Group,
+  path: THREE.CatmullRomCurve3,
+  clearance: PathClearance,
+) {
+  const targetN = 3;
+  const goreN = 6;
+  const radius = 0.52;
+  const goreAngle = (Math.PI * 2) / goreN;
+
+  // Classic beach-ball palette (same family as umbrella canopies)
+  const ballColors = [
+    0xe84848, // red
+    0xf0f0ee, // white
+    0x2f6fd4, // blue
+    0xf0c020, // yellow
+    0xe86828, // orange
+    0x2aa8a0, // teal
+  ];
+  const goreMats = ballColors.map(
+    (c) =>
+      new THREE.MeshStandardMaterial({
+        color: c,
+        roughness: 0.72,
+        metalness: 0.04,
+        flatShading: true,
+      }),
+  );
+  // One gore wedge — instances rotate around Y to tile a full striped sphere
+  const goreGeo = new THREE.SphereGeometry(radius, 3, 5, 0, goreAngle);
+
+  const gores = goreMats.map((mat) => {
+    const mesh = new THREE.InstancedMesh(goreGeo, mat, targetN);
+    mesh.count = 0;
+    mesh.castShadow = false;
+    mesh.receiveShadow = true;
+    return mesh;
+  });
+
+  const dummy = new THREE.Object3D();
+  const pt = new THREE.Vector3();
+  const tan = new THREE.Vector3();
+  const nrm = new THREE.Vector3();
+  type BallSpot = { x: number; z: number; i: number };
+  const candidates: BallSpot[] = [];
+
+  // Gather valid outer-sand spots, then pick 3 well-spaced ones
+  const samples = 96;
+  for (let i = 0; i < samples; i++) {
+    const t = (i + 0.61) / samples;
+    if (hash2(i * 19, 1201) < 0.5) continue;
+
+    path.getPointAt(t, pt);
+    tan.copy(path.getTangentAt(t)).normalize();
+    nrm.set(-tan.z, 0, tan.x);
+    const probe = clearance.runoffClear + 2;
+    const outSign = clearance.insideLoop(pt.x + nrm.x * probe, pt.z + nrm.z * probe)
+      ? -1
+      : 1;
+
+    const beachExtra = coastBeachExtra(t);
+    const shoreR = clearance.runoffClear + beachExtra;
+    const sandMin = clearance.baseClear + 1.2;
+    const sandMax = shoreR - COAST_BALL_WATER_CLEAR;
+    if (sandMax <= sandMin + 2) continue;
+
+    // Bias toward the sea side of the sand band (same feel as umbrellas)
+    const frac = 0.58 + hash2(i * 7, 1303) * 0.34;
+    const lat = sandMin + (sandMax - sandMin) * frac;
+    const along = (hash2(i * 3, 1409) - 0.5) * 4.5;
+    const x = pt.x + nrm.x * outSign * lat + tan.x * along;
+    const z = pt.z + nrm.z * outSign * lat + tan.z * along;
+
+    if (clearance.insideLoop(x, z)) continue;
+    if (!clearance.outsideRunoff(x, z, 1.2)) continue;
+    const d2 = clearance.minDist2(x, z);
+    if (d2 < sandMin * sandMin) continue;
+    if (d2 > sandMax * sandMax) continue;
+
+    candidates.push({ x, z, i });
+  }
+
+  // Greedy farthest-spread pick so the 3 balls aren't clustered
+  const picked: BallSpot[] = [];
+  while (picked.length < targetN && candidates.length) {
+    let bestIdx = 0;
+    let bestScore = -1;
+    for (let c = 0; c < candidates.length; c++) {
+      const spot = candidates[c]!;
+      let nearest = Infinity;
+      for (const p of picked) {
+        const dx = p.x - spot.x;
+        const dz = p.z - spot.z;
+        nearest = Math.min(nearest, dx * dx + dz * dz);
+      }
+      const score = picked.length === 0 ? hash2(spot.i * 31, 2003) : nearest;
+      if (score > bestScore) {
+        bestScore = score;
+        bestIdx = c;
+      }
+    }
+    picked.push(candidates.splice(bestIdx, 1)[0]!);
+  }
+
+  const qTumble = new THREE.Quaternion();
+  const qGore = new THREE.Quaternion();
+  const euler = new THREE.Euler();
+  const yAxis = new THREE.Vector3(0, 1, 0);
+
+  for (const spot of picked) {
+    const i = spot.i;
+    const s = 0.85 + hash2(i * 5, 1511) * 0.35;
+    // Casual tumble so stripes read as balls lying around, not planted upright
+    euler.set(
+      (hash2(i * 11, 1607) - 0.5) * 1.1,
+      hash2(i * 17, 1709) * Math.PI * 2,
+      (hash2(i * 23, 1811) - 0.5) * 0.9,
+    );
+    qTumble.setFromEuler(euler);
+    const colorShift = Math.floor(hash2(i * 29, 1913) * goreN) % goreN;
+
+    const y = radius * s;
+    for (let g = 0; g < goreN; g++) {
+      const colorI = (g + colorShift) % goreN;
+      qGore.setFromAxisAngle(yAxis, g * goreAngle);
+      dummy.position.set(spot.x, y, spot.z);
+      dummy.scale.set(s, s, s);
+      // tumble ∘ goreYaw so meridian stripes stay watertight under tilt
+      dummy.quaternion.copy(qTumble).multiply(qGore);
+      dummy.updateMatrix();
+      gores[colorI]!.setMatrixAt(gores[colorI]!.count++, dummy.matrix);
+    }
+  }
+
+  for (const mesh of gores) {
+    if (!mesh.count) continue;
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.computeBoundingSphere();
+    group.add(mesh);
+  }
+}
+
 /**
  * Keep coast palms on beach sand only — never on asphalt/runoff, never in/over water.
  * Uses the same dilated shoreline extras as the water mesh so planting matches the sea.
@@ -1104,6 +1422,8 @@ function plantBiomeProps(
 
   if (biome.props === "water") {
     plantCoastWater(group, path, clearance, bounds, biome.ground);
+    plantCoastBeachUmbrellas(group, path, clearance);
+    plantCoastBeachBalls(group, path, clearance);
   }
 
   if (biome.props === "rocks" || biome.props === "mesas") {
@@ -2404,24 +2724,11 @@ function plantCityPark(
   const pathInner = scalePolyToward(outline, cx, cz, 0.55);
   const pathOuter = scalePolyToward(outline, cx, cz, 0.68);
   const pathMid = scalePolyToward(outline, cx, cz, 0.615);
+  // Gravel walking ring only — no cross strips (those read as dark lines
+  // cutting through the lawn from camera height / slight z-fight with grass).
   const pathRing = new THREE.Mesh(ringStripGeometry(pathInner, pathOuter, -0.02), pathMat);
   pathRing.receiveShadow = true;
   group.add(pathRing);
-
-  // Cross paths span the real infield extents
-  const crossLenX = halfX * 1.05;
-  const crossLenZ = halfZ * 1.05;
-  for (const [len, rot] of [
-    [crossLenX * 2, 0],
-    [crossLenZ * 2, Math.PI / 2],
-  ] as const) {
-    const strip = new THREE.Mesh(new THREE.PlaneGeometry(len, 2.6), pathMat);
-    strip.rotation.x = -Math.PI / 2;
-    strip.rotation.z = rot;
-    strip.position.set(cx, -0.015, cz);
-    strip.receiveShadow = true;
-    group.add(strip);
-  }
 
   // Central pond — sized to the shorter infield axis
   const pondR = Math.min(12, Math.max(5, minHalf * 0.2));

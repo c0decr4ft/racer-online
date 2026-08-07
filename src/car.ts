@@ -325,13 +325,13 @@ export function createCar(
   box(car, 1.55, 0.36, 1.52, body, 0, 0.96, -0.08);
   box(car, 1.38, 0.16, 1.28, body, 0, 1.2, -0.22);
   box(car, 1.28, 0.06, 1.1, dark, 0, 1.32, -0.28);
-  // Glass
-  box(car, 1.36, 0.04, 0.88, glass, 0, 1.0, 0.7, -0.5);
-  box(car, 1.28, 0.04, 0.82, glass, 0, 1.0, -0.98, 0.4);
+  // Glass (rx: + drops +Z edge — correct front rake / rear hatch slope)
+  box(car, 1.36, 0.04, 0.88, glass, 0, 1.0, 0.7, 0.5);
+  box(car, 1.28, 0.04, 0.82, glass, 0, 1.0, -0.98, -0.4);
   box(car, 0.04, 0.3, 1.08, glass, -0.78, 0.96, -0.1);
   box(car, 0.04, 0.3, 1.08, glass, 0.78, 0.96, -0.1);
   for (const x of [-0.36, 0, 0.36]) {
-    box(car, 0.025, 0.025, 0.7, dark, x, 1.02, -0.98, 0.4);
+    box(car, 0.025, 0.025, 0.7, dark, x, 1.02, -0.98, -0.4);
   }
 
   // Flared arches
