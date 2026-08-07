@@ -86,6 +86,7 @@ function wheel(radius: number, width: number, spokeCount = 8) {
   );
   tire.rotation.z = Math.PI / 2;
   tire.castShadow = true;
+  tire.receiveShadow = false;
   g.add(tire);
 
   const sidewall = new THREE.Mesh(
@@ -93,6 +94,8 @@ function wheel(radius: number, width: number, spokeCount = 8) {
     mat(0x1a1a1e, { metal: 0.1, rough: 0.85 }),
   );
   sidewall.rotation.y = Math.PI / 2;
+  sidewall.castShadow = true;
+  sidewall.receiveShadow = false;
   g.add(sidewall);
 
   const rim = new THREE.Mesh(
@@ -100,6 +103,8 @@ function wheel(radius: number, width: number, spokeCount = 8) {
     mat(0xd0d8e2, { metal: 0.98, rough: 0.18 }),
   );
   rim.rotation.z = Math.PI / 2;
+  rim.castShadow = true;
+  rim.receiveShadow = false;
   g.add(rim);
 
   const hub = new THREE.Mesh(
@@ -107,12 +112,16 @@ function wheel(radius: number, width: number, spokeCount = 8) {
     mat(0xf0f4f8, { metal: 1, rough: 0.12 }),
   );
   hub.rotation.z = Math.PI / 2;
+  hub.castShadow = true;
+  hub.receiveShadow = false;
   g.add(hub);
 
   const spokeMat = mat(0xc5ced8, { metal: 0.95, rough: 0.22 });
   for (let i = 0; i < spokeCount; i++) {
     const spoke = new THREE.Mesh(new THREE.BoxGeometry(radius * 0.05, radius * 0.92, width * 0.07), spokeMat);
     spoke.rotation.z = (i / spokeCount) * Math.PI;
+    spoke.castShadow = true;
+    spoke.receiveShadow = false;
     g.add(spoke);
   }
   return g;
@@ -294,15 +303,15 @@ export function createCar(
   const chrome = mat(0xb0b8c2, { metal: 1, rough: 0.14 });
   const accent = paintMat(accentColor, { metal: 0.32, rough: 0.4, emit: 0.16 });
 
-  // Chassis / rocker
-  box(car, 1.95, 0.34, 4.4, body, 0, 0.44, 0.02);
-  box(car, 2.08, 0.1, 4.2, carbon, 0, 0.22, 0.02);
-  box(car, 1.72, 0.2, 3.95, dark, 0, 0.36, 0.02);
+  // Chassis / rocker — kept slightly above wheel contact so pitch/lean never buries them
+  box(car, 1.95, 0.34, 4.4, body, 0, 0.46, 0.02);
+  box(car, 2.08, 0.1, 4.2, carbon, 0, 0.26, 0.02);
+  box(car, 1.72, 0.2, 3.95, dark, 0, 0.38, 0.02);
 
   // Nose + splitter
-  box(car, 1.9, 0.26, 0.58, body, 0, 0.48, 2.08);
-  box(car, 2.12, 0.07, 0.52, carbon, 0, 0.17, 2.2);
-  box(car, 1.55, 0.12, 0.18, dark, 0, 0.32, 2.34);
+  box(car, 1.9, 0.26, 0.58, body, 0, 0.5, 2.08);
+  box(car, 2.12, 0.07, 0.52, carbon, 0, 0.22, 2.2);
+  box(car, 1.55, 0.12, 0.18, dark, 0, 0.34, 2.34);
   // Headlights (angled pods + bright projector lenses)
   box(car, 0.48, 0.1, 0.08, head, -0.7, 0.52, 2.36, 0, 0.08);
   box(car, 0.48, 0.1, 0.08, head, 0.7, 0.52, 2.36, 0, -0.08);
@@ -343,18 +352,18 @@ export function createCar(
   }
 
   // Side skirts + exits
-  box(car, 2.16, 0.08, 2.35, carbon, 0, 0.18, 0.04);
-  box(car, 0.16, 0.1, 0.36, chrome, 1.1, 0.28, -0.5);
-  box(car, 0.16, 0.1, 0.36, chrome, -1.1, 0.28, -0.5);
+  box(car, 2.16, 0.08, 2.35, carbon, 0, 0.24, 0.04);
+  box(car, 0.16, 0.1, 0.36, chrome, 1.1, 0.3, -0.5);
+  box(car, 0.16, 0.1, 0.36, chrome, -1.1, 0.3, -0.5);
 
   // Ducktail + diffuser
   box(car, 1.98, 0.06, 0.56, body, 0, 0.86, -2.04, -0.14);
   box(car, 1.98, 0.12, 0.04, carbon, 0, 0.98, -2.28);
   box(car, 0.06, 0.28, 0.32, dark, -0.86, 0.74, -1.94);
   box(car, 0.06, 0.28, 0.32, dark, 0.86, 0.74, -1.94);
-  box(car, 1.8, 0.06, 0.5, carbon, 0, 0.16, -2.2);
+  box(car, 1.8, 0.06, 0.5, carbon, 0, 0.22, -2.2);
   for (let i = -2; i <= 2; i++) {
-    box(car, 0.03, 0.2, 0.42, dark, i * 0.28, 0.22, -2.24);
+    box(car, 0.03, 0.2, 0.42, dark, i * 0.28, 0.26, -2.24);
   }
 
   // Lights + stripe + plate
@@ -475,13 +484,13 @@ export function createBike(
   box(bike, 0.16, 0.12, 2.2, carbon, 0, 0.58, 0);
   box(bike, 0.1, 0.08, 1.45, chrome, 0, 0.46, 0.12);
 
-  // Engine + exhaust tips
-  box(bike, 0.44, 0.36, 0.58, dark, 0, 0.4, 0.08);
-  box(bike, 0.38, 0.1, 0.5, chrome, 0, 0.26, 0.08);
-  box(bike, 0.2, 0.08, 0.7, dark, 0.16, 0.3, -0.55, 0.12);
-  box(bike, 0.2, 0.08, 0.7, dark, -0.16, 0.3, -0.55, 0.12);
-  cyl(bike, 0.07, 0.07, 0.36, chrome, 0.2, 0.32, -0.28, 0, 0, Math.PI / 2, 10);
-  cyl(bike, 0.07, 0.07, 0.36, chrome, -0.2, 0.32, -0.28, 0, 0, Math.PI / 2, 10);
+  // Engine + exhaust tips — lifted slightly so full lean doesn't bury the cases
+  box(bike, 0.44, 0.36, 0.58, dark, 0, 0.44, 0.08);
+  box(bike, 0.38, 0.1, 0.5, chrome, 0, 0.3, 0.08);
+  box(bike, 0.2, 0.08, 0.7, dark, 0.16, 0.34, -0.55, 0.12);
+  box(bike, 0.2, 0.08, 0.7, dark, -0.16, 0.34, -0.55, 0.12);
+  cyl(bike, 0.07, 0.07, 0.36, chrome, 0.2, 0.36, -0.28, 0, 0, Math.PI / 2, 10);
+  cyl(bike, 0.07, 0.07, 0.36, chrome, -0.2, 0.36, -0.28, 0, 0, Math.PI / 2, 10);
 
   // Sculpted tank
   box(bike, 0.5, 0.26, 0.68, body, 0, 0.8, 0.18);
@@ -538,8 +547,8 @@ export function createBike(
   }
 
   // Foot pegs
-  box(bike, 0.2, 0.035, 0.055, chrome, 0.26, 0.3, -0.12);
-  box(bike, 0.2, 0.035, 0.055, chrome, -0.26, 0.3, -0.12);
+  box(bike, 0.2, 0.035, 0.055, chrome, 0.26, 0.34, -0.12);
+  box(bike, 0.2, 0.035, 0.055, chrome, -0.26, 0.34, -0.12);
 
   const r = 0.4;
   attachWheels(

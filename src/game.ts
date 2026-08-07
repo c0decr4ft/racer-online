@@ -66,6 +66,8 @@ function formatTime(ms: number): string {
 
 const TOTAL_LAPS = 3;
 const COUNTDOWN_STEPS = ["3", "2", "1", "GO"] as const;
+/** Thinner Forest Loop backdrop behind the home menu (race rebuilds at full density). */
+const MENU_SCENERY_SCALE = 0.4;
 const COUNTDOWN_STEP_MS = 1000;
 /** Distinct wall hits before the player car explodes and the race restarts. */
 const WALL_HIT_LIMIT = 10;
@@ -115,9 +117,11 @@ export class Game {
   input = new Input();
   private touch = new TouchControls(this.input);
   private touchMode = false;
-  track = createTrack(DEFAULT_TRACK_ID);
+  track = createTrack(DEFAULT_TRACK_ID, { sceneryScale: MENU_SCENERY_SCALE });
   /** Active course id — rebuilt when starting a mode or Race Again (random). */
   private trackId = DEFAULT_TRACK_ID;
+  /** True while the active mesh is the reduced-density home backdrop. */
+  private menuScenery = true;
   /** Board panel currently showing this course. */
   private boardTrackId = DEFAULT_TRACK_ID;
   player!: Vehicle;
@@ -166,7 +170,6 @@ export class Game {
   private pauseBegan = 0;
   private lastFrame = performance.now();
   private lastHudAt = 0;
-  private lastShadowAt = 0;
   private camPos = new THREE.Vector3();
   private camLook = new THREE.Vector3();
   /** Last known track-t per vehicle/remote — keeps projection sticky so it
@@ -317,8 +320,10 @@ export class Game {
     this.renderer.setSize(boot.w, boot.h);
     this.renderer.setClearColor(0x87a0bc, 1);
     this.renderer.shadowMap.enabled = true;
-    // Keep default PCFShadowMap type; rebuild once per frame before the main
-    // pass so the rearview inset does not re-render the shadow map.
+    // Soft PCF — blurred contact shadows instead of blocky texel cubes.
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    // Rebuild once per frame before the main pass so the rearview inset does
+    // not re-render the shadow map.
     this.renderer.shadowMap.autoUpdate = false;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.2;
@@ -402,6 +407,7 @@ export class Game {
 
     this.buildWorld();
     this.spawnVehicles();
+    this.setAiVisible(false);
     this.snapCamera();
     this.bindUi();
     this.refreshTouchMode();
@@ -470,14 +476,22 @@ export class Game {
         // AI race again → new random map; solo/online keep chosen course
         const trackId =
           this.online || this.solo || this.practice ? this.trackId : randomTrackId();
-        this.startRace({ solo: this.solo, trackId });
+        this.startRace({
+          solo: this.solo,
+          practice: this.practice,
+          trackId,
+        });
       });
     };
     document.getElementById("resume-btn")!.onclick = () => this.resume();
     document.getElementById("pause-restart-btn")!.onclick = () => {
       void this.audio.unlock().then(() => {
         this.audio.stopMusic();
-        this.startRace({ practice: this.practice, solo: this.solo, trackId: this.trackId });
+        this.startRace({
+          practice: this.practice,
+          solo: this.solo,
+          trackId: this.trackId,
+        });
       });
     };
     document.getElementById("pause-home-btn")!.onclick = () => this.goHome();
@@ -1078,17 +1092,30 @@ export class Game {
     }
   }
 
-  /** Dispose current track mesh and rebuild from a named path definition. */
-  private setActiveTrack(trackId: string) {
-    if (this.trackId === trackId && this.track.id === trackId) return;
+  /**
+   * Dispose current track mesh and rebuild from a named path definition.
+   * `menu: true` builds a lighter Forest Loop backdrop (no wildlife).
+   */
+  private setActiveTrack(trackId: string, opts?: { menu?: boolean }) {
+    const menu = !!opts?.menu;
+    if (
+      this.trackId === trackId &&
+      this.track.id === trackId &&
+      this.menuScenery === menu
+    ) {
+      return;
+    }
     this.disposeWildlife();
     disposeTrack(this.track);
-    this.track = createTrack(trackId);
+    this.track = createTrack(trackId, {
+      sceneryScale: menu ? MENU_SCENERY_SCALE : 1,
+    });
     this.trackId = this.track.id;
     this.boardTrackId = this.track.id;
+    this.menuScenery = menu;
     this.scene.add(this.track.group);
     this.weather?.setTrackRoot(this.track.group);
-    this.syncWildlife();
+    if (!menu) this.syncWildlife();
     // Invalidate minimap bake — new path reference
     this.minimapPath = null;
     this.minimapPts = [];
@@ -1214,14 +1241,16 @@ export class Game {
     // Reset weather before rebuilding the menu track
     this.mpWeatherPreview = false;
     this.weather.setMode("dry");
-    // Always show map one (Forest Loop) behind the home menu
-    this.setActiveTrack(DEFAULT_TRACK_ID);
+    // Always show map one (Forest Loop) behind the home menu — thinned scenery
+    this.setActiveTrack(DEFAULT_TRACK_ID, { menu: true });
     this.applyGarageToWorld();
     if (this.player) {
       this.player.reset(this.track.startPosition.clone(), this.track.startHeading);
       this.resetSticky(this.player);
     }
-    this.setAiVisible(true);
+    // Park AI off-screen cost on the menu (orbit + forest is enough GPU work)
+    this.setAiVisible(false);
+    this.weather.placeSun(this.track.startPosition, { snap: true });
     this.shadowNeedsWarmup = true;
     this.audio.playMenuMusic();
     this.syncMuteBtn();
@@ -1400,13 +1429,6 @@ export class Game {
     const remote = new RemotePlayer(pose, this.scene, this.labelRoot);
     // Local-only beams: remotes keep emissive lenses, never SpotLights.
     stripVehicleSpotLights(remote.mesh);
-    // Skip shadows on remotes for FPS
-    remote.mesh.traverse((o) => {
-      if (o instanceof THREE.Mesh) {
-        o.castShadow = false;
-        o.receiveShadow = false;
-      }
-    });
     this.remotes.set(pose.id, remote);
   }
 
@@ -1443,16 +1465,24 @@ export class Game {
     const sun = new THREE.DirectionalLight(0xfff5e6, 1.85);
     sun.position.set(40, 80, 20);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(512, 512);
-    sun.shadow.camera.near = 5;
-    sun.shadow.camera.far = 280;
-    sun.shadow.camera.left = -120;
-    sun.shadow.camera.right = 120;
-    sun.shadow.camera.top = 120;
-    sun.shadow.camera.bottom = -120;
+    // Higher res + soft radius → smudged oval shadow, not little darkness cubes.
+    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.radius = 4.5;
+    sun.shadow.bias = -0.00015;
+    sun.shadow.normalBias = 0.035;
+    // Ortho frustum follows the player in world space (weather.placeSun).
+    // Slightly roomy so fast motion stays covered without aggressive recenters.
+    sun.shadow.camera.near = 1;
+    sun.shadow.camera.far = 220;
+    sun.shadow.camera.left = -70;
+    sun.shadow.camera.right = 70;
+    sun.shadow.camera.top = 70;
+    sun.shadow.camera.bottom = -70;
+    sun.shadow.camera.updateProjectionMatrix();
     this.scene.add(hemi);
     this.scene.add(ambient);
     this.scene.add(sun);
+    this.scene.add(sun.target);
     this.weather = new WeatherController(this.renderer, this.scene, { hemi, ambient, sun });
     this.weather.setTrackRoot(this.track.group);
     this.weather.setMode("dry");
@@ -1581,9 +1611,6 @@ export class Game {
       const accent = CAR_PALETTE.rivalAccents[i] ?? 0xf0f4f8;
       // No SpotLight beams on AI — keeps MeshStandard fragment cost low
       const mesh = createVehicle(kind, color, 11 + i * 3, accent);
-      mesh.traverse((o) => {
-        if (o instanceof THREE.Mesh) o.castShadow = false;
-      });
       this.scene.add(mesh);
       const { pos, heading } = this.spawnPose(slot.t, slot.offset);
       return new RivalAI(new Vehicle(mesh, pos, heading, false), slot.offset, slot.skill, i);
@@ -1605,9 +1632,9 @@ export class Game {
     weather?: WeatherMode;
   } = {}) {
     this.practice = !!opts.practice;
-    this.solo = !!opts.solo && !this.practice;
+    this.solo = !!opts.solo && !this.online;
     const nextId = opts.trackId ?? this.trackId ?? DEFAULT_TRACK_ID;
-    this.setActiveTrack(nextId);
+    this.setActiveTrack(nextId, { menu: false });
     if (!this.online) this.applyGarageToWorld();
     this.setAiVisible(!this.solo && !this.online);
     this.el.overlay.classList.add("hidden");
@@ -1657,7 +1684,7 @@ export class Game {
       // Shared start-line grid for every human (sorted ids → same slots on all clients)
       this.snapOnlineStartingGrid();
     } else {
-      // Test Drive: end of the line. Solo: front. Full AI race: rearmost GRID slot.
+      // Solo: front of the start line. Test Drive: rearmost. AI race: GRID[0].
       const gridSlot = this.practice
         ? { t: PRACTICE_START_T, offset: PRACTICE_START_OFFSET }
         : this.solo
@@ -1668,6 +1695,9 @@ export class Game {
       this.resetSticky(this.player);
       this.lastT = this.projectSticky(this.player, this.player.state.position).t;
     }
+    // World-stable sun aimed at the grid; shadow map warms on first live frame.
+    this.weather.placeSun(this.player.state.position, { snap: true });
+    this.shadowNeedsWarmup = true;
     // Spawned behind SF facing race direction — first armed wrap after a full lap
     this.crossedOnce = true;
     this.gates.reset();
@@ -1870,7 +1900,11 @@ export class Game {
           if (this.online) {
             this.applyOnlineCrashReset();
           } else {
-            this.startRace({ practice: this.practice, solo: this.solo, trackId: this.trackId });
+            this.startRace({
+              practice: this.practice,
+              solo: this.solo,
+              trackId: this.trackId,
+            });
           }
         }
       } else {
@@ -1890,6 +1924,7 @@ export class Game {
             this.el.wrongWay.classList.add("hidden");
             this.snapCamera();
           }
+
           this.player.update(dt, input);
           const onWall = this.keepOnTrack(this.player);
           this.notePlayerWallHit(onWall, dt);
@@ -1942,11 +1977,11 @@ export class Game {
     } else if (this.paused) {
       this.updateCamera(0);
     } else if (!this.running && !this.finished) {
+      // Home / lobby backdrop: orbit only — no wildlife sim (was a major menu hitch)
       const t = now * 0.0002;
       const p = this.track.startPosition;
       this.camera.position.set(p.x + Math.cos(t) * 18, 7, p.z + Math.sin(t) * 18);
       this.camera.lookAt(p.x, 1.2, p.z);
-      this.updateWildlife(dt);
     } else if (this.finished) {
       this.updateCamera(dt);
     }
@@ -1954,6 +1989,7 @@ export class Game {
     if (this.weather) {
       // Keep night headlights on while paused (not only while unpaused "racing").
       const sessionLive = this.running && !this.finished;
+      const preview = this.mpWeatherPreview && !sessionLive;
       const pos = this.player?.state.position ?? this.track.startPosition;
       const heading = this.player?.state.heading ?? this.track.startHeading;
       // AI + remotes: emissive lamps only (player SpotLights come from createVehicle opts)
@@ -1964,9 +2000,9 @@ export class Game {
       }
       for (const remote of this.remotes.values()) lamps.push(remote.mesh);
       this.weather.update(dt, pos, heading, sessionLive, this.player?.mesh, {
-        particles: true,
+        particles: sessionLive || preview,
         lampMeshes: lamps,
-        preview: this.mpWeatherPreview && !sessionLive,
+        preview,
       });
     }
 
@@ -1988,17 +2024,12 @@ export class Game {
     this.renderer.setScissorTest(false);
     this.renderer.setViewport(0, 0, w, h);
     this.renderer.autoClear = true;
-    // Rearview reuses the main pass shadow map. Moving shadows only need ~12Hz;
-    // car motion and controls still render at the display refresh rate.
+    // Rearview reuses the main pass shadow map. Rebuild every frame while
+    // driving — a low-Hz map lagged behind the car (looked like a rear trail)
+    // and popped when it finally caught up. Soft PCF + ride height unchanged.
     // Home/pause/finish: casters are still — skip rebuilds after a warmup.
     const liveShadows = this.running && !this.paused && !this.finished;
-    let refreshShadows = liveShadows;
-    if (liveShadows) {
-      const now = performance.now();
-      refreshShadows = now - this.lastShadowAt >= 1000 / 12;
-      if (refreshShadows) this.lastShadowAt = now;
-    }
-    this.renderer.shadowMap.needsUpdate = refreshShadows || this.shadowNeedsWarmup;
+    this.renderer.shadowMap.needsUpdate = liveShadows || this.shadowNeedsWarmup;
     if (this.shadowNeedsWarmup) this.shadowNeedsWarmup = false;
     this.renderer.render(this.scene, this.camera);
 

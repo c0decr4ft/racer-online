@@ -55,7 +55,7 @@ const PRESETS: Record<WeatherMode, Atmosphere> = {
     hemiIntensity: 0.35,
     ambient: 0.18,
     sunColor: 0xb0c4e8,
-    sunIntensity: 0.45,
+    sunIntensity: 0.65,
     sunPos: [-30, 55, 40],
     asphalt: 0x3a3e46,
     asphaltRough: 0.88,
@@ -148,6 +148,9 @@ export class WeatherController {
   private static readonly NIGHT_LAMP_RANGE_SQ = 85 * 85;
   private readonly _tintScratch = new THREE.Color();
   private readonly _tintMix = new THREE.Color();
+  /** Continuous follow aim (lerped); quantized only when writing the light. */
+  private readonly _sunFollow = new THREE.Vector3();
+  private _sunFollowReady = false;
 
   constructor(
     renderer: THREE.WebGLRenderer,
@@ -163,6 +166,8 @@ export class WeatherController {
     this.hemi = lights.hemi;
     this.ambient = lights.ambient;
     this.sun = lights.sun;
+    // Target must live in the scene so shadow-camera matrixWorld updates.
+    if (!this.sun.target.parent) this.scene.add(this.sun.target);
   }
 
   setTrackRoot(root: THREE.Object3D | null) {
@@ -252,6 +257,50 @@ export class WeatherController {
     const wantParticles = this.particlesEnabled && opts?.particles !== false;
     if (this.mode === "rain" && wantParticles && (active || preview)) this.tickRain(dt, playerPos);
     else if (this.rain) this.rain.visible = false;
+
+    // Home/idle menu: leave the sun frustum still (orbit cam doesn't need follow).
+    // Live race + lobby weather preview keep the ortho shadow camera on the car.
+    if (active || preview) this.placeSun(playerPos, { dt });
+  }
+
+  /**
+   * Aim the directional light at `at` using the current preset's sunPos as a
+   * **fixed world-space** offset (not car-relative). Turning puts the shadow on
+   * the sun-lit side of the car — never "trailing behind" the rear.
+   *
+   * The shadow camera recenters on the player for coverage, but the follow point
+   * is smoothed + quantized to shadow-map texels so the frustum doesn't jump.
+   */
+  placeSun(at: THREE.Vector3, opts?: { dt?: number; snap?: boolean }) {
+    const p = PRESETS[this.mode];
+    const [ox, oy, oz] = p.sunPos;
+    const cam = this.sun.shadow.camera;
+    const mapSize = Math.max(1, this.sun.shadow.mapSize.x);
+    const halfExtent =
+      Math.max(Math.abs(cam.right - cam.left), Math.abs(cam.top - cam.bottom)) * 0.5;
+    const texel = (halfExtent * 2) / mapSize;
+    const dt = opts?.dt ?? 1 / 60;
+
+    // Smooth toward the player (frame-rate independent), then snap to texel grid.
+    // Direction stays world-stable: light = follow + sunPos, target = follow.
+    if (opts?.snap || !this._sunFollowReady) {
+      this._sunFollow.set(at.x, 0, at.z);
+      this._sunFollowReady = true;
+    } else {
+      // ~12 Hz settle — snappy enough to keep the car in-frustum, soft enough
+      // to avoid per-frame ortho pops when the player jerks.
+      const alpha = 1 - Math.exp(-Math.max(0, dt) * 12);
+      this._sunFollow.x += (at.x - this._sunFollow.x) * alpha;
+      this._sunFollow.z += (at.z - this._sunFollow.z) * alpha;
+      this._sunFollow.y = 0;
+    }
+
+    const qx = Math.round(this._sunFollow.x / texel) * texel;
+    const qz = Math.round(this._sunFollow.z / texel) * texel;
+
+    this.sun.target.position.set(qx, 0, qz);
+    this.sun.position.set(qx + ox, oy, qz + oz);
+    this.sun.target.updateMatrixWorld();
   }
 
   /** Enable only nearby night PointLights so NUM_POINT_LIGHTS stays small in-shader. */
@@ -299,7 +348,8 @@ export class WeatherController {
     this.ambient.intensity = p.ambient;
     this.sun.color.setHex(p.sunColor);
     this.sun.intensity = p.sunIntensity;
-    this.sun.position.set(...p.sunPos);
+    // Re-place with the last follow point (or origin) using the new offset.
+    this.placeSun(this._sunFollow);
 
     this.tintSurfaces(p);
     this.applyNightLamps(this.mode === "night");
