@@ -3,11 +3,15 @@ import { createVehicle, disposeVehicleGroup, stripVehicleSpotLights } from "../c
 import type { VehicleKind } from "../garage";
 import { VISUAL_RIDE_Y } from "../vehicle";
 import {
+  INTERP_DELAY_MS,
+  MAX_EXTRAPOLATE_MS,
   NET_TICK_MS,
+  decodeStateBinary,
   type LobbyPhase,
   type NetVehicleKind,
   type NetWeatherMode,
   type PlayerPose,
+  type PoseMotion,
   type ServerMsg,
 } from "./protocol";
 import { applyWireWeather, normalizeWeatherMode } from "../weather";
@@ -19,20 +23,25 @@ function poseKind(pose: PlayerPose): VehicleKind {
   return pose.kind === "bike" ? "bike" : "car";
 }
 
-/** Remote racer — render-interpolated, never blocks the local sim. */
+function wrapPi(dh: number): number {
+  while (dh > Math.PI) dh -= Math.PI * 2;
+  while (dh < -Math.PI) dh += Math.PI * 2;
+  return dh;
+}
+
+/** Remote racer — buffered snapshot lerp for every lobby size (2–8). */
 export class RemotePlayer {
   readonly id: string;
   name: string;
   kind: VehicleKind;
   mesh: THREE.Group;
-  private from: Snapshot | null = null;
-  private to: Snapshot | null = null;
+  private buffer: Snapshot[] = [];
+  private latest: Snapshot | null = null;
   label: HTMLDivElement;
   private scene: THREE.Scene;
   private color: number;
   private accent: number;
   private readonly labelPoint = new THREE.Vector3();
-  private lastVisualAt = 0;
   private labelX = Number.NaN;
   private labelY = Number.NaN;
   private labelVisible = true;
@@ -66,7 +75,7 @@ export class RemotePlayer {
 
   /** Latest reported lap (current lap number, 1-based like the local HUD). */
   get lap(): number | undefined {
-    return this.to?.pose.lap;
+    return this.latest?.pose.lap;
   }
 
   private rebuildMesh(kind: VehicleKind, color: number, accent: number) {
@@ -80,7 +89,7 @@ export class RemotePlayer {
     this.accent = accent;
   }
 
-  push(pose: PlayerPose, at = performance.now()) {
+  private applyMeta(pose: PlayerPose) {
     if (pose.name !== this.name) {
       this.name = pose.name;
       this.label.textContent = pose.name;
@@ -91,81 +100,110 @@ export class RemotePlayer {
     if (nextKind !== this.kind || nextColor !== this.color || nextAccent !== this.accent) {
       this.rebuildMesh(nextKind, nextColor, nextAccent);
     }
-    this.from = this.to ?? { at, pose: { ...pose } };
-    this.to = { at, pose: { ...pose } };
+  }
+
+  push(pose: PlayerPose, at = performance.now()) {
+    this.applyMeta(pose);
+    const snap: Snapshot = { at, pose: { ...pose } };
+    this.latest = snap;
+    const buf = this.buffer;
+    const last = buf[buf.length - 1];
+    if (last) {
+      if (at < last.at - 1) return; // stale / out-of-order
+      if (at <= last.at) {
+        last.at = at;
+        last.pose = snap.pose;
+        return;
+      }
+    }
+    buf.push(snap);
+    const cutoff = at - 1000;
+    while (buf.length > 24 || (buf.length > 2 && buf[0]!.at < cutoff)) buf.shift();
   }
 
   /** Immediately place a remote (used once for the synchronized starting grid). */
   snap(pose: PlayerPose, at = performance.now()) {
-    this.from = { at, pose: { ...pose } };
-    this.to = { at, pose: { ...pose } };
+    this.applyMeta(pose);
+    const snap: Snapshot = { at, pose: { ...pose } };
+    this.buffer = [snap];
+    this.latest = snap;
     this.mesh.position.set(pose.x, VISUAL_RIDE_Y, pose.z);
     this.mesh.rotation.y = pose.h;
-    this.lastVisualAt = at;
+    this.mesh.rotation.z = 0;
   }
 
-  /** Predict the latest server snapshot forward so remotes stay near their real position. */
-  update(
-    now: number,
-    camera: THREE.Camera,
-    viewportWidth: number,
-    viewportHeight: number,
-    latencyMs = 0,
-  ) {
-    if (!this.to) return;
-    const prev = this.from ?? this.to;
-    const next = this.to;
-    const span = Math.max(NET_TICK_MS, next.at - prev.at);
-    const a = prev.pose;
-    const b = next.pose;
-    // A received pose is already old by the server tick plus roughly one network
-    // round trip (sender→server→viewer). Advance it to the current render time.
-    const leadMs = Math.min(
-      200,
-      Math.max(0, now - next.at) + NET_TICK_MS * 0.5 + Math.min(150, latencyMs),
-    );
-    const spanSeconds = span / 1000;
-    const measuredVx = (b.x - a.x) / spanSeconds;
-    const measuredVz = (b.z - a.z) / spanSeconds;
-    const reportedVx = Math.sin(b.h) * b.s;
-    const reportedVz = Math.cos(b.h) * b.s;
-    const velocityBlend = Math.abs(b.s) < 0.5 ? 1 : 0.55;
-    const vx = THREE.MathUtils.lerp(measuredVx, reportedVx, velocityBlend);
-    const vz = THREE.MathUtils.lerp(measuredVz, reportedVz, velocityBlend);
-    const targetX = b.x + vx * (leadMs / 1000);
-    const targetZ = b.z + vz * (leadMs / 1000);
-    let dh = b.h - a.h;
-    while (dh > Math.PI) dh -= Math.PI * 2;
-    while (dh < -Math.PI) dh += Math.PI * 2;
-    const targetH = b.h + dh * Math.min(4, leadMs / span);
-    const turnRate = dh / spanSeconds;
-    const targetLean =
+  /**
+   * Lerp between buffered server snapshots (same path for 2–8 players).
+   * Renders slightly in the past; briefly extrapolates only when the buffer runs dry.
+   */
+  update(now: number, camera: THREE.Camera, viewportWidth: number, viewportHeight: number) {
+    const buf = this.buffer;
+    if (buf.length === 0) return;
+
+    const renderAt = now - INTERP_DELAY_MS;
+    let x: number;
+    let z: number;
+    let h: number;
+    let s: number;
+    let turnRate = 0;
+
+    if (buf.length === 1) {
+      const only = buf[0]!;
+      x = only.pose.x;
+      z = only.pose.z;
+      h = only.pose.h;
+      s = only.pose.s;
+    } else if (renderAt <= buf[0]!.at) {
+      const a = buf[0]!;
+      x = a.pose.x;
+      z = a.pose.z;
+      h = a.pose.h;
+      s = a.pose.s;
+    } else {
+      const newest = buf[buf.length - 1]!;
+      if (renderAt >= newest.at) {
+        const prev = buf[buf.length - 2]!;
+        const span = Math.max(1, newest.at - prev.at);
+        const extrapMs = Math.min(MAX_EXTRAPOLATE_MS, renderAt - newest.at);
+        const spanSec = span / 1000;
+        const measuredVx = (newest.pose.x - prev.pose.x) / spanSec;
+        const measuredVz = (newest.pose.z - prev.pose.z) / spanSec;
+        const reportedVx = Math.sin(newest.pose.h) * newest.pose.s;
+        const reportedVz = Math.cos(newest.pose.h) * newest.pose.s;
+        const blend = Math.abs(newest.pose.s) < 0.5 ? 1 : 0.65;
+        const vx = THREE.MathUtils.lerp(measuredVx, reportedVx, blend);
+        const vz = THREE.MathUtils.lerp(measuredVz, reportedVz, blend);
+        const dh = wrapPi(newest.pose.h - prev.pose.h);
+        turnRate = dh / spanSec;
+        x = newest.pose.x + vx * (extrapMs / 1000);
+        z = newest.pose.z + vz * (extrapMs / 1000);
+        h = newest.pose.h + dh * (extrapMs / span);
+        s = newest.pose.s;
+      } else {
+        let i = 0;
+        while (i < buf.length - 2 && buf[i + 1]!.at < renderAt) i++;
+        const a = buf[i]!;
+        const b = buf[i + 1]!;
+        const span = Math.max(1, b.at - a.at);
+        const t = THREE.MathUtils.clamp((renderAt - a.at) / span, 0, 1);
+        x = a.pose.x + (b.pose.x - a.pose.x) * t;
+        z = a.pose.z + (b.pose.z - a.pose.z) * t;
+        const dh = wrapPi(b.pose.h - a.pose.h);
+        h = a.pose.h + dh * t;
+        s = a.pose.s + (b.pose.s - a.pose.s) * t;
+        turnRate = dh / (span / 1000);
+      }
+    }
+
+    const lean =
       this.kind === "bike"
-        ? THREE.MathUtils.clamp(
-            -Math.atan((Math.abs(b.s) * turnRate) / 9.81) * 0.72,
-            -0.42,
-            0.42,
-          )
+        ? THREE.MathUtils.clamp(-Math.atan((Math.abs(s) * turnRate) / 9.81) * 0.72, -0.42, 0.42)
         : 0;
 
-    const visualDt = this.lastVisualAt > 0 ? Math.min(0.1, (now - this.lastVisualAt) / 1000) : 0.05;
-    this.lastVisualAt = now;
-    const alpha = 1 - Math.exp(-visualDt / 0.02);
-    const farAway = this.mesh.position.distanceToSquared(this.labelPoint.set(targetX, VISUAL_RIDE_Y, targetZ)) > 36;
-    if (farAway) {
-      this.mesh.position.set(targetX, VISUAL_RIDE_Y, targetZ);
-      this.mesh.rotation.y = targetH;
-      this.mesh.rotation.z = targetLean;
-    } else {
-      this.mesh.position.x += (targetX - this.mesh.position.x) * alpha;
-      this.mesh.position.y = VISUAL_RIDE_Y;
-      this.mesh.position.z += (targetZ - this.mesh.position.z) * alpha;
-      let visualDh = targetH - this.mesh.rotation.y;
-      while (visualDh > Math.PI) visualDh -= Math.PI * 2;
-      while (visualDh < -Math.PI) visualDh += Math.PI * 2;
-      this.mesh.rotation.y += visualDh * alpha;
-      this.mesh.rotation.z += (targetLean - this.mesh.rotation.z) * alpha;
-    }
+    // Direct sample — no exponential chase (that read as laggy remotes).
+    this.mesh.position.set(x, VISUAL_RIDE_Y, z);
+    this.mesh.rotation.y = h;
+    this.mesh.rotation.z = lean;
 
     // Project name tag
     const v = this.labelPoint.set(this.mesh.position.x, 2.2, this.mesh.position.z).project(camera);
@@ -179,12 +217,12 @@ export class RemotePlayer {
         this.label.style.display = "block";
         this.labelVisible = true;
       }
-      const x = Math.round((v.x * 0.5 + 0.5) * viewportWidth);
-      const y = Math.round((-v.y * 0.5 + 0.5) * viewportHeight);
-      if (x !== this.labelX || y !== this.labelY) {
-        this.label.style.transform = `translate(-50%, -100%) translate(${x}px, ${y}px)`;
-        this.labelX = x;
-        this.labelY = y;
+      const lx = Math.round((v.x * 0.5 + 0.5) * viewportWidth);
+      const ly = Math.round((-v.y * 0.5 + 0.5) * viewportHeight);
+      if (lx !== this.labelX || ly !== this.labelY) {
+        this.label.style.transform = `translate(-50%, -100%) translate(${lx}px, ${ly}px)`;
+        this.labelX = lx;
+        this.labelY = ly;
       }
     }
   }
@@ -234,7 +272,8 @@ export type NetHandlers = {
   ) => void;
   onVoteUpdate: (votes: Record<string, number>, received: number, total: number) => void;
   onVoteResult: (trackId: string) => void;
-  onState: (players: PlayerPose[]) => void;
+  /** `at` is local performance.now()-space time for the snapshot (clock-synced). */
+  onState: (players: PlayerPose[], at: number) => void;
   onError: (message: string) => void;
   onStatus: (text: string) => void;
 };
@@ -261,6 +300,11 @@ export class NetClient {
   private pingAt = 0;
   private handlers: NetHandlers;
   private pending: RoomConnectOpts | null = null;
+  /** Identity/cosmetics for binary state frames (motion-only downlink). */
+  private roster = new Map<string, PlayerPose>();
+  /** localNow ≈ serverAt + clockOffset (EMA). */
+  private clockOffset = 0;
+  private clockReady = false;
   latency = 0;
   connected = false;
   room = "";
@@ -278,6 +322,56 @@ export class NetClient {
 
   constructor(handlers: NetHandlers) {
     this.handlers = handlers;
+  }
+
+  private rememberPlayers(players: PlayerPose[]) {
+    for (const p of players) this.roster.set(p.id, { ...p });
+  }
+
+  private rememberPlayer(player: PlayerPose) {
+    this.roster.set(player.id, { ...player });
+  }
+
+  /** Map server wall-clock `at` into performance.now() space. */
+  private localStamp(serverAt: number, recvNow: number): number {
+    if (!Number.isFinite(serverAt) || serverAt <= 0) return recvNow;
+    const sample = recvNow - serverAt;
+    if (!this.clockReady) {
+      this.clockOffset = sample;
+      this.clockReady = true;
+    } else {
+      this.clockOffset += (sample - this.clockOffset) * 0.05;
+    }
+    return serverAt + this.clockOffset;
+  }
+
+  private posesFromMotions(motions: PoseMotion[]): PlayerPose[] {
+    const kind = this.kind;
+    const out: PlayerPose[] = [];
+    for (const m of motions) {
+      const meta = this.roster.get(m.id);
+      const pose: PlayerPose = {
+        id: m.id,
+        name: meta?.name ?? "RACER",
+        color: meta?.color ?? 0xe4eaf2,
+        accent: meta?.accent,
+        kind: meta?.kind ?? kind,
+        x: m.x,
+        z: m.z,
+        h: m.h,
+        s: m.s,
+        g: m.g,
+        lap: m.lap,
+      };
+      this.roster.set(m.id, pose);
+      out.push(pose);
+    }
+    return out;
+  }
+
+  private emitState(players: PlayerPose[], at: number) {
+    this.rememberPlayers(players);
+    this.handlers.onState(players, at);
   }
 
   createRoom(opts: Omit<RoomConnectOpts, "mode">) {
@@ -333,6 +427,7 @@ export class NetClient {
   ) {
     if (gen !== this.connGen) return;
     const ws = new WebSocket(url);
+    ws.binaryType = "arraybuffer";
     this.ws = ws;
     let settled = false;
 
@@ -373,6 +468,17 @@ export class NetClient {
 
     ws.onmessage = (ev) => {
       if (gen !== this.connGen || this.ws !== ws) return;
+      const recvNow = performance.now();
+
+      // Hot path: compact binary state (2–8 players, same encoder).
+      if (ev.data instanceof ArrayBuffer) {
+        const decoded = decodeStateBinary(ev.data);
+        if (!decoded) return;
+        const at = this.localStamp(decoded.at, recvNow);
+        this.emitState(this.posesFromMotions(decoded.motions), at);
+        return;
+      }
+
       let msg: ServerMsg;
       try {
         msg = JSON.parse(String(ev.data)) as ServerMsg;
@@ -390,6 +496,10 @@ export class NetClient {
         this.maxPlayers = msg.maxPlayers;
         this.phase = msg.phase;
         this.pending = null;
+        this.roster.clear();
+        this.clockReady = false;
+        this.rememberPlayers(msg.players);
+        this.rememberPlayer(msg.you);
         this.handlers.onStatus(`Lobby · ${msg.room}`);
         this.handlers.onWelcome({
           id: msg.id,
@@ -404,9 +514,11 @@ export class NetClient {
           phase: msg.phase,
         });
       } else if (msg.t === "join") {
+        this.rememberPlayer(msg.player);
         this.handlers.onJoin(msg.player);
       } else if (msg.t === "leave") {
         if (msg.hostId) this.hostId = msg.hostId;
+        this.roster.delete(msg.id);
         this.handlers.onLeave(msg.id, msg.hostId);
       } else if (msg.t === "notice") {
         this.handlers.onNotice(msg.text);
@@ -416,6 +528,8 @@ export class NetClient {
         this.kind = msg.kind === "bike" ? "bike" : "car";
         this.weather = applyWireWeather(msg.weather, this.weather);
         this.maxPlayers = msg.maxPlayers;
+        this.roster.clear();
+        this.rememberPlayers(msg.players);
         this.handlers.onLobby({ ...msg, weather: this.weather });
       } else if (msg.t === "start") {
         this.phase = "racing";
@@ -442,7 +556,9 @@ export class NetClient {
         this.phase = "starting";
         this.handlers.onVoteResult(msg.trackId);
       } else if (msg.t === "state") {
-        this.handlers.onState(msg.players);
+        // Legacy JSON state fallback (older servers).
+        const at = this.localStamp(msg.at ?? 0, recvNow);
+        this.emitState(msg.players, at);
       } else if (msg.t === "pong") {
         this.latency = Math.max(0, performance.now() - msg.n);
       } else if (msg.t === "error") {
@@ -485,6 +601,8 @@ export class NetClient {
     this.ws = null;
     this.pending = null;
     this.myId = "";
+    this.roster.clear();
+    this.clockReady = false;
     try {
       ws.close();
     } catch {
@@ -505,6 +623,9 @@ export class NetClient {
     this.phase = "";
     this.finishSent = false;
     this.pending = null;
+    this.roster.clear();
+    this.clockReady = false;
+    this.clockOffset = 0;
     try {
       ws?.close();
     } catch {

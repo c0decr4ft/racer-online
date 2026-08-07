@@ -376,7 +376,7 @@ export class Game {
       onVoteUpdate: (votes, received, total) =>
         this.updateMapVote(votes, received, total),
       onVoteResult: (trackId) => this.showMapVoteResult(trackId),
-      onState: (players) => this.onNetState(players),
+      onState: (players, at) => this.onNetState(players, at),
       onError: (message) => {
         this.setNetStatus(message, "bad");
         this.setMpFormStatus(message);
@@ -1405,9 +1405,8 @@ export class Game {
     });
   }
 
-  private onNetState(players: PlayerPose[]) {
+  private onNetState(players: PlayerPose[], at = performance.now()) {
     if (this.gridHeld) return;
-    const now = performance.now();
     const seen = this.seenRemoteIds;
     seen.clear();
     const roomKind: VehicleKind = this.net.kind === "bike" ? "bike" : "car";
@@ -1416,8 +1415,11 @@ export class Game {
       seen.add(p.id);
       p.kind = roomKind;
       const remote = this.remotes.get(p.id);
-      if (remote) remote.push(p, now);
-      else this.spawnRemote(p);
+      if (remote) remote.push(p, at);
+      else {
+        this.spawnRemote(p);
+        this.remotes.get(p.id)?.push(p, at);
+      }
     }
     for (const id of this.remotes.keys()) {
       if (!seen.has(id)) this.removeRemote(id);
@@ -1871,13 +1873,7 @@ export class Game {
       const remoteViewportWidth = this.renderer.domElement.clientWidth;
       const remoteViewportHeight = this.renderer.domElement.clientHeight;
       for (const remote of this.remotes.values()) {
-        remote.update(
-          now,
-          this.camera,
-          remoteViewportWidth,
-          remoteViewportHeight,
-          this.net.latency,
-        );
+        remote.update(now, this.camera, remoteViewportWidth, remoteViewportHeight);
       }
     }
 
