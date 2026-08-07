@@ -1,9 +1,16 @@
-/** Shared wire protocol — compact 30Hz pose sync for responsive remote racers. */
+/** Shared wire protocol — 30Hz pose sync with client-side snapshot interpolation. */
 
 export const NET_TICK_HZ = 30;
 export const NET_TICK_MS = 1000 / NET_TICK_HZ;
+/** Render remotes this far behind local time so we almost always lerp between two snapshots. */
+export const INTERP_DELAY_MS = NET_TICK_MS * 2.5;
+/** When the buffer runs dry, coast at most this far past the newest sample. */
+export const MAX_EXTRAPOLATE_MS = NET_TICK_MS * 2;
 export const MAX_PLAYERS = 8;
 export const MIN_PLAYERS = 2;
+
+/** Binary WebSocket frame type for racing state (keeps 8-player downlink small). */
+export const STATE_BIN_TYPE = 1;
 
 export type NetVehicleKind = "car" | "bike";
 /** Host-chosen at room create — same modes as WeatherController. */
@@ -21,6 +28,17 @@ export type PlayerPose = {
   h: number; // heading
   s: number; // speed m/s
   g: string; // gear label
+  lap: number;
+};
+
+/** Motion-only fields carried on the hot state path (identity comes from lobby/join). */
+export type PoseMotion = {
+  id: string;
+  x: number;
+  z: number;
+  h: number;
+  s: number;
+  g: string;
   lap: number;
 };
 
@@ -91,7 +109,7 @@ export type ServerMsg =
       hostId: string;
       maxPlayers: number;
     }
-  | { t: "state"; players: PlayerPose[] }
+  | { t: "state"; players: PlayerPose[]; at?: number }
   | { t: "start"; at: number; trackId: string; kind: NetVehicleKind; weather: NetWeatherMode }
   /** One driver exploded — everyone resets to the start grid. */
   | { t: "crashReset"; byId: string; byName: string }
@@ -109,3 +127,38 @@ export type ServerMsg =
   | { t: "error"; message: string };
 
 export const PLAYER_COLORS = [0xe4eaf2, 0xe23b2e, 0x2a66f0, 0xf0c020, 0x1dbf6a, 0xb44dff, 0xff6b9d, 0x00d4ff];
+
+/** Bytes per player in a binary state frame (8-char id + 4×f32 + gear + lap). */
+const STATE_PLAYER_BYTES = 8 + 16 + 2;
+
+/** Decode a binary racing-state frame. Returns null if the buffer is not a state packet. */
+export function decodeStateBinary(buf: ArrayBuffer): { at: number; motions: PoseMotion[] } | null {
+  if (buf.byteLength < 10) return null;
+  const view = new DataView(buf);
+  if (view.getUint8(0) !== STATE_BIN_TYPE) return null;
+  const at = view.getFloat64(1, true);
+  const count = view.getUint8(9);
+  const need = 10 + count * STATE_PLAYER_BYTES;
+  if (buf.byteLength < need || count > MAX_PLAYERS) return null;
+  const motions: PoseMotion[] = [];
+  let o = 10;
+  const idBytes = new Uint8Array(buf);
+  for (let i = 0; i < count; i++) {
+    let end = o;
+    while (end < o + 8 && idBytes[end] !== 0) end++;
+    const id = String.fromCharCode(...idBytes.subarray(o, end));
+    o += 8;
+    const x = view.getFloat32(o, true);
+    o += 4;
+    const z = view.getFloat32(o, true);
+    o += 4;
+    const h = view.getFloat32(o, true);
+    o += 4;
+    const s = view.getFloat32(o, true);
+    o += 4;
+    const g = String.fromCharCode(view.getUint8(o++) || 49);
+    const lap = view.getUint8(o++) || 1;
+    motions.push({ id, x, z, h, s, g, lap });
+  }
+  return { at, motions };
+}

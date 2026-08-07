@@ -23,6 +23,8 @@ const STATIC_BASE = (
       : "/racer-online"
 ).replace(/\/$/, "");
 const NET_TICK_MS = 1000 / 30;
+/** Binary state frame type — must match src/net/protocol.ts STATE_BIN_TYPE. */
+const STATE_BIN_TYPE = 1;
 const MAP_VOTE_MS = 20_000;
 const MAX_PLAYERS = 8;
 const PLAYER_COLORS = [0xe4eaf2, 0xe23b2e, 0x2a66f0, 0xf0c020, 0x1dbf6a, 0xb44dff, 0xff6b9d, 0x00d4ff];
@@ -527,6 +529,40 @@ function send(ws, msg) {
 /** @param {Room} room */
 function roomPlayers(room) {
   return [...room.clients.values()].map((c) => c.pose);
+}
+
+/**
+ * Compact binary racing state for any lobby size (2–8).
+ * Layout: u8 type | f64 at | u8 count | count × (8-byte id | 4×f32 xzh s | u8 gear | u8 lap)
+ * @param {Pose[]} players
+ * @param {number} at
+ */
+function encodeStateBinary(players, at) {
+  const n = Math.min(MAX_PLAYERS, players.length);
+  const buf = Buffer.allocUnsafe(10 + n * 26);
+  let o = 0;
+  buf.writeUInt8(STATE_BIN_TYPE, o++);
+  buf.writeDoubleLE(at, o);
+  o += 8;
+  buf.writeUInt8(n, o++);
+  for (let i = 0; i < n; i++) {
+    const p = players[i];
+    const id = String(p.id || "").slice(0, 8);
+    buf.fill(0, o, o + 8);
+    buf.write(id, o, "ascii");
+    o += 8;
+    buf.writeFloatLE(+p.x || 0, o);
+    o += 4;
+    buf.writeFloatLE(+p.z || 0, o);
+    o += 4;
+    buf.writeFloatLE(+p.h || 0, o);
+    o += 4;
+    buf.writeFloatLE(+p.s || 0, o);
+    o += 4;
+    buf.writeUInt8(String(p.g || "1").charCodeAt(0) & 0xff, o++);
+    buf.writeUInt8(Math.max(1, Math.min(99, p.lap | 0)), o++);
+  }
+  return buf.subarray(0, o);
 }
 
 /** @param {Room} room @param {object} msg @param {string} [except] */
@@ -1089,10 +1125,11 @@ wss.on("connection", (ws) => {
 });
 
 setInterval(() => {
+  const at = Date.now();
   for (const room of rooms.values()) {
+    // Same 30Hz binary state for every racing room size (2 through 8).
     if (room.phase !== "racing" || room.clients.size === 0) continue;
-    const players = roomPlayers(room);
-    const raw = JSON.stringify({ t: "state", players });
+    const raw = encodeStateBinary(roomPlayers(room), at);
     for (const c of room.clients.values()) {
       if (c.ws.readyState === 1) c.ws.send(raw);
     }
