@@ -45,6 +45,11 @@ export class Vehicle {
   private shiftTimer = 0;
   /** Drive multiplier — must stay 1 for fair AI (same gear ceilings as player). */
   powerMul = 1;
+  /**
+   * Seconds of post–animal-hit drive cut. Player and AI both use this so a
+   * wildlife collision actually sticks instead of full-throttle recovery.
+   */
+  animalHitPenalty = 0;
 
   constructor(mesh: THREE.Group, position: THREE.Vector3, heading: number, manual = false) {
     this.mesh = mesh;
@@ -67,6 +72,7 @@ export class Vehicle {
     this.state.gear = 1;
     this.shiftTimer = 0;
     this.powerMul = 1;
+    this.animalHitPenalty = 0;
     this.syncMesh();
   }
 
@@ -100,7 +106,17 @@ export class Vehicle {
       this.setGear(1);
     }
 
-    stepVehiclePhysics(s, dt, input, this.powerMul);
+    let physicsInput = input;
+    if (this.animalHitPenalty > 0) {
+      this.animalHitPenalty = Math.max(0, this.animalHitPenalty - dt);
+      physicsInput = {
+        ...input,
+        throttle: input.throttle * 0.12,
+        brake: Math.max(input.brake, 0.18),
+      };
+    }
+
+    stepVehiclePhysics(s, dt, physicsInput, this.powerMul);
 
     this.syncMesh();
     this.animateWheels(dt);

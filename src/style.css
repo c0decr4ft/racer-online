@@ -302,6 +302,47 @@ html.touch-mode [contenteditable="true"] {
   }
 }
 
+.animal-hit {
+  position: absolute;
+  top: 42%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: clamp(2.4rem, 10vw, 5.5rem);
+  letter-spacing: 0.12em;
+  color: #fff;
+  text-shadow:
+    0 0 28px rgba(255, 106, 46, 0.9),
+    0 4px 0 rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+  z-index: 6;
+  animation: animal-hit-flash 1.35s ease-out both;
+}
+
+.animal-hit.hidden {
+  display: none;
+}
+
+@keyframes animal-hit-flash {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.45);
+  }
+  12% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  55% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.92);
+  }
+}
+
 .best-flash {
   position: absolute;
   top: 38%;

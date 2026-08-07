@@ -53,6 +53,7 @@ import {
   WeatherController,
   type WeatherMode,
 } from "./weather";
+import { WildlifeHerd } from "./wildlife";
 
 function formatTime(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "--:--.---";
@@ -206,6 +207,7 @@ export class Game {
     minimap: document.getElementById("minimap") as HTMLCanvasElement,
     wallHits: document.getElementById("wall-hits")!,
     explodeFlash: document.getElementById("explode-flash")!,
+    animalHit: document.getElementById("animal-hit")!,
     mapSelect: document.getElementById("map-select")!,
     mapGrid: document.getElementById("map-grid")!,
     mapSelectTitle: document.getElementById("map-select-title")!,
@@ -247,6 +249,8 @@ export class Game {
   private mapVoteTimer = 0;
   private scoreSaveInFlight = false;
   private bestFlashUntil = 0;
+  /** Animal-hit name banner (e.g. "COW!") — hide after fade. */
+  private animalHitUntil = 0;
   /** Ignore stale async board fetches when switching maps quickly. */
   private boardLoadGen = 0;
 
@@ -264,6 +268,11 @@ export class Game {
     life: number;
   }[] = [];
   private explodeFlashLight: THREE.PointLight | null = null;
+
+  /** Per-track wildlife herd — null only if a track has no animal spec. */
+  private wildlife: WildlifeHerd | null = null;
+  /** Scratch pack for wildlife hits (avoid clobbering `_pack` mid-frame). */
+  private readonly _wildlifePack: Vehicle[] = [];
 
   /** Cached centerline samples for the 2D minimap (rebuilt if path changes). */
   private minimapPath: THREE.CatmullRomCurve3 | null = null;
@@ -1072,17 +1081,76 @@ export class Game {
   /** Dispose current track mesh and rebuild from a named path definition. */
   private setActiveTrack(trackId: string) {
     if (this.trackId === trackId && this.track.id === trackId) return;
+    this.disposeWildlife();
     disposeTrack(this.track);
     this.track = createTrack(trackId);
     this.trackId = this.track.id;
     this.boardTrackId = this.track.id;
     this.scene.add(this.track.group);
     this.weather?.setTrackRoot(this.track.group);
+    this.syncWildlife();
     // Invalidate minimap bake — new path reference
     this.minimapPath = null;
     this.minimapPts = [];
     this.minimapTrackKey = "";
     this.stickyT = new WeakMap();
+  }
+
+  /** Spawn the track's wildlife herd (cows/goats/pigeons/deer/crabs/snakes). */
+  private syncWildlife() {
+    this.disposeWildlife();
+    const herd = WildlifeHerd.createForTrack(this.track.id, this.track.path);
+    if (!herd) return;
+    this.wildlife = herd;
+    this.scene.add(herd.group);
+  }
+
+  private disposeWildlife() {
+    this.wildlife?.dispose();
+    this.wildlife = null;
+  }
+
+  /** Animate wildlife + hits. Player and offline AI rivals both take slowdown. */
+  private updateWildlife(dt: number) {
+    if (!this.wildlife || !this.player) return;
+    const pack = this._wildlifePack;
+    pack.length = 0;
+    pack.push(this.player);
+    // Offline races / practice with AI — rivals share the same hit slowdown.
+    if (!this.online && !this.solo) {
+      for (const r of this.rivals) {
+        pack.push(r.vehicle);
+      }
+    }
+    this.wildlife.update(dt, pack, (info) => {
+      this.audio.playBoom();
+      // Banner for the local player's hits only.
+      if (info.target === this.player) this.showAnimalHit(info.name);
+    });
+  }
+
+  private showAnimalHit(name: string) {
+    const el = this.el.animalHit;
+    el.textContent = `${name}!`;
+    el.classList.remove("hidden");
+    // Retrigger CSS enter/fade animation
+    el.style.animation = "none";
+    void el.offsetWidth;
+    el.style.animation = "";
+    this.animalHitUntil = performance.now() + 1400;
+  }
+
+  private updateAnimalHit() {
+    if (this.animalHitUntil <= 0) return;
+    if (performance.now() >= this.animalHitUntil) {
+      this.animalHitUntil = 0;
+      this.el.animalHit.classList.add("hidden");
+    }
+  }
+
+  private hideAnimalHit() {
+    this.animalHitUntil = 0;
+    this.el.animalHit.classList.add("hidden");
   }
 
   /** Menu Start / Test Drive / Solo — unlock audio, leave online, start session. */
@@ -1120,6 +1188,7 @@ export class Game {
     this.bestFlashUntil = 0;
     this.clearCountdown();
     this.clearExplode(true);
+    this.hideAnimalHit();
     this.resetWallHits();
     this.resetMapVote();
     this.audio.mute();
@@ -1131,6 +1200,7 @@ export class Game {
     this.el.wrongWay.classList.add("hidden");
     this.el.bestFlash.classList.add("hidden");
     this.el.explodeFlash.classList.add("hidden");
+    this.el.animalHit.classList.add("hidden");
     this.el.nameEntry.classList.add("hidden");
     this.el.leaderboard.classList.add("hidden");
     this.el.mapSelect.classList.add("hidden");
@@ -1549,6 +1619,7 @@ export class Game {
     this.el.leaderboard.classList.add("hidden");
     this.el.nameEntry.classList.add("hidden");
     this.el.bestFlash.classList.add("hidden");
+    this.hideAnimalHit();
     this.resetMapVote();
     this.el.pauseBtn.classList.remove("hidden");
     this.el.finishEyebrow.textContent = "SESSION COMPLETE";
@@ -1561,6 +1632,7 @@ export class Game {
     this.lap = 1;
     this.bestLap = Infinity;
     this.bestFlashUntil = 0;
+    this.hideAnimalHit();
     this.pauseTotal = 0;
     this.pauseBegan = 0;
     // Timer starts when countdown hits GO — hold at zero until then
@@ -1866,6 +1938,7 @@ export class Game {
           }
         }
       }
+      this.updateWildlife(dt);
     } else if (this.paused) {
       this.updateCamera(0);
     } else if (!this.running && !this.finished) {
@@ -1873,6 +1946,7 @@ export class Game {
       const p = this.track.startPosition;
       this.camera.position.set(p.x + Math.cos(t) * 18, 7, p.z + Math.sin(t) * 18);
       this.camera.lookAt(p.x, 1.2, p.z);
+      this.updateWildlife(dt);
     } else if (this.finished) {
       this.updateCamera(dt);
     }
@@ -2097,6 +2171,7 @@ export class Game {
     this.lap = 1;
     this.bestLap = Infinity;
     this.bestFlashUntil = 0;
+    this.hideAnimalHit();
     this.pauseTotal = 0;
     this.pauseBegan = 0;
     this.raceStart = 0;
@@ -2486,6 +2561,7 @@ export class Game {
     this.audio.stopDriveMusic();
     this.el.wrongWay.classList.add("hidden");
     this.el.explodeFlash.classList.add("hidden");
+    this.hideAnimalHit();
     this.el.pause.classList.add("hidden");
     this.el.pauseBtn.classList.add("hidden");
     this.el.minimap.classList.add("hidden");
@@ -2567,6 +2643,7 @@ export class Game {
           : this.raceNow() - this.raceStart;
     this.el.time.textContent = formatTime(clockMs);
     this.updateBestFlash();
+    this.updateAnimalHit();
     this.updateMinimap();
 
     if (this.el.position) {
