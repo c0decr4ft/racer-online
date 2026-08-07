@@ -483,11 +483,21 @@ html.touch-mode [contenteditable="true"] {
   outline-offset: 2px;
 }
 
-.feedback-btn {
+.home-corner-btns {
   position: fixed;
   left: 0.85rem;
   bottom: 0.65rem;
   z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.home-corner-btns.hidden {
+  display: none !important;
+}
+
+.feedback-btn {
   appearance: none;
   display: inline-flex;
   align-items: center;
@@ -607,6 +617,68 @@ html.touch-mode [contenteditable="true"] {
   width: 100%;
   box-sizing: border-box;
   margin: 0;
+}
+
+.controls-help-panel {
+  text-align: left;
+}
+
+.controls-help-panel .eyebrow,
+.controls-help-panel .feedback-compose-hint {
+  text-align: center;
+}
+
+.controls-help-groups {
+  margin: 0 0 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.controls-help-group {
+  margin: 0;
+}
+
+.controls-help-group-title {
+  margin: 0 0 0.35rem;
+  color: var(--muted, #9aa3b5);
+  font-family: "Rajdhani", sans-serif;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.controls-help-list {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+}
+
+.controls-help-row {
+  display: grid;
+  grid-template-columns: 6.75rem minmax(0, 1fr);
+  column-gap: 0.75rem;
+  align-items: baseline;
+}
+
+.controls-help-row dt {
+  margin: 0;
+  color: #ffc857;
+  font-family: "Rajdhani", sans-serif;
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-align: right;
+}
+
+.controls-help-row dd {
+  margin: 0;
+  color: var(--text);
+  font-family: "Rajdhani", sans-serif;
+  font-size: 0.95rem;
+  letter-spacing: 0.03em;
 }
 
 .dev-dashboard {

@@ -158,8 +158,8 @@ function makePathClearance(path: THREE.CatmullRomCurve3, roadHalf: number): Path
     return best;
   };
 
-  // Ray-cast infield test on the closed centerline polyline
-  const insideLoop = (x: number, z: number) => {
+  // Exact ray-cast on the closed centerline polyline (used to stamp the grid).
+  const insideExact = (x: number, z: number) => {
     let inside = false;
     for (let i = 0, j = sampleN - 1; i < sampleN; j = i++) {
       const pi = samples[i]!;
@@ -172,6 +172,42 @@ function makePathClearance(path: THREE.CatmullRomCurve3, roadHalf: number): Path
       if (x < xHit) inside = !inside;
     }
     return inside;
+  };
+
+  // O(1) infield lookup — coast water / palm filters call this thousands of times.
+  let gMinX = Infinity;
+  let gMaxX = -Infinity;
+  let gMinZ = Infinity;
+  let gMaxZ = -Infinity;
+  for (let i = 0; i < sampleN; i++) {
+    const p = samples[i]!;
+    if (p.x < gMinX) gMinX = p.x;
+    if (p.x > gMaxX) gMaxX = p.x;
+    if (p.z < gMinZ) gMinZ = p.z;
+    if (p.z > gMaxZ) gMaxZ = p.z;
+  }
+  const GCELL = 4;
+  const gPad = GCELL * 2;
+  gMinX -= gPad;
+  gMaxX += gPad;
+  gMinZ -= gPad;
+  gMaxZ += gPad;
+  const gw = Math.max(1, Math.ceil((gMaxX - gMinX) / GCELL));
+  const gh = Math.max(1, Math.ceil((gMaxZ - gMinZ) / GCELL));
+  const insideGrid = new Uint8Array(gw * gh);
+  for (let gz = 0; gz < gh; gz++) {
+    for (let gx = 0; gx < gw; gx++) {
+      const x = gMinX + (gx + 0.5) * GCELL;
+      const z = gMinZ + (gz + 0.5) * GCELL;
+      if (insideExact(x, z)) insideGrid[gz * gw + gx] = 1;
+    }
+  }
+
+  const insideLoop = (x: number, z: number) => {
+    const gx = Math.floor((x - gMinX) / GCELL);
+    const gz = Math.floor((z - gMinZ) / GCELL);
+    if (gx < 0 || gz < 0 || gx >= gw || gz >= gh) return false;
+    return insideGrid[gz * gw + gx]! !== 0;
   };
 
   const clearOf = (x: number, z: number, footprint: number) =>
@@ -403,12 +439,14 @@ function plantPalmPoses(
   group: THREE.Group,
   poses: TreePose[],
   mats = VEG_MATS.palms,
+  sharedGeos?: { trunk: THREE.BufferGeometry; canopy: THREE.BufferGeometry },
 ) {
   if (!poses.length) return;
 
   const TRUNK_H = 3.85;
-  const trunkGeo = new THREE.CylinderGeometry(0.065, 0.28, TRUNK_H, 6);
-  const canopyGeo = createPalmCanopyGeometry();
+  const trunkGeo =
+    sharedGeos?.trunk ?? new THREE.CylinderGeometry(0.065, 0.28, TRUNK_H, 6);
+  const canopyGeo = sharedGeos?.canopy ?? createPalmCanopyGeometry();
   const dummy = new THREE.Object3D();
   const n = poses.length;
 
@@ -538,8 +576,12 @@ function plantVegetation(
 
   // Coast palms use a dedicated frond mesh (not the generic sphere canopy)
   if (biome.vegetation === "palms") {
+    const palmGeos = {
+      trunk: new THREE.CylinderGeometry(0.065, 0.28, 3.85, 6),
+      canopy: createPalmCanopyGeometry(),
+    };
     for (const list of buckets.values()) {
-      if (list.length) plantPalmPoses(group, list, mats);
+      if (list.length) plantPalmPoses(group, list, mats, palmGeos);
     }
     return poses.length;
   }
@@ -767,6 +809,9 @@ function coastBeachExtra(t: number): number {
 /** Sliding-window max — fills narrow shoreline concavities that spawn cutting chords. */
 function dilateCoastExtras(extras: number[], halfWin: number): number[] {
   const n = extras.length;
+  if (n === 0) return [];
+  if (halfWin <= 0) return extras.slice();
+  // Circular max via padded linear pass — O(n · window) but n≲800, window≲40.
   const out = new Array<number>(n);
   for (let i = 0; i < n; i++) {
     let m = 0;
@@ -780,9 +825,9 @@ function dilateCoastExtras(extras: number[], halfWin: number): number[] {
 }
 
 /**
- * Inflate path-normal latitudes until every shoreline vertex AND every chord
- * sample clears the beach floor. Latitudes stay the source of truth so verts
- * cannot drift into folded / diagonal strip edges.
+ * Inflate path-normal latitudes until shoreline verts clear the beach floor.
+ * Binary-search per vertex + morphological dilate (replaces the old 64-pass
+ * chord storm that never converged and stalled Harbor load ~4s).
  */
 function enforceCoastShoreLatitudes(
   lats: number[],
@@ -792,33 +837,56 @@ function enforceCoastShoreLatitudes(
   minWaterR2: number,
 ) {
   const n = lats.length;
-  const fracs = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9];
-  const inner = (i: number) => {
-    const a = anchors[i]!;
-    const d = outDir[i]!;
-    const lat = lats[i]!;
-    return { x: a.x + d.x * lat, z: a.z + d.z * lat };
-  };
-
+  const maxLat = 240;
   const pointBad = (x: number, z: number) =>
     clearance.minDist2(x, z) < minWaterR2 || clearance.insideLoop(x, z);
 
-  for (let pass = 0; pass < 64; pass++) {
+  for (let i = 0; i < n; i++) {
+    const a = anchors[i]!;
+    const d = outDir[i]!;
+    let lo = lats[i]!;
+    const x0 = a.x + d.x * lo;
+    const z0 = a.z + d.z * lo;
+    if (!pointBad(x0, z0)) continue;
+
+    let hi = Math.min(maxLat, lo + 12);
+    while (hi < maxLat && pointBad(a.x + d.x * hi, a.z + d.z * hi)) {
+      lo = hi;
+      hi = Math.min(maxLat, hi + 12);
+    }
+    // Binary search the first clear latitude in (lo, hi].
+    for (let k = 0; k < 10; k++) {
+      const mid = (lo + hi) * 0.5;
+      if (pointBad(a.x + d.x * mid, a.z + d.z * mid)) lo = mid;
+      else hi = mid;
+    }
+    lats[i] = hi;
+  }
+
+  // Max-dilate latitudes so chords between neighbors cannot cut sand / asphalt.
+  const latDilate = Math.max(2, Math.round(n * 0.012));
+  const dilated = dilateCoastExtras(lats, latDilate);
+  for (let i = 0; i < n; i++) lats[i] = dilated[i]!;
+
+  // One cheap chord polish — few samples, few passes (dilation does the heavy lift).
+  const fracs = [0.35, 0.5, 0.65];
+  for (let pass = 0; pass < 6; pass++) {
     let moved = false;
     for (let i = 0; i < n; i++) {
-      const p = inner(i);
-      if (!pointBad(p.x, p.z)) continue;
-      lats[i]! += 3;
-      moved = true;
-    }
-    for (let i = 0; i < n; i++) {
-      const a = inner(i);
-      const b = inner((i + 1) % n);
-      let needs = pointBad(a.x, a.z) || pointBad(b.x, b.z);
+      const a = anchors[i]!;
+      const d0 = outDir[i]!;
+      const j = (i + 1) % n;
+      const b = anchors[j]!;
+      const d1 = outDir[j]!;
+      const ax = a.x + d0.x * lats[i]!;
+      const az = a.z + d0.z * lats[i]!;
+      const bx = b.x + d1.x * lats[j]!;
+      const bz = b.z + d1.z * lats[j]!;
+      let needs = pointBad(ax, az) || pointBad(bx, bz);
       if (!needs) {
         for (const f of fracs) {
-          const mx = a.x + (b.x - a.x) * f;
-          const mz = a.z + (b.z - a.z) * f;
+          const mx = ax + (bx - ax) * f;
+          const mz = az + (bz - az) * f;
           if (pointBad(mx, mz)) {
             needs = true;
             break;
@@ -826,8 +894,8 @@ function enforceCoastShoreLatitudes(
         }
       }
       if (!needs) continue;
-      lats[i]! += 3.5;
-      lats[(i + 1) % n]! += 3.5;
+      lats[i]! += 5;
+      lats[j]! += 5;
       moved = true;
     }
     if (!moved) break;
@@ -835,14 +903,15 @@ function enforceCoastShoreLatitudes(
 }
 
 /**
- * Coastal ocean as an outer annular strip only — never a square AABB plane
- * under the circuit. Hole = beach + asphalt + infield (sand stays dry).
+ * Coastal ocean surrounding the full map — irregular shoreline island keeps
+ * beach + asphalt + infield dry (ocean never reads as a flood under the ribbon).
  */
 function plantCoastWater(
   group: THREE.Group,
   path: THREE.CatmullRomCurve3,
   clearance: PathClearance,
   bounds: ReturnType<typeof pathBounds>,
+  groundColor: number,
 ) {
   // Fully opaque — transparent water + depthWrite was z-fighting sand and
   // drawing dark shoreline-chord seams across beach / asphalt.
@@ -858,57 +927,82 @@ function plantCoastWater(
   });
 
   const pathLen = path.getLength();
-  const samples = Math.max(520, Math.min(1100, Math.ceil(pathLen / 1.15)));
+  // Dense enough for an irregular coast; dilation covers local concavities.
+  const samples = Math.max(400, Math.min(720, Math.ceil(pathLen / 1.55)));
   const minWaterR = clearance.runoffClear + COAST_BEACH_MIN;
   const minWaterR2 = minWaterR * minWaterR;
-  // Absolute reject: never nick runoff / asphalt, and never enter the infield.
-  const ribbonR2 = (clearance.runoffClear + 2) * (clearance.runoffClear + 2);
   const anchors: { x: number; z: number }[] = [];
   const outDir: { x: number; z: number }[] = [];
   const rawExtra: number[] = [];
+  const pt = new THREE.Vector3();
   const tan = new THREE.Vector3();
-  const n = new THREE.Vector3();
-  // Outer horizon ring — far past the beach, still path-following (not a square fill).
-  const outerLat = Math.max(bounds.spanX, bounds.spanZ) * 0.95;
+  const nrm = new THREE.Vector3();
+
   for (let i = 0; i < samples; i++) {
     const t = i / samples;
-    const p = path.getPointAt(t);
+    path.getPointAt(t, pt);
     tan.copy(path.getTangentAt(t)).normalize();
-    n.set(-tan.z, 0, tan.x);
+    nrm.set(-tan.z, 0, tan.x);
     const probe = clearance.runoffClear + 2;
     // Outward = opposite of the infield side
-    const outSign = clearance.insideLoop(p.x + n.x * probe, p.z + n.z * probe) ? -1 : 1;
-    anchors.push({ x: p.x, z: p.z });
-    outDir.push({ x: n.x * outSign, z: n.z * outSign });
+    const outSign = clearance.insideLoop(pt.x + nrm.x * probe, pt.z + nrm.z * probe)
+      ? -1
+      : 1;
+    anchors.push({ x: pt.x, z: pt.z });
+    outDir.push({ x: nrm.x * outSign, z: nrm.z * outSign });
     rawExtra.push(coastBeachExtra(t));
   }
 
-  // Dilate beach widths so concave outer pockets cannot create strip chords
-  // that slash across sand and the racing ribbon.
+  // Dilate beach widths so concave outer pockets cannot create shoreline
+  // chords that slash across sand and the racing ribbon.
   const dilated = dilateCoastExtras(rawExtra, COAST_SHORE_DILATE_HALF);
   const lats = dilated.map((e) => clearance.runoffClear + e);
 
+  // Single enforce at the beach floor (stricter than ribbon) — ribbon pass was redundant.
   enforceCoastShoreLatitudes(lats, anchors, outDir, clearance, minWaterR2);
-  enforceCoastShoreLatitudes(lats, anchors, outDir, clearance, ribbonR2);
 
   const inner: { x: number; z: number }[] = [];
-  const outer: { x: number; z: number }[] = [];
   for (let i = 0; i < samples; i++) {
     const a = anchors[i]!;
     const d = outDir[i]!;
     const latIn = lats[i]!;
     inner.push({ x: a.x + d.x * latIn, z: a.z + d.z * latIn });
-    const latOut = Math.max(latIn + 48, outerLat);
-    outer.push({ x: a.x + d.x * latOut, z: a.z + d.z * latOut });
   }
 
-  // Above sand (−0.12), below runoff (−0.02). Opaque + polygonOffset so any
-  // residual shoreline edge cannot z-fight into dark artifact lines.
-  const shore = new THREE.Mesh(ringStripGeometry(inner, outer, -0.1), waterMat);
-  shore.receiveShadow = false;
-  shore.userData.surface = "water";
-  shore.renderOrder = -1;
-  group.add(shore);
+  // Map-sized ocean (past the grass AABB) so sea wraps the whole Harbor view —
+  // not a path-normal half-ring that left AABB corners as dry sand.
+  const waterPad = 40;
+  const ocean = new THREE.Mesh(
+    new THREE.PlaneGeometry(bounds.spanX + waterPad * 2, bounds.spanZ + waterPad * 2),
+    waterMat,
+  );
+  ocean.rotation.x = -Math.PI / 2;
+  ocean.position.set(bounds.cx, -0.11, bounds.cz);
+  ocean.receiveShadow = false;
+  ocean.userData.surface = "water";
+  ocean.renderOrder = -2;
+  group.add(ocean);
+
+  // Dry island fill = beach + ribbon + infield (hides ocean under the circuit).
+  const shape = new THREE.Shape();
+  shape.moveTo(inner[0]!.x, inner[0]!.z);
+  for (let i = 1; i < inner.length; i++) {
+    shape.lineTo(inner[i]!.x, inner[i]!.z);
+  }
+  shape.closePath();
+  const islandMat = new THREE.MeshStandardMaterial({
+    color: groundColor,
+    roughness: 1,
+    metalness: 0,
+  });
+  const island = new THREE.Mesh(new THREE.ShapeGeometry(shape), islandMat);
+  island.rotation.x = -Math.PI / 2;
+  island.position.y = -0.105;
+  island.receiveShadow = true;
+  island.userData.surface = "grass";
+  island.userData.baseColor = groundColor;
+  island.renderOrder = -1;
+  group.add(island);
 }
 
 /**
@@ -921,16 +1015,32 @@ function filterPosesToCoastSand(
   clearance: PathClearance,
 ): TreePose[] {
   const sampleN = 256;
-  const samples: THREE.Vector3[] = [];
+  const samples: { x: number; z: number }[] = [];
   const rawExtra: number[] = [];
+  const pt = new THREE.Vector3();
   for (let i = 0; i < sampleN; i++) {
     const t = i / sampleN;
-    samples.push(path.getPointAt(t));
+    path.getPointAt(t, pt);
+    samples.push({ x: pt.x, z: pt.z });
     rawExtra.push(coastBeachExtra(t));
   }
   // Match water mesh dilation (scaled to this coarser sample count).
   const halfWin = Math.max(8, Math.round(COAST_SHORE_DILATE_HALF * (sampleN / 900)));
   const dilated = dilateCoastExtras(rawExtra, halfWin);
+
+  // Spatial bins for nearest shoreline sample (avoid O(poses · sampleN)).
+  const BIN = 24;
+  const bins = new Map<string, number[]>();
+  for (let i = 0; i < sampleN; i++) {
+    const p = samples[i]!;
+    const key = `${Math.floor(p.x / BIN)},${Math.floor(p.z / BIN)}`;
+    let list = bins.get(key);
+    if (!list) {
+      list = [];
+      bins.set(key, list);
+    }
+    list.push(i);
+  }
 
   return poses.filter((pose) => {
     // Outfield only — infield palms come from plantInfieldGrove.
@@ -940,14 +1050,34 @@ function filterPosesToCoastSand(
 
     let bestI = 0;
     let bestD = Infinity;
-    for (let i = 0; i < sampleN; i++) {
-      const p = samples[i]!;
-      const d = (p.x - pose.x) * (p.x - pose.x) + (p.z - pose.z) * (p.z - pose.z);
-      if (d < bestD) {
-        bestD = d;
-        bestI = i;
+    const bx = Math.floor(pose.x / BIN);
+    const bz = Math.floor(pose.z / BIN);
+    for (let dx = -2; dx <= 2; dx++) {
+      for (let dz = -2; dz <= 2; dz++) {
+        const list = bins.get(`${bx + dx},${bz + dz}`);
+        if (!list) continue;
+        for (const i of list) {
+          const p = samples[i]!;
+          const d = (p.x - pose.x) * (p.x - pose.x) + (p.z - pose.z) * (p.z - pose.z);
+          if (d < bestD) {
+            bestD = d;
+            bestI = i;
+          }
+        }
       }
     }
+    // Fallback if bins missed (far scatter) — rare.
+    if (!Number.isFinite(bestD) || bestD === Infinity) {
+      for (let i = 0; i < sampleN; i++) {
+        const p = samples[i]!;
+        const d = (p.x - pose.x) * (p.x - pose.x) + (p.z - pose.z) * (p.z - pose.z);
+        if (d < bestD) {
+          bestD = d;
+          bestI = i;
+        }
+      }
+    }
+
     const dilatedR = clearance.runoffClear + dilated[bestI]!;
     // Also respect the undilated local beach — dilation fills bays for water
     // chords, but palms should not march into those filled pockets.
@@ -973,7 +1103,7 @@ function plantBiomeProps(
   const dummy = new THREE.Object3D();
 
   if (biome.props === "water") {
-    plantCoastWater(group, path, clearance, bounds);
+    plantCoastWater(group, path, clearance, bounds, biome.ground);
   }
 
   if (biome.props === "rocks" || biome.props === "mesas") {
@@ -1138,8 +1268,22 @@ function plantBiomeProps(
       group.add(mesh);
     }
 
-    // Pine grove in the infield center (clear of asphalt / runoff)
-    plantAlpineInfieldTrees(group, path, clearance, dummy, bounds);
+    // Pine grove + small rocks in the infield center (clear of asphalt / runoff)
+    const alpineInfieldTrees = plantAlpineInfieldTrees(
+      group,
+      path,
+      clearance,
+      dummy,
+      bounds,
+    );
+    plantAlpineInfieldRocks(
+      group,
+      path,
+      clearance,
+      dummy,
+      bounds,
+      alpineInfieldTrees,
+    );
   }
 
   if (biome.props === "lights") {
@@ -1391,9 +1535,14 @@ function plantAlpineInfieldTrees(
   clearance: PathClearance,
   dummy: THREE.Object3D,
   bounds: ReturnType<typeof pathBounds>,
-) {
-  const points = collectSpacedInfieldPoints(path, clearance, bounds, { count: 48, minSep: 7.5 });
-  if (!points.length) return;
+): { x: number; z: number }[] {
+  // Dense stand across the clear infield center (was ~48 @ 7.5m, then ~110 @ 5.2m)
+  const points = collectSpacedInfieldPoints(path, clearance, bounds, {
+    count: 175,
+    minSep: 4.4,
+    clearFoot: 2.5,
+  });
+  if (!points.length) return [];
 
   const mats = VEG_MATS.pines;
   const trunkGeo = new THREE.CylinderGeometry(0.2, 0.28, 2.2, 5);
@@ -1450,6 +1599,64 @@ function plantAlpineInfieldTrees(
     mesh.computeBoundingSphere();
     group.add(mesh);
   }
+  return points;
+}
+
+/** Small alpine rocks scattered through the Summit Pass infield (clear of ribbon). */
+function plantAlpineInfieldRocks(
+  group: THREE.Group,
+  path: THREE.CatmullRomCurve3,
+  clearance: PathClearance,
+  dummy: THREE.Object3D,
+  bounds: ReturnType<typeof pathBounds>,
+  avoidTrees: readonly { x: number; z: number }[],
+) {
+  const treeClear2 = 2.8 * 2.8;
+  // Slightly denser / tighter than pines so rocks tuck between trunks
+  const points = collectSpacedInfieldPoints(path, clearance, bounds, {
+    count: 85,
+    minSep: 3.6,
+    clearFoot: 1.4,
+    exclude: (x, z) => {
+      for (const t of avoidTrees) {
+        const dx = t.x - x;
+        const dz = t.z - z;
+        if (dx * dx + dz * dz < treeClear2) return true;
+      }
+      return false;
+    },
+  });
+  if (!points.length) return;
+
+  const rockMat = new THREE.MeshStandardMaterial({
+    color: 0x8a949e,
+    roughness: 0.93,
+    metalness: 0.04,
+    flatShading: true,
+    emissive: 0x303844,
+    emissiveIntensity: 0.06,
+  });
+  const boulderGeo = new THREE.DodecahedronGeometry(1, 0);
+  const rocks = new THREE.InstancedMesh(boulderGeo, rockMat, points.length);
+  rocks.count = 0;
+  rocks.castShadow = false;
+  rocks.receiveShadow = true;
+  rocks.frustumCulled = true;
+
+  for (const { x, z, i } of points) {
+    // Smaller than outfield roadside boulders — infield clutter, not walls
+    const s = 0.45 + hash2(i, 19) * 1.15;
+    dummy.position.set(x, s * 0.38, z);
+    dummy.scale.set(s, s * (0.55 + hash2(i, 23) * 0.4), s);
+    dummy.rotation.set(hash2(i, 29) * 1.2, hash2(i, 31) * 6, hash2(i, 37) * 0.8);
+    dummy.updateMatrix();
+    rocks.setMatrixAt(rocks.count++, dummy.matrix);
+  }
+
+  if (!rocks.count) return;
+  rocks.instanceMatrix.needsUpdate = true;
+  rocks.computeBoundingSphere();
+  group.add(rocks);
 }
 
 /** Procedural low-poly window-grid map for city facades (shared across instances). */

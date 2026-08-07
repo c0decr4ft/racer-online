@@ -1,3 +1,4 @@
+import { closeControlsHelp } from "./controlsHelp";
 import {
   FEEDBACK_NAME_MAX,
   FEEDBACK_TEXT_MAX,
@@ -6,11 +7,14 @@ import {
 
 /** Show on homepage/menu; hide during a race session (same as version badge). */
 export function setFeedbackBtnVisible(visible: boolean): void {
+  const cluster = document.getElementById("home-corner-btns");
   const btn = document.getElementById("feedback-btn");
   const modal = document.getElementById("feedback-compose");
-  if (btn instanceof HTMLElement) btn.classList.toggle("hidden", !visible);
+  if (cluster instanceof HTMLElement) cluster.classList.toggle("hidden", !visible);
+  else if (btn instanceof HTMLElement) btn.classList.toggle("hidden", !visible);
   if (!visible) {
     modal?.classList.add("hidden");
+    closeControlsHelp();
     const form = document.getElementById("feedback-compose-form");
     if (form instanceof HTMLFormElement) form.reset();
     const status = document.getElementById("feedback-compose-status");
@@ -59,6 +63,7 @@ export function initFeedbackCompose(): void {
   };
 
   const open = () => {
+    closeControlsHelp();
     status.textContent = "";
     status.classList.add("hidden");
     form.reset();

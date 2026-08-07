@@ -444,10 +444,12 @@ export class Game {
       void this.bootFromMenu({ trackId: randomTrackId() });
     };
     document.getElementById("test-drive-btn")!.onclick = () => {
-      void this.unlockAndMaybeMenuMusic().then(() => this.openMapSelect("practice"));
+      // Practice: keep map picker so you can choose a circuit to learn
+      void this.unlockAndMaybeMenuMusic().then(() => this.openMapSelect());
     };
     document.getElementById("solo-race-btn")!.onclick = () => {
-      void this.unlockAndMaybeMenuMusic().then(() => this.openMapSelect("solo"));
+      // Solo Race — random course on Play (same as Start Race)
+      void this.bootFromMenu({ solo: true, trackId: randomTrackId() });
     };
     document.getElementById("multiplayer-btn")!.onclick = () => {
       void this.unlockAndMaybeMenuMusic().then(() => this.openMultiplayer());
@@ -1014,19 +1016,15 @@ export class Game {
     if (this.onHomeOrBoard()) this.audio.playMenuMusic();
   }
 
-  /** Silhouette course picker for Test Drive / Solo — no text map names. */
-  private openMapSelect(mode: "practice" | "solo") {
+  /** Silhouette course picker for Test Drive — no text map names. */
+  private openMapSelect() {
     this.el.leaderboard.classList.add("hidden");
     this.el.garage.classList.add("hidden");
     this.el.multiplayer.classList.add("hidden");
-    this.el.mapSelectTitle.textContent = mode === "practice" ? "TEST DRIVE" : "SOLO RACE";
+    this.el.mapSelectTitle.textContent = "TEST DRIVE";
     this.el.mapSelectTagline.textContent = "Choose a circuit";
     this.renderMapGrid(this.el.mapGrid, null, (trackId) => {
-      void this.bootFromMenu({
-        practice: mode === "practice",
-        solo: mode === "solo",
-        trackId,
-      });
+      void this.bootFromMenu({ practice: true, trackId });
     });
     this.el.overlay.classList.add("hidden");
     this.el.mapSelect.classList.remove("hidden");
@@ -1528,7 +1526,7 @@ export class Game {
 
   /** @param opts.practice Test Drive — same world, no finish / podium.
    *  @param opts.solo Timed race with no AI rivals.
-   *  @param opts.trackId Course to load; AI Start Race should pass a random id.
+   *  @param opts.trackId Course to load; Start Race / Solo pass a random id.
    *  @param opts.weather Online only — host-committed room weather (never pickWeather). */
   startRace(opts: {
     practice?: boolean;

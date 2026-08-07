@@ -303,11 +303,13 @@ export function initDevDashboard(): void {
     (e) => {
       if (e.key !== "Escape") return;
       if (!isDevDashboardOpen()) return;
-      // Let version gate / feedback modal handle Escape first if they are open
+      // Let version gate / feedback / controls modals handle Escape first if they are open
       const gate = document.getElementById("version-gate");
       const compose = document.getElementById("feedback-compose");
+      const controls = document.getElementById("controls-help");
       if (gate && !gate.classList.contains("hidden")) return;
       if (compose && !compose.classList.contains("hidden")) return;
+      if (controls && !controls.classList.contains("hidden")) return;
       e.stopPropagation();
       e.preventDefault();
       closeDevDashboard();
