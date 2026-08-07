@@ -387,69 +387,81 @@
           <div id="mp-create" class="mp-view hidden">
             <p class="eyebrow">HOST</p>
             <h1>CREATE ROOM</h1>
-            <p class="tagline">Set the lobby — race starts when you say go</p>
-            <form id="mp-create-form" class="multiplayer-form" autocomplete="off">
-              <label class="mp-field">
-                <span>Racer name</span>
-                <input id="mp-create-name" type="text" maxlength="10" placeholder="Name (max 10)" autocomplete="nickname" spellcheck="false" required />
-              </label>
-              <label class="mp-field">
-                <span>Room name</span>
-                <input id="mp-create-room" type="text" maxlength="24" placeholder="circuit" value="circuit" autocomplete="off" spellcheck="false" required />
-              </label>
-              <label class="mp-field">
-                <span>Password</span>
-                <input id="mp-create-pass" type="password" maxlength="32" placeholder="Optional" autocomplete="new-password" />
-              </label>
-              <label class="mp-field">
-                <span>Max players</span>
-                <input id="mp-create-max" type="number" min="2" max="8" value="4" />
-              </label>
-              <div class="mp-field">
-                <span>Vehicle</span>
-                <div class="garage-kind mp-kind" role="group" aria-label="Vehicle type">
-                  <button id="mp-create-kind-car" class="garage-kind-btn is-active" type="button" data-kind="car">CAR</button>
-                  <button id="mp-create-kind-bike" class="garage-kind-btn" type="button" data-kind="bike">BIKE</button>
+            <p class="tagline">Lobby settings — race starts when you say go</p>
+            <form id="mp-create-form" class="multiplayer-form mp-create-form" autocomplete="off">
+              <div class="mp-fields-row">
+                <label class="mp-field">
+                  <span>Racer name</span>
+                  <input id="mp-create-name" type="text" maxlength="10" placeholder="Name (max 10)" autocomplete="nickname" spellcheck="false" required />
+                </label>
+                <label class="mp-field">
+                  <span>Room name</span>
+                  <input id="mp-create-room" type="text" maxlength="24" placeholder="circuit" value="circuit" autocomplete="off" spellcheck="false" required />
+                </label>
+              </div>
+              <div class="mp-fields-row">
+                <label class="mp-field">
+                  <span>Password</span>
+                  <input id="mp-create-pass" type="password" maxlength="32" placeholder="Optional" autocomplete="new-password" />
+                </label>
+                <label class="mp-field">
+                  <span>Max players</span>
+                  <input id="mp-create-max" type="number" min="2" max="8" value="4" />
+                </label>
+              </div>
+              <div class="mp-fields-row mp-pickers-row">
+                <div class="mp-field">
+                  <span>Vehicle</span>
+                  <div class="garage-kind mp-kind" role="group" aria-label="Vehicle type">
+                    <button id="mp-create-kind-car" class="garage-kind-btn is-active" type="button" data-kind="car">CAR</button>
+                    <button id="mp-create-kind-bike" class="garage-kind-btn" type="button" data-kind="bike">BIKE</button>
+                  </div>
+                </div>
+                <div class="mp-field">
+                  <span>Weather</span>
+                  <div class="garage-kind mp-kind mp-weather" role="group" aria-label="Weather">
+                    <button id="mp-create-weather-dry" class="garage-kind-btn is-active" type="button" data-weather="dry">DRY</button>
+                    <button id="mp-create-weather-rain" class="garage-kind-btn" type="button" data-weather="rain">RAIN</button>
+                    <button id="mp-create-weather-night" class="garage-kind-btn" type="button" data-weather="night">NIGHT</button>
+                  </div>
                 </div>
               </div>
-              <div class="mp-field">
-                <span>Weather</span>
-                <div class="garage-kind mp-kind mp-weather" role="group" aria-label="Weather">
-                  <button id="mp-create-weather-dry" class="garage-kind-btn is-active" type="button" data-weather="dry">DRY</button>
-                  <button id="mp-create-weather-rain" class="garage-kind-btn" type="button" data-weather="rain">RAIN</button>
-                  <button id="mp-create-weather-night" class="garage-kind-btn" type="button" data-weather="night">NIGHT</button>
-                </div>
-              </div>
-              <div class="mp-field">
+              <div class="mp-field mp-track-field">
                 <span>Track</span>
                 <div id="mp-create-track-grid" class="map-grid mp-track-grid" role="listbox" aria-label="Tracks"></div>
               </div>
               <p id="mp-create-status" class="tagline mp-status">Vehicle class and weather apply to everyone in the room</p>
-              <button type="submit">CREATE &amp; ENTER LOBBY</button>
-              <button id="mp-create-back" class="btn-ghost" type="button">BACK</button>
+              <div class="mp-form-actions">
+                <button type="submit">CREATE &amp; ENTER LOBBY</button>
+                <button id="mp-create-back" class="btn-ghost" type="button">BACK</button>
+              </div>
             </form>
           </div>
 
           <div id="mp-join" class="mp-view hidden">
             <p class="eyebrow">RACER</p>
             <h1>JOIN ROOM</h1>
-            <p class="tagline">Enter the room name and password</p>
-            <form id="mp-join-form" class="multiplayer-form" autocomplete="off">
+            <p class="tagline">Room name and password</p>
+            <form id="mp-join-form" class="multiplayer-form mp-join-form" autocomplete="off">
               <label class="mp-field">
                 <span>Racer name</span>
                 <input id="mp-join-name" type="text" maxlength="10" placeholder="Name (max 10)" autocomplete="nickname" spellcheck="false" required />
               </label>
-              <label class="mp-field">
-                <span>Room name</span>
-                <input id="mp-join-room" type="text" maxlength="24" placeholder="circuit" autocomplete="off" spellcheck="false" required />
-              </label>
-              <label class="mp-field">
-                <span>Password</span>
-                <input id="mp-join-pass" type="password" maxlength="32" placeholder="Room password" autocomplete="current-password" />
-              </label>
+              <div class="mp-fields-row">
+                <label class="mp-field">
+                  <span>Room name</span>
+                  <input id="mp-join-room" type="text" maxlength="24" placeholder="circuit" autocomplete="off" spellcheck="false" required />
+                </label>
+                <label class="mp-field">
+                  <span>Password</span>
+                  <input id="mp-join-pass" type="password" maxlength="32" placeholder="Room password" autocomplete="current-password" />
+                </label>
+              </div>
               <p id="mp-join-status" class="tagline mp-status">Vehicle class and weather are set by the host · garage paint still applies</p>
-              <button type="submit">ENTER LOBBY</button>
-              <button id="mp-join-back" class="btn-ghost" type="button">BACK</button>
+              <div class="mp-form-actions">
+                <button type="submit">ENTER LOBBY</button>
+                <button id="mp-join-back" class="btn-ghost" type="button">BACK</button>
+              </div>
             </form>
           </div>
 
@@ -512,9 +524,11 @@
         <div class="overlay-inner finish-panel">
           <p class="eyebrow" id="finish-eyebrow">SESSION COMPLETE</p>
           <h1 id="finish-title">FINISH</h1>
-          <p class="tagline finish-stat">Place <span id="final-place">1/6</span></p>
-          <p class="tagline finish-stat">Total <span id="final-time">0:00.000</span></p>
-          <p class="tagline finish-stat">Best lap <span id="final-best">--:--.---</span></p>
+          <div class="finish-stats">
+            <p class="tagline finish-stat">Place <span id="final-place">1/6</span></p>
+            <p class="tagline finish-stat">Total <span id="final-time">0:00.000</span></p>
+            <p class="tagline finish-stat">Best lap <span id="final-best">--:--.---</span></p>
+          </div>
           <div id="name-entry" class="name-entry hidden">
             <p class="name-entry-label">Top 10 time — up to 10 letters or numbers</p>
             <input
@@ -535,7 +549,7 @@
             <p id="mp-map-vote-status" class="tagline mp-map-vote-status">Press 1–6 or choose a map</p>
           </section>
           <div class="finish-actions">
-            <button id="restart-btn" type="button">RACE AGAIN</button>
+            <button id="restart-btn" class="btn-ghost" type="button">RACE AGAIN</button>
             <button id="finish-home-btn" class="btn-ghost" type="button">HOME</button>
           </div>
         </div>
