@@ -541,6 +541,27 @@ async function main() {
     "mp:race-guest-running",
     await page2.evaluate(() => window.__game?.running && window.__game?.online),
   );
+  // Right after GO: remotes must still sit on the shared grid. If clients stay
+  // silent during 3-2-1, the first binary state reapplies lobby placeholders
+  // (near origin) and teleports remotes off the start line.
+  {
+    const [guestPos, hostView] = await Promise.all([
+      page2.evaluate(() => {
+        const p = window.__game?.player?.state?.position;
+        return p ? { x: p.x, z: p.z } : null;
+      }),
+      page.evaluate(() => {
+        const remote = window.__game?.remotes?.values?.().next?.().value;
+        const p = remote?.mesh?.position;
+        return p ? { x: p.x, z: p.z } : null;
+      }),
+    ]);
+    const goError =
+      guestPos && hostView
+        ? Math.hypot(guestPos.x - hostView.x, guestPos.z - hostView.z)
+        : Infinity;
+    assert("mp:go-remote-on-grid", goError < 8, `error=${goError.toFixed(2)}m`);
+  }
   await measureFps(page, "mp-race-host", 2000);
   await measureFps(page2, "mp-race-guest", 2000);
   await page2.keyboard.down("KeyW");
