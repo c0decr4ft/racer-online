@@ -1910,6 +1910,21 @@ export class Game {
           // Frozen on grid through 3-2-1. Network poses are ignored until GO.
           this.updateHud();
           this.updateCamera(dt);
+          // Online: still publish the shared grid pose while held. The server
+          // keeps the last x/z/h across start/crashReset, and binary state is
+          // ignored only while gridHeld — if nobody uploads the grid, the first
+          // post-GO snapshot teleports remotes to lobby placeholders or the
+          // pre-crash track position (and can shove the local car).
+          if (this.online) {
+            this.net.maybeSendPose(dt, {
+              x: this.player.state.position.x,
+              z: this.player.state.position.z,
+              h: this.player.state.heading,
+              s: 0,
+              g: this.player.gearLabel,
+              lap: this.lap,
+            });
+          }
         } else {
           const input = inputPeek;
           if (input.reset) {
