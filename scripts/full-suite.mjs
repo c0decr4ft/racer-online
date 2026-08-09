@@ -4,6 +4,8 @@
  */
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
+import { readFileSync, writeFileSync } from "node:fs";
+import { generateSecretKey, finalizeEvent, getPublicKey } from "nostr-tools";
 
 const require = createRequire(import.meta.url);
 const { chromium } = require("playwright-core");
@@ -14,6 +16,50 @@ const WS = "ws://127.0.0.1:8787";
 const CHROME =
   process.env.CHROME_PATH ||
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+
+// The suite saves a real signed score end-to-end — preserve the dev board.
+const LB_PATH = new URL("../server/leaderboard.json", import.meta.url);
+let lbBackup = null;
+try {
+  lbBackup = readFileSync(LB_PATH, "utf8");
+} catch {
+  /* no board yet */
+}
+function restoreLeaderboard() {
+  if (lbBackup == null) return;
+  try {
+    writeFileSync(LB_PATH, lbBackup);
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Inject a fake NIP-07 browser extension backed by a real (throwaway) Nostr
+ * key — signing happens in Node via an exposed binding, so the page exercises
+ * the genuine sign + server-verify pipeline.
+ */
+async function installFakeNip07(page) {
+  const sk = generateSecretKey();
+  const pubkey = getPublicKey(sk);
+  await page.exposeFunction("__nip07Sign", (template) => finalizeEvent(template, sk));
+  await page.exposeFunction("__nip07Pubkey", () => pubkey);
+  await page.addInitScript(() => {
+    window.nostr = {
+      getPublicKey: () => window.__nip07Pubkey(),
+      signEvent: (template) => window.__nip07Sign(template),
+    };
+  });
+}
+
+/** Multiplayer is gated behind Nostr login — pass the gate when it appears. */
+async function signInIfGate(page) {
+  await page.waitForTimeout(250);
+  if (await visible(page, "#nostr-login")) {
+    await page.click("#nostr-ext-btn");
+    await page.waitForTimeout(600);
+  }
+}
 
 const results = [];
 let failed = 0;
@@ -116,7 +162,8 @@ function wsOnce(payload, waitFor = "welcome", timeoutMs = 2500) {
       resolve({ events, ok: false, err: "timeout" });
     }, timeoutMs);
     ws.on("open", () => ws.send(JSON.stringify(payload)));
-    ws.on("message", (d) => {
+    ws.on("message", (d, isBinary) => {
+      if (isBinary) return; // binary racing-state frames — not JSON (ws delivers text as Buffer)
       const m = JSON.parse(String(d));
       events.push(m);
       if (m.t === waitFor || m.t === "error") {
@@ -137,7 +184,8 @@ function waitForWsEvent(ws, type, timeoutMs = 2500) {
       ws.off("message", onMessage);
       resolve(null);
     }, timeoutMs);
-    function onMessage(data) {
+    function onMessage(data, isBinary) {
+      if (isBinary) return; // binary racing-state frames — not JSON (ws delivers text as Buffer)
       const msg = JSON.parse(String(data));
       if (msg.t !== type) return;
       clearTimeout(timer);
@@ -272,6 +320,7 @@ async function main() {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   const pageErrors = [];
   page.on("pageerror", (e) => pageErrors.push(String(e)));
+  await installFakeNip07(page);
 
   await page.goto(BASE, { waitUntil: "domcontentloaded", timeout: 45000 });
   await page.waitForFunction(() => window.__game, null, { timeout: 15000 });
@@ -429,9 +478,9 @@ async function main() {
   await page.click("#pause-home-btn");
   await page.waitForTimeout(250);
 
-  // --- Multiplayer UI ---
+  // --- Multiplayer UI (Nostr-gated: sign in via the injected test extension) ---
   await page.click("#multiplayer-btn");
-  await page.waitForTimeout(200);
+  await signInIfGate(page);
   assert("mp:entry", await visible(page, "#mp-entry"));
   const namePrefill = await page.locator("#mp-create-name").inputValue().catch(async () => {
     await page.click("#mp-goto-create");
@@ -442,7 +491,7 @@ async function main() {
   await page.waitForTimeout(150);
   assert("mp:create-view", await visible(page, "#mp-create"));
   const createName = await page.locator("#mp-create-name").inputValue();
-  assert("mp:name-not-autofilled", createName === "", `value="${createName}"`);
+  assert("mp:name-prefilled-nostr", createName !== "", `value="${createName}"`);
 
   // Back from create while idle
   await page.click("#mp-create-back");
@@ -451,7 +500,7 @@ async function main() {
   // Join view back
   await page.click("#mp-goto-join");
   assert("mp:join-view", await visible(page, "#mp-join"));
-  assert("mp:join-name-empty", (await page.locator("#mp-join-name").inputValue()) === "");
+  assert("mp:join-name-prefilled-nostr", (await page.locator("#mp-join-name").inputValue()) !== "");
   await page.click("#mp-join-back");
   assert("mp:join-back-entry", await visible(page, "#mp-entry"));
 
@@ -478,9 +527,11 @@ async function main() {
 
   // Guest joins via second page
   const page2 = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await installFakeNip07(page2);
   await page2.goto(BASE, { waitUntil: "domcontentloaded", timeout: 45000 });
   await page2.waitForFunction(() => window.__game, null, { timeout: 15000 });
   await page2.click("#multiplayer-btn");
+  await signInIfGate(page2);
   await page2.click("#mp-goto-join");
   await page2.fill("#mp-join-name", "UIGuest");
   await page2.fill("#mp-join-room", roomUi);
@@ -580,6 +631,18 @@ async function main() {
     "mp:vote-timer-visible",
     (await page.locator("#mp-map-vote-status").textContent())?.includes("20s"),
   );
+
+  // Signed score save — host (signed in via fake NIP-07) saves a real
+  // signature-verified score through the server. Runs inside the 20s vote window.
+  assert("mp:finish-save-row", await visible(page, "#name-entry"));
+  await page.fill("#driver-name", "E2E");
+  await page.click("#submit-score-btn");
+  await page.waitForTimeout(1500);
+  assert("mp:signed-score-board", await visible(page, "#leaderboard"));
+  const boardText = await page.locator("#board-list").innerText();
+  assert("mp:signed-score-listed", boardText.includes("E2E"), boardText.slice(0, 60));
+  await page.click("#board-close-btn");
+
   await page.keyboard.press("Digit1");
   await page.waitForTimeout(40);
   await page2.keyboard.press("Digit2");
@@ -593,11 +656,16 @@ async function main() {
     await page2.evaluate(() => window.__game?.running && !window.__game?.finished),
   );
 
+  // Guest drops mid-race first — host should see a "left the room" toast
+  await page2.evaluate(() => window.__game?.goHome?.());
+  await page.waitForTimeout(600);
+  const toastText = await page.locator("#toast-stack").innerText().catch(() => "");
+  assert("mp:leave-toast", /left the room/.test(toastText), toastText.slice(0, 40));
+
   await page.keyboard.press("Escape");
   await page.waitForTimeout(150);
   if (await visible(page, "#pause")) await page.click("#pause-home-btn");
   else await goHomeSafe(page);
-  await page2.evaluate(() => window.__game?.goHome?.());
   await page.waitForTimeout(300);
 
   // Cancel / leave after create — always ends on a healthy home overlay
@@ -708,12 +776,17 @@ async function main() {
   if (failed) {
     console.log("\nFailures:");
     for (const r of results.filter((x) => !x.pass)) console.log(` - ${r.name}: ${r.detail}`);
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
   console.log("\nAll checks passed.");
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+main()
+  .catch((e) => {
+    console.error(e);
+    process.exitCode = 1;
+  })
+  .finally(() => {
+    restoreLeaderboard();
+  });

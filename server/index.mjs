@@ -1,4 +1,5 @@
 import { WebSocketServer } from "ws";
+import { verifyEvent } from "nostr-tools";
 import { createServer } from "node:http";
 import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { dirname, join, extname, normalize } from "node:path";
@@ -85,11 +86,11 @@ function normalizeSessionId(raw) {
   return id;
 }
 
-/** @typedef {{ id: string, name: string, color: number, accent: number, kind: string, x: number, z: number, h: number, s: number, g: string, lap: number }} Pose */
+/** @typedef {{ id: string, name: string, color: number, accent: number, kind: string, pubkey?: string, x: number, z: number, h: number, s: number, g: string, lap: number }} Pose */
 /** @typedef {{ id: string, name: string, color: number, room: string, ws: import('ws').WebSocket, pose: Pose, lastPoseAt: number }} Client */
 /** @typedef {{ trackId: string, order: number }} TrackVote */
 /** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, lastCrashAt: number, clients: Map<string, Client> }} Room */
-/** @typedef {{ name: string, timeMs: number, bestLapMs?: number, at: number, trackId?: string }} BoardEntry */
+/** @typedef {{ name: string, timeMs: number, bestLapMs?: number, at: number, trackId?: string, pubkey: string, eventId?: string }} BoardEntry */
 /** @typedef {Record<string, BoardEntry[]>} BoardStore */
 /** @typedef {{ at: number, count: number }} PresenceSample */
 /** @typedef {{ buckets: Record<string, number>, samples: PresenceSample[], sessions: Record<string, number>, updatedAt: number, historyEpoch: number }} PresenceStore */
@@ -126,6 +127,66 @@ function normalizeColor(raw, fallback) {
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return fallback;
   return Math.round(n) & 0xffffff;
+}
+
+/** Lowercased 64-hex Nostr pubkey, or null. */
+function normalizePubkey(raw) {
+  const pk = String(raw ?? "").trim().toLowerCase();
+  return /^[0-9a-f]{64}$/.test(pk) ? pk : null;
+}
+
+const SCORE_EVENT_KIND = 30078;
+const SCORE_D_PREFIX = "racer-online:";
+const SCORE_MIN_TIME_MS = 5_000;
+const SCORE_MAX_TIME_MS = 3_600_000;
+const SCORE_FUTURE_SKEW_S = 900;
+const SCORE_MAX_AGE_S = 365 * 24 * 3600;
+
+/**
+ * Validate + verify a signed leaderboard score event (kind 30078).
+ * Returns { name, timeMs, bestLapMs, at, trackId, pubkey, eventId } or null.
+ */
+function verifyScoreEvent(event) {
+  if (!event || typeof event !== "object") return null;
+  if (event.kind !== SCORE_EVENT_KIND) return null;
+  const pubkey = normalizePubkey(event.pubkey);
+  if (!pubkey) return null;
+  const tags = Array.isArray(event.tags) ? event.tags : [];
+  const dTag = tags.find((t) => Array.isArray(t) && t[0] === "d");
+  const d = dTag && typeof dTag[1] === "string" ? dTag[1] : "";
+  if (!d.startsWith(SCORE_D_PREFIX)) return null;
+  const trackId = d.slice(SCORE_D_PREFIX.length);
+  if (!TRACK_IDS.includes(trackId)) return null;
+
+  let content;
+  try {
+    content = JSON.parse(typeof event.content === "string" ? event.content : "{}");
+  } catch {
+    return null;
+  }
+  const timeMs = Math.round(Number(content.timeMs));
+  if (!Number.isFinite(timeMs) || timeMs < SCORE_MIN_TIME_MS || timeMs > SCORE_MAX_TIME_MS) return null;
+  const createdAt = Number(event.created_at);
+  const nowS = Math.floor(Date.now() / 1000);
+  if (!Number.isFinite(createdAt) || createdAt > nowS + SCORE_FUTURE_SKEW_S || createdAt < nowS - SCORE_MAX_AGE_S) {
+    return null;
+  }
+  try {
+    if (!verifyEvent(event)) return null;
+  } catch {
+    return null;
+  }
+
+  const bestRaw = content.bestLapMs != null ? Math.round(Number(content.bestLapMs)) : undefined;
+  return {
+    name: typeof content.name === "string" ? content.name : "",
+    timeMs,
+    bestLapMs: bestRaw != null && Number.isFinite(bestRaw) && bestRaw > 0 ? bestRaw : undefined,
+    at: createdAt * 1000,
+    trackId,
+    pubkey,
+    eventId: typeof event.id === "string" ? event.id : undefined,
+  };
 }
 
 /** @returns {BoardStore} */
@@ -174,43 +235,38 @@ function saveStore(store) {
   writeFileSync(LEADERBOARD_PATH, JSON.stringify({ byTrack }, null, 2));
 }
 
-const TIME_EPS_MS = 15;
-
-/** @param {BoardEntry} a @param {BoardEntry} b */
-function sameRun(a, b) {
-  if (String(a.name || "").trim().toLowerCase() !== String(b.name || "").trim().toLowerCase()) return false;
-  return Math.abs(a.timeMs - b.timeMs) <= TIME_EPS_MS;
-}
-
-/** @param {BoardEntry[]} entries @param {string} [trackId] */
+/**
+ * Normalize + rank a track board. Verified-era entries only: every entry must
+ * carry a Nostr pubkey (legacy unsigned entries are dropped here), one best
+ * time per racer (pubkey), fastest first, top MAX_BOARD.
+ * @param {BoardEntry[]} entries @param {string} [trackId]
+ */
 function sortBoard(entries, trackId) {
   const tid = trackId ? normalizeTrackId(trackId) : undefined;
   const cleaned = [...entries]
-    .filter((e) => e && Number.isFinite(e.timeMs) && e.timeMs > 0)
+    .filter((e) => e && Number.isFinite(e.timeMs) && e.timeMs > 0 && normalizePubkey(e.pubkey))
     .map((e) => ({
       name: sanitizeDriverName(e.name),
       timeMs: Math.round(e.timeMs),
       bestLapMs: e.bestLapMs != null ? Math.round(e.bestLapMs) : undefined,
       at: e.at || Date.now(),
       trackId: tid || (e.trackId ? normalizeTrackId(e.trackId) : undefined),
+      pubkey: normalizePubkey(e.pubkey),
+      eventId: typeof e.eventId === "string" ? e.eventId : undefined,
     }));
 
-  /** @type {BoardEntry[]} */
-  const unique = [];
+  /** @type {Map<string, BoardEntry>} */
+  const byPubkey = new Map();
   for (const e of cleaned) {
-    const i = unique.findIndex((u) => sameRun(u, e));
-    if (i >= 0) {
-      const prev = unique[i];
-      unique[i] = (prev.at || 0) <= (e.at || 0) ? prev : e;
-      if (unique[i].bestLapMs == null && e.bestLapMs != null) {
-        unique[i] = { ...unique[i], bestLapMs: e.bestLapMs };
-      }
-    } else {
-      unique.push(e);
+    const prev = byPubkey.get(e.pubkey);
+    if (!prev || e.timeMs < prev.timeMs || (e.timeMs === prev.timeMs && (e.at || 0) < (prev.at || 0))) {
+      byPubkey.set(e.pubkey, e);
     }
   }
 
-  return unique.sort((a, b) => a.timeMs - b.timeMs || (a.at || 0) - (b.at || 0)).slice(0, MAX_BOARD);
+  return [...byPubkey.values()]
+    .sort((a, b) => a.timeMs - b.timeMs || (a.at || 0) - (b.at || 0))
+    .slice(0, MAX_BOARD);
 }
 
 function hourKey(ms) {
@@ -748,6 +804,7 @@ function admitClient(ws, msg, mode) {
   const kind = room.kind;
   const id = Math.random().toString(36).slice(2, 10);
   const color = normalizeColor(msg.color, pickColor(room));
+  const pubkey = normalizePubkey(msg.pubkey) ?? undefined;
   // Placeholder pose — clients snap everyone to a shared start-line grid on race start.
   const slot = room.clients.size;
   /** @type {Pose} */
@@ -757,6 +814,7 @@ function admitClient(ws, msg, mode) {
     color,
     accent,
     kind,
+    pubkey,
     x: (slot % 4) * 2.3 - 3.4,
     z: -2 - Math.floor(slot / 4) * 3.5,
     h: 0,
@@ -822,19 +880,24 @@ const httpServer = createServer(async (req, res) => {
     for await (const chunk of req) body += chunk;
     try {
       const data = JSON.parse(body || "{}");
-      const tid = normalizeTrackId(data.trackId);
-      const entry = {
-        name: sanitizeDriverName(data.name),
-        timeMs: Math.round(Number(data.timeMs)),
-        bestLapMs: data.bestLapMs != null ? Math.round(Number(data.bestLapMs)) : undefined,
-        at: Date.now(),
-        trackId: tid,
-      };
-      if (!Number.isFinite(entry.timeMs) || entry.timeMs <= 0) {
+      // Verified-only board: submissions must be signed Nostr score events.
+      const score = verifyScoreEvent(data.event);
+      if (!score) {
         res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: false, error: "bad time" }));
+        res.end(JSON.stringify({ ok: false, error: "valid signed score event required" }));
         return;
       }
+      const tid = normalizeTrackId(score.trackId);
+      /** @type {BoardEntry} */
+      const entry = {
+        name: sanitizeDriverName(score.name),
+        timeMs: score.timeMs,
+        bestLapMs: score.bestLapMs,
+        at: score.at,
+        trackId: tid,
+        pubkey: score.pubkey,
+        eventId: score.eventId,
+      };
       const store = loadStore();
       store[tid] = sortBoard([...(store[tid] || []), entry], tid);
       saveStore(store);

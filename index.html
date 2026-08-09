@@ -19,6 +19,7 @@
     <div id="app">
       <canvas id="game"></canvas>
       <div id="player-tags"></div>
+      <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
 
       <div id="hud">
         <div class="hud-top">
@@ -243,8 +244,108 @@
         </div>
       </div>
 
-      <div id="dev-dashboard" class="dev-dashboard hidden" role="dialog" aria-modal="true" aria-labelledby="dev-dashboard-title">
-        <div class="dev-dashboard-panel">
+      <div id="nostr-login" class="feedback-compose hidden" role="dialog" aria-modal="true" aria-labelledby="nostr-login-title">
+        <div class="feedback-compose-panel nostr-panel">
+          <p class="eyebrow" id="nostr-login-title">NOSTR IDENTITY</p>
+          <p id="nostr-reason" class="feedback-compose-hint hidden"></p>
+
+          <div id="nostr-out-view">
+            <p class="feedback-compose-hint">Sign in to race online and save verified scores</p>
+
+            <button id="nostr-ext-btn" class="nostr-option nostr-option-primary" type="button">
+              <svg class="nostr-option-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M13 2 4.5 13.5h5L8 22l8.5-11.5h-5L13 2z"/></svg>
+              <span class="nostr-option-text">
+                <span class="nostr-option-title">BROWSER EXTENSION</span>
+                <span class="nostr-option-sub">NIP-07 · Alby, nos2x…</span>
+              </span>
+            </button>
+
+            <div class="nostr-remote-group">
+              <button id="nostr-remote-toggle" class="nostr-option" type="button" aria-expanded="false" aria-controls="nostr-remote-box">
+                <svg class="nostr-option-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M14.5 2a6.5 6.5 0 0 0-6.4 7.7L2 15.8V22h6.2l1.5-1.5v-2h2l1.4-1.4v-2h2l1.9-1.9A6.5 6.5 0 1 0 14.5 2zm0 4a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z"/></svg>
+                <span class="nostr-option-text">
+                  <span class="nostr-option-title">REMOTE SIGNER</span>
+                  <span class="nostr-option-sub">NIP-46 · bunker:// or QR · Amber, nsec.app…</span>
+                </span>
+              </button>
+              <div id="nostr-remote-box" class="nostr-subbox hidden">
+                <div class="nostr-bunker-row">
+                  <input
+                    id="nostr-bunker-input"
+                    type="text"
+                    placeholder="bunker://…"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                  <button id="nostr-bunker-btn" type="button">CONNECT</button>
+                </div>
+                <button id="nostr-qr-toggle" class="btn-ghost" type="button">SHOW QR / LINK</button>
+                <div id="nostr-qr-box" class="nostr-qr-box hidden">
+                  <img id="nostr-qr-img" class="nostr-qr-img" alt="nostrconnect QR code" />
+                  <input id="nostr-connect-uri" class="nostr-connect-uri" type="text" readonly aria-label="nostrconnect URI" />
+                </div>
+              </div>
+            </div>
+
+            <button id="nostr-create-btn" class="nostr-option" type="button">
+              <svg class="nostr-option-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0-4.5-4.5A4.5 4.5 0 0 0 12 12zm0 2.25c-3 0-9 1.5-9 4.5V21h18v-2.25c0-3-6-4.5-9-4.5zM19.5 6H18V4.5h-1.5V6H15v1.5h1.5v2H18V7.5h1.5V6z"/></svg>
+              <span class="nostr-option-text">
+                <span class="nostr-option-title">CREATE ACCOUNT</span>
+                <span class="nostr-option-sub">New to Nostr? One tap — no app needed</span>
+              </span>
+            </button>
+
+            <p id="nostr-login-status" class="feedback-compose-status hidden" aria-live="polite"></p>
+            <div class="feedback-compose-actions">
+              <button id="nostr-login-cancel" class="btn-ghost" type="button">CANCEL</button>
+            </div>
+          </div>
+
+          <div id="nostr-create-view" class="hidden">
+            <p class="feedback-compose-hint">Pick a racer name — it becomes your public Nostr profile name</p>
+            <input
+              id="nostr-username"
+              type="text"
+              maxlength="24"
+              placeholder="Username"
+              autocomplete="nickname"
+              spellcheck="false"
+            />
+            <p id="nostr-create-status" class="feedback-compose-status hidden" aria-live="polite"></p>
+            <div class="feedback-compose-actions">
+              <button id="nostr-create-go" type="button">CREATE ACCOUNT</button>
+              <button id="nostr-create-back" class="btn-ghost" type="button">BACK</button>
+            </div>
+          </div>
+
+          <div id="nostr-backup-view" class="hidden">
+            <p class="feedback-compose-hint">Your account is ready — back up your secret key. It's the only way to recover this identity.</p>
+            <input id="nostr-nsec-out" class="nostr-connect-uri" type="text" readonly aria-label="Your nsec secret key" />
+            <button id="nostr-nsec-copy" type="button">COPY KEY</button>
+            <p class="nostr-warning">Anyone with this key can post as you — keep it secret. It's also stored in this browser.</p>
+            <div class="feedback-compose-actions">
+              <button id="nostr-new-done" type="button">DONE — I SAVED MY KEY</button>
+            </div>
+          </div>
+
+          <div id="nostr-in-view" class="hidden">
+            <div class="nostr-id-row">
+              <img id="nostr-avatar" class="nostr-avatar hidden" alt="" />
+              <div class="nostr-id-text">
+                <p id="nostr-display-name" class="nostr-display-name">RACER</p>
+                <p id="nostr-npub" class="nostr-npub">npub…</p>
+              </div>
+            </div>
+            <p class="feedback-compose-hint">Signed in — your race times are saved with your Nostr signature</p>
+            <div class="feedback-compose-actions">
+              <button id="nostr-logout-btn" class="btn-ghost" type="button">LOG OUT</button>
+              <button id="nostr-in-close" class="btn-ghost" type="button">CLOSE</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="dev-dashboard" class="dev-dashboard hidden" role="dialog" aria-modal="true" aria-labelledby="dev-dashboard-title"><div class="dev-dashboard-panel">
           <header class="dev-dashboard-header">
             <div>
               <p class="eyebrow">ADMIN</p>
@@ -311,6 +412,12 @@
               <path d="M5 20h14v-1.5H5V20zm2.5-4h2V10h-2v6zm3.5 0h2V7h-2v9zm3.5 0h2V12h-2v4z" fill="currentColor"/>
             </svg>
             <span class="board-icon-label">BOARD</span>
+          </button>
+          <button id="nostr-btn" class="board-icon-btn" type="button" aria-label="Nostr sign in" aria-haspopup="dialog" aria-controls="nostr-login">
+            <svg class="board-icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M14.5 2a6.5 6.5 0 0 0-6.4 7.7L2 15.8V22h6.2l1.5-1.5v-2h2l1.4-1.4v-2h2l1.9-1.9A6.5 6.5 0 1 0 14.5 2zm0 4a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z" fill="currentColor"/>
+            </svg>
+            <span class="board-icon-label" id="nostr-btn-label">SIGN IN</span>
           </button>
         </div>
         <div class="overlay-inner">
@@ -530,7 +637,7 @@
             <p class="tagline finish-stat">Best lap <span id="final-best">--:--.---</span></p>
           </div>
           <div id="name-entry" class="name-entry hidden">
-            <p class="name-entry-label">Top 10 time — up to 10 letters or numbers</p>
+            <p class="name-entry-label" id="name-entry-label">Top 10 time — up to 10 letters or numbers</p>
             <input
               id="driver-name"
               type="text"
@@ -542,6 +649,7 @@
               spellcheck="false"
             />
             <button id="submit-score-btn" type="button">SAVE TO BOARD</button>
+            <button id="nostr-save-login-btn" type="button" class="hidden">SIGN IN WITH NOSTR TO SAVE</button>
           </div>
           <section id="mp-map-vote" class="mp-map-vote hidden" aria-labelledby="mp-map-vote-title">
             <p class="eyebrow" id="mp-map-vote-title">VOTE NEXT TRACK</p>

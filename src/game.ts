@@ -28,12 +28,16 @@ import {
   boardSourceLabel,
   fetchLeaderboard,
   formatBoardTime,
+  getLocalDriverName,
   sanitizeDriverName,
   saveLocalDriverName,
   submitScore,
   wouldQualify,
   type LeaderboardEntry,
 } from "./net/leaderboard";
+import { getSession, onSessionChange } from "./nostr/session";
+import { ensureNostrLogin, getCurrentProfile } from "./nostr/ui";
+import { profileLabel, shortNpub } from "./nostr/profile";
 import { GameAudio } from "./audio";
 import { setFeedbackBtnVisible } from "./feedbackCompose";
 import {
@@ -348,7 +352,10 @@ export class Game {
           if (hostId) this.net.hostId = hostId;
           this.renderLobby();
         } else {
+          // Mid-race / vote screen — tell everyone else who dropped.
+          const name = this.remotes.get(id)?.name;
           this.removeRemote(id);
+          if (name && this.online) this.showToast(`${name} left the room`);
         }
       },
       onNotice: (text) => this.pushLobbyNotice(text),
@@ -467,7 +474,12 @@ export class Game {
       void this.bootFromMenu({ solo: true, trackId: randomTrackId() });
     };
     document.getElementById("multiplayer-btn")!.onclick = () => {
-      void this.unlockAndMaybeMenuMusic().then(() => this.openMultiplayer());
+      // Multiplayer needs a Nostr identity — prompt sign-in first, then continue.
+      void this.unlockAndMaybeMenuMusic()
+        .then(() => ensureNostrLogin("Sign in with Nostr to race online"))
+        .then((session) => {
+          if (session) this.openMultiplayer();
+        });
     };
     document.getElementById("map-select-back")!.onclick = () => this.closeMapSelect();
     document.getElementById("restart-btn")!.onclick = () => {
@@ -549,6 +561,15 @@ export class Game {
       void this.unlockAndMaybeMenuMusic();
     });
     document.getElementById("submit-score-btn")!.onclick = () => void this.saveDriverScore();
+    // Finish screen, signed out: "Sign in with Nostr to save" → login, then show the save row.
+    document.getElementById("nostr-save-login-btn")!.onclick = () => {
+      void ensureNostrLogin("Sign in to save your time on the verified board").then((session) => {
+        if (session) this.renderNameEntryState();
+      });
+    };
+    onSessionChange(() => {
+      if (!this.el.nameEntry.classList.contains("hidden")) this.renderNameEntryState();
+    });
     this.el.driverName.addEventListener("keydown", (e) => {
       if (e.key === "Enter") void this.saveDriverScore();
     });
@@ -800,9 +821,10 @@ export class Game {
     this.mpCreateKind = this.garage.kind;
     this.mpCreateWeather = "dry";
     this.mpCreateTrackId = DEFAULT_TRACK_ID;
-    // Always start blank — don't autofill a previous name (e.g. "Luca").
-    this.el.mpCreateName.value = "";
-    this.el.mpJoinName.value = "";
+    // Signed in → prefill the racer name from the Nostr profile (still editable).
+    const nostrName = this.nostrDisplayName();
+    this.el.mpCreateName.value = nostrName ?? "";
+    this.el.mpJoinName.value = nostrName ?? "";
     this.el.mpCreatePass.value = "";
     this.el.mpJoinPass.value = "";
     if (!this.el.mpCreateRoom.value.trim()) this.el.mpCreateRoom.value = "circuit";
@@ -916,6 +938,14 @@ export class Game {
     return raw.replace(/[^\w\- ]/g, "").trim().slice(0, 24) || "circuit";
   }
 
+  /** Sanitized display name from the signed-in Nostr profile, or null when signed out. */
+  private nostrDisplayName(): string | null {
+    const session = getSession();
+    if (!session) return null;
+    const cleaned = sanitizeDriverName(profileLabel(session.pubkey, getCurrentProfile()));
+    return cleaned === "RACER" ? null : cleaned;
+  }
+
   private async createMultiplayerRoom() {
     const typed = this.el.mpCreateName.value.trim();
     if (!typed) {
@@ -951,6 +981,7 @@ export class Game {
       weather: this.mpCreateWeather,
       color: this.garage.primary,
       accent: this.garage.accent,
+      pubkey: getSession()?.pubkey,
     });
   }
 
@@ -984,6 +1015,7 @@ export class Game {
       password,
       color: this.garage.primary,
       accent: this.garage.accent,
+      pubkey: getSession()?.pubkey,
     });
   }
 
@@ -1011,6 +1043,19 @@ export class Game {
     }
   }
 
+  /** Small transient notice, top-left — e.g. a racer leaving mid-race. */
+  private showToast(text: string) {
+    const stack = document.getElementById("toast-stack");
+    if (!stack) return;
+    while (stack.children.length >= 4) stack.firstElementChild?.remove();
+    const toast = document.createElement("div");
+    toast.className = "toast";
+    toast.textContent = text;
+    stack.appendChild(toast);
+    setTimeout(() => toast.classList.add("toast-out"), 2600);
+    setTimeout(() => toast.remove(), 3100);
+  }
+
   private renderLobby() {
     const trackName = getTrackDef(this.net.trackId || this.mpCreateTrackId).name;
     const vehicle = this.net.kind === "bike" ? "BIKES" : "CARS";
@@ -1022,8 +1067,11 @@ export class Game {
       .map((p) => {
         const host = p.id === this.net.hostId ? "HOST" : "RACER";
         const you = p.id === this.net.id ? " (you)" : "";
+        const verified = p.pubkey
+          ? `<span class="board-verified" title="Nostr-signed · ${shortNpub(p.pubkey)}">✓</span>`
+          : "";
         const color = `#${(p.color >>> 0).toString(16).padStart(6, "0")}`;
-        return `<li><span class="mp-name-row"><span class="mp-swatch" style="background:${color}"></span><span>${escapeHtml(p.name)}${you}</span></span><span class="mp-role">${host}</span></li>`;
+        return `<li><span class="mp-name-row"><span class="mp-swatch" style="background:${color}"></span><span>${escapeHtml(p.name)}${you}${verified}</span></span><span class="mp-role">${host}</span></li>`;
       })
       .join("");
     const host = this.net.isHost;
@@ -1265,7 +1313,10 @@ export class Game {
     this.el.boardList.innerHTML = entries
       .map((e, i) => {
         const cls = i === 0 ? "top1" : i === 1 ? "top2" : i === 2 ? "top3" : "";
-        return `<li class="${cls}"><span class="rank">${i + 1}</span><span class="name">${escapeHtml(e.name)}</span><span class="time">${formatBoardTime(e.timeMs)}</span></li>`;
+        const verified = e.pubkey
+          ? `<span class="board-verified" title="Nostr-signed · ${shortNpub(e.pubkey)}">✓</span>`
+          : "";
+        return `<li class="${cls}"><span class="rank">${i + 1}</span><span class="name">${escapeHtml(e.name)}${verified}</span><span class="time">${formatBoardTime(e.timeMs)}</span></li>`;
       })
       .join("");
   }
@@ -1307,7 +1358,8 @@ export class Game {
   }
 
   private async saveDriverScore() {
-    if (this.solo) return;
+    const session = getSession();
+    if (!session) return; // verified-only board — the save row is hidden when signed out
     if (this.scoreSaveInFlight) return;
     if (!this.el.driverName.value.trim()) {
       this.el.driverName.focus();
@@ -1324,6 +1376,7 @@ export class Game {
         this.pendingFinishMs,
         this.bestLap,
         this.trackId,
+        session.signer,
       );
       saveLocalDriverName(name);
       this.el.nameEntry.classList.add("hidden");
@@ -2622,9 +2675,9 @@ export class Game {
     }
 
     this.el.finish.classList.remove("hidden");
-    // Solo Race: finish UI only — no leaderboard qualify / name entry
+    // Any finished race can qualify for the verified board — sign-in is offered at save time.
     const wonOnline = !this.online || !result || result.winnerId === this.net.id;
-    if (!this.solo && wonOnline) void this.checkLeaderboardQualify();
+    if (wonOnline) void this.checkLeaderboardQualify();
   }
 
   /**
@@ -2648,11 +2701,32 @@ export class Game {
   }
 
   private async checkLeaderboardQualify() {
-    if (this.solo) return;
     const qualifies = await wouldQualify(this.pendingFinishMs, this.trackId);
     if (!qualifies) return;
     this.el.nameEntry.classList.remove("hidden");
-    this.el.driverName.focus();
+    this.renderNameEntryState();
+  }
+
+  /** Configure the finish-screen save row for the current Nostr session state. */
+  private renderNameEntryState() {
+    const session = getSession();
+    const label = document.getElementById("name-entry-label");
+    const saveBtn = document.getElementById("submit-score-btn");
+    const loginBtn = document.getElementById("nostr-save-login-btn");
+    this.el.driverName.classList.toggle("hidden", !session);
+    saveBtn?.classList.toggle("hidden", !session);
+    loginBtn?.classList.toggle("hidden", !!session);
+    if (label) {
+      label.textContent = session
+        ? "Top 10 time — saved with your Nostr signature"
+        : "Top 10 time — sign in with Nostr to save it verified";
+    }
+    if (session) {
+      if (!this.el.driverName.value.trim()) {
+        this.el.driverName.value = this.nostrDisplayName() ?? getLocalDriverName() ?? "";
+      }
+      this.el.driverName.focus();
+    }
   }
 
   private updateHud() {

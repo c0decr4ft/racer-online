@@ -23,6 +23,8 @@ export type PlayerPose = {
   color: number;
   accent?: number;
   kind?: NetVehicleKind;
+  /** Nostr pubkey (64-hex) when the racer is signed in — verified at login, display-only here. */
+  pubkey?: string;
   x: number;
   z: number;
   h: number; // heading
@@ -55,6 +57,8 @@ export type ClientMsg =
       weather?: NetWeatherMode;
       color?: number;
       accent?: number;
+      /** Nostr identity (64-hex pubkey) of the host. */
+      pubkey?: string;
     }
   | {
       t: "join";
@@ -63,6 +67,8 @@ export type ClientMsg =
       password?: string;
       color?: number;
       accent?: number;
+      /** Nostr identity (64-hex pubkey) of the joining racer. */
+      pubkey?: string;
     }
   | {
       t: "pose";

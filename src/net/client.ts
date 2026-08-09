@@ -320,6 +320,8 @@ export type RoomConnectOpts = {
   accent?: number;
   maxPlayers?: number;
   trackId?: string;
+  /** Nostr identity (64-hex pubkey) — rides along to lobbies/leaderboards. */
+  pubkey?: string;
   mode: "create" | "join";
 };
 
@@ -388,6 +390,7 @@ export class NetClient {
         color: meta?.color ?? 0xe4eaf2,
         accent: meta?.accent,
         kind: meta?.kind ?? kind,
+        pubkey: meta?.pubkey,
         x: m.x,
         z: m.z,
         h: m.h,
@@ -484,6 +487,7 @@ export class NetClient {
               weather: normalizeWeatherMode(opts.weather),
               color: opts.color,
               accent: opts.accent,
+              pubkey: opts.pubkey,
             }
           : {
               t: "join" as const,
@@ -492,6 +496,7 @@ export class NetClient {
               password: opts.password ?? "",
               color: opts.color,
               accent: opts.accent,
+              pubkey: opts.pubkey,
             };
       ws.send(JSON.stringify(payload));
       this.pingAt = performance.now();

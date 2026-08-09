@@ -18,7 +18,9 @@ GitHub Pages only hosts the **static game**. Multiplayer + live presence need a 
      - `VITE_WS_URL` = `wss://racer-online.onrender.com`
    - Push to `main` (or re-run **Deploy GitHub Pages** workflow)
 
-Free Render webs **sleep after ~15 minutes idle**. The first join after sleep can take ~30s while it wakes. For no sleep, upgrade the plan or use Fly.io.
+Free Render webs **sleep after ~15 minutes idle**. The first join after sleep can take ~30s while it wakes.
+
+`.github/workflows/keep-alive.yml` pings `/healthz` every 10 minutes via GitHub Actions so the server stays warm — it runs automatically once it's on `main`. (GitHub can delay scheduled runs under heavy load, so a rare cold start may still happen. For guaranteed no-sleep, upgrade the plan or use Fly.io.)
 
 ### Local play (your PC)
 ```bash

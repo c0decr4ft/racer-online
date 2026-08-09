@@ -18,6 +18,7 @@
     "test:full": "node scripts/full-suite.mjs"
   },
   "devDependencies": {
+    "@types/qrcode": "^1.5.6",
     "@types/three": "^0.185.1",
     "@types/ws": "^8.18.1",
     "concurrently": "^9.2.1",
@@ -26,6 +27,12 @@
     "vite": "^8.1.1"
   },
   "dependencies": {
+    "applesauce-core": "^6.2.0",
+    "applesauce-relay": "^6.2.1",
+    "applesauce-signers": "^6.2.2",
+    "nostr-tools": "^2.24.1",
+    "qrcode": "^1.5.4",
+    "rxjs": "^7.8.2",
     "three": "^0.185.1",
     "ws": "^8.18.3"
   }

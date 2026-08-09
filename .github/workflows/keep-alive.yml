@@ -1,0 +1,18 @@
+name: Keep Render awake
+
+# Render free tier sleeps after ~15 min idle, causing a ~30s cold start
+# for the next player. Ping /healthz every 10 minutes so it stays warm.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping health endpoint
+        run: |
+          status=$(curl -s -o /dev/null -w "%{http_code}" -m 60 https://racer-online.onrender.com/healthz)
+          echo "healthz → HTTP $status"
+          test "$status" = "200"

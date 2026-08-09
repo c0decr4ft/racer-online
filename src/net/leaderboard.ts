@@ -1,5 +1,6 @@
 import { DEFAULT_TRACK_ID, isTrackId, TRACKS } from "../trackDefs";
 import { apiUrl } from "./apiBase";
+import { scoreEventTemplate, verifyScoreEvent, publishScoreEvent } from "../nostr/scores";
 
 export type LeaderboardEntry = {
   name: string;
@@ -7,7 +8,39 @@ export type LeaderboardEntry = {
   bestLapMs?: number;
   at: number;
   trackId?: string;
+  /** Nostr pubkey (64-hex) of the verified racer who set this time. */
+  pubkey?: string;
+  /** id of the signed score event this entry came from. */
+  eventId?: string;
 };
+
+/** Minimal signer surface needed to sign a score (NIP-07 or NIP-46). */
+export type ScoreSigner = {
+  signEvent: (template: ReturnType<typeof scoreEventTemplate>) => Promise<unknown>;
+};
+
+/** Raw signed Nostr event as stored in the public blob. */
+type RawEvent = {
+  id: string;
+  pubkey: string;
+  sig: string;
+  kind: number;
+  created_at: number;
+  content: string;
+  tags: string[][];
+};
+
+function isRawEvent(data: unknown): data is RawEvent {
+  if (!data || typeof data !== "object") return false;
+  const e = data as Record<string, unknown>;
+  return (
+    typeof e.id === "string" &&
+    typeof e.pubkey === "string" &&
+    typeof e.sig === "string" &&
+    typeof e.kind === "number" &&
+    Array.isArray(e.tags)
+  );
+}
 
 export type BoardSource = "online" | "server" | "local";
 
@@ -101,7 +134,9 @@ function writeLocal(trackId: string, entries: LeaderboardEntry[]) {
 
 const TIME_EPS_MS = 15;
 
+/** Verified entries key on pubkey (one best time per racer); local guest entries keep legacy name+time keying. */
 function entryKey(e: LeaderboardEntry): string {
+  if (e.pubkey) return `pk:${e.pubkey}`;
   return `${e.name.trim().toLowerCase()}|${Math.round(e.timeMs)}`;
 }
 
@@ -110,16 +145,24 @@ function isSameRun(a: LeaderboardEntry, b: LeaderboardEntry): boolean {
   return Math.abs(a.timeMs - b.timeMs) <= TIME_EPS_MS;
 }
 
+/** Same key: a racer's faster time wins; ties go to the earlier submission; missing bestLap gets filled in. */
 function pickBetter(a: LeaderboardEntry, b: LeaderboardEntry): LeaderboardEntry {
-  const earlier = (a.at || 0) <= (b.at || 0) ? a : b;
-  const other = earlier === a ? b : a;
-  if (earlier.bestLapMs == null && other.bestLapMs != null) {
-    return { ...earlier, bestLapMs: other.bestLapMs };
+  let winner = a;
+  let loser = b;
+  if (a.pubkey && a.pubkey === b.pubkey) {
+    winner = a.timeMs < b.timeMs || (a.timeMs === b.timeMs && (a.at || 0) <= (b.at || 0)) ? a : b;
+    loser = winner === a ? b : a;
+  } else {
+    winner = (a.at || 0) <= (b.at || 0) ? a : b;
+    loser = winner === a ? b : a;
   }
-  return earlier;
+  if (winner.bestLapMs == null && loser.bestLapMs != null) {
+    return { ...winner, bestLapMs: loser.bestLapMs };
+  }
+  return winner;
 }
 
-/** Normalize, dedupe near-identical runs, keep top N. */
+/** Normalize, dedupe (best-per-pubkey / legacy near-identical runs), keep top N. */
 export function normalize(entries: LeaderboardEntry[], trackId?: string): LeaderboardEntry[] {
   const tid = trackId ? normalizeTrackId(trackId) : undefined;
   const cleaned = [...entries]
@@ -130,6 +173,8 @@ export function normalize(entries: LeaderboardEntry[], trackId?: string): Leader
       bestLapMs: e.bestLapMs != null ? Math.round(e.bestLapMs) : undefined,
       at: e.at || Date.now(),
       trackId: tid ?? (e.trackId ? normalizeTrackId(e.trackId) : undefined),
+      pubkey: e.pubkey,
+      eventId: e.eventId,
     }));
 
   const byKey = new Map<string, LeaderboardEntry>();
@@ -158,12 +203,6 @@ export function emptyStore(): BoardStore {
   return store;
 }
 
-export function storeEntryCount(store: BoardStore): number {
-  let n = 0;
-  for (const t of TRACKS) n += store[t.id]?.length ?? 0;
-  return n;
-}
-
 /** Union all per-track lists, then normalize/top-N each track. */
 export function mergeBoardStores(...stores: BoardStore[]): BoardStore {
   const out = emptyStore();
@@ -188,27 +227,65 @@ function isBoardPayload(data: unknown): boolean {
   return false;
 }
 
-export function parseStore(data: unknown): BoardStore {
+/**
+ * Coerce one stored item into a board entry.
+ * - Signed score events (public blob): always signature-verified here.
+ * - Plain entries: only accepted from trusted sources (our game server, which
+ *   verifies signatures at write time) and only in the verified-era shape.
+ */
+function toEntry(item: unknown, trackId: string, trusted: boolean): LeaderboardEntry | null {
+  if (isRawEvent(item)) {
+    const score = verifyScoreEvent(item, trackId);
+    if (!score) return null;
+    return {
+      name: score.name,
+      timeMs: score.timeMs,
+      bestLapMs: score.bestLapMs,
+      at: score.at,
+      trackId: score.trackId,
+      pubkey: score.pubkey,
+      eventId: score.eventId,
+    };
+  }
+  if (trusted) {
+    const e = item as LeaderboardEntry;
+    if (!e || typeof e !== "object") return null;
+    if (typeof e.pubkey !== "string" || !/^[0-9a-f]{64}$/.test(e.pubkey)) return null;
+    if (typeof e.timeMs !== "number" || !Number.isFinite(e.timeMs)) return null;
+    return e;
+  }
+  return null;
+}
+
+/**
+ * Parse a stored board payload.
+ * `trusted` = our own game server (verified at write); untrusted = public blob
+ * (verify-on-read — unsigned legacy entries are dropped).
+ */
+export function parseStore(data: unknown, trusted = false): BoardStore {
   const store = emptyStore();
   if (!isBoardPayload(data)) return store;
 
   const obj = data as { byTrack?: unknown; entries?: unknown };
+  const parseList = (list: unknown[], tid: string): LeaderboardEntry[] =>
+    list.map((item) => toEntry(item, tid, trusted)).filter((e): e is LeaderboardEntry => e !== null);
+
   if (obj.byTrack && typeof obj.byTrack === "object") {
     for (const [id, list] of Object.entries(obj.byTrack as Record<string, unknown>)) {
       const tid = normalizeTrackId(id);
       if (!Array.isArray(list)) continue;
       // Merge when legacy / unknown ids collapse onto the same track
-      store[tid] = normalize([...(store[tid] ?? []), ...(list as LeaderboardEntry[])], tid);
+      store[tid] = normalize([...(store[tid] ?? []), ...parseList(list, tid)], tid);
     }
     return store;
   }
 
   if (Array.isArray(data)) {
-    store[DEFAULT_TRACK_ID] = normalize(data as LeaderboardEntry[], DEFAULT_TRACK_ID);
+    store[DEFAULT_TRACK_ID] = normalize(parseList(data, DEFAULT_TRACK_ID), DEFAULT_TRACK_ID);
     return store;
   }
   if (Array.isArray(obj.entries)) {
-    store[DEFAULT_TRACK_ID] = normalize(obj.entries as LeaderboardEntry[], DEFAULT_TRACK_ID);
+    store[DEFAULT_TRACK_ID] = normalize(parseList(obj.entries, DEFAULT_TRACK_ID), DEFAULT_TRACK_ID);
   }
   return store;
 }
@@ -222,12 +299,6 @@ function readLocalStore(): BoardStore {
   const store = emptyStore();
   for (const t of TRACKS) store[t.id] = normalize(readLocal(t.id), t.id);
   return store;
-}
-
-/** Cache a store locally without dropping any scores already cached. */
-function cacheStoreLocally(store: BoardStore) {
-  const merged = mergeBoardStores(readLocalStore(), store);
-  for (const t of TRACKS) writeLocal(t.id, merged[t.id] ?? []);
 }
 
 function writeStoreLocally(store: BoardStore) {
@@ -279,7 +350,8 @@ async function fetchLocalServerStore(): Promise<BoardStore | null> {
     if (!res.ok) return null;
     const data = await res.json();
     if (!isBoardPayload(data)) return null;
-    return parseStore(data);
+    // Our server verifies signatures at write time — plain entries are trusted.
+    return parseStore(data, true);
   } catch {
     return null;
   }
@@ -290,79 +362,69 @@ async function fetchPublicBlobStore(): Promise<BoardStore> {
   if (!res.ok) throw new Error(String(res.status));
   const data = await res.json();
   if (!isBoardPayload(data)) throw new Error("unrecognized board payload");
-  return parseStore(data);
+  // Untrusted shared storage — every event is signature-verified on read.
+  return parseStore(data, false);
 }
 
-function storeToPayload(store: BoardStore): { byTrack: BoardStore } {
-  const byTrack: BoardStore = emptyStore();
-  for (const t of TRACKS) {
-    byTrack[t.id] = normalize(store[t.id] ?? [], t.id);
-  }
-  return { byTrack };
-}
+/** Max signed events kept per track in the public blob. */
+const BLOB_TRACK_CAP = 25;
 
-async function putPublicBlobStore(store: BoardStore): Promise<BoardStore> {
-  const payload = storeToPayload(store);
-  const res = await fetchBlobResponse({
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) throw new Error(String(res.status));
-  try {
-    const data = await res.json();
-    if (isBoardPayload(data)) return parseStore(data);
-  } catch {
-    /* some hosts omit a JSON body on PUT */
+/** Extract raw signed events per track from a blob payload (unsigned items skipped). */
+function collectBlobEvents(data: unknown): Record<string, RawEvent[]> {
+  const out: Record<string, RawEvent[]> = {};
+  const obj = data as { byTrack?: unknown } | null;
+  const lists: Record<string, unknown[]> = {};
+  if (obj && typeof obj === "object" && obj.byTrack && typeof obj.byTrack === "object") {
+    for (const [id, list] of Object.entries(obj.byTrack as Record<string, unknown>)) {
+      if (Array.isArray(list)) lists[normalizeTrackId(id)] = list;
+    }
+  } else if (Array.isArray(data)) {
+    lists[DEFAULT_TRACK_ID] = data;
   }
-  return payload.byTrack;
+  for (const [tid, list] of Object.entries(lists)) {
+    out[tid] = list.filter(isRawEvent);
+  }
+  return out;
 }
 
 /**
- * Write store to the public blob after merging with the latest remote.
- * Never replaces a non-empty remote track with an empty list.
+ * Merge a freshly signed event into the public blob: every candidate is
+ * signature-verified, then we keep the fastest event per pubkey per track.
  */
-async function publishMergedStore(store: BoardStore): Promise<BoardStore> {
-  let latest: BoardStore;
+async function publishEventToBlob(event: RawEvent, trackId: string): Promise<void> {
+  const tid = normalizeTrackId(trackId);
+  let existing: Record<string, RawEvent[]> = {};
   try {
-    latest = await fetchPublicBlobStore();
+    const res = await fetchBlobResponse();
+    if (res.ok) existing = collectBlobEvents(await res.json());
   } catch {
-    // If we cannot read remote, only write when we actually have scores to preserve.
-    if (storeEntryCount(store) === 0) throw new Error("refusing empty publish without remote");
-    return putPublicBlobStore(store);
+    /* unreadable blob — publish just ours */
   }
 
-  const merged = mergeBoardStores(latest, store);
+  const merged: Record<string, RawEvent[]> = {};
   for (const t of TRACKS) {
-    const remoteList = latest[t.id] ?? [];
-    const nextList = merged[t.id] ?? [];
-    if (remoteList.length > 0 && nextList.length === 0) {
-      merged[t.id] = remoteList;
+    const candidates = [...(existing[t.id] ?? []), ...(t.id === tid ? [event] : [])];
+    const byPubkey = new Map<string, { raw: RawEvent; timeMs: number; at: number }>();
+    for (const raw of candidates) {
+      const score = verifyScoreEvent(raw, t.id);
+      if (!score) continue;
+      const prev = byPubkey.get(score.pubkey);
+      if (!prev || score.timeMs < prev.timeMs || (score.timeMs === prev.timeMs && score.at < prev.at)) {
+        byPubkey.set(score.pubkey, { raw, timeMs: score.timeMs, at: score.at });
+      }
     }
+    merged[t.id] = [...byPubkey.values()]
+      .sort((a, b) => a.timeMs - b.timeMs || a.at - b.at)
+      .slice(0, BLOB_TRACK_CAP)
+      .map((v) => v.raw);
   }
 
-  // Refuse a full wipe of a previously non-empty worldwide board.
-  if (storeEntryCount(latest) > 0 && storeEntryCount(merged) === 0) {
-    return latest;
-  }
-
-  let written = await putPublicBlobStore(merged);
-
-  // Second pass: absorb concurrent submits that landed between fetch and put.
-  try {
-    const againRemote = await fetchPublicBlobStore();
-    const again = mergeBoardStores(againRemote, written, store);
-    if (
-      storeEntryCount(again) > storeEntryCount(written) ||
-      JSON.stringify(again) !== JSON.stringify(written)
-    ) {
-      written = await putPublicBlobStore(again);
-    }
-  } catch {
-    /* keep first write */
-  }
-
-  return written;
+  const res = await fetchBlobResponse({
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ byTrack: merged }),
+  });
+  if (!res.ok) throw new Error(String(res.status));
 }
 
 function insertEntry(store: BoardStore, entry: LeaderboardEntry, trackId: string): BoardStore {
@@ -376,35 +438,58 @@ export async function fetchLeaderboard(
   trackId: string = DEFAULT_TRACK_ID,
 ): Promise<{ entries: LeaderboardEntry[]; source: BoardSource }> {
   const tid = normalizeTrackId(trackId);
-  const local = readLocalStore();
 
-  // Durable game server first, then public blob, then local cache.
+  // Verified-only board: game server first (verifies signatures at write),
+  // public blob as fallback (verify-on-read). Unsigned local scores stay off it.
   const fromServer = await fetchLocalServerStore();
   if (fromServer) {
-    const merged = mergeBoardStores(local, fromServer);
-    cacheStoreLocally(merged);
-    return { entries: entriesFor(merged, tid), source: "server" };
+    // Background heal: forward verified blob-only events to the server so
+    // scores submitted during server downtime merge in — without slowing loads.
+    void healServerFromBlob(fromServer).catch(() => undefined);
+    return { entries: entriesFor(fromServer, tid), source: "server" };
   }
 
-  let fromPublic: BoardStore | null = null;
   try {
-    fromPublic = await fetchPublicBlobStore();
+    const fromPublic = await fetchPublicBlobStore();
+    return { entries: entriesFor(fromPublic, tid), source: "online" };
   } catch {
-    fromPublic = null;
+    return { entries: entriesFor(emptyStore(), tid), source: "local" };
   }
+}
 
-  const merged = mergeBoardStores(local, fromPublic ?? emptyStore());
-  cacheStoreLocally(merged);
-
-  if (fromPublic) {
-    // Heal a wiped/empty remote from local or server scores when we have more.
-    if (storeEntryCount(merged) > storeEntryCount(fromPublic)) {
-      void publishMergedStore(merged).catch(() => undefined);
+/**
+ * One-way background sync: re-POST signed blob events the server is missing
+ * (server re-verifies each signature and keeps the best time per pubkey).
+ */
+async function healServerFromBlob(serverStore: BoardStore): Promise<void> {
+  const serverUrl = apiUrl("/leaderboard");
+  if (!serverUrl) return;
+  let raw: Record<string, RawEvent[]>;
+  try {
+    const res = await fetchBlobResponse();
+    if (!res.ok) return;
+    raw = collectBlobEvents(await res.json());
+  } catch {
+    return;
+  }
+  for (const t of TRACKS) {
+    const serverBest = new Map((serverStore[t.id] ?? []).map((e) => [e.pubkey, e.timeMs]));
+    for (const event of raw[t.id] ?? []) {
+      const score = verifyScoreEvent(event, t.id);
+      if (!score) continue;
+      const serverTime = score.pubkey ? serverBest.get(score.pubkey) : undefined;
+      if (serverTime != null && serverTime <= score.timeMs) continue; // server already has same-or-better
+      try {
+        await fetch(serverUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ event }),
+        });
+      } catch {
+        /* next load heals the rest */
+      }
     }
-    return { entries: entriesFor(merged, tid), source: "online" };
   }
-
-  return { entries: entriesFor(merged, tid), source: "local" };
 }
 
 export async function wouldQualify(timeMs: number, trackId: string = DEFAULT_TRACK_ID): Promise<boolean> {
@@ -418,6 +503,7 @@ export async function submitScore(
   timeMs: number,
   bestLapMs?: number,
   trackId: string = DEFAULT_TRACK_ID,
+  signer?: ScoreSigner | null,
 ): Promise<{ entries: LeaderboardEntry[]; source: BoardSource }> {
   const tid = normalizeTrackId(trackId);
   const entry: LeaderboardEntry = {
@@ -428,53 +514,56 @@ export async function submitScore(
     trackId: tid,
   };
 
-  const local = readLocalStore();
-  let fromServer: BoardStore | null = null;
-  let fromPublic: BoardStore | null = null;
+  // Personal on-device record — always updated, never published unsigned.
+  const local = insertEntry(readLocalStore(), entry, tid);
+  writeStoreLocally(local);
 
-  // Persist on game server when available — but never treat that as the sole worldwide truth.
+  if (!signer) {
+    return { entries: entriesFor(local, tid), source: "local" };
+  }
+
+  // Sign the run with the racer's Nostr key (kind 30078, one best per track).
+  const event = (await signer.signEvent(
+    scoreEventTemplate({
+      name: entry.name,
+      timeMs: entry.timeMs,
+      bestLapMs: entry.bestLapMs,
+      trackId: tid,
+    }),
+  )) as RawEvent;
+
+  // Primary: the game server verifies the signature and stores the score.
   const serverUrl = apiUrl("/leaderboard");
   if (serverUrl) {
     try {
       const res = await fetch(serverUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(entry),
+        body: JSON.stringify({ event }),
       });
       if (res.ok) {
         const data = await res.json();
-        if (isBoardPayload(data)) fromServer = parseStore(data);
+        if (isBoardPayload(data)) {
+          const store = parseStore(data, true);
+          // Best-effort: mirror to the worldwide blob + public Nostr relays.
+          void publishEventToBlob(event, tid).catch(() => undefined);
+          void publishScoreEvent(event);
+          return { entries: entriesFor(store, tid), source: "server" };
+        }
       }
     } catch {
-      /* fall through — local server is optional */
+      /* fall through to the blob */
     }
   }
 
+  // Fallback: straight into the worldwide blob (still signed + verified).
   try {
-    fromPublic = await fetchPublicBlobStore();
-  } catch {
-    fromPublic = null;
-  }
-
-  let store = insertEntry(
-    mergeBoardStores(local, fromServer ?? emptyStore(), fromPublic ?? emptyStore()),
-    entry,
-    tid,
-  );
-  writeStoreLocally(store);
-
-  if (fromServer) {
-    // Best-effort mirror to public blob when available.
-    void publishMergedStore(store).then((written) => cacheStoreLocally(written)).catch(() => undefined);
-    return { entries: entriesFor(store, tid), source: "server" };
-  }
-
-  try {
-    store = insertEntry(await publishMergedStore(store), entry, tid);
-    cacheStoreLocally(store);
+    await publishEventToBlob(event, tid);
+    void publishScoreEvent(event);
+    const store = await fetchPublicBlobStore();
     return { entries: entriesFor(store, tid), source: "online" };
   } catch {
-    return { entries: entriesFor(store, tid), source: "local" };
+    return { entries: entriesFor(local, tid), source: "local" };
   }
 }
 
