@@ -537,12 +537,24 @@ function roomPlayers(room) {
  * @param {Pose[]} players
  * @param {number} at
  */
+/** Coerce wire numbers to finite floats (Infinity/NaN → fallback). */
+function finiteOr(n, fallback = 0) {
+  const v = +n;
+  return Number.isFinite(v) ? v : fallback;
+}
+
+/** Shortest-angle wrap — keeps binary headings in (-π, π]. */
+function wrapHeading(h) {
+  const v = finiteOr(h, 0);
+  return Math.atan2(Math.sin(v), Math.cos(v));
+}
+
 function encodeStateBinary(players, at) {
   const n = Math.min(MAX_PLAYERS, players.length);
   const buf = Buffer.allocUnsafe(10 + n * 26);
   let o = 0;
   buf.writeUInt8(STATE_BIN_TYPE, o++);
-  buf.writeDoubleLE(at, o);
+  buf.writeDoubleLE(finiteOr(at, Date.now()), o);
   o += 8;
   buf.writeUInt8(n, o++);
   for (let i = 0; i < n; i++) {
@@ -551,13 +563,13 @@ function encodeStateBinary(players, at) {
     buf.fill(0, o, o + 8);
     buf.write(id, o, "ascii");
     o += 8;
-    buf.writeFloatLE(+p.x || 0, o);
+    buf.writeFloatLE(finiteOr(p.x), o);
     o += 4;
-    buf.writeFloatLE(+p.z || 0, o);
+    buf.writeFloatLE(finiteOr(p.z), o);
     o += 4;
-    buf.writeFloatLE(+p.h || 0, o);
+    buf.writeFloatLE(wrapHeading(p.h), o);
     o += 4;
-    buf.writeFloatLE(+p.s || 0, o);
+    buf.writeFloatLE(finiteOr(p.s), o);
     o += 4;
     buf.writeUInt8(String(p.g || "1").charCodeAt(0) & 0xff, o++);
     buf.writeUInt8(Math.max(1, Math.min(99, p.lap | 0)), o++);
@@ -1027,10 +1039,12 @@ wss.on("connection", (ws) => {
       if (now - client.lastPoseAt < 12) return; // accept jitter around the 60Hz client cadence
       client.lastPoseAt = now;
       const p = client.pose;
-      p.x = +msg.x || 0;
-      p.z = +msg.z || 0;
-      p.h = +msg.h || 0;
-      p.s = +msg.s || 0;
+      // Reject non-finite motion — `+msg.h || 0` keeps Infinity (truthy) and float32
+      // then carries it to every peer, where remote interp while-loops hang the tab.
+      p.x = finiteOr(msg.x);
+      p.z = finiteOr(msg.z);
+      p.h = wrapHeading(msg.h);
+      p.s = finiteOr(msg.s);
       p.g = String(msg.g || "1").slice(0, 2);
       p.lap = Math.max(1, Math.min(99, msg.lap | 0));
       // Ignore client kind — room class is locked by the host at create.

@@ -137,6 +137,7 @@ export function decodeStateBinary(buf: ArrayBuffer): { at: number; motions: Pose
   const view = new DataView(buf);
   if (view.getUint8(0) !== STATE_BIN_TYPE) return null;
   const at = view.getFloat64(1, true);
+  if (!Number.isFinite(at)) return null;
   const count = view.getUint8(9);
   const need = 10 + count * STATE_PLAYER_BYTES;
   if (buf.byteLength < need || count > MAX_PLAYERS) return null;
@@ -158,6 +159,8 @@ export function decodeStateBinary(buf: ArrayBuffer): { at: number; motions: Pose
     o += 4;
     const g = String.fromCharCode(view.getUint8(o++) || 49);
     const lap = view.getUint8(o++) || 1;
+    // Drop poison samples (Infinity/NaN) so remotes never feed wrap/lerp hangs.
+    if (![x, z, h, s].every(Number.isFinite)) continue;
     motions.push({ id, x, z, h, s, g, lap });
   }
   return { at, motions };
