@@ -23,10 +23,12 @@ function poseKind(pose: PlayerPose): VehicleKind {
   return pose.kind === "bike" ? "bike" : "car";
 }
 
+/** Shortest signed angle in (-π, π]. Safe for non-finite / huge inputs (no while-spin). */
 function wrapPi(dh: number): number {
-  while (dh > Math.PI) dh -= Math.PI * 2;
-  while (dh < -Math.PI) dh += Math.PI * 2;
-  return dh;
+  if (!Number.isFinite(dh)) return 0;
+  // atan2(sin, cos) collapses any magnitude in one shot — unlike subtract-2π loops
+  // that hang forever on Infinity or take ages on 1e20-scale garbage headings.
+  return Math.atan2(Math.sin(dh), Math.cos(dh));
 }
 
 /** Remote racer — buffered snapshot lerp for every lobby size (2–8). */
