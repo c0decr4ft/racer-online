@@ -428,6 +428,7 @@
           <div class="menu-actions">
             <button id="start-btn" type="button">START RACE</button>
             <button id="multiplayer-btn" class="btn-ghost" type="button">MULTIPLAYER</button>
+            <button id="event-btn" class="btn-ghost" type="button">EVENT MODE</button>
             <button id="test-drive-btn" class="btn-ghost" type="button">TEST DRIVE</button>
             <button id="solo-race-btn" class="btn-ghost" type="button">SOLO RACE</button>
           </div>
@@ -516,6 +517,10 @@
                   <input id="mp-create-max" type="number" min="2" max="8" value="4" />
                 </label>
               </div>
+              <label class="mp-field hidden" id="mp-create-buyin-field">
+                <span>Buy-in per racer (sats) · winner takes the pot</span>
+                <input id="mp-create-buyin" type="number" min="1" max="1000000" step="1" value="100" />
+              </label>
               <div class="mp-fields-row mp-pickers-row">
                 <div class="mp-field">
                   <span>Vehicle</span>
@@ -578,6 +583,18 @@
             <p id="mp-lobby-meta" class="tagline">Waiting for host…</p>
             <ul id="mp-lobby-players" class="mp-lobby-players" aria-live="polite"></ul>
             <div id="mp-lobby-feed" class="mp-lobby-feed" aria-live="polite"></div>
+            <div id="mp-buyin" class="mp-buyin hidden">
+              <p id="mp-buyin-banner" class="mp-buyin-banner">BUY-IN · 100 SATS</p>
+              <div id="mp-invoice-box" class="mp-invoice-box">
+                <img id="mp-invoice-qr" class="mp-invoice-qr" alt="Buy-in invoice QR code" />
+                <input id="mp-invoice-bolt11" class="mp-invoice-bolt11" type="text" readonly aria-label="Buy-in invoice" />
+                <div class="mp-invoice-actions">
+                  <button id="mp-webln-pay" class="hidden" type="button">PAY WITH WALLET</button>
+                  <button id="mp-invoice-copy" class="btn-ghost" type="button">COPY INVOICE</button>
+                </div>
+                <p id="mp-invoice-status" class="mp-invoice-status">Waiting for payment…</p>
+              </div>
+            </div>
             <p id="mp-status" class="tagline mp-status">Waiting in lobby</p>
             <button id="mp-start-btn" class="mp-start-btn hidden" type="button">START RACE</button>
             <button id="mp-lobby-leave" class="btn-ghost" type="button">BACK</button>
@@ -656,6 +673,21 @@
             <div id="mp-map-vote-grid" class="mp-map-vote-grid" role="listbox" aria-label="Vote for the next track"></div>
             <p id="mp-map-vote-status" class="tagline mp-map-vote-status">Press 1–6 or choose a map</p>
           </section>
+          <section id="event-checkout" class="event-checkout hidden" aria-labelledby="event-checkout-title">
+            <p class="eyebrow" id="event-checkout-title">POT WON</p>
+            <p class="event-pot"><span id="event-pot-sats">0</span> SATS</p>
+            <label class="event-tip-row" for="event-tip-range">
+              <span>Dev tip · <span id="event-tip-label">2%</span></span>
+              <input id="event-tip-range" type="range" min="0" max="100" step="1" value="2" />
+            </label>
+            <p class="event-breakdown">You receive <span id="event-winner-sats">0</span> sats · dev gets <span id="event-tip-sats">0</span></p>
+            <input id="event-payout-address" type="text" placeholder="your@lightning.address" spellcheck="false" autocomplete="off" />
+            <p class="event-or">— or paste an invoice —</p>
+            <input id="event-payout-invoice" type="text" placeholder="lnbc…" spellcheck="false" autocomplete="off" />
+            <button id="event-claim-btn" type="button">CLAIM POT</button>
+            <p id="event-payout-status" class="event-payout-status hidden" aria-live="polite"></p>
+          </section>
+          <p id="event-lost-note" class="event-lost-note hidden">Winner takes the pot</p>
           <div class="finish-actions">
             <button id="restart-btn" class="btn-ghost" type="button">RACE AGAIN</button>
             <button id="finish-home-btn" class="btn-ghost" type="button">HOME</button>

@@ -23,7 +23,7 @@ import { Input } from "./input";
 import { isTouchPrimary, TouchControls, viewportSize } from "./touch";
 import { Vehicle, RivalAI } from "./vehicle";
 import { NetClient, RemotePlayer, type WelcomeInfo } from "./net/client";
-import type { PlayerPose } from "./net/protocol";
+import type { EventRoomInfo, PlayerPose } from "./net/protocol";
 import {
   boardSourceLabel,
   fetchLeaderboard,
@@ -38,6 +38,7 @@ import {
 import { getSession, onSessionChange } from "./nostr/session";
 import { ensureNostrLogin, getCurrentProfile } from "./nostr/ui";
 import { profileLabel, shortNpub } from "./nostr/profile";
+import QRCode from "qrcode";
 import { GameAudio } from "./audio";
 import { setFeedbackBtnVisible } from "./feedbackCompose";
 import {
@@ -144,6 +145,8 @@ export class Game {
   /** Timed race with no AI rivals — empty track, wall explode on. */
   solo = false;
   online = false;
+  /** Event Mode lobby flow (Lightning buy-in gate + winner's pot) vs plain multiplayer. */
+  private eventMode = false;
   private remotes = new Map<string, RemotePlayer>();
   private readonly seenRemoteIds = new Set<string>();
   private net: NetClient;
@@ -384,6 +387,8 @@ export class Game {
         this.updateMapVote(votes, received, total),
       onVoteResult: (trackId) => this.showMapVoteResult(trackId),
       onState: (players, at) => this.onNetState(players, at),
+      onEventInvoice: (bolt11, amountSats, mock) => this.showBuyInInvoice(bolt11, amountSats, mock),
+      onPayoutResult: (result) => this.onPayoutResult(result),
       onError: (message) => {
         this.setNetStatus(message, "bad");
         this.setMpFormStatus(message);
@@ -481,6 +486,14 @@ export class Game {
           if (session) this.openMultiplayer();
         });
     };
+    document.getElementById("event-btn")!.onclick = () => {
+      // Event Mode — same flow with a Lightning buy-in gate + winner's pot.
+      void this.unlockAndMaybeMenuMusic()
+        .then(() => ensureNostrLogin("Sign in with Nostr to race event mode"))
+        .then((session) => {
+          if (session) this.openMultiplayer(true);
+        });
+    };
     document.getElementById("map-select-back")!.onclick = () => this.closeMapSelect();
     document.getElementById("restart-btn")!.onclick = () => {
       void this.audio.unlock().then(() => {
@@ -567,6 +580,11 @@ export class Game {
         if (session) this.renderNameEntryState();
       });
     };
+    // Event Mode: invoice copy, WebLN one-click pay, tip slider, pot claim.
+    document.getElementById("mp-invoice-copy")!.onclick = () => this.copyBuyInInvoice();
+    document.getElementById("mp-webln-pay")!.onclick = () => void this.payBuyInWithWebln();
+    document.getElementById("event-tip-range")!.oninput = () => this.updateEventTipBreakdown();
+    document.getElementById("event-claim-btn")!.onclick = () => this.claimEventPot();
     onSessionChange(() => {
       if (!this.el.nameEntry.classList.contains("hidden")) this.renderNameEntryState();
     });
@@ -813,7 +831,8 @@ export class Game {
     }
   }
 
-  private openMultiplayer() {
+  private openMultiplayer(eventMode = false) {
+    this.eventMode = eventMode;
     this.el.mapSelect.classList.add("hidden");
     this.el.leaderboard.classList.add("hidden");
     this.el.garage.classList.add("hidden");
@@ -821,6 +840,14 @@ export class Game {
     this.mpCreateKind = this.garage.kind;
     this.mpCreateWeather = "dry";
     this.mpCreateTrackId = DEFAULT_TRACK_ID;
+    // Event Mode: show the buy-in field; plain multiplayer hides it.
+    document.getElementById("mp-create-buyin-field")?.classList.toggle("hidden", !eventMode);
+    const entryTagline = document.querySelector("#mp-entry .tagline");
+    if (entryTagline) {
+      entryTagline.textContent = eventMode
+        ? "Buy-in races — everyone pays, winner takes the pot"
+        : "Create a private room or join with a password";
+    }
     // Signed in → prefill the racer name from the Nostr profile (still editable).
     const nostrName = this.nostrDisplayName();
     this.el.mpCreateName.value = nostrName ?? "";
@@ -840,11 +867,13 @@ export class Game {
     this.expectingLobby = false;
     this.inLobby = false;
     this.online = false;
+    this.eventMode = false;
     this.lobbyPlayers = [];
     this.net.disconnect();
     this.clearRemotes();
     this.el.netStatus.classList.add("hidden");
     this.el.mpLobbyFeed.innerHTML = "";
+    document.getElementById("mp-buyin")?.classList.add("hidden");
     this.el.multiplayer.classList.add("hidden");
     this.showMpView("entry");
     // Lobby flow hides the home overlay — always restore it when leaving MP.
@@ -961,6 +990,17 @@ export class Game {
     const password = this.el.mpCreatePass.value.slice(0, 32);
     const maxPlayers = Math.max(2, Math.min(8, Number(this.el.mpCreateMax.value) || 4));
     this.el.mpCreateMax.value = String(maxPlayers);
+    // Event Mode: validate the host-chosen buy-in before creating the room.
+    let eventBuyInSats: number | undefined;
+    if (this.eventMode) {
+      const raw = Math.round(Number((document.getElementById("mp-create-buyin") as HTMLInputElement).value));
+      if (!Number.isFinite(raw) || raw < 1) {
+        this.el.mpCreateStatus.textContent = "Enter a buy-in of at least 1 sat";
+        return;
+      }
+      eventBuyInSats = Math.min(1_000_000, raw);
+      (document.getElementById("mp-create-buyin") as HTMLInputElement).value = String(eventBuyInSats);
+    }
     this.el.mpCreateStatus.textContent = "Creating room…";
     await this.audio.unlock();
     this.audio.stopMenuMusic();
@@ -982,6 +1022,7 @@ export class Game {
       color: this.garage.primary,
       accent: this.garage.accent,
       pubkey: getSession()?.pubkey,
+      eventBuyInSats,
     });
   }
 
@@ -1061,6 +1102,7 @@ export class Game {
     const vehicle = this.net.kind === "bike" ? "BIKES" : "CARS";
     const weather =
       this.net.weather === "rain" ? "RAIN" : this.net.weather === "night" ? "NIGHT" : "DRY";
+    const event = this.net.event;
     this.el.mpLobbyTitle.textContent = this.net.room.toUpperCase();
     this.el.mpLobbyMeta.textContent = `${trackName} · ${vehicle} · ${weather} · ${this.lobbyPlayers.length}/${this.net.maxPlayers}`;
     this.el.mpLobbyPlayers.innerHTML = this.lobbyPlayers
@@ -1070,16 +1112,179 @@ export class Game {
         const verified = p.pubkey
           ? `<span class="board-verified" title="Nostr-signed · ${shortNpub(p.pubkey)}">✓</span>`
           : "";
+        const payBadge = event
+          ? event.paidIds.includes(p.id)
+            ? `<span class="mp-paid-badge">PAID</span>`
+            : `<span class="mp-unpaid-badge">UNPAID</span>`
+          : "";
         const color = `#${(p.color >>> 0).toString(16).padStart(6, "0")}`;
-        return `<li><span class="mp-name-row"><span class="mp-swatch" style="background:${color}"></span><span>${escapeHtml(p.name)}${you}${verified}</span></span><span class="mp-role">${host}</span></li>`;
+        return `<li><span class="mp-name-row"><span class="mp-swatch" style="background:${color}"></span><span>${escapeHtml(p.name)}${you}${verified}</span></span><span class="mp-role">${host}${payBadge}</span></li>`;
       })
       .join("");
+
+    // Event Mode: buy-in banner + my invoice state + start gate until all paid
+    const buyin = document.getElementById("mp-buyin");
+    if (buyin) buyin.classList.toggle("hidden", !event);
+    if (event) {
+      const banner = document.getElementById("mp-buyin-banner");
+      if (banner) {
+        banner.textContent = `BUY-IN ${event.buyInSats} SATS · POT ${event.buyInSats * this.lobbyPlayers.length} SATS${event.mock ? " · DEV MODE (fake sats)" : ""}`;
+      }
+      const minePaid = event.paidIds.includes(this.net.id);
+      const box = document.getElementById("mp-invoice-box");
+      if (box) box.classList.toggle("is-paid", minePaid);
+      const status = document.getElementById("mp-invoice-status");
+      if (status && minePaid) {
+        status.textContent = "PAID ✓";
+        status.classList.add("is-paid");
+      }
+    }
+
     const host = this.net.isHost;
+    const paidCount = event ? this.lobbyPlayers.filter((p) => event.paidIds.includes(p.id)).length : 0;
+    const allPaid = !event || (this.lobbyPlayers.length > 0 && paidCount === this.lobbyPlayers.length);
     this.el.mpStartBtn.classList.toggle("hidden", !host);
-    this.el.mpStartBtn.disabled = !host;
+    this.el.mpStartBtn.disabled = !host || !allPaid;
     this.el.mpStatus.textContent = host
-      ? "You are the host — start when ready"
-      : "Waiting for host to start the race…";
+      ? allPaid
+        ? "All buy-ins paid — start when ready"
+        : `Waiting for buy-ins (${paidCount}/${this.lobbyPlayers.length} paid)`
+      : event
+        ? allPaid
+          ? "All paid — waiting for host to start…"
+          : `Waiting for buy-ins (${paidCount}/${this.lobbyPlayers.length} paid)…`
+        : "Waiting for host to start the race…";
+  }
+
+  /** Event Mode: show my buy-in invoice (QR + copyable BOLT11 + WebLN one-click). */
+  private showBuyInInvoice(bolt11: string, amountSats: number, mock: boolean) {
+    void amountSats;
+    const box = document.getElementById("mp-invoice-box");
+    if (!box) return;
+    box.classList.remove("is-paid");
+    const bolt = document.getElementById("mp-invoice-bolt11") as HTMLInputElement | null;
+    if (bolt) bolt.value = bolt11;
+    const status = document.getElementById("mp-invoice-status");
+    if (status) {
+      status.textContent = mock ? "Dev mode — fake sats auto-pay in a few seconds" : "Waiting for payment…";
+      status.classList.remove("is-paid");
+    }
+    const qr = document.getElementById("mp-invoice-qr") as HTMLImageElement | null;
+    if (qr) {
+      void QRCode.toDataURL(bolt11.toUpperCase(), { width: 168, margin: 1 })
+        .then((url) => {
+          qr.src = url;
+        })
+        .catch(() => undefined);
+    }
+    // One-click in-browser wallets (Alby & friends expose window.webln)
+    const weblnBtn = document.getElementById("mp-webln-pay");
+    const webln = (window as { webln?: { enable(): Promise<void>; sendPayment(bolt11: string): Promise<unknown> } }).webln;
+    if (weblnBtn) weblnBtn.classList.toggle("hidden", !webln);
+    this.renderLobby();
+  }
+
+  private async payBuyInWithWebln() {
+    const webln = (window as { webln?: { enable(): Promise<void>; sendPayment(bolt11: string): Promise<unknown> } }).webln;
+    const status = document.getElementById("mp-invoice-status");
+    if (!webln || !this.net.myBuyIn) return;
+    if (status) status.textContent = "Opening your wallet…";
+    try {
+      await webln.enable();
+      await webln.sendPayment(this.net.myBuyIn.bolt11);
+      if (status) status.textContent = "Payment sent — confirming…";
+    } catch (err) {
+      if (status) status.textContent = `Wallet payment failed — ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  private copyBuyInInvoice() {
+    const bolt = document.getElementById("mp-invoice-bolt11") as HTMLInputElement | null;
+    const btn = document.getElementById("mp-invoice-copy");
+    if (!bolt || !btn) return;
+    void navigator.clipboard
+      .writeText(bolt.value)
+      .then(() => {
+        btn.textContent = "COPIED ✓";
+        setTimeout(() => (btn.textContent = "COPY INVOICE"), 1500);
+      })
+      .catch(() => bolt.select());
+  }
+
+  /** Winner's checkout: pot breakdown, tip slider (default 2%), payout target. */
+  private setupEventCheckout(event: EventRoomInfo) {
+    const pot = event.potSats || event.buyInSats * Math.max(1, this.lobbyPlayers.length);
+    const potEl = document.getElementById("event-pot-sats");
+    if (potEl) potEl.textContent = String(pot);
+    const range = document.getElementById("event-tip-range") as HTMLInputElement | null;
+    if (range) range.value = "2";
+    const addr = document.getElementById("event-payout-address") as HTMLInputElement | null;
+    if (addr) addr.value = "";
+    const inv = document.getElementById("event-payout-invoice") as HTMLInputElement | null;
+    if (inv) inv.value = "";
+    const status = document.getElementById("event-payout-status");
+    if (status) status.classList.add("hidden");
+    const claim = document.getElementById("event-claim-btn") as HTMLButtonElement | null;
+    if (claim) claim.disabled = false;
+    this.updateEventTipBreakdown();
+  }
+
+  private updateEventTipBreakdown() {
+    const event = this.net.event;
+    if (!event) return;
+    const pot = event.potSats || event.buyInSats * Math.max(1, this.lobbyPlayers.length);
+    const range = document.getElementById("event-tip-range") as HTMLInputElement | null;
+    const tipPercent = Math.max(0, Math.min(100, Number(range?.value ?? 2)));
+    const label = document.getElementById("event-tip-label");
+    if (label) label.textContent = `${tipPercent}%`;
+    const winnerSats = Math.floor((pot * (100 - tipPercent)) / 100);
+    const tipSats = pot - winnerSats;
+    const winnerEl = document.getElementById("event-winner-sats");
+    if (winnerEl) winnerEl.textContent = String(winnerSats);
+    const tipEl = document.getElementById("event-tip-sats");
+    if (tipEl) tipEl.textContent = String(tipSats);
+  }
+
+  private claimEventPot() {
+    const status = document.getElementById("event-payout-status");
+    const claim = document.getElementById("event-claim-btn") as HTMLButtonElement | null;
+    const addr = (document.getElementById("event-payout-address") as HTMLInputElement).value.trim();
+    const inv = (document.getElementById("event-payout-invoice") as HTMLInputElement).value.trim();
+    const tipPercent = Number((document.getElementById("event-tip-range") as HTMLInputElement).value);
+    if (!status) return;
+    status.classList.remove("hidden", "nostr-error");
+    if (!addr && !inv) {
+      status.textContent = "Enter your lightning address or paste an invoice";
+      status.classList.add("nostr-error");
+      return;
+    }
+    status.textContent = "Sending your sats…";
+    if (claim) claim.disabled = true;
+    this.net.claimPot(tipPercent, addr, inv);
+  }
+
+  private onPayoutResult(result: {
+    ok: boolean;
+    winnerSats?: number;
+    tipSats?: number;
+    tipPaid?: boolean;
+    mock?: boolean;
+    error?: string;
+  }) {
+    const status = document.getElementById("event-payout-status");
+    const claim = document.getElementById("event-claim-btn") as HTMLButtonElement | null;
+    if (!status) return;
+    status.classList.remove("hidden");
+    if (result.ok) {
+      status.classList.remove("nostr-error");
+      const tipNote = result.tipSats ? ` · ${result.tipSats} sats dev tip${result.tipPaid === false ? " (dev wallet not set)" : ""}` : "";
+      status.textContent = `Paid! ${result.winnerSats} sats on the way to your wallet${tipNote}${result.mock ? " · dev mode (fake sats)" : ""}`;
+      if (claim) claim.disabled = true;
+    } else {
+      status.classList.add("nostr-error");
+      status.textContent = `Payout failed — ${result.error || "unknown error"}`;
+      if (claim) claim.disabled = false;
+    }
   }
 
   private async unlockAndMaybeMenuMusic() {
@@ -2672,6 +2877,21 @@ export class Game {
     } else {
       this.el.finishEyebrow.textContent = "RACE COMPLETE";
       this.el.finishTitle.textContent = `P${place}`;
+    }
+
+    // Event Mode: winner gets the pot checkout; everyone else sees "winner takes the pot".
+    const eventRoom = this.net.event;
+    const isEventResult = this.online && !!eventRoom && !!result;
+    document
+      .getElementById("event-checkout")
+      ?.classList.toggle("hidden", !(isEventResult && result!.winnerId === this.net.id));
+    document
+      .getElementById("event-lost-note")
+      ?.classList.toggle("hidden", !(isEventResult && result!.winnerId !== this.net.id));
+    if (isEventResult) {
+      // One race per event — no local restart, no next-track vote.
+      this.el.restartBtn.classList.add("hidden");
+      if (result!.winnerId === this.net.id) this.setupEventCheckout(eventRoom!);
     }
 
     this.el.finish.classList.remove("hidden");

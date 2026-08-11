@@ -312,6 +312,107 @@ async function main() {
     }
   }
 
+  // --- Event Mode (mock Lightning: invoices auto-pay after ~3s) ---
+  const evRoom = `event-${Date.now().toString(36)}`;
+  const evHost = await wsOnce({
+    t: "create",
+    name: "EvHost",
+    room: evRoom,
+    password: "",
+    maxPlayers: 4,
+    trackId: "forest-loop",
+    kind: "car",
+    color: 1,
+    accent: 2,
+    event: { buyInSats: 100 },
+  });
+  assert("event:create", evHost.ok && evHost.last?.event?.buyInSats === 100, JSON.stringify(evHost.last?.event ?? {}));
+
+  if (evHost.ok && evHost.ws) {
+    // Attach waiters before the actions that trigger them
+    const hostInvoiceP = waitForWsEvent(evHost.ws, "eventInvoice", 5000);
+    const startErrP = waitForWsEvent(evHost.ws, "error", 2500);
+    evHost.ws.send(JSON.stringify({ t: "start" }));
+    const startErr = await startErrP;
+    assert("event:start-blocked-unpaid", /buy-ins/.test(startErr?.message || ""), startErr?.message);
+    const hostInvoice = await hostInvoiceP;
+    assert("event:host-invoice", hostInvoice?.amountSats === 100 && !!hostInvoice?.bolt11, JSON.stringify(hostInvoice ?? {}).slice(0, 80));
+
+    const evGuest = await wsOnce({
+      t: "join",
+      name: "EvGuest",
+      room: evRoom,
+      password: "",
+      color: 3,
+      accent: 4,
+    });
+    assert("event:join", evGuest.ok, evGuest.err || "");
+    const guestInvoiceP = evGuest.ws ? waitForWsEvent(evGuest.ws, "eventInvoice", 5000) : Promise.resolve(null);
+    // Persistent lobby watcher — sequential attach/detach waits can miss back-to-back broadcasts
+    const allPaidP = new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        evHost.ws.off("message", onMsg);
+        resolve(null);
+      }, 12_000);
+      function onMsg(data, isBinary) {
+        if (isBinary) return;
+        const m = JSON.parse(String(data));
+        if (m.t !== "lobby") return;
+        if ((m.event?.paidIds ?? []).length >= 2) {
+          clearTimeout(timer);
+          evHost.ws.off("message", onMsg);
+          resolve(m);
+        }
+      }
+      evHost.ws.on("message", onMsg);
+    });
+    const guestInvoice = await guestInvoiceP;
+    assert("event:guest-invoice", !!guestInvoice?.bolt11, "");
+    const paidSnap = await allPaidP;
+    assert("event:all-paid", (paidSnap?.event?.paidIds ?? []).length >= 2, JSON.stringify(paidSnap?.event ?? {}));
+
+    // Fully bought in → host start now works
+    const evStartP = waitForWsEvent(evHost.ws, "start", 4000);
+    const evGuestStartP = waitForWsEvent(evGuest.ws, "start", 4000);
+    evHost.ws.send(JSON.stringify({ t: "start" }));
+    const [evS, evGS] = await Promise.all([evStartP, evGuestStartP]);
+    assert("event:start-after-paid", !!evS && !!evGS, "");
+
+    // Host wins → raceResult carries the pot (2 racers × 100 sats)
+    const evResultP = waitForWsEvent(evHost.ws, "raceResult", 4000);
+    evHost.ws.send(JSON.stringify({ t: "finish", timeMs: 65432, bestLapMs: 21000 }));
+    const evResult = await evResultP;
+    assert("event:pot", evResult?.event?.potSats === 200, JSON.stringify(evResult?.event ?? {}));
+
+    // Claim with default 2% tip: winner 196, dev 4
+    const payoutP = waitForWsEvent(evHost.ws, "payoutResult", 5000);
+    evHost.ws.send(JSON.stringify({ t: "claimPot", tipPercent: 2, lnAddress: "winner@example.com" }));
+    const payout = await payoutP;
+    assert(
+      "event:payout",
+      payout?.ok === true && payout?.winnerSats === 196 && payout?.tipSats === 4,
+      JSON.stringify(payout ?? {}),
+    );
+
+    // Double claim rejected
+    const againP = waitForWsEvent(evHost.ws, "payoutResult", 4000);
+    evHost.ws.send(JSON.stringify({ t: "claimPot", tipPercent: 2, lnAddress: "winner@example.com" }));
+    const again = await againP;
+    assert("event:double-claim-blocked", again?.ok === false && /claimed/.test(again?.error || ""), JSON.stringify(again ?? {}));
+
+    // Loser gets no claim response at all
+    const loserP = waitForWsEvent(evGuest.ws, "payoutResult", 3000);
+    evGuest.ws.send(JSON.stringify({ t: "claimPot", tipPercent: 0, lnAddress: "x@y.z" }));
+    assert("event:loser-cannot-claim", (await loserP) === null, "");
+
+    try {
+      evHost.ws.close();
+      evGuest.ws.close();
+    } catch {
+      /* */
+    }
+  }
+
   const browser = await chromium.launch({
     executablePath: CHROME,
     headless: true,
@@ -702,6 +803,18 @@ async function main() {
   assert("mp:create-back-no-submit", await visible(page, "#mp-entry"));
   await page.click("#mp-back-btn");
   assert("mp:entry-back-home", await visible(page, "#overlay"));
+
+  // --- Event Mode UI (signed in already → gate passes instantly) ---
+  await page.click("#event-btn");
+  await signInIfGate(page);
+  await page.waitForTimeout(200);
+  assert("event:entry", await visible(page, "#mp-entry"));
+  await page.click("#mp-goto-create");
+  await page.waitForTimeout(150);
+  assert("event:buyin-field", await visible(page, "#mp-create-buyin-field"));
+  await page.click("#mp-create-back");
+  await page.click("#mp-back-btn");
+  assert("event:back-home", await visible(page, "#overlay"));
 
   // Presence API after traffic
   try {
