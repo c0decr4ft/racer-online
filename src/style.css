@@ -1096,6 +1096,48 @@ html.touch-mode [contenteditable="true"] {
   letter-spacing: 0.08em;
   text-align: center;
 }
+
+.event-token-box {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.event-token-box.hidden {
+  display: none !important;
+}
+
+.event-payout-token {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #ffc857;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  font-size: 0.68rem;
+  padding: 0.5rem 0.6rem;
+  text-align: center;
+  outline: none;
+  user-select: all;
+}
+
+.event-token-actions {
+  display: flex;
+  gap: 0.45rem;
+}
+
+.event-token-actions > * {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0.6rem 0.6rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+  text-decoration: none;
+}
 .hidden {
   display: none !important;
 }

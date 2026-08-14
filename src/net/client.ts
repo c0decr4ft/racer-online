@@ -292,14 +292,14 @@ export type NetHandlers = {
     maxPlayers: number;
   }) => void;
   onStart: (at: number, trackId: string, kind: NetVehicleKind, weather: NetWeatherMode) => void;
-  /** Event Mode — your buy-in invoice arrived from the server. */
-  onEventInvoice: (bolt11: string, amountSats: number, mock: boolean) => void;
-  /** Event Mode — pot claim result. */
+  /** Event Mode — your buy-in payment request (creq) arrived from the server. */
+  onEventInvoice: (paymentRequest: string, amountSats: number, mock: boolean) => void;
+  /** Event Mode — pot claim result; `token` is the cashuA payout to claim in cashu.me. */
   onPayoutResult: (result: {
     ok: boolean;
+    token?: string;
     winnerSats?: number;
     tipSats?: number;
-    tipPaid?: boolean;
     mock?: boolean;
     error?: string;
   }) => void;
@@ -364,8 +364,8 @@ export class NetClient {
   phase: LobbyPhase | "" = "";
   /** Event Mode room state — null in normal rooms. */
   event: EventRoomInfo | null = null;
-  /** Event Mode — this client's own buy-in invoice. */
-  myBuyIn: { bolt11: string; amountSats: number } | null = null;
+  /** Event Mode — this client's own buy-in payment request (creq). */
+  myBuyIn: { paymentRequest: string; amountSats: number } | null = null;
   /** Bumps on each connect/disconnect so stale socket handlers are ignored. */
   private connGen = 0;
   private finishSent = false;
@@ -620,14 +620,14 @@ export class NetClient {
         const at = this.localStamp(msg.at ?? 0, recvNow);
         this.emitState(msg.players, at);
       } else if (msg.t === "eventInvoice") {
-        this.myBuyIn = { bolt11: msg.bolt11, amountSats: msg.amountSats };
-        this.handlers.onEventInvoice(msg.bolt11, msg.amountSats, !!msg.mock);
+        this.myBuyIn = { paymentRequest: msg.paymentRequest, amountSats: msg.amountSats };
+        this.handlers.onEventInvoice(msg.paymentRequest, msg.amountSats, !!msg.mock);
       } else if (msg.t === "payoutResult") {
         this.handlers.onPayoutResult({
           ok: msg.ok,
+          token: msg.token,
           winnerSats: msg.winnerSats,
           tipSats: msg.tipSats,
-          tipPaid: msg.tipPaid,
           mock: msg.mock,
           error: msg.error,
         });
@@ -755,16 +755,22 @@ export class NetClient {
     this.ws.send(JSON.stringify({ t: "vote", trackId }));
   }
 
+  /** Event Mode — manual buy-in: submit a pasted cashuA token. */
+  submitToken(token: string) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.myId) return;
+    const trimmed = token.trim();
+    if (!trimmed) return;
+    this.ws.send(JSON.stringify({ t: "submitToken", token: trimmed }));
+  }
+
   /** Event Mode — winner claims the pot; tip 0–100 goes to the dev. */
-  claimPot(tipPercent: number, lnAddress?: string, invoice?: string) {
+  claimPot(tipPercent: number) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.myId) return;
     if (this.phase !== "finished" || !this.event) return;
     this.ws.send(
       JSON.stringify({
         t: "claimPot",
         tipPercent: Math.max(0, Math.min(100, Math.round(tipPercent))),
-        lnAddress: lnAddress || undefined,
-        invoice: invoice || undefined,
       }),
     );
   }
