@@ -612,7 +612,7 @@ export class Game {
       const cleaned = this.el.driverName.value
         .normalize("NFKC")
         .replace(/[^\p{L}\p{N} _]/gu, "")
-        .slice(0, 10);
+        .slice(0, 15);
       if (cleaned !== this.el.driverName.value) this.el.driverName.value = cleaned;
     });
     document.addEventListener("keydown", (e) => {

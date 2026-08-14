@@ -43,11 +43,15 @@ Then set the same GitHub Actions secrets to your `https://APP.fly.dev` / `wss://
 Event Mode buy-ins/payouts run through a Cashu mint — players pay with cashu.me or any
 NUT-18 Cashu wallet; winners claim the pot as a `cashuA` token.
 
-- No env var → **mock mode** (fake sats auto-pay in ~3s) for local dev/tests
-- `CASHU_MINT_URL=https://mint.minibits.cash` → real sats via the public mint
-  (any Cashu mint works — the pot wallet lives in `server/cashu-proofs.json`, gitignored; back it up)
+- **Render ships with real sats by default** — `render.yaml` sets
+  `CASHU_MINT_URL=https://mint.minibits.cash`. Any Cashu mint URL works; pick one you trust.
+- Unset `CASHU_MINT_URL` → **mock mode** (fake sats auto-pay in ~3s) for local dev/tests.
+  The e2e suite expects mock mode — run it against a server started *without* the env var.
+- For real local testing: `CASHU_MINT_URL=https://mint.minibits.cash npm run dev:online`
 - `PUBLIC_BASE_URL` — public URL of this server (needed for the payment-request callback;
   auto-detected on Render via `RENDER_EXTERNAL_URL`)
+- The pot wallet lives in `server/cashu-proofs.json` (gitignored) — it's the money while a
+  pot is unclaimed; back it up for real-money events.
 
 ## Local (your PC must stay on)
 
