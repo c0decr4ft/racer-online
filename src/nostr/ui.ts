@@ -8,6 +8,7 @@
 import QRCode from "qrcode";
 import {
   createAccount,
+  getLocalSecret,
   getSession,
   loginWithBunker,
   loginWithExtension,
@@ -69,6 +70,8 @@ async function refreshIdentityViews() {
   const displayName = profile?.displayName || profile?.name || "NOSTR RACER";
   if (chipLabel) chipLabel.textContent = profileLabel(session.pubkey, profile).toUpperCase().slice(0, 16);
   if (nameEl) nameEl.textContent = displayName;
+  // Local accounts get a backup-key reveal (extension/remote sessions hold no secret here)
+  el<HTMLDivElement>("nostr-backup-box")?.classList.toggle("hidden", session.method !== "local");
   const avatar = el<HTMLImageElement>("nostr-avatar");
   if (avatar) {
     if (profile?.picture) {
@@ -279,6 +282,16 @@ export function initNostrUi() {
     }
   });
   el<HTMLButtonElement>("nostr-create-back")?.addEventListener("click", () => showView("out"));
+  el<HTMLButtonElement>("nostr-backup-toggle")?.addEventListener("click", () => {
+    const secret = el<HTMLDivElement>("nostr-backup-secret");
+    const input = el<HTMLInputElement>("nostr-backup-nsec");
+    if (!secret || !input) return;
+    const opening = secret.classList.contains("hidden");
+    if (opening) input.value = getLocalSecret() ?? "";
+    else input.value = "";
+    secret.classList.toggle("hidden", !opening);
+    el<HTMLButtonElement>("nostr-backup-toggle")!.textContent = opening ? "HIDE BACKUP KEY" : "SHOW BACKUP KEY";
+  });
   el<HTMLButtonElement>("nostr-nsec-copy")?.addEventListener("click", (e) => void handleCopyNsec(e));
   el<HTMLButtonElement>("nostr-new-done")?.addEventListener("click", () => {
     const session = getSession();

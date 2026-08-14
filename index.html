@@ -305,6 +305,13 @@
               </div>
             </div>
             <p class="feedback-compose-hint">Signed in — your race times are saved with your Nostr signature</p>
+            <div id="nostr-backup-box" class="nostr-backup-box hidden">
+              <button id="nostr-backup-toggle" class="btn-ghost" type="button">SHOW BACKUP KEY</button>
+              <div id="nostr-backup-secret" class="hidden">
+                <input id="nostr-backup-nsec" class="nostr-connect-uri" type="text" readonly aria-label="Your nsec secret key" />
+                <p class="nostr-warning">Never share this key — it controls your identity. Losing it means losing access.</p>
+              </div>
+            </div>
             <div class="feedback-compose-actions">
               <button id="nostr-logout-btn" class="btn-ghost" type="button">LOG OUT</button>
               <button id="nostr-in-close" class="btn-ghost" type="button">CLOSE</button>
@@ -381,6 +388,12 @@
           <div class="garage-kind" role="group" aria-label="Vehicle type">
             <button id="garage-kind-car" class="garage-kind-btn is-active" type="button" data-kind="car">CAR</button>
             <button id="garage-kind-bike" class="garage-kind-btn" type="button" data-kind="bike">BIKE</button>
+          </div>
+
+          <div id="garage-class-card" class="garage-class-card" aria-live="polite">
+            <div class="garage-class-stat"><span>TOP SPEED</span><b>310 KM/H</b></div>
+            <div class="garage-class-stat"><span>GEARS</span><b>5</b></div>
+            <div class="garage-class-stat"><span>HANDLING</span><b id="garage-stat-handling">Planted · minimal lean</b></div>
           </div>
 
           <div class="garage-colors">
@@ -522,6 +535,7 @@
             <div id="mp-lobby-feed" class="mp-lobby-feed" aria-live="polite"></div>
             <div id="mp-buyin" class="mp-buyin hidden">
               <p id="mp-buyin-banner" class="mp-buyin-banner">BUY-IN · 100 SATS</p>
+              <p class="mp-buyin-note">Race starts when everyone's paid · unpaid requests expire · pots are final once racing starts</p>
               <div id="mp-invoice-box" class="mp-invoice-box">
                 <img id="mp-invoice-qr" class="mp-invoice-qr" alt="Buy-in payment request QR code" />
                 <input id="mp-invoice-bolt11" class="mp-invoice-bolt11" type="text" readonly aria-label="Buy-in payment request" />

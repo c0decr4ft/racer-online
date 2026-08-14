@@ -202,3 +202,10 @@ export async function logout(): Promise<void> {
     await (session.signer as NostrConnectSigner).logout().catch(() => undefined);
   }
 }
+
+/** The stored nsec for locally created accounts (never for extension/remote sessions). */
+export function getLocalSecret(): string | null {
+  if (current?.method !== "local") return null;
+  const saved = readPersisted();
+  return typeof saved?.nsec === "string" ? saved.nsec : null;
+}

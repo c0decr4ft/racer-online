@@ -349,7 +349,10 @@ export class Game {
       onWelcome: (info) => this.onNetWelcome(info),
       onJoin: (p) => {
         if (this.inLobby) this.upsertLobbyPlayer(p);
-        else if (this.running) this.spawnRemote(p);
+        else if (this.running) {
+          this.spawnRemote(p);
+          if (this.online) this.showToast(`${p.name} joined the race`);
+        }
       },
       onLeave: (id, hostId) => {
         if (this.inLobby) {
@@ -736,6 +739,11 @@ export class Game {
   private syncGarageUi() {
     document.getElementById("garage-kind-car")?.classList.toggle("is-active", this.garage.kind === "car");
     document.getElementById("garage-kind-bike")?.classList.toggle("is-active", this.garage.kind === "bike");
+    const handling = document.getElementById("garage-stat-handling");
+    if (handling) {
+      handling.textContent =
+        this.garage.kind === "bike" ? "Deep lean · quick turn-in" : "Planted · minimal lean";
+    }
     this.el.garagePrimary.value = hexColor(this.garage.primary);
     this.el.garageAccent.value = hexColor(this.garage.accent);
     this.syncGarageSwatches();
