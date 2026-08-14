@@ -1,38 +1,84 @@
 /**
- * Lightning payments for Event Mode.
+ * Cashu (eCash) payments for Event Mode — replaces the LNbits backend.
  *
- * Production: LNbits backend (env LNBITS_URL + LNBITS_ADMIN_KEY; optional
- * LNBITS_INVOICE_KEY for read/create). Local dev & tests: mock adapter —
- * invoices auto-"pay" themselves after ~3s and payouts are just logged.
+ * The server runs a cashu-ts Wallet against CASHU_MINT_URL (default
+ * unset → mock mode for dev/tests). Buy-ins arrive as NUT-18 payment-request
+ * payloads (POST /api/ecash/pay) or pasted cashuA tokens; the pot pays out as
+ * a cashuA token string the winner claims in cashu.me.
  *
- * Dev tip destination: DEV_TIP_LN_ADDRESS (lightning address). When unset,
- * tip payouts are skipped (logged) and the amount stays in the pot wallet.
+ * Money custody note: buy-in value lives as proofs in server/cashu-proofs.json
+ * until claimed — that file IS the money. It's gitignored; back it up for
+ * real-money events, and use amounts you don't mind losing (Cashu is young).
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 
-const LNBITS_URL = (process.env.LNBITS_URL || "").replace(/\/+$/, "");
-const LNBITS_ADMIN_KEY = process.env.LNBITS_ADMIN_KEY || "";
-const LNBITS_INVOICE_KEY = process.env.LNBITS_INVOICE_KEY || LNBITS_ADMIN_KEY;
+const CASHU_MINT_URL = (process.env.CASHU_MINT_URL || "").trim().replace(/\/+$/, "");
 
-/** Mock mode = no LNbits configured. UI shows "dev mode — fake sats". */
-export const PAYMENTS_MOCK = !(LNBITS_URL && LNBITS_ADMIN_KEY);
+/** Mock mode = no mint configured. UI shows "dev mode — fake sats". */
+export const PAYMENTS_MOCK = !CASHU_MINT_URL;
 
-export const DEV_TIP_LN_ADDRESS = (process.env.DEV_TIP_LN_ADDRESS || "").trim();
+const DIR = dirname(fileURLToPath(import.meta.url));
+const PROOFS_PATH = join(DIR, "cashu-proofs.json");
+const PAYOUTS_PATH = join(DIR, "payouts.json");
 
-const PAYOUTS_PATH = join(dirname(fileURLToPath(import.meta.url)), "payouts.json");
+/* ---------------- proof store (the pot wallet's money) ---------------- */
+
+function loadProofStore() {
+  try {
+    if (!existsSync(PROOFS_PATH)) return { mintUrl: CASHU_MINT_URL, proofs: [] };
+    const data = JSON.parse(readFileSync(PROOFS_PATH, "utf8"));
+    if (data?.mintUrl !== CASHU_MINT_URL || !Array.isArray(data?.proofs)) {
+      return { mintUrl: CASHU_MINT_URL, proofs: [] };
+    }
+    // JSON round-trip stringifies amounts — v4 wallets need real bigints
+    return {
+      mintUrl: CASHU_MINT_URL,
+      proofs: data.proofs.map((p) => ({ ...p, amount: BigInt(p.amount ?? 0) })),
+    };
+  } catch {
+    return { mintUrl: CASHU_MINT_URL, proofs: [] };
+  }
+}
+
+function saveProofStore(store) {
+  try {
+    // v4 proofs use bigint amounts — JSON can't serialize them without a replacer
+    writeFileSync(
+      PROOFS_PATH,
+      JSON.stringify(store, (key, v) => (typeof v === "bigint" ? v.toString() : v), 2),
+    );
+  } catch (err) {
+    console.error("[cashu] failed to persist proofs — money at risk!", err?.message || err);
+  }
+}
+
+/* ---------------- wallet init (real mode) ---------------- */
+
+let walletPromise = null;
+async function getWallet() {
+  if (PAYMENTS_MOCK) throw new Error("mock mode has no real wallet");
+  if (!walletPromise) {
+    walletPromise = (async () => {
+      const { Wallet } = await import("@cashu/cashu-ts");
+      const wallet = new Wallet(CASHU_MINT_URL);
+      await wallet.loadMint();
+      return wallet;
+    })();
+  }
+  return walletPromise;
+}
 
 /* ---------------- mock adapter ---------------- */
 
-/** @type {Map<string, { amountSats: number, memo: string, createdAt: number, paidAt: number }>} */
-const mockInvoices = new Map();
+const mockInvoices = new Map(); // id → { amountSats, createdAt, paidAt }
 
-async function mockCreateInvoice({ amountSats, memo }) {
+async function mockCreatePaymentRequest({ amountSats, memo }) {
   const paymentHash = randomUUID().replaceAll("-", "");
   mockInvoices.set(paymentHash, { amountSats, memo, createdAt: Date.now(), paidAt: 0 });
-  return { paymentHash, paymentRequest: `lnbc${amountSats}n1mock${paymentHash.slice(0, 26)}` };
+  return { paymentHash, paymentRequest: `creq-mock-${paymentHash}` };
 }
 
 async function mockIsPaid(paymentHash) {
@@ -42,94 +88,114 @@ async function mockIsPaid(paymentHash) {
   return inv.paidAt > 0;
 }
 
-function mockPay({ amountSats, target }) {
-  return { paymentHash: randomUUID().replaceAll("-", ""), preimage: `mock-preimage-${randomUUID()}`, amountSats, target };
+async function mockSendToken(amountSats) {
+  return { token: `cashu-mock-${amountSats}sats-${randomUUID().replaceAll("-", "")}` };
 }
 
-/* ---------------- LNbits adapter ---------------- */
+/* ---------------- real adapter (cashu-ts) ---------------- */
 
-async function lnRequest(path, { method = "GET", key = LNBITS_INVOICE_KEY, body } = {}) {
-  const res = await fetch(`${LNBITS_URL}${path}`, {
-    method,
-    headers: { "X-Api-Key": key, "Content-Type": "application/json" },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const text = await res.text();
-  let data;
+async function cashuCreatePaymentRequest({ amountSats, memo, baseUrl }) {
+  const { PaymentRequest, PaymentRequestTransportType } = await import("@cashu/cashu-ts");
+  const paymentHash = randomUUID().replaceAll("-", "").slice(0, 24);
+  // cashu-ts v4: PaymentRequest takes positional args (transport, id, amount, unit, mints, description)
+  const request = new PaymentRequest(
+    [{ type: PaymentRequestTransportType.POST, target: `${baseUrl}/api/ecash/pay` }],
+    paymentHash,
+    amountSats,
+    "sat",
+    [CASHU_MINT_URL],
+    memo,
+  );
+  return { paymentHash, paymentRequest: request.toEncodedCreqB() };
+}
+
+/** Sum proofs minus the mint's input fees → net spendable sats (v4: amounts are bigint). */
+async function netOfFees(wallet, proofs) {
+  const gross = proofs.reduce((a, p) => a + BigInt(p.amount), 0n);
+  let fees = 0n;
   try {
-    data = JSON.parse(text);
+    fees = BigInt(await wallet.getFeesForProofs(proofs));
   } catch {
-    data = { detail: text };
+    fees = 0n; // mints without fee reporting → assume zero
   }
-  if (!res.ok) throw new Error(`lnbits ${res.status}: ${data?.detail || text}`.slice(0, 200));
-  return data;
+  return gross - fees;
 }
 
-async function lnCreateInvoice({ amountSats, memo }) {
-  const data = await lnRequest("/api/v1/payments", {
-    method: "POST",
-    body: { out: false, amount: amountSats, memo, unit: "sat", expiry: 3600 },
-  });
-  // Newer LNbits versions return both bolt11 and payment_request — accept either.
-  return { paymentHash: data.payment_hash, paymentRequest: data.bolt11 ?? data.payment_request };
+/** Normalize incoming proofs (v4: amounts must be bigint) and receive via encoded token. */
+async function receiveProofsFromMint(mintUrl, rawProofs) {
+  const { getEncodedToken } = await import("@cashu/cashu-ts");
+  const wallet = await getWallet();
+  const proofs = rawProofs.map((p) => ({ ...p, amount: BigInt(p.amount) }));
+  const token = getEncodedToken({ mint: mintUrl, proofs });
+  return wallet.receive(token);
 }
 
-async function lnIsPaid(paymentHash) {
-  try {
-    const data = await lnRequest(`/api/v1/payments/${paymentHash}`);
-    return !!data.paid;
-  } catch {
-    return false;
-  }
+/**
+ * Validate + receive a NUT-18 payment payload {id, mint, unit, proofs}.
+ * Returns fresh proofs (swapped to our secrets). Throws on any
+ * mismatch/shortfall — callers must treat that as unpaid.
+ */
+async function cashuReceivePayload({ paymentHash, amountSats, payload }) {
+  const wallet = await getWallet();
+  if (String(payload.id || "") !== paymentHash) throw new Error("payment id mismatch");
+  const mint = String(payload.mint || "").replace(/\/+$/, "");
+  if (mint !== CASHU_MINT_URL) throw new Error("wrong mint");
+  if (String(payload.unit || "sat").toLowerCase() !== "sat") throw new Error("wrong unit");
+  const proofs = Array.isArray(payload.proofs) ? payload.proofs : [];
+  const net = await netOfFees(wallet, proofs);
+  if (net < BigInt(amountSats)) throw new Error(`underpaid (net ${net} < ${amountSats} sats)`);
+  return receiveProofsFromMint(mint, proofs);
 }
 
-/** Pay a BOLT11 invoice from the pot wallet. */
-async function lnPayInvoice(bolt11) {
-  const data = await lnRequest("/api/v1/payments", {
-    method: "POST",
-    key: LNBITS_ADMIN_KEY,
-    body: { out: true, bolt11 },
-  });
-  return { paymentHash: data.payment_hash, preimage: data.payment_proof || data.preimage || "" };
+/** Receive a pasted cashuA token (manual fallback path). */
+async function cashuReceiveToken({ amountSats, token }) {
+  const wallet = await getWallet();
+  // v4: short keyset IDs need the mint's keysets to decode — use wallet-aware decode
+  const decoded = await wallet.decodeToken(String(token).trim());
+  const mint = String(decoded.mint).replace(/\/+$/, "");
+  if (mint !== CASHU_MINT_URL) {
+    throw new Error(`token is from another mint (we use ${CASHU_MINT_URL})`);
+  }
+  const net = await netOfFees(wallet, decoded.proofs);
+  if (net < BigInt(amountSats)) throw new Error(`token too small (net ${net} < ${amountSats} sats)`);
+  return receiveProofsFromMint(mint, decoded.proofs);
 }
 
-/** Pay a lightning address (user@domain) — LNURL-pay flow, then pay the invoice. */
-async function lnPayAddress(address, amountSats, comment) {
-  const [name, domain] = String(address).trim().split("@");
-  if (!name || !domain) throw new Error("bad lightning address");
-  const metaRes = await fetch(`https://${domain}/.well-known/lnurlp/${encodeURIComponent(name)}`);
-  if (!metaRes.ok) throw new Error("lightning address lookup failed");
-  const meta = await metaRes.json();
-  if (meta?.tag !== "payRequest" || !meta.callback) throw new Error("address is not payable");
-  const msats = amountSats * 1000;
-  if (msats < Number(meta.minSendable) || msats > Number(meta.maxSendable)) {
-    throw new Error(`amount out of range (${meta.minSendable}-${meta.maxSendable} msat)`);
-  }
-  const cb = new URL(meta.callback);
-  cb.searchParams.set("amount", String(msats));
-  if (comment && meta.commentAllowed && comment.length <= Number(meta.commentAllowed)) {
-    cb.searchParams.set("comment", comment);
-  }
-  const invRes = await fetch(cb);
-  if (!invRes.ok) throw new Error("invoice callback failed");
-  const inv = await invRes.json();
-  if (!inv?.pr) throw new Error("no invoice from callback");
-  return lnPayInvoice(inv.pr);
+/** Pay out sats as a fresh cashuA token string from the pot wallet. */
+async function cashuSendToken(amountSats) {
+  const wallet = await getWallet();
+  const store = loadProofStore();
+  const total = store.proofs.reduce((a, p) => a + Number(p.amount), 0);
+  if (total < amountSats) throw new Error(`pot wallet short (${total} < ${amountSats} sats)`);
+  const { keep, send } = await wallet.send(amountSats, store.proofs);
+  saveProofStore({ mintUrl: CASHU_MINT_URL, proofs: keep });
+  const { getEncodedToken } = await import("@cashu/cashu-ts");
+  return { token: getEncodedToken({ mint: CASHU_MINT_URL, proofs: send }) };
 }
 
 /* ---------------- unified surface ---------------- */
 
 export const payments = {
   mock: PAYMENTS_MOCK,
-  createInvoice: PAYMENTS_MOCK ? mockCreateInvoice : lnCreateInvoice,
-  isPaid: PAYMENTS_MOCK ? mockIsPaid : lnIsPaid,
-  payInvoice: PAYMENTS_MOCK ? (bolt11) => mockPay({ amountSats: 0, target: bolt11 }) : lnPayInvoice,
-  payAddress: PAYMENTS_MOCK
-    ? (address, amountSats) => mockPay({ amountSats, target: address })
-    : lnPayAddress,
+  mintUrl: CASHU_MINT_URL,
+  createPaymentRequest: PAYMENTS_MOCK
+    ? mockCreatePaymentRequest
+    : cashuCreatePaymentRequest,
+  isPaid: PAYMENTS_MOCK ? mockIsPaid : null, // real mode: paid via POST /api/ecash/pay (push)
+  receivePayload: PAYMENTS_MOCK ? null : cashuReceivePayload,
+  receiveToken: PAYMENTS_MOCK ? async () => [] : cashuReceiveToken,
+  sendToken: PAYMENTS_MOCK ? mockSendToken : cashuSendToken,
 };
 
-/** Append a payout attempt to the audit log (gitignored). */
+/** Record fresh buy-in proofs into the pot wallet store (real mode). */
+export function depositProofs(freshProofs) {
+  if (PAYMENTS_MOCK || !Array.isArray(freshProofs) || !freshProofs.length) return;
+  const store = loadProofStore();
+  store.proofs.push(...freshProofs);
+  saveProofStore(store);
+}
+
+/** Append a payout attempt to the audit log (gitignored; may contain bearer tokens). */
 export function recordPayout(record) {
   let list = [];
   try {

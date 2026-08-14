@@ -29,3 +29,4 @@ server/feedback.json
 
 # Event Mode payout audit log
 server/payouts.json
+server/cashu-proofs.json

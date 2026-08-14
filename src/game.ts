@@ -580,11 +580,28 @@ export class Game {
         if (session) this.renderNameEntryState();
       });
     };
-    // Event Mode: invoice copy, WebLN one-click pay, tip slider, pot claim.
+    // Event Mode: invoice copy, cashu token fallback submit, tip slider, pot claim.
     document.getElementById("mp-invoice-copy")!.onclick = () => this.copyBuyInInvoice();
-    document.getElementById("mp-webln-pay")!.onclick = () => void this.payBuyInWithWebln();
+    document.getElementById("mp-token-submit")!.onclick = () => this.submitBuyInToken();
+    document.getElementById("mp-token-input")!.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        this.submitBuyInToken();
+      }
+    });
     document.getElementById("event-tip-range")!.oninput = () => this.updateEventTipBreakdown();
     document.getElementById("event-claim-btn")!.onclick = () => this.claimEventPot();
+    document.getElementById("event-token-copy")!.onclick = () => {
+      const input = document.getElementById("event-payout-token") as HTMLInputElement;
+      const btn = document.getElementById("event-token-copy")!;
+      void navigator.clipboard
+        .writeText(input.value)
+        .then(() => {
+          btn.textContent = "COPIED ✓";
+          setTimeout(() => (btn.textContent = "COPY TOKEN"), 1500);
+        })
+        .catch(() => input.select());
+    };
     onSessionChange(() => {
       if (!this.el.nameEntry.classList.contains("hidden")) this.renderNameEntryState();
     });
@@ -1180,46 +1197,43 @@ export class Game {
         : "Waiting for host to start the race…";
   }
 
-  /** Event Mode: show my buy-in invoice (QR + copyable BOLT11 + WebLN one-click). */
-  private showBuyInInvoice(bolt11: string, amountSats: number, mock: boolean) {
+  /** Event Mode: show my buy-in payment request (QR + copyable creq + token fallback). */
+  private showBuyInInvoice(paymentRequest: string, amountSats: number, mock: boolean) {
     void amountSats;
     const box = document.getElementById("mp-invoice-box");
     if (!box) return;
     box.classList.remove("is-paid");
-    const bolt = document.getElementById("mp-invoice-bolt11") as HTMLInputElement | null;
-    if (bolt) bolt.value = bolt11;
+    const creq = document.getElementById("mp-invoice-bolt11") as HTMLInputElement | null;
+    if (creq) creq.value = paymentRequest;
     const status = document.getElementById("mp-invoice-status");
     if (status) {
-      status.textContent = mock ? "Dev mode — fake sats auto-pay in a few seconds" : "Waiting for payment…";
+      status.textContent = mock
+        ? "Dev mode — fake sats auto-pay in a few seconds"
+        : "Scan with cashu.me or any Cashu wallet";
       status.classList.remove("is-paid");
     }
+    const tokenInput = document.getElementById("mp-token-input") as HTMLInputElement | null;
+    if (tokenInput) tokenInput.value = "";
     const qr = document.getElementById("mp-invoice-qr") as HTMLImageElement | null;
     if (qr) {
-      void QRCode.toDataURL(bolt11.toUpperCase(), { width: 168, margin: 1 })
+      // creqB is bech32m — uppercase QRs scan denser/more reliably
+      void QRCode.toDataURL(paymentRequest.toUpperCase(), { width: 168, margin: 1 })
         .then((url) => {
           qr.src = url;
         })
         .catch(() => undefined);
     }
-    // One-click in-browser wallets (Alby & friends expose window.webln)
-    const weblnBtn = document.getElementById("mp-webln-pay");
-    const webln = (window as { webln?: { enable(): Promise<void>; sendPayment(bolt11: string): Promise<unknown> } }).webln;
-    if (weblnBtn) weblnBtn.classList.toggle("hidden", !webln);
     this.renderLobby();
   }
 
-  private async payBuyInWithWebln() {
-    const webln = (window as { webln?: { enable(): Promise<void>; sendPayment(bolt11: string): Promise<unknown> } }).webln;
+  /** Manual fallback: paste a cashuA token instead of scanning the payment request. */
+  private submitBuyInToken() {
+    const input = document.getElementById("mp-token-input") as HTMLInputElement | null;
+    const token = input?.value.trim() ?? "";
+    if (!token) return;
     const status = document.getElementById("mp-invoice-status");
-    if (!webln || !this.net.myBuyIn) return;
-    if (status) status.textContent = "Opening your wallet…";
-    try {
-      await webln.enable();
-      await webln.sendPayment(this.net.myBuyIn.bolt11);
-      if (status) status.textContent = "Payment sent — confirming…";
-    } catch (err) {
-      if (status) status.textContent = `Wallet payment failed — ${err instanceof Error ? err.message : String(err)}`;
-    }
+    if (status) status.textContent = "Checking token…";
+    this.net.submitToken(token);
   }
 
   private copyBuyInInvoice() {
@@ -1230,24 +1244,21 @@ export class Game {
       .writeText(bolt.value)
       .then(() => {
         btn.textContent = "COPIED ✓";
-        setTimeout(() => (btn.textContent = "COPY INVOICE"), 1500);
+        setTimeout(() => (btn.textContent = "COPY REQUEST"), 1500);
       })
       .catch(() => bolt.select());
   }
 
-  /** Winner's checkout: pot breakdown, tip slider (default 2%), payout target. */
+  /** Winner's checkout: pot breakdown, tip slider (default 2%), Cashu token claim. */
   private setupEventCheckout(event: EventRoomInfo) {
     const pot = event.potSats || event.buyInSats * Math.max(1, this.lobbyPlayers.length);
     const potEl = document.getElementById("event-pot-sats");
     if (potEl) potEl.textContent = String(pot);
     const range = document.getElementById("event-tip-range") as HTMLInputElement | null;
     if (range) range.value = "2";
-    const addr = document.getElementById("event-payout-address") as HTMLInputElement | null;
-    if (addr) addr.value = "";
-    const inv = document.getElementById("event-payout-invoice") as HTMLInputElement | null;
-    if (inv) inv.value = "";
     const status = document.getElementById("event-payout-status");
     if (status) status.classList.add("hidden");
+    document.getElementById("event-token-box")?.classList.add("hidden");
     const claim = document.getElementById("event-claim-btn") as HTMLButtonElement | null;
     if (claim) claim.disabled = false;
     this.updateEventTipBreakdown();
@@ -1272,26 +1283,19 @@ export class Game {
   private claimEventPot() {
     const status = document.getElementById("event-payout-status");
     const claim = document.getElementById("event-claim-btn") as HTMLButtonElement | null;
-    const addr = (document.getElementById("event-payout-address") as HTMLInputElement).value.trim();
-    const inv = (document.getElementById("event-payout-invoice") as HTMLInputElement).value.trim();
     const tipPercent = Number((document.getElementById("event-tip-range") as HTMLInputElement).value);
     if (!status) return;
     status.classList.remove("hidden", "nostr-error");
-    if (!addr && !inv) {
-      status.textContent = "Enter your lightning address or paste an invoice";
-      status.classList.add("nostr-error");
-      return;
-    }
     status.textContent = "Sending your sats…";
     if (claim) claim.disabled = true;
-    this.net.claimPot(tipPercent, addr, inv);
+    this.net.claimPot(tipPercent);
   }
 
   private onPayoutResult(result: {
     ok: boolean;
+    token?: string;
     winnerSats?: number;
     tipSats?: number;
-    tipPaid?: boolean;
     mock?: boolean;
     error?: string;
   }) {
@@ -1301,9 +1305,12 @@ export class Game {
     status.classList.remove("hidden");
     if (result.ok) {
       status.classList.remove("nostr-error");
-      const tipNote = result.tipSats ? ` · ${result.tipSats} sats dev tip${result.tipPaid === false ? " (dev wallet not set)" : ""}` : "";
-      status.textContent = `Paid! ${result.winnerSats} sats on the way to your wallet${tipNote}${result.mock ? " · dev mode (fake sats)" : ""}`;
+      const tipNote = result.tipSats ? ` · ${result.tipSats} sats dev tip` : "";
+      status.textContent = `Paid! ${result.winnerSats} sats${tipNote} — paste the token into cashu.me to claim${result.mock ? " · dev mode (fake sats)" : ""}`;
       if (claim) claim.disabled = true;
+      const out = document.getElementById("event-payout-token") as HTMLInputElement | null;
+      if (out) out.value = result.token || "";
+      document.getElementById("event-token-box")?.classList.remove("hidden");
     } else {
       status.classList.add("nostr-error");
       status.textContent = `Payout failed — ${result.error || "unknown error"}`;

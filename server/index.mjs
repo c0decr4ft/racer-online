@@ -1,7 +1,7 @@
 import { WebSocketServer } from "ws";
 import { verifyEvent } from "nostr-tools";
 import { createServer } from "node:http";
-import { payments, recordPayout, DEV_TIP_LN_ADDRESS } from "./payments.mjs";
+import { payments, depositProofs, recordPayout } from "./payments.mjs";
 import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { dirname, join, extname, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,12 @@ import { fileURLToPath } from "node:url";
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "0.0.0.0";
 const ON_RENDER = Boolean(process.env.RENDER);
+/** Public base URL for NUT-18 payment-request transports (Render sets RENDER_EXTERNAL_URL). */
+const PUBLIC_BASE_URL = (
+  process.env.PUBLIC_BASE_URL ||
+  process.env.RENDER_EXTERNAL_URL ||
+  `http://127.0.0.1:${PORT}`
+).replace(/\/+$/, "");
 /** When set (or when ../dist exists), serve the built web client from this process. */
 const DIST_DIR = process.env.STATIC_DIR
   ? process.env.STATIC_DIR
@@ -90,7 +96,7 @@ function normalizeSessionId(raw) {
 /** @typedef {{ id: string, name: string, color: number, accent: number, kind: string, pubkey?: string, x: number, z: number, h: number, s: number, g: string, lap: number }} Pose */
 /** @typedef {{ id: string, name: string, color: number, room: string, ws: import('ws').WebSocket, pose: Pose, lastPoseAt: number }} Client */
 /** @typedef {{ trackId: string, order: number }} TrackVote */
-/** @typedef {{ paymentHash: string, bolt11: string, paidAt: number }} BuyIn */
+/** @typedef {{ paymentHash: string, paymentRequest: string, paidAt: number }} BuyIn */
 /** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, lastCrashAt: number, clients: Map<string, Client>, isEvent: boolean, buyInSats: number, buyIns: Map<string, BuyIn>, potSats: number, potClaimed: boolean }} Room */
 /** @typedef {{ name: string, timeMs: number, bestLapMs?: number, at: number, trackId?: string, pubkey: string, eventId?: string }} BoardEntry */
 /** @typedef {Record<string, BoardEntry[]>} BoardStore */
@@ -738,26 +744,50 @@ function eventInfo(room) {
   return { buyInSats: room.buyInSats, paidIds, potSats: room.potSats, mock: payments.mock };
 }
 
-/** Create a buy-in invoice for a freshly joined event-room racer (async). */
+/** Create a buy-in payment request (NUT-18 creq) for a freshly joined event-room racer. */
 async function createBuyInInvoice(room, client) {
   try {
-    const inv = await payments.createInvoice({
+    const inv = await payments.createPaymentRequest({
       amountSats: room.buyInSats,
       memo: `Racer Online event ${room.name} — buy-in ${room.buyInSats} sats`,
+      baseUrl: PUBLIC_BASE_URL,
     });
     // Room may have been replaced/deleted or the racer left while awaiting
     if (rooms.get(room.name) !== room || !room.clients.has(client.id)) return;
-    room.buyIns.set(client.id, { paymentHash: inv.paymentHash, bolt11: inv.paymentRequest, paidAt: 0 });
+    room.buyIns.set(client.id, { paymentHash: inv.paymentHash, paymentRequest: inv.paymentRequest, paidAt: 0 });
     send(client.ws, {
       t: "eventInvoice",
-      bolt11: inv.paymentRequest,
+      paymentRequest: inv.paymentRequest,
       amountSats: room.buyInSats,
       mock: payments.mock,
     });
   } catch (err) {
-    console.warn(`[event] invoice failed for ${client.name}:`, err?.message || err);
-    send(client.ws, { t: "error", message: "could not create buy-in invoice — try rejoining" });
+    console.warn(`[event] payment request failed for ${client.name}:`, err?.message || err);
+    send(client.ws, { t: "error", message: "could not create buy-in request — try rejoining" });
   }
+}
+
+/** Mark a racer's buy-in as paid (from /api/ecash/pay or a pasted token). */
+function markBuyInPaid(room, clientId) {
+  const buyIn = room.buyIns.get(clientId);
+  if (!buyIn || buyIn.paidAt) return false;
+  buyIn.paidAt = Date.now();
+  const client = room.clients.get(clientId);
+  console.log(`[event] ${room.name} buy-in paid by ${client?.name || clientId}`);
+  if (client) broadcast(room, { t: "notice", text: `${client.name} paid the buy-in` });
+  broadcast(room, lobbySnapshot(room));
+  return true;
+}
+
+/** Find (room, clientId) for a payment-request id across event rooms. */
+function findBuyInByHash(paymentHash) {
+  for (const room of rooms.values()) {
+    if (!room.isEvent) continue;
+    for (const [clientId, buyIn] of room.buyIns) {
+      if (buyIn.paymentHash === paymentHash) return { room, clientId };
+    }
+  }
+  return null;
 }
 
 /**
@@ -965,6 +995,36 @@ const httpServer = createServer(async (req, res) => {
     presence = prunePresence(presence);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(presenceSnapshot(presence)));
+    return;
+  }
+
+  // NUT-18 payment-request transport: payer wallets POST {id, mint, unit, proofs} here.
+  if (url.pathname === "/api/ecash/pay" && req.method === "POST") {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    try {
+      if (payments.mock) throw new Error("mock mode");
+      const payload = JSON.parse(body || "{}");
+      const found = findBuyInByHash(String(payload.id || ""));
+      if (!found) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "unknown payment id" }));
+        return;
+      }
+      const buyIn = found.room.buyIns.get(found.clientId);
+      const fresh = await payments.receivePayload({
+        paymentHash: buyIn.paymentHash,
+        amountSats: found.room.buyInSats,
+        payload,
+      });
+      depositProofs(fresh);
+      markBuyInPaid(found.room, found.clientId);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (err) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: String(err?.message || err).slice(0, 140) }));
+    }
     return;
   }
 
@@ -1235,6 +1295,26 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    if (msg.t === "submitToken") {
+      // Manual fallback: player pastes a cashuA token instead of scanning the request.
+      if (!room.isEvent || room.phase !== "lobby" || payments.mock) return;
+      const buyIn = room.buyIns.get(client.id);
+      if (!buyIn || buyIn.paidAt) return;
+      void (async () => {
+        try {
+          const fresh = await payments.receiveToken({
+            amountSats: room.buyInSats,
+            token: String(msg.token || ""),
+          });
+          depositProofs(fresh);
+          markBuyInPaid(room, client.id);
+        } catch (err) {
+          send(ws, { t: "error", message: `token rejected — ${String(err?.message || err).slice(0, 100)}` });
+        }
+      })();
+      return;
+    }
+
     if (msg.t === "claimPot") {
       if (!room.isEvent || room.phase !== "finished") return;
       if (client.id !== room.winnerId) return;
@@ -1245,26 +1325,23 @@ wss.on("connection", (ws) => {
       const tipPercent = Math.max(0, Math.min(100, Math.round(Number(msg.tipPercent) || 0)));
       const winnerSats = Math.floor((room.potSats * (100 - tipPercent)) / 100);
       const tipSats = room.potSats - winnerSats;
-      const lnAddress = String(msg.lnAddress || "").trim();
-      const invoice = String(msg.invoice || "").trim();
-      if (!lnAddress && !invoice) {
-        send(ws, { t: "payoutResult", ok: false, error: "enter a lightning address or paste an invoice" });
-        return;
-      }
       room.potClaimed = true; // lock before paying — no double claims
       void (async () => {
         try {
+          // Winner's share as a cashuA token — they claim it in cashu.me (or any Cashu wallet)
+          let winnerToken = "";
           if (winnerSats > 0) {
-            if (lnAddress) await payments.payAddress(lnAddress, winnerSats, `Racer Online event win — ${room.name}`);
-            else await payments.payInvoice(invoice);
+            const sent = await payments.sendToken(winnerSats);
+            winnerToken = sent.token;
           }
-          let tipPaid = false;
-          if (tipSats > 0 && DEV_TIP_LN_ADDRESS) {
+          // Dev tip as a separate token, kept in the audit log for the dev to claim
+          let tipToken = "";
+          if (tipSats > 0) {
             try {
-              await payments.payAddress(DEV_TIP_LN_ADDRESS, tipSats, `Racer Online dev tip — ${room.name}`);
-              tipPaid = true;
+              const sent = await payments.sendToken(tipSats);
+              tipToken = sent.token;
             } catch (err) {
-              console.warn(`[event] dev tip failed:`, err?.message || err);
+              console.warn(`[event] dev tip token failed:`, err?.message || err);
             }
           }
           recordPayout({
@@ -1275,15 +1352,12 @@ wss.on("connection", (ws) => {
             winnerSats,
             tipSats,
             tipPercent,
-            tipPaid,
-            method: lnAddress ? "address" : "invoice",
+            tipToken: tipToken || null, // bearer token — dev claims it from this file
             mock: payments.mock,
           });
-          send(ws, { t: "payoutResult", ok: true, winnerSats, tipSats, tipPaid, mock: payments.mock });
+          send(ws, { t: "payoutResult", ok: true, token: winnerToken, winnerSats, tipSats, mock: payments.mock });
           broadcast(room, { t: "notice", text: `${client.name} claimed the pot — ${winnerSats} sats` });
-          console.log(
-            `[event] ${room.name} pot ${room.potSats} sats → ${client.name} ${winnerSats} · tip ${tipSats}${tipPaid ? "" : " (not configured)"}`,
-          );
+          console.log(`[event] ${room.name} pot ${room.potSats} sats → ${client.name} ${winnerSats} · tip ${tipSats}`);
         } catch (err) {
           room.potClaimed = false; // payment failed — allow retry
           send(ws, { t: "payoutResult", ok: false, error: String(err?.message || err).slice(0, 140) });
@@ -1334,23 +1408,17 @@ setInterval(() => {
   }
 }, NET_TICK_MS);
 
-// Event Mode: poll unpaid buy-in invoices; announce + refresh lobby when one lands.
+// Event Mode: mock adapter auto-pays after ~3s — poll to notice. Real mode is
+// push-based: payments land via POST /api/ecash/pay (no polling needed).
 setInterval(() => {
+  if (!payments.isPaid) return;
   for (const room of rooms.values()) {
     if (!room.isEvent || room.phase !== "lobby") continue;
     for (const [id, buyIn] of room.buyIns) {
       if (buyIn.paidAt > 0) continue;
       void payments.isPaid(buyIn.paymentHash).then((paid) => {
         if (!paid || rooms.get(room.name) !== room) return;
-        const cur = room.buyIns.get(id);
-        if (!cur || cur.paidAt) return;
-        cur.paidAt = Date.now();
-        const client = room.clients.get(id);
-        console.log(`[event] ${room.name} buy-in paid by ${client?.name || id}`);
-        if (client) {
-          broadcast(room, { t: "notice", text: `${client.name} paid the buy-in` });
-        }
-        broadcast(room, lobbySnapshot(room));
+        markBuyInPaid(room, id);
       });
     }
   }

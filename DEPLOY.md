@@ -38,6 +38,17 @@ fly deploy
 
 Then set the same GitHub Actions secrets to your `https://APP.fly.dev` / `wss://APP.fly.dev` URLs.
 
+## Event Mode payments (Cashu eCash)
+
+Event Mode buy-ins/payouts run through a Cashu mint — players pay with cashu.me or any
+NUT-18 Cashu wallet; winners claim the pot as a `cashuA` token.
+
+- No env var → **mock mode** (fake sats auto-pay in ~3s) for local dev/tests
+- `CASHU_MINT_URL=https://mint.minibits.cash` → real sats via the public mint
+  (any Cashu mint works — the pot wallet lives in `server/cashu-proofs.json`, gitignored; back it up)
+- `PUBLIC_BASE_URL` — public URL of this server (needed for the payment-request callback;
+  auto-detected on Render via `RENDER_EXTERNAL_URL`)
+
 ## Local (your PC must stay on)
 
 ```bash

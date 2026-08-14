@@ -96,8 +96,10 @@ export type ClientMsg =
   | { t: "finish"; timeMs: number; bestLapMs: number }
   | { t: "crash" }
   | { t: "vote"; trackId: string }
-  /** Event Mode — winner claims the pot: tip 0–100% to the dev, rest via LN address or invoice. */
-  | { t: "claimPot"; tipPercent: number; lnAddress?: string; invoice?: string }
+  /** Event Mode — manual buy-in: paste a cashuA token instead of scanning the request. */
+  | { t: "submitToken"; token: string }
+  /** Event Mode — winner claims the pot as a Cashu token: tip 0–100% to the dev. */
+  | { t: "claimPot"; tipPercent: number }
   /** Host-only. Optional weather re-asserts the room setting on play. */
   | { t: "start"; weather?: NetWeatherMode }
   | { t: "ping"; n: number };
@@ -132,15 +134,15 @@ export type ServerMsg =
     }
   | { t: "state"; players: PlayerPose[]; at?: number }
   | { t: "start"; at: number; trackId: string; kind: NetVehicleKind; weather: NetWeatherMode }
-  /** Event Mode — your personal buy-in invoice (pay with any Lightning wallet). */
-  | { t: "eventInvoice"; bolt11: string; amountSats: number; mock?: boolean }
-  /** Event Mode — result of a pot claim attempt. */
+  /** Event Mode — your personal buy-in request (NUT-18 creq, payable by cashu.me & co). */
+  | { t: "eventInvoice"; paymentRequest: string; amountSats: number; mock?: boolean }
+  /** Event Mode — result of a pot claim attempt; `token` is the cashuA payout. */
   | {
       t: "payoutResult";
       ok: boolean;
+      token?: string;
       winnerSats?: number;
       tipSats?: number;
-      tipPaid?: boolean;
       mock?: boolean;
       error?: string;
     }

@@ -586,11 +586,15 @@
             <div id="mp-buyin" class="mp-buyin hidden">
               <p id="mp-buyin-banner" class="mp-buyin-banner">BUY-IN · 100 SATS</p>
               <div id="mp-invoice-box" class="mp-invoice-box">
-                <img id="mp-invoice-qr" class="mp-invoice-qr" alt="Buy-in invoice QR code" />
-                <input id="mp-invoice-bolt11" class="mp-invoice-bolt11" type="text" readonly aria-label="Buy-in invoice" />
+                <img id="mp-invoice-qr" class="mp-invoice-qr" alt="Buy-in payment request QR code" />
+                <input id="mp-invoice-bolt11" class="mp-invoice-bolt11" type="text" readonly aria-label="Buy-in payment request" />
                 <div class="mp-invoice-actions">
-                  <button id="mp-webln-pay" class="hidden" type="button">PAY WITH WALLET</button>
-                  <button id="mp-invoice-copy" class="btn-ghost" type="button">COPY INVOICE</button>
+                  <button id="mp-invoice-copy" class="btn-ghost" type="button">COPY REQUEST</button>
+                </div>
+                <p class="event-or">— or paste a cashuA token —</p>
+                <div class="mp-invoice-actions">
+                  <input id="mp-token-input" class="mp-invoice-bolt11" type="text" placeholder="cashuA…" spellcheck="false" autocomplete="off" aria-label="Paste cashu token" />
+                  <button id="mp-token-submit" type="button">PAY</button>
                 </div>
                 <p id="mp-invoice-status" class="mp-invoice-status">Waiting for payment…</p>
               </div>
@@ -681,10 +685,14 @@
               <input id="event-tip-range" type="range" min="0" max="100" step="1" value="2" />
             </label>
             <p class="event-breakdown">You receive <span id="event-winner-sats">0</span> sats · dev gets <span id="event-tip-sats">0</span></p>
-            <input id="event-payout-address" type="text" placeholder="your@lightning.address" spellcheck="false" autocomplete="off" />
-            <p class="event-or">— or paste an invoice —</p>
-            <input id="event-payout-invoice" type="text" placeholder="lnbc…" spellcheck="false" autocomplete="off" />
             <button id="event-claim-btn" type="button">CLAIM POT</button>
+            <div id="event-token-box" class="event-token-box hidden">
+              <input id="event-payout-token" class="event-payout-token" type="text" readonly aria-label="Your payout token" />
+              <div class="event-token-actions">
+                <button id="event-token-copy" class="btn-ghost" type="button">COPY TOKEN</button>
+                <a id="event-open-cashu" class="btn-ghost" href="https://wallet.cashu.me" target="_blank" rel="noopener noreferrer">OPEN CASHU.ME</a>
+              </div>
+            </div>
             <p id="event-payout-status" class="event-payout-status hidden" aria-live="polite"></p>
           </section>
           <p id="event-lost-note" class="event-lost-note hidden">Winner takes the pot</p>
