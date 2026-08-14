@@ -70,7 +70,8 @@ async function lnCreateInvoice({ amountSats, memo }) {
     method: "POST",
     body: { out: false, amount: amountSats, memo, unit: "sat", expiry: 3600 },
   });
-  return { paymentHash: data.payment_hash, paymentRequest: data.payment_request };
+  // Newer LNbits versions return both bolt11 and payment_request — accept either.
+  return { paymentHash: data.payment_hash, paymentRequest: data.bolt11 ?? data.payment_request };
 }
 
 async function lnIsPaid(paymentHash) {
