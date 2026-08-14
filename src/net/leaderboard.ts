@@ -59,7 +59,7 @@ const LEGACY_STORAGE_KEYS = ["racer-leaderboard-v1", "racer-leaderboard-v2", "ra
 const LEGACY_TRACK_PREFIXES = ["racer-leaderboard-v2-", "racer-leaderboard-v3-"];
 const DRIVER_NAME_KEY = "racer-driver-name";
 const MAX = 10;
-export const NAME_MAX = 10;
+export const NAME_MAX = 15;
 
 function clearLegacyLocalBoards() {
   try {
