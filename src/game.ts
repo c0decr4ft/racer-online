@@ -37,7 +37,7 @@ import {
 } from "./net/leaderboard";
 import { getSession, onSessionChange } from "./nostr/session";
 import { ensureNostrLogin, getCurrentProfile } from "./nostr/ui";
-import { profileLabel, shortNpub } from "./nostr/profile";
+import { fetchProfile, shortNpub } from "./nostr/profile";
 import QRCode from "qrcode";
 import { GameAudio } from "./audio";
 import { setFeedbackBtnVisible } from "./feedbackCompose";
@@ -848,10 +848,19 @@ export class Game {
         ? "Buy-in races — everyone pays, winner takes the pot"
         : "Create a private room or join with a password";
     }
-    // Signed in → prefill the racer name from the Nostr profile (still editable).
-    const nostrName = this.nostrDisplayName();
-    this.el.mpCreateName.value = nostrName ?? "";
-    this.el.mpJoinName.value = nostrName ?? "";
+    // Signed in → prefill the racer name from the Nostr profile (username, never
+    // the npub); it may arrive a moment after the lobby opens. Guests start blank.
+    const signedIn = !!getSession();
+    const baseName = signedIn ? (this.nostrDisplayName() ?? getLocalDriverName() ?? "") : "";
+    this.el.mpCreateName.value = baseName;
+    this.el.mpJoinName.value = baseName;
+    if (signedIn) {
+      void this.nostrDisplayNameAsync().then((nostrName) => {
+        if (!nostrName) return;
+        if (this.el.mpCreateName.value === baseName) this.el.mpCreateName.value = nostrName;
+        if (this.el.mpJoinName.value === baseName) this.el.mpJoinName.value = nostrName;
+      });
+    }
     this.el.mpCreatePass.value = "";
     this.el.mpJoinPass.value = "";
     if (!this.el.mpCreateRoom.value.trim()) this.el.mpCreateRoom.value = "circuit";
@@ -967,12 +976,27 @@ export class Game {
     return raw.replace(/[^\w\- ]/g, "").trim().slice(0, 24) || "circuit";
   }
 
-  /** Sanitized display name from the signed-in Nostr profile, or null when signed out. */
+  /** Board-safe version of a Nostr profile name — null when there is no usable name. */
+  private profileNameToBoard(name: string | undefined): string | null {
+    if (!name) return null;
+    const cleaned = sanitizeDriverName(name);
+    return cleaned === "RACER" ? null : cleaned;
+  }
+
+  /** Username from the signed-in Nostr profile — never the npub. */
   private nostrDisplayName(): string | null {
     const session = getSession();
     if (!session) return null;
-    const cleaned = sanitizeDriverName(profileLabel(session.pubkey, getCurrentProfile()));
-    return cleaned === "RACER" ? null : cleaned;
+    const profile = getCurrentProfile();
+    return this.profileNameToBoard(profile?.displayName || profile?.name);
+  }
+
+  /** Await the profile (cached after first fetch) so the username lands — not the npub. */
+  private async nostrDisplayNameAsync(): Promise<string | null> {
+    const session = getSession();
+    if (!session) return null;
+    const profile = await fetchProfile(session.pubkey);
+    return this.profileNameToBoard(profile?.displayName || profile?.name);
   }
 
   private async createMultiplayerRoom() {
@@ -2943,7 +2967,14 @@ export class Game {
     }
     if (session) {
       if (!this.el.driverName.value.trim()) {
-        this.el.driverName.value = this.nostrDisplayName() ?? getLocalDriverName() ?? "";
+        const baseName = this.nostrDisplayName() ?? getLocalDriverName() ?? "";
+        this.el.driverName.value = baseName;
+        // Upgrade to the real username once the profile lands (unless the user typed).
+        void this.nostrDisplayNameAsync().then((nostrName) => {
+          if (nostrName && this.el.driverName.value === baseName) {
+            this.el.driverName.value = nostrName;
+          }
+        });
       }
       this.el.driverName.focus();
     }

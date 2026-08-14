@@ -592,7 +592,8 @@ async function main() {
   await page.waitForTimeout(150);
   assert("mp:create-view", await visible(page, "#mp-create"));
   const createName = await page.locator("#mp-create-name").inputValue();
-  assert("mp:name-prefilled-nostr", createName !== "", `value="${createName}"`);
+  // Profile-less test key: name stays empty — but must NEVER fall back to the npub
+  assert("mp:name-no-npub-fallback", !createName.startsWith("npub"), `value="${createName}"`);
 
   // Back from create while idle
   await page.click("#mp-create-back");
@@ -601,7 +602,7 @@ async function main() {
   // Join view back
   await page.click("#mp-goto-join");
   assert("mp:join-view", await visible(page, "#mp-join"));
-  assert("mp:join-name-prefilled-nostr", (await page.locator("#mp-join-name").inputValue()) !== "");
+  assert("mp:join-name-no-npub-fallback", !(await page.locator("#mp-join-name").inputValue()).startsWith("npub"));
   await page.click("#mp-join-back");
   assert("mp:join-back-entry", await visible(page, "#mp-entry"));
 
@@ -815,6 +816,31 @@ async function main() {
   await page.click("#mp-create-back");
   await page.click("#mp-back-btn");
   assert("event:back-home", await visible(page, "#overlay"));
+
+  // --- Nostr account creation → the game recognizes the username (never the npub) ---
+  await page.click("#nostr-btn");
+  await page.waitForTimeout(300);
+  if (await visible(page, "#nostr-in-view")) {
+    await page.click("#nostr-logout-btn");
+    await page.waitForTimeout(400);
+  }
+  await page.click("#nostr-create-btn");
+  await page.fill("#nostr-username", "SuiteRacer");
+  await page.click("#nostr-create-go");
+  await page.waitForTimeout(1500);
+  assert("nostr:create-backup-view", await visible(page, "#nostr-backup-view"));
+  await page.click("#nostr-new-done");
+  await page.waitForTimeout(800);
+  const chipText = await page.locator("#nostr-btn-label").innerText();
+  assert("nostr:chip-username", chipText.includes("SUIT"), chipText);
+  await page.click("#multiplayer-btn");
+  await page.waitForTimeout(400);
+  await page.click("#mp-goto-create");
+  await page.waitForTimeout(300);
+  const createName2 = await page.locator("#mp-create-name").inputValue();
+  assert("nostr:mp-name-username", createName2.startsWith("SuiteRace"), `value="${createName2}"`);
+  await page.click("#mp-create-back");
+  await page.click("#mp-back-btn");
 
   // Presence API after traffic
   try {
