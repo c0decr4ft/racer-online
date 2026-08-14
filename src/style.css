@@ -431,6 +431,70 @@ html.touch-mode [contenteditable="true"] {
   display: none;
 }
 
+/* Final-lap flash — same pulse family as best-flash, accent colored */
+.final-lap-flash {
+  position: absolute;
+  top: 26%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: clamp(1.6rem, 6vw, 2.6rem);
+  letter-spacing: 0.22em;
+  color: var(--accent);
+  text-shadow:
+    0 0 22px var(--glow),
+    0 3px 0 rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+  z-index: 7;
+  animation: best-flash-in 0.35s ease-out both;
+}
+
+.final-lap-flash.hidden {
+  display: none;
+}
+
+/* Finish-screen accomplishment pills */
+.finish-callouts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.45rem;
+  margin: 0.35rem 0 0.6rem;
+}
+
+.finish-callouts.hidden {
+  display: none !important;
+}
+
+.finish-callout {
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--line);
+  font-family: var(--font-display);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.finish-callout.is-pb {
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: 0 0 14px rgba(255, 59, 46, 0.25);
+}
+
+.finish-callout.is-lap {
+  border-color: var(--accent-soft);
+  color: var(--accent-soft);
+}
+
+.finish-callout.is-podium {
+  border-color: #ffc857;
+  color: #ffc857;
+  box-shadow: 0 0 14px rgba(255, 200, 87, 0.22);
+}
+
 @keyframes countdown-pulse {
   0% {
     opacity: 0;

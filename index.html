@@ -70,6 +70,7 @@
           <div class="best-flash-label">BEST</div>
           <div id="best-flash-time">--:--.---</div>
         </div>
+        <div id="final-lap-flash" class="final-lap-flash hidden" aria-live="polite">FINAL LAP</div>
         <div id="countdown" class="countdown hidden" aria-live="assertive">3</div>
         <canvas id="minimap" class="minimap hidden" width="160" height="160" aria-hidden="true"></canvas>
         <div id="rearview-frame" class="rearview-frame hidden" aria-hidden="true">
@@ -593,6 +594,7 @@
             <p class="tagline finish-stat">Total <span id="final-time">0:00.000</span></p>
             <p class="tagline finish-stat">Best lap <span id="final-best">--:--.---</span></p>
           </div>
+          <div id="finish-callouts" class="finish-callouts hidden"></div>
           <div id="name-entry" class="name-entry hidden">
             <p class="name-entry-label" id="name-entry-label">Top 10 time — up to 15 letters or numbers</p>
             <input

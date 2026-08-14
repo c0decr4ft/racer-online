@@ -28,6 +28,7 @@ import {
   boardSourceLabel,
   fetchLeaderboard,
   formatBoardTime,
+  getLocalBest,
   getLocalDriverName,
   sanitizeDriverName,
   saveLocalDriverName,
@@ -2734,6 +2735,7 @@ export class Game {
           this.finishRace();
         } else {
           this.el.lap.innerHTML = `${this.lap}<span>/${TOTAL_LAPS}</span>`;
+          if (this.lap === TOTAL_LAPS) this.showFinalLapFlash();
         }
       } else if (!this.crossedOnce) {
         this.crossedOnce = true;
@@ -2755,11 +2757,26 @@ export class Game {
     this.bestFlashUntil = performance.now() + 2000;
   }
 
+  private finalLapFlashUntil = 0;
+
+  private showFinalLapFlash() {
+    const el = document.getElementById("final-lap-flash");
+    if (!el) return;
+    el.classList.remove("hidden");
+    el.style.animation = "none";
+    void el.offsetWidth;
+    el.style.animation = "";
+    this.finalLapFlashUntil = performance.now() + 2200;
+  }
+
   private updateBestFlash() {
-    if (this.bestFlashUntil <= 0) return;
-    if (performance.now() >= this.bestFlashUntil) {
+    if (this.bestFlashUntil > 0 && performance.now() >= this.bestFlashUntil) {
       this.bestFlashUntil = 0;
       this.el.bestFlash.classList.add("hidden");
+    }
+    if (this.finalLapFlashUntil > 0 && performance.now() >= this.finalLapFlashUntil) {
+      this.finalLapFlashUntil = 0;
+      document.getElementById("final-lap-flash")?.classList.add("hidden");
     }
   }
 
@@ -2932,6 +2949,24 @@ export class Game {
     } else {
       this.el.finishEyebrow.textContent = "RACE COMPLETE";
       this.el.finishTitle.textContent = `P${place}`;
+    }
+
+    // Accomplishment pills — personal records vs device best, podium
+    const callouts = document.getElementById("finish-callouts");
+    if (callouts) {
+      const pills: string[] = [];
+      const pb = getLocalBest(this.trackId);
+      const isPersonalBest =
+        this.pendingFinishMs > 0 && (pb.timeMs === null || this.pendingFinishMs < pb.timeMs);
+      const isBestLap =
+        Number.isFinite(this.bestLap) &&
+        this.bestLap > 0 &&
+        (pb.bestLapMs === null || this.bestLap < pb.bestLapMs);
+      if (isPersonalBest) pills.push(`<span class="finish-callout is-pb">NEW PERSONAL BEST</span>`);
+      if (isBestLap) pills.push(`<span class="finish-callout is-lap">NEW BEST LAP</span>`);
+      if (place <= 3) pills.push(`<span class="finish-callout is-podium">PODIUM FINISH</span>`);
+      callouts.innerHTML = pills.join("");
+      callouts.classList.toggle("hidden", pills.length === 0);
     }
 
     // Event Mode: winner gets the pot checkout; everyone else sees "winner takes the pot".

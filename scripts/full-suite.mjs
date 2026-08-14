@@ -464,9 +464,15 @@ async function main() {
     (await page.evaluate(() => window.__physicsBackend)) === "cpp-wasm",
   );
   // Live presence chip on the home hero (this page's own heartbeat counts)
-  await page.waitForTimeout(2500);
-  const liveText = await page.locator("#home-live-text").innerText().catch(() => "");
-  assert("home:live-chip", /racer(s)? online now/.test(liveText), liveText);
+  const liveOk = await page
+    .waitForFunction(
+      () => /racer(s)? online now/.test(document.getElementById("home-live-text")?.textContent || ""),
+      null,
+      { timeout: 10_000 },
+    )
+    .then(() => true)
+    .catch(() => false);
+  assert("home:live-chip", liveOk, "");
   await measureFps(page, "home", 1500);
 
   // --- Mute ---
@@ -786,6 +792,15 @@ async function main() {
   // Signed score save — host (signed in via fake NIP-07) saves a real
   // signature-verified score through the server. Runs inside the 20s vote window.
   assert("mp:finish-save-row", await visible(page, "#name-entry"));
+  // Accomplishment pills on the results screen (fresh device → records expected)
+  const calloutText = await page.locator("#finish-callouts").innerText().catch(() => "");
+  assert("finish:callouts", /PERSONAL BEST|BEST LAP/.test(calloutText), calloutText.slice(0, 60));
+  // Final-lap flash element works
+  const flashOk = await page.evaluate(() => {
+    window.__game.showFinalLapFlash();
+    return !document.getElementById("final-lap-flash").classList.contains("hidden");
+  });
+  assert("hud:final-lap-flash", flashOk, "");
   await page.fill("#driver-name", "E2E");
   await page.click("#submit-score-btn");
   await page.waitForTimeout(1500);
