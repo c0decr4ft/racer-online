@@ -898,6 +898,21 @@ async function main() {
   assert("nostr:feedback-name-prefill", fbName === "SuiteRacer", `value="${fbName}"`);
   await page.click("#feedback-compose-cancel");
 
+  // --- Abuse guards (after the feedback:post test so the rate window can't collide) ---
+  const fbGet = await fetch("http://127.0.0.1:8787/api/feedback").then((r) => r.json());
+  assert("api:feedback-private", fbGet.ok === true && !("messages" in fbGet), "inbox contents not public");
+  let lastStatus = 0;
+  for (let i = 0; i < 7; i++) {
+    lastStatus = (
+      await fetch("http://127.0.0.1:8787/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: `rl-${i}-${Date.now()}`, text: "rate limit probe", createdAt: Date.now() }),
+      })
+    ).status;
+  }
+  assert("api:feedback-rate-limited", lastStatus === 429, `last=${lastStatus}`);
+
   // Presence API after traffic
   try {
     const pres = await fetch("http://127.0.0.1:8787/api/presence").then((r) => r.json());

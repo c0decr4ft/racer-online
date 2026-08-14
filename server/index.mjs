@@ -581,6 +581,47 @@ function cors(res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
+/* ── Abuse guards ─────────────────────────────────────────────── */
+/** Per-IP sliding-window rate limiter (in-memory; per-endpoint limits below). */
+const rateBuckets = new Map();
+function rateLimit(key, limit, windowMs) {
+  const now = Date.now();
+  let b = rateBuckets.get(key);
+  if (!b || now > b.resetAt) {
+    b = { count: 0, resetAt: now + windowMs };
+    rateBuckets.set(key, b);
+  }
+  b.count += 1;
+  return b.count <= limit;
+}
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, b] of rateBuckets) if (now > b.resetAt) rateBuckets.delete(k);
+}, 60_000).unref();
+
+function clientIp(req) {
+  return String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown")
+    .split(",")[0]
+    .trim();
+}
+
+function tooMany(res, req, bucket, limit, windowMs) {
+  if (rateLimit(`${bucket}:${clientIp(req)}`, limit, windowMs)) return false;
+  res.writeHead(429, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ ok: false, error: "rate limited — slow down" }));
+  return true;
+}
+
+/** Read a request body with a hard size cap; null when exceeded. */
+async function readBody(req, limitBytes) {
+  let body = "";
+  for await (const chunk of req) {
+    body += chunk;
+    if (body.length > limitBytes) return null;
+  }
+  return body;
+}
+
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -1003,8 +1044,13 @@ const httpServer = createServer(async (req, res) => {
   }
 
   if (url.pathname === "/api/leaderboard" && req.method === "POST") {
-    let body = "";
-    for await (const chunk of req) body += chunk;
+    if (tooMany(res, req, "board", 12, 60_000)) return;
+    const body = await readBody(req, 64 * 1024);
+    if (body === null) {
+      res.writeHead(413, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "payload too large" }));
+      return;
+    }
     try {
       const data = JSON.parse(body || "{}");
       // Verified-only board: submissions must be signed Nostr score events.
@@ -1046,8 +1092,13 @@ const httpServer = createServer(async (req, res) => {
 
   // NUT-18 payment-request transport: payer wallets POST {id, mint, unit, proofs} here.
   if (url.pathname === "/api/ecash/pay" && req.method === "POST") {
-    let body = "";
-    for await (const chunk of req) body += chunk;
+    if (tooMany(res, req, "ecash", 20, 60_000)) return;
+    const body = await readBody(req, 256 * 1024);
+    if (body === null) {
+      res.writeHead(413, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "payload too large" }));
+      return;
+    }
     try {
       if (payments.mock) throw new Error("mock mode");
       const payload = JSON.parse(body || "{}");
@@ -1075,8 +1126,13 @@ const httpServer = createServer(async (req, res) => {
   }
 
   if (url.pathname === "/api/presence" && req.method === "POST") {
-    let body = "";
-    for await (const chunk of req) body += chunk;
+    if (tooMany(res, req, "presence", 30, 60_000)) return;
+    const body = await readBody(req, 8 * 1024);
+    if (body === null) {
+      res.writeHead(413, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "payload too large" }));
+      return;
+    }
     try {
       const data = JSON.parse(body || "{}");
       const id = normalizeSessionId(data.id);
@@ -1108,15 +1164,21 @@ const httpServer = createServer(async (req, res) => {
   }
 
   if (url.pathname === "/api/feedback" && req.method === "GET") {
+    // Inbox contents are private to the owner (emailed) — only expose a count.
     const store = loadFeedback();
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ ok: true, messages: store.messages, source: "server" }));
+    res.end(JSON.stringify({ ok: true, count: store.messages.length, source: "server" }));
     return;
   }
 
   if (url.pathname === "/api/feedback" && req.method === "POST") {
-    let body = "";
-    for await (const chunk of req) body += chunk;
+    if (tooMany(res, req, "feedback", 5, 60_000)) return;
+    const body = await readBody(req, 16 * 1024);
+    if (body === null) {
+      res.writeHead(413, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "payload too large" }));
+      return;
+    }
     try {
       const data = JSON.parse(body || "{}");
       const msg = normalizeFeedbackMessage({
@@ -1192,6 +1254,11 @@ wss.on("connection", (ws) => {
   let client = null;
 
   ws.on("message", (data) => {
+    // Hard cap: legit messages are ≤ a few KB (claimPot carries a token).
+    if (data.length > 16_384) {
+      send(ws, { t: "error", message: "message too large" });
+      return;
+    }
     let msg;
     try {
       msg = JSON.parse(String(data));
@@ -1267,10 +1334,11 @@ wss.on("connection", (ws) => {
       if (now - client.lastPoseAt < NET_TICK_MS * 0.55) return;
       client.lastPoseAt = now;
       const p = client.pose;
-      p.x = +msg.x || 0;
-      p.z = +msg.z || 0;
-      p.h = +msg.h || 0;
-      p.s = +msg.s || 0;
+      // Sanity clamps — the client is untrusted; keep poses inside plausible bounds.
+      p.x = Math.max(-20_000, Math.min(20_000, +msg.x || 0));
+      p.z = Math.max(-20_000, Math.min(20_000, +msg.z || 0));
+      p.h = Math.max(-10, Math.min(10, +msg.h || 0));
+      p.s = Math.max(-150, Math.min(150, +msg.s || 0)); // ±540 km/h ceiling
       p.g = String(msg.g || "1").slice(0, 2);
       p.lap = Math.max(1, Math.min(99, msg.lap | 0));
       // Ignore client kind — room class is locked by the host at create.
