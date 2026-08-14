@@ -902,7 +902,200 @@ html.touch-mode [contenteditable="true"] {
   font-size: 0.75rem;
 }
 
-/* Global utility — every toggle of .hidden should actually hide. */
+/* ── Event Mode (buy-in + pot) ───────────────────────────────── */
+.mp-buyin {
+  width: min(100%, 18rem);
+  margin-top: 0.55rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.mp-buyin-banner {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: #ffc857;
+  text-align: center;
+}
+
+.mp-invoice-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.7rem;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.mp-invoice-qr {
+  width: 168px;
+  height: 168px;
+  padding: 0.35rem;
+  background: #fff;
+  border: 1px solid var(--line);
+}
+
+.mp-invoice-bolt11 {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  font-size: 0.68rem;
+  padding: 0.45rem 0.6rem;
+  text-align: center;
+  outline: none;
+}
+
+.mp-invoice-status {
+  margin: 0;
+  color: var(--muted);
+  font-family: "Rajdhani", sans-serif;
+  font-size: 0.85rem;
+  letter-spacing: 0.05em;
+}
+
+.mp-invoice-status.is-paid {
+  color: #1dbf6a;
+  font-weight: 700;
+}
+
+.mp-invoice-actions {
+  display: flex;
+  gap: 0.45rem;
+  width: 100%;
+}
+
+.mp-invoice-actions > button {
+  flex: 1;
+  margin: 0;
+  padding: 0.55rem 0.6rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+}
+
+/* Paid — collapse the payment UI down to just the status line */
+.mp-invoice-box.is-paid .mp-invoice-qr,
+.mp-invoice-box.is-paid .mp-invoice-bolt11,
+.mp-invoice-box.is-paid .mp-invoice-actions {
+  display: none;
+}
+
+.mp-paid-badge {
+  margin-left: 0.5rem;
+  color: #1dbf6a;
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+}
+
+.mp-unpaid-badge {
+  margin-left: 0.5rem;
+  color: #ffc857;
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+}
+
+.event-checkout {
+  width: 100%;
+  margin: 0.4rem 0 0.55rem;
+  padding: 0.85rem;
+  border: 1px solid #ffc857;
+  background: rgba(255, 200, 87, 0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.event-checkout.hidden,
+.event-lost-note.hidden {
+  display: none !important;
+}
+
+.event-pot {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.3rem;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  color: #ffc857;
+  text-align: center;
+}
+
+.event-tip-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  color: var(--text);
+  font-family: "Rajdhani", sans-serif;
+  font-size: 0.9rem;
+  letter-spacing: 0.05em;
+  text-align: left;
+}
+
+.event-tip-row input[type="range"] {
+  width: 100%;
+  accent-color: #ffc857;
+}
+
+.event-breakdown {
+  margin: 0;
+  color: var(--muted);
+  font-family: "Rajdhani", sans-serif;
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+.event-checkout input[type="text"] {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 0.9rem;
+  padding: 0.6rem 0.7rem;
+  outline: none;
+  text-align: center;
+}
+
+.event-checkout input[type="text"]:focus {
+  border-color: #ffc857;
+}
+
+.event-or {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-align: center;
+}
+
+.event-payout-status {
+  margin: 0;
+  font-family: "Rajdhani", sans-serif;
+  font-size: 0.9rem;
+  letter-spacing: 0.04em;
+  color: #9ad4a8;
+  text-align: center;
+}
+
+.event-payout-status.nostr-error {
+  color: #ff8a7a !important;
+}
+
+.event-lost-note {
+  margin: 0.4rem 0 0.55rem;
+  color: #ffc857;
+  font-family: "Rajdhani", sans-serif;
+  font-size: 0.9rem;
+  letter-spacing: 0.08em;
+  text-align: center;
+}
 .hidden {
   display: none !important;
 }

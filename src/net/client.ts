@@ -7,6 +7,7 @@ import {
   MAX_EXTRAPOLATE_MS,
   NET_TICK_MS,
   decodeStateBinary,
+  type EventRoomInfo,
   type LobbyPhase,
   type NetVehicleKind,
   type NetWeatherMode,
@@ -291,6 +292,17 @@ export type NetHandlers = {
     maxPlayers: number;
   }) => void;
   onStart: (at: number, trackId: string, kind: NetVehicleKind, weather: NetWeatherMode) => void;
+  /** Event Mode — your buy-in invoice arrived from the server. */
+  onEventInvoice: (bolt11: string, amountSats: number, mock: boolean) => void;
+  /** Event Mode — pot claim result. */
+  onPayoutResult: (result: {
+    ok: boolean;
+    winnerSats?: number;
+    tipSats?: number;
+    tipPaid?: boolean;
+    mock?: boolean;
+    error?: string;
+  }) => void;
   /** Another (or local) driver crashed — reset everyone to the start grid. */
   onCrashReset: (byId: string, byName: string) => void;
   onRaceResult: (
@@ -322,6 +334,8 @@ export type RoomConnectOpts = {
   trackId?: string;
   /** Nostr identity (64-hex pubkey) — rides along to lobbies/leaderboards. */
   pubkey?: string;
+  /** Event Mode (host, on create): buy-in per racer in sats. */
+  eventBuyInSats?: number;
   mode: "create" | "join";
 };
 
@@ -348,6 +362,10 @@ export class NetClient {
   weather: NetWeatherMode = "dry";
   maxPlayers = 8;
   phase: LobbyPhase | "" = "";
+  /** Event Mode room state — null in normal rooms. */
+  event: EventRoomInfo | null = null;
+  /** Event Mode — this client's own buy-in invoice. */
+  myBuyIn: { bolt11: string; amountSats: number } | null = null;
   /** Bumps on each connect/disconnect so stale socket handlers are ignored. */
   private connGen = 0;
   private finishSent = false;
@@ -488,6 +506,7 @@ export class NetClient {
               color: opts.color,
               accent: opts.accent,
               pubkey: opts.pubkey,
+              event: opts.eventBuyInSats ? { buyInSats: opts.eventBuyInSats } : undefined,
             }
           : {
               t: "join" as const,
@@ -532,6 +551,8 @@ export class NetClient {
         this.weather = applyWireWeather(msg.weather, this.weather);
         this.maxPlayers = msg.maxPlayers;
         this.phase = msg.phase;
+        this.event = msg.event ?? null;
+        this.myBuyIn = null;
         this.pending = null;
         this.roster.clear();
         this.clockReady = false;
@@ -565,6 +586,7 @@ export class NetClient {
         this.kind = msg.kind === "bike" ? "bike" : "car";
         this.weather = applyWireWeather(msg.weather, this.weather);
         this.maxPlayers = msg.maxPlayers;
+        this.event = msg.event ?? null;
         this.roster.clear();
         this.rememberPlayers(msg.players);
         this.handlers.onLobby({ ...msg, weather: this.weather });
@@ -580,6 +602,7 @@ export class NetClient {
         this.handlers.onCrashReset(msg.byId, msg.byName);
       } else if (msg.t === "raceResult") {
         this.phase = "finished";
+        if (msg.event !== undefined) this.event = msg.event;
         this.handlers.onRaceResult(
           msg.winnerId,
           msg.winnerName,
@@ -596,6 +619,18 @@ export class NetClient {
         // Legacy JSON state fallback (older servers).
         const at = this.localStamp(msg.at ?? 0, recvNow);
         this.emitState(msg.players, at);
+      } else if (msg.t === "eventInvoice") {
+        this.myBuyIn = { bolt11: msg.bolt11, amountSats: msg.amountSats };
+        this.handlers.onEventInvoice(msg.bolt11, msg.amountSats, !!msg.mock);
+      } else if (msg.t === "payoutResult") {
+        this.handlers.onPayoutResult({
+          ok: msg.ok,
+          winnerSats: msg.winnerSats,
+          tipSats: msg.tipSats,
+          tipPaid: msg.tipPaid,
+          mock: msg.mock,
+          error: msg.error,
+        });
       } else if (msg.t === "pong") {
         this.latency = Math.max(0, performance.now() - msg.n);
       } else if (msg.t === "error") {
@@ -658,6 +693,8 @@ export class NetClient {
     this.kind = "car";
     this.maxPlayers = 8;
     this.phase = "";
+    this.event = null;
+    this.myBuyIn = null;
     this.finishSent = false;
     this.pending = null;
     this.roster.clear();
@@ -716,6 +753,20 @@ export class NetClient {
   voteForTrack(trackId: string) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.phase !== "finished") return;
     this.ws.send(JSON.stringify({ t: "vote", trackId }));
+  }
+
+  /** Event Mode — winner claims the pot; tip 0–100 goes to the dev. */
+  claimPot(tipPercent: number, lnAddress?: string, invoice?: string) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.myId) return;
+    if (this.phase !== "finished" || !this.event) return;
+    this.ws.send(
+      JSON.stringify({
+        t: "claimPot",
+        tipPercent: Math.max(0, Math.min(100, Math.round(tipPercent))),
+        lnAddress: lnAddress || undefined,
+        invoice: invoice || undefined,
+      }),
+    );
   }
 
   /** Call from render loop; sends at ~60Hz during a live race. */

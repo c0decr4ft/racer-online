@@ -17,6 +17,15 @@ export type NetVehicleKind = "car" | "bike";
 export type NetWeatherMode = "dry" | "night" | "rain";
 export type LobbyPhase = "lobby" | "racing" | "finished" | "starting";
 
+/** Event Mode room state — buy-in gate + pot. Present only in event rooms. */
+export type EventRoomInfo = {
+  buyInSats: number;
+  paidIds: string[];
+  potSats: number;
+  /** True when the server runs the mock payment adapter (dev/testing — fake sats). */
+  mock?: boolean;
+};
+
 export type PlayerPose = {
   id: string;
   name: string;
@@ -59,6 +68,8 @@ export type ClientMsg =
       accent?: number;
       /** Nostr identity (64-hex pubkey) of the host. */
       pubkey?: string;
+      /** Event Mode — buy-in per racer in sats; host cannot start until all paid. */
+      event?: { buyInSats: number };
     }
   | {
       t: "join";
@@ -85,6 +96,8 @@ export type ClientMsg =
   | { t: "finish"; timeMs: number; bestLapMs: number }
   | { t: "crash" }
   | { t: "vote"; trackId: string }
+  /** Event Mode — winner claims the pot: tip 0–100% to the dev, rest via LN address or invoice. */
+  | { t: "claimPot"; tipPercent: number; lnAddress?: string; invoice?: string }
   /** Host-only. Optional weather re-asserts the room setting on play. */
   | { t: "start"; weather?: NetWeatherMode }
   | { t: "ping"; n: number };
@@ -102,6 +115,7 @@ export type ServerMsg =
       weather: NetWeatherMode;
       maxPlayers: number;
       phase: LobbyPhase;
+      event?: EventRoomInfo | null;
     }
   | { t: "join"; player: PlayerPose }
   | { t: "leave"; id: string; hostId?: string }
@@ -114,9 +128,22 @@ export type ServerMsg =
       weather: NetWeatherMode;
       hostId: string;
       maxPlayers: number;
+      event?: EventRoomInfo | null;
     }
   | { t: "state"; players: PlayerPose[]; at?: number }
   | { t: "start"; at: number; trackId: string; kind: NetVehicleKind; weather: NetWeatherMode }
+  /** Event Mode — your personal buy-in invoice (pay with any Lightning wallet). */
+  | { t: "eventInvoice"; bolt11: string; amountSats: number; mock?: boolean }
+  /** Event Mode — result of a pot claim attempt. */
+  | {
+      t: "payoutResult";
+      ok: boolean;
+      winnerSats?: number;
+      tipSats?: number;
+      tipPaid?: boolean;
+      mock?: boolean;
+      error?: string;
+    }
   /** One driver exploded — everyone resets to the start grid. */
   | { t: "crashReset"; byId: string; byName: string }
   | {
@@ -126,6 +153,7 @@ export type ServerMsg =
       timeMs: number;
       trackOptions: string[];
       voteEndsAt: number;
+      event?: EventRoomInfo | null;
     }
   | { t: "voteUpdate"; votes: Record<string, number>; received: number; total: number }
   | { t: "voteResult"; trackId: string }

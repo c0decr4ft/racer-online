@@ -1,6 +1,7 @@
 import { WebSocketServer } from "ws";
 import { verifyEvent } from "nostr-tools";
 import { createServer } from "node:http";
+import { payments, recordPayout, DEV_TIP_LN_ADDRESS } from "./payments.mjs";
 import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { dirname, join, extname, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -89,7 +90,8 @@ function normalizeSessionId(raw) {
 /** @typedef {{ id: string, name: string, color: number, accent: number, kind: string, pubkey?: string, x: number, z: number, h: number, s: number, g: string, lap: number }} Pose */
 /** @typedef {{ id: string, name: string, color: number, room: string, ws: import('ws').WebSocket, pose: Pose, lastPoseAt: number }} Client */
 /** @typedef {{ trackId: string, order: number }} TrackVote */
-/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, lastCrashAt: number, clients: Map<string, Client> }} Room */
+/** @typedef {{ paymentHash: string, bolt11: string, paidAt: number }} BuyIn */
+/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, lastCrashAt: number, clients: Map<string, Client>, isEvent: boolean, buyInSats: number, buyIns: Map<string, BuyIn>, potSats: number, potClaimed: boolean }} Room */
 /** @typedef {{ name: string, timeMs: number, bestLapMs?: number, at: number, trackId?: string, pubkey: string, eventId?: string }} BoardEntry */
 /** @typedef {Record<string, BoardEntry[]>} BoardStore */
 /** @typedef {{ at: number, count: number }} PresenceSample */
@@ -121,6 +123,15 @@ function clampMaxPlayers(raw) {
   const n = Math.round(Number(raw));
   if (!Number.isFinite(n)) return DEFAULT_MAX_PLAYERS;
   return Math.max(MIN_PLAYERS_CAP, Math.min(MAX_PLAYERS, n));
+}
+
+const MIN_BUYIN_SATS = 1;
+const MAX_BUYIN_SATS = 1_000_000;
+
+function clampBuyIn(raw) {
+  const n = Math.round(Number(raw));
+  if (!Number.isFinite(n) || n < MIN_BUYIN_SATS) return 0;
+  return Math.min(MAX_BUYIN_SATS, n);
 }
 
 function normalizeColor(raw, fallback) {
@@ -715,7 +726,38 @@ function lobbySnapshot(room) {
     weather: room.weather || "dry",
     hostId: room.hostId,
     maxPlayers: room.maxPlayers,
+    event: eventInfo(room),
   };
+}
+
+/** @param {Room} room — Event Mode state for lobby/UI, or null for normal rooms. */
+function eventInfo(room) {
+  if (!room.isEvent) return null;
+  const paidIds = [];
+  for (const [id, b] of room.buyIns) if (b.paidAt > 0) paidIds.push(id);
+  return { buyInSats: room.buyInSats, paidIds, potSats: room.potSats, mock: payments.mock };
+}
+
+/** Create a buy-in invoice for a freshly joined event-room racer (async). */
+async function createBuyInInvoice(room, client) {
+  try {
+    const inv = await payments.createInvoice({
+      amountSats: room.buyInSats,
+      memo: `Racer Online event ${room.name} — buy-in ${room.buyInSats} sats`,
+    });
+    // Room may have been replaced/deleted or the racer left while awaiting
+    if (rooms.get(room.name) !== room || !room.clients.has(client.id)) return;
+    room.buyIns.set(client.id, { paymentHash: inv.paymentHash, bolt11: inv.paymentRequest, paidAt: 0 });
+    send(client.ws, {
+      t: "eventInvoice",
+      bolt11: inv.paymentRequest,
+      amountSats: room.buyInSats,
+      mock: payments.mock,
+    });
+  } catch (err) {
+    console.warn(`[event] invoice failed for ${client.name}:`, err?.message || err);
+    send(client.ws, { t: "error", message: "could not create buy-in invoice — try rejoining" });
+  }
 }
 
 /**
@@ -759,6 +801,12 @@ function admitClient(ws, msg, mode) {
       voteEndsAt: 0,
       lastCrashAt: 0,
       clients: new Map(),
+      // Event Mode: buy-in gate + winner-takes-the-pot
+      isEvent: !!msg.event,
+      buyInSats: clampBuyIn(msg.event?.buyInSats),
+      buyIns: new Map(),
+      potSats: 0,
+      potClaimed: false,
     };
     rooms.set(roomName, room);
   } else {
@@ -840,10 +888,13 @@ function admitClient(ws, msg, mode) {
     weather: room.weather || "dry",
     maxPlayers: room.maxPlayers,
     phase: room.phase,
+    event: eventInfo(room),
   });
   broadcast(room, { t: "join", player: pose }, id);
   broadcast(room, { t: "notice", text: `${name} joined` });
   broadcast(room, lobbySnapshot(room));
+  // Event Mode: every racer gets their own buy-in invoice
+  if (room.isEvent) void createBuyInInvoice(room, client);
   console.log(
     `[${mode}] ${name} (${kind}) → ${roomName} (${room.clients.size}/${room.maxPlayers}) track=${room.trackId} weather=${room.weather || "dry"}`,
   );
@@ -1061,6 +1112,15 @@ wss.on("connection", (ws) => {
         return;
       }
       if (room.phase !== "lobby") return;
+      // Event Mode: the pot must be fully bought in before the race can start
+      if (room.isEvent) {
+        const unpaid = [...room.clients.values()].filter((c) => !room.buyIns.get(c.id)?.paidAt);
+        if (unpaid.length > 0) {
+          send(ws, { t: "error", message: `waiting for buy-ins: ${unpaid.map((c) => c.name).join(", ")}` });
+          return;
+        }
+        room.potSats = room.buyInSats * room.clients.size;
+      }
       if (msg.trackId != null) room.trackId = normalizeTrackId(msg.trackId);
       // Host may re-assert create-room weather on play (belt-and-suspenders).
       if (msg.weather != null && msg.weather !== "") {
@@ -1134,6 +1194,20 @@ wss.on("connection", (ws) => {
       const timeMs = Math.max(1_000, Math.min(3_600_000, Math.round(Number(msg.timeMs) || 0)));
       room.winnerId = client.id;
       room.phase = "finished";
+      // Event Mode: one race, winner takes the pot — no map vote / next round
+      if (room.isEvent) {
+        broadcast(room, {
+          t: "raceResult",
+          winnerId: client.id,
+          winnerName: client.name,
+          timeMs,
+          trackOptions: [],
+          voteEndsAt: 0,
+          event: eventInfo(room),
+        });
+        console.log(`[event] ${room.name} won by ${client.name} — pot ${room.potSats} sats`);
+        return;
+      }
       room.voteOptions = shuffledVoteTracks();
       room.votes.clear();
       room.voteOrder = 0;
@@ -1158,6 +1232,64 @@ wss.on("connection", (ws) => {
       if (!room.voteOptions.includes(trackId)) return;
       room.votes.set(client.id, { trackId, order: ++room.voteOrder });
       broadcastVoteState(room);
+      return;
+    }
+
+    if (msg.t === "claimPot") {
+      if (!room.isEvent || room.phase !== "finished") return;
+      if (client.id !== room.winnerId) return;
+      if (room.potClaimed || room.potSats <= 0) {
+        send(ws, { t: "payoutResult", ok: false, error: "pot already claimed" });
+        return;
+      }
+      const tipPercent = Math.max(0, Math.min(100, Math.round(Number(msg.tipPercent) || 0)));
+      const winnerSats = Math.floor((room.potSats * (100 - tipPercent)) / 100);
+      const tipSats = room.potSats - winnerSats;
+      const lnAddress = String(msg.lnAddress || "").trim();
+      const invoice = String(msg.invoice || "").trim();
+      if (!lnAddress && !invoice) {
+        send(ws, { t: "payoutResult", ok: false, error: "enter a lightning address or paste an invoice" });
+        return;
+      }
+      room.potClaimed = true; // lock before paying — no double claims
+      void (async () => {
+        try {
+          if (winnerSats > 0) {
+            if (lnAddress) await payments.payAddress(lnAddress, winnerSats, `Racer Online event win — ${room.name}`);
+            else await payments.payInvoice(invoice);
+          }
+          let tipPaid = false;
+          if (tipSats > 0 && DEV_TIP_LN_ADDRESS) {
+            try {
+              await payments.payAddress(DEV_TIP_LN_ADDRESS, tipSats, `Racer Online dev tip — ${room.name}`);
+              tipPaid = true;
+            } catch (err) {
+              console.warn(`[event] dev tip failed:`, err?.message || err);
+            }
+          }
+          recordPayout({
+            room: room.name,
+            winnerId: client.id,
+            winnerPubkey: client.pose.pubkey || null,
+            potSats: room.potSats,
+            winnerSats,
+            tipSats,
+            tipPercent,
+            tipPaid,
+            method: lnAddress ? "address" : "invoice",
+            mock: payments.mock,
+          });
+          send(ws, { t: "payoutResult", ok: true, winnerSats, tipSats, tipPaid, mock: payments.mock });
+          broadcast(room, { t: "notice", text: `${client.name} claimed the pot — ${winnerSats} sats` });
+          console.log(
+            `[event] ${room.name} pot ${room.potSats} sats → ${client.name} ${winnerSats} · tip ${tipSats}${tipPaid ? "" : " (not configured)"}`,
+          );
+        } catch (err) {
+          room.potClaimed = false; // payment failed — allow retry
+          send(ws, { t: "payoutResult", ok: false, error: String(err?.message || err).slice(0, 140) });
+        }
+      })();
+      return;
     }
   });
 
@@ -1170,6 +1302,7 @@ wss.on("connection", (ws) => {
     }
     room.clients.delete(client.id);
     room.votes.delete(client.id);
+    room.buyIns.delete(client.id); // event: drop their buy-in record (v1 — paid buy-ins are not refunded)
     console.log(`[leave] ${client.name}`);
     if (room.clients.size === 0) {
       rooms.delete(client.room);
@@ -1200,6 +1333,28 @@ setInterval(() => {
     }
   }
 }, NET_TICK_MS);
+
+// Event Mode: poll unpaid buy-in invoices; announce + refresh lobby when one lands.
+setInterval(() => {
+  for (const room of rooms.values()) {
+    if (!room.isEvent || room.phase !== "lobby") continue;
+    for (const [id, buyIn] of room.buyIns) {
+      if (buyIn.paidAt > 0) continue;
+      void payments.isPaid(buyIn.paymentHash).then((paid) => {
+        if (!paid || rooms.get(room.name) !== room) return;
+        const cur = room.buyIns.get(id);
+        if (!cur || cur.paidAt) return;
+        cur.paidAt = Date.now();
+        const client = room.clients.get(id);
+        console.log(`[event] ${room.name} buy-in paid by ${client?.name || id}`);
+        if (client) {
+          broadcast(room, { t: "notice", text: `${client.name} paid the buy-in` });
+        }
+        broadcast(room, lobbySnapshot(room));
+      });
+    }
+  }
+}, 3_000);
 
 // Drop stale presence sessions periodically so GET stays fresh without heartbeats.
 setInterval(() => {

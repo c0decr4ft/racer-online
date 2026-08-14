@@ -94,7 +94,8 @@ export async function publishProfileName(
     tags: [],
   })) as Parameters<typeof pool.publish>[1];
   try {
-    await pool.publish(DEFAULT_RELAYS, event);
+    // Relay acks can be slow — never let them stall account creation.
+    await Promise.race([pool.publish(DEFAULT_RELAYS, event), new Promise((r) => setTimeout(r, 4_000))]);
   } catch {
     /* best-effort — relays can be re-published to later */
   }
