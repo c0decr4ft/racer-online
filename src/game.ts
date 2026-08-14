@@ -38,6 +38,7 @@ import {
 import { getSession, onSessionChange } from "./nostr/session";
 import { ensureNostrLogin, getCurrentProfile } from "./nostr/ui";
 import { fetchProfile, shortNpub } from "./nostr/profile";
+import { fetchPresence } from "./net/presence";
 import QRCode from "qrcode";
 import { GameAudio } from "./audio";
 import { setFeedbackBtnVisible } from "./feedbackCompose";
@@ -627,6 +628,29 @@ export class Game {
     });
 
     this.bindMuteBtn();
+
+    // Live presence chip on the home hero ("N racers online now")
+    void this.updateHomeLive();
+    window.setInterval(() => void this.updateHomeLive(), 30_000);
+  }
+
+  /** Fetch presence and show the live-online chip on the home screen. */
+  private async updateHomeLive() {
+    const el = document.getElementById("home-live");
+    const text = document.getElementById("home-live-text");
+    if (!el || !text) return;
+    try {
+      const snap = await fetchPresence();
+      const n = Math.max(0, snap?.now ?? 0);
+      if (n > 0) {
+        text.textContent = n === 1 ? "1 racer online now" : `${n} racers online now`;
+        el.classList.remove("hidden");
+      } else {
+        el.classList.add("hidden");
+      }
+    } catch {
+      el.classList.add("hidden");
+    }
   }
 
   private bindMuteBtn() {
