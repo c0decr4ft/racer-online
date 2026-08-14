@@ -16,3 +16,7 @@ services:
         value: 0.0.0.0
       - key: PORT
         value: 10000
+      # Event Mode pot wallet: real sats via the public Cashu mint (any mint URL works).
+      # Unset = mock mode (fake sats) for dev/tests.
+      - key: CASHU_MINT_URL
+        value: https://mint.minibits.cash
