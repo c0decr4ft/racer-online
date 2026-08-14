@@ -1169,7 +1169,7 @@ export class Game {
     if (event) {
       const banner = document.getElementById("mp-buyin-banner");
       if (banner) {
-        banner.textContent = `BUY-IN ${event.buyInSats} SATS · POT ${event.buyInSats * this.lobbyPlayers.length} SATS${event.mock ? " · DEV MODE (fake sats)" : ""}`;
+        banner.textContent = `BUY-IN ${event.buyInSats} SATS · POT ${event.buyInSats * this.lobbyPlayers.length} SATS`;
       }
       const minePaid = event.paidIds.includes(this.net.id);
       const box = document.getElementById("mp-invoice-box");
@@ -1208,7 +1208,7 @@ export class Game {
     const status = document.getElementById("mp-invoice-status");
     if (status) {
       status.textContent = mock
-        ? "Dev mode — fake sats auto-pay in a few seconds"
+        ? "Dev mode — auto-pays in a few seconds"
         : "Scan with cashu.me or any Cashu wallet";
       status.classList.remove("is-paid");
     }
@@ -1306,7 +1306,7 @@ export class Game {
     if (result.ok) {
       status.classList.remove("nostr-error");
       const tipNote = result.tipSats ? ` · ${result.tipSats} sats dev tip` : "";
-      status.textContent = `Paid! ${result.winnerSats} sats${tipNote} — paste the token into cashu.me to claim${result.mock ? " · dev mode (fake sats)" : ""}`;
+      status.textContent = `Paid! ${result.winnerSats} sats${tipNote} — paste the token into cashu.me to claim`;
       if (claim) claim.disabled = true;
       const out = document.getElementById("event-payout-token") as HTMLInputElement | null;
       if (out) out.value = result.token || "";
