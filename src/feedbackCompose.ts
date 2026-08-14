@@ -4,6 +4,8 @@ import {
   FEEDBACK_TEXT_MAX,
   submitFeedback,
 } from "./net/feedback";
+import { getSession } from "./nostr/session";
+import { fetchProfile } from "./nostr/profile";
 
 /** Show on homepage/menu; hide during a race session (same as version badge). */
 export function setFeedbackBtnVisible(visible: boolean): void {
@@ -68,6 +70,16 @@ export function initFeedbackCompose(): void {
     status.classList.add("hidden");
     form.reset();
     submitBtn.disabled = false;
+    // Signed in? Pre-fill the name from the Nostr profile (stays editable).
+    const session = getSession();
+    if (session) {
+      void fetchProfile(session.pubkey).then((profile) => {
+        const name = profile?.displayName || profile?.name;
+        if (name && !nameInput.value.trim()) {
+          nameInput.value = name.slice(0, FEEDBACK_NAME_MAX);
+        }
+      });
+    }
     modal.classList.remove("hidden");
     requestAnimationFrame(() => textInput.focus());
   };
