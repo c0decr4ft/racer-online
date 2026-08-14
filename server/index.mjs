@@ -57,7 +57,12 @@ const GAME_VERSION_LABEL = (() => {
 async function sendFeedbackEmail(msg) {
   const res = await fetch(FEEDBACK_RELAY_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      // FormSubmit rejects requests without a Referer (its "web server" anti-spam check)
+      Referer: `${PUBLIC_BASE_URL}/`,
+    },
     body: JSON.stringify({
       _subject: `Racer Online feedback${msg.name ? ` — ${msg.name}` : ""}`,
       _template: "box",
@@ -70,6 +75,16 @@ async function sendFeedbackEmail(msg) {
     signal: AbortSignal.timeout(8_000),
   });
   if (!res.ok) throw new Error(`email relay ${res.status}`);
+  // FormSubmit answers HTTP 200 even for rejections — inspect the payload
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    /* no JSON body */
+  }
+  if (data && String(data.success) !== "true") {
+    throw new Error(String(data.message || "relay rejected").slice(0, 140));
+  }
 }
 const MAX_BOARD = 10;
 const MAX_FEEDBACK = 80;
