@@ -1,10 +1,14 @@
 /**
- * Cashu (eCash) payments for Event Mode — replaces the LNbits backend.
+ * Cashu (eCash) payments for Event Mode.
  *
- * The server runs a cashu-ts Wallet against CASHU_MINT_URL (default
- * unset → mock mode for dev/tests). Buy-ins arrive as NUT-18 payment-request
- * payloads (POST /api/ecash/pay) or pasted cashuA tokens; the pot pays out as
- * a cashuA token string the winner claims in cashu.me.
+ * The server runs a cashu-ts Wallet against CASHU_MINT_URL (defaults to the
+ * public minibits mint — real sats out of the box). Mock mode (fake sats
+ * auto-pay in ~3s) exists ONLY for dev/tests and must be forced via
+ * RACER_PAYMENTS_MOCK=1 — players never see it otherwise.
+ *
+ * Buy-ins arrive as NUT-18 payment-request payloads (POST /api/ecash/pay) or
+ * pasted cashuA tokens; the pot pays out as a cashuA token string the winner
+ * claims in cashu.me.
  *
  * Money custody note: buy-in value lives as proofs in server/cashu-proofs.json
  * until claimed — that file IS the money. It's gitignored; back it up for
@@ -15,10 +19,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 
-const CASHU_MINT_URL = (process.env.CASHU_MINT_URL || "").trim().replace(/\/+$/, "");
-
-/** Mock mode = no mint configured. UI shows "dev mode — fake sats". */
-export const PAYMENTS_MOCK = !CASHU_MINT_URL;
+/** Mock is opt-in (tests/dev): RACER_PAYMENTS_MOCK=1. Everyone else gets real sats. */
+export const PAYMENTS_MOCK = process.env.RACER_PAYMENTS_MOCK === "1";
+const CASHU_MINT_URL = (process.env.CASHU_MINT_URL || "https://mint.minibits.cash").trim().replace(/\/+$/, "");
 
 const DIR = dirname(fileURLToPath(import.meta.url));
 const PROOFS_PATH = join(DIR, "cashu-proofs.json");

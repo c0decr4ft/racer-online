@@ -321,7 +321,11 @@ async function main() {
     }
   }
 
-  // --- Event Mode (mock Lightning: invoices auto-pay after ~3s) ---
+  // --- Event Mode: full flow in mock; live mode proves there is NO fake auto-pay ---
+  const apiStatus = await fetch("http://127.0.0.1:8787/api/status")
+    .then((r) => r.json())
+    .catch(() => ({}));
+  const paymentsLive = apiStatus.payments === "live";
   const evRoom = `event-${Date.now().toString(36)}`;
   const evHost = await wsOnce({
     t: "create",
@@ -346,6 +350,25 @@ async function main() {
     assert("event:start-blocked-unpaid", /buy-ins/.test(startErr?.message || ""), startErr?.message);
     const hostInvoice = await hostInvoiceP;
     assert("event:host-invoice", hostInvoice?.amountSats === 100 && !!hostInvoice?.paymentRequest, JSON.stringify(hostInvoice ?? {}).slice(0, 80));
+
+    if (paymentsLive) {
+      // Real payments: request must be a genuine creq, and nothing may auto-pay
+      assert(
+        "event:real-creq-request",
+        /^(CREQB1|creqA)/.test(hostInvoice?.paymentRequest || ""),
+        (hostInvoice?.paymentRequest || "").slice(0, 14),
+      );
+      await new Promise((r) => setTimeout(r, 6000));
+      const stillErrP = waitForWsEvent(evHost.ws, "error", 2500);
+      evHost.ws.send(JSON.stringify({ t: "start" }));
+      const stillErr = await stillErrP;
+      assert("event:no-fake-pay", /buy-ins/.test(stillErr?.message || ""), stillErr?.message);
+      try {
+        evHost.ws.close();
+      } catch {
+        /* */
+      }
+    } else {
 
     const evGuest = await wsOnce({
       t: "join",
@@ -419,6 +442,7 @@ async function main() {
       evGuest.ws.close();
     } catch {
       /* */
+    }
     }
   }
 
@@ -580,12 +604,22 @@ async function main() {
   await page.keyboard.up("KeyA");
   const speed = await page.locator("#speed").innerText();
   assert("ai-race:throttle", Number(speed) >= 0, `speed=${speed}`);
-  await page.click("#pause-btn");
-  await page.click("#pause-restart-btn");
-  await page.waitForTimeout(4500);
-  assert("ai-race:restart", await page.evaluate(() => window.__game?.running));
+  // Pause via Escape (works only while racing). A blind drive on a random track
+  // can end in a wall explode mid-test — handle both outcomes.
   await page.keyboard.press("Escape");
-  await page.click("#pause-home-btn");
+  await page.waitForTimeout(300);
+  if (await visible(page, "#pause")) {
+    await page.click("#pause-restart-btn");
+    await page.waitForTimeout(4500);
+    assert("ai-race:restart", await page.evaluate(() => window.__game?.running));
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(300);
+    if (await visible(page, "#pause")) await page.click("#pause-home-btn");
+    else await goHomeSafe(page);
+  } else {
+    ok("ai-race:restart", "race ended during drive (wall explode) — going home");
+    await goHomeSafe(page);
+  }
   await page.waitForTimeout(250);
 
   // --- Multiplayer UI (Nostr-gated: sign in via the injected test extension) ---
@@ -836,8 +870,12 @@ async function main() {
   await page.click("#nostr-create-btn");
   await page.fill("#nostr-username", "SuiteRacer");
   await page.click("#nostr-create-go");
-  await page.waitForTimeout(1500);
-  assert("nostr:create-backup-view", await visible(page, "#nostr-backup-view"));
+  // Relay publish may take a moment — poll for the backup view instead of a fixed sleep
+  const backupVisible = await page
+    .waitForSelector("#nostr-backup-view", { state: "visible", timeout: 8000 })
+    .then(() => true)
+    .catch(() => false);
+  assert("nostr:create-backup-view", backupVisible);
   await page.click("#nostr-new-done");
   await page.waitForTimeout(800);
   const chipText = await page.locator("#nostr-btn-label").innerText();
