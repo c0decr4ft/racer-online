@@ -891,6 +891,13 @@ async function main() {
   await page.click("#mp-create-back");
   await page.click("#mp-back-btn");
 
+  // Feedback name prefills from the Nostr username (stays editable)
+  await page.click("#feedback-btn");
+  await page.waitForTimeout(700);
+  const fbName = await page.locator("#feedback-name").inputValue();
+  assert("nostr:feedback-name-prefill", fbName === "SuiteRacer", `value="${fbName}"`);
+  await page.click("#feedback-compose-cancel");
+
   // Presence API after traffic
   try {
     const pres = await fetch("http://127.0.0.1:8787/api/presence").then((r) => r.json());
