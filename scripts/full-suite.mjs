@@ -534,18 +534,20 @@ async function main() {
   await page.click("#feedback-compose-cancel");
   assert("feedback:cancel", !(await visible(page, "#feedback-compose")));
 
-  // --- Version gate cancel ---
-  await page.click("#version-badge");
-  await page.waitForTimeout(150);
-  if (await visible(page, "#version-gate")) {
-    await page.click("#version-gate-cancel");
-    assert("version-gate:cancel", !(await visible(page, "#version-gate")));
-  } else if (await visible(page, "#dev-dashboard")) {
-    await page.click("#dev-dashboard-close");
-    ok("dev-dashboard:already-unlocked-close");
-  } else {
-    ok("version-gate:no-modal");
-  }
+  // Feedback POST forwards to the email relay (best-effort; ok even if relay is unreachable)
+  const fb = await fetch("http://127.0.0.1:8787/api/feedback", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: `suite-${Date.now()}`, text: "Suite feedback check", name: "Suite", createdAt: Date.now() }),
+  });
+  const fbData = await fb.json();
+  assert("feedback:post", fb.ok && fbData.ok === true, `status=${fb.status} emailed=${fbData.emailed}`);
+
+  // --- Version badge is display-only (secret developer page removed) ---
+  const badgeText = await page.locator("#version-badge").innerText();
+  assert("version:badge-display", /^v\d+\.\d+$/.test(badgeText.trim()), badgeText.trim());
+  assert("version:no-gate", !(await page.locator("#version-gate").count()), "gate markup gone");
+  assert("version:no-dashboard", !(await page.locator("#dev-dashboard").count()), "dashboard markup gone");
 
   // --- Test drive map select ---
   await page.click("#test-drive-btn");

@@ -8,7 +8,7 @@ import { restoreSession } from "./nostr/session";
 import { initNostrUi } from "./nostr/ui";
 import { initVehiclePhysics, vehiclePhysicsBackend } from "./physics/vehiclePhysics";
 import { GAME_VERSION } from "./version";
-import { initVersionSwitcher } from "./versions";
+import { initVersionBadge } from "./versions";
 
 const canvas = document.getElementById("game");
 if (!(canvas instanceof HTMLCanvasElement)) {
@@ -17,7 +17,7 @@ if (!(canvas instanceof HTMLCanvasElement)) {
 
 await Promise.all([loadOnlineConfig(), initVehiclePhysics()]);
 
-initVersionSwitcher();
+initVersionBadge();
 initFeedbackCompose();
 initControlsHelp();
 initNostrUi();

@@ -40,6 +40,37 @@ const DIR = dirname(fileURLToPath(import.meta.url));
 const LEADERBOARD_PATH = join(DIR, "leaderboard.json");
 const PRESENCE_PATH = join(DIR, "presence.json");
 const FEEDBACK_PATH = join(DIR, "feedback.json");
+/** Where player feedback is emailed (FormSubmit relay — free, no SMTP creds needed). */
+const FEEDBACK_EMAIL = (process.env.FEEDBACK_EMAIL || "c0decr4ft.fr@gmail.com").trim();
+const FEEDBACK_RELAY_URL = (
+  process.env.FEEDBACK_RELAY_URL || `https://formsubmit.co/ajax/${encodeURIComponent(FEEDBACK_EMAIL)}`
+).trim();
+const GAME_VERSION_LABEL = (() => {
+  try {
+    return JSON.parse(readFileSync(join(DIR, "..", "package.json"), "utf8")).version || "unknown";
+  } catch {
+    return "unknown";
+  }
+})();
+
+/** Forward one feedback message to the inbox. Throws on relay failure (caller logs). */
+async function sendFeedbackEmail(msg) {
+  const res = await fetch(FEEDBACK_RELAY_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({
+      _subject: `Racer Online feedback${msg.name ? ` — ${msg.name}` : ""}`,
+      _template: "box",
+      _captcha: "false",
+      name: msg.name || "anonymous",
+      message: msg.text,
+      game_version: GAME_VERSION_LABEL,
+      received_at: new Date(msg.createdAt || Date.now()).toISOString(),
+    }),
+    signal: AbortSignal.timeout(8_000),
+  });
+  if (!res.ok) throw new Error(`email relay ${res.status}`);
+}
 const MAX_BOARD = 10;
 const MAX_FEEDBACK = 80;
 const FEEDBACK_TEXT_MAX = 500;
@@ -1087,8 +1118,16 @@ const httpServer = createServer(async (req, res) => {
       const store = loadFeedback();
       store.messages = [msg, ...store.messages.filter((m) => m.id !== msg.id)];
       const saved = saveFeedback(store);
+      // Forward to the feedback inbox (best-effort — local log is the backup)
+      let emailed = false;
+      try {
+        await sendFeedbackEmail(msg);
+        emailed = true;
+      } catch (err) {
+        console.warn(`[feedback] email relay failed:`, err?.message || err);
+      }
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true, messages: saved.messages, source: "server" }));
+      res.end(JSON.stringify({ ok: true, messages: saved.messages, source: "server", emailed }));
     } catch {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "bad json" }));

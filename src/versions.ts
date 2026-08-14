@@ -3,9 +3,6 @@ import { GAME_VERSION } from "./version";
 /** Site root on GitHub Pages (also Vite `base` for the live build). */
 export const PAGES_ROOT = "/racer-online/";
 
-/** Client-side gate for the version switcher (not a real security boundary). */
-const VERSION_SWITCH_PASSWORD = "ubVNyw8hge8i*QUiG2Ym";
-
 export type PlayableVersion = {
   /** Two-part id matching GAME_VERSION, e.g. `1.4` */
   id: string;
@@ -93,149 +90,18 @@ export function isCurrentVersion(v: PlayableVersion): boolean {
   return v.id === GAME_VERSION;
 }
 
-let dashboardModule: Promise<typeof import("./devDashboard")> | null = null;
-
-function loadDashboard() {
-  dashboardModule ??= import("./devDashboard").then((module) => {
-    module.initDevDashboard();
-    return module;
-  });
-  return dashboardModule;
-}
-
-function openDash(): void {
-  void loadDashboard().then((module) => module.openDevDashboard());
-}
-
-function closeDash(): void {
-  if (dashboardModule) {
-    void dashboardModule.then((module) => module.closeDevDashboard());
-  }
-}
-
-/** Show on homepage/menu; hide (and close gate/dashboard) during a race session. */
+/** Show on homepage/menu; hide during a race session. */
 export function setVersionSwitcherVisible(visible: boolean): void {
   const switcher = document.getElementById("version-switcher");
-  const badge = document.getElementById("version-badge");
-  const gate = document.getElementById("version-gate");
-  const input = document.getElementById("version-gate-input");
-  const errorEl = document.getElementById("version-gate-error");
-
   if (switcher instanceof HTMLElement) {
     switcher.classList.toggle("hidden", !visible);
   }
-  if (!visible) {
-    gate?.classList.add("hidden");
-    closeDash();
-    badge?.setAttribute("aria-expanded", "false");
-    if (input instanceof HTMLInputElement) input.value = "";
-    if (errorEl instanceof HTMLElement) {
-      errorEl.textContent = "";
-      errorEl.classList.add("hidden");
-    }
-  }
 }
 
-/**
- * Wire: badge click → password modal → on success → developer dashboard
- * (activity graph, feedback inbox, version switching). Wrong password stays on the gate.
- */
-export function initVersionSwitcher(): void {
+/** The version badge is display-only (the secret developer page was removed). */
+export function initVersionBadge(): void {
   const badge = document.getElementById("version-badge");
-  const gate = document.getElementById("version-gate");
-  const form = document.getElementById("version-gate-form");
-  const input = document.getElementById("version-gate-input");
-  const errorEl = document.getElementById("version-gate-error");
-  const cancelBtn = document.getElementById("version-gate-cancel");
-
-  if (
-    !(badge instanceof HTMLButtonElement) ||
-    !(gate instanceof HTMLElement) ||
-    !(form instanceof HTMLFormElement) ||
-    !(input instanceof HTMLInputElement) ||
-    !(errorEl instanceof HTMLElement) ||
-    !(cancelBtn instanceof HTMLButtonElement)
-  ) {
-    return;
+  if (badge instanceof HTMLElement) {
+    badge.textContent = `v${GAME_VERSION}`;
   }
-
-  badge.textContent = `v${GAME_VERSION}`;
-  badge.setAttribute("aria-expanded", "false");
-  badge.setAttribute("aria-controls", "dev-dashboard");
-  badge.setAttribute("aria-label", "Developer tools");
-
-  let unlocked = false;
-
-  const closeGate = () => {
-    gate.classList.add("hidden");
-    input.value = "";
-    errorEl.textContent = "";
-    errorEl.classList.add("hidden");
-  };
-
-  const openGate = () => {
-    closeDash();
-    errorEl.textContent = "";
-    errorEl.classList.add("hidden");
-    input.value = "";
-    gate.classList.remove("hidden");
-    requestAnimationFrame(() => input.focus());
-  };
-
-  badge.addEventListener("click", (e) => {
-    e.stopPropagation();
-    if (!unlocked) {
-      openGate();
-      return;
-    }
-    openDash();
-    badge.setAttribute("aria-expanded", "true");
-  });
-
-  form.addEventListener("submit", (e) => {
-    e.preventDefault();
-    if (input.value === VERSION_SWITCH_PASSWORD) {
-      unlocked = true;
-      closeGate();
-      openDash();
-      badge.setAttribute("aria-expanded", "true");
-      return;
-    }
-    unlocked = false;
-    errorEl.textContent = "Wrong password";
-    errorEl.classList.remove("hidden");
-    input.select();
-  });
-
-  cancelBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    closeGate();
-  });
-
-  document.addEventListener("click", (e) => {
-    const t = e.target;
-    if (!(t instanceof Node)) return;
-
-    if (!gate.classList.contains("hidden")) {
-      const panel = gate.querySelector(".version-gate-panel");
-      if (panel instanceof HTMLElement && !panel.contains(t) && !badge.contains(t)) {
-        closeGate();
-      }
-    }
-  });
-
-  // Capture so Escape closes gate without toggling pause.
-  document.addEventListener(
-    "keydown",
-    (e) => {
-      if (e.key !== "Escape") return;
-      if (!gate.classList.contains("hidden")) {
-        e.stopPropagation();
-        e.preventDefault();
-        closeGate();
-        badge.focus();
-      }
-    },
-    true,
-  );
 }
