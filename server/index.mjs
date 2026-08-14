@@ -1116,6 +1116,8 @@ const httpServer = createServer(async (req, res) => {
         ok: true,
         rooms: stats,
         presence: presenceSnapshot(prunePresence(presence)),
+        payments: payments.mock ? "mock" : "live",
+        mint: payments.mintUrl,
       }),
     );
     return;
