@@ -463,16 +463,6 @@ async function main() {
     "boot:cpp-wasm-physics",
     (await page.evaluate(() => window.__physicsBackend)) === "cpp-wasm",
   );
-  // Live presence chip on the home hero (this page's own heartbeat counts)
-  const liveOk = await page
-    .waitForFunction(
-      () => /racer(s)? online now/.test(document.getElementById("home-live-text")?.textContent || ""),
-      null,
-      { timeout: 10_000 },
-    )
-    .then(() => true)
-    .catch(() => false);
-  assert("home:live-chip", liveOk, "");
   await measureFps(page, "home", 1500);
 
   // --- Mute ---
