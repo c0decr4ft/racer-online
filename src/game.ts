@@ -646,18 +646,28 @@ export class Game {
   private async updateHomeLive() {
     const el = document.getElementById("home-live");
     const text = document.getElementById("home-live-text");
-    if (!el || !text) return;
+    const chip = document.getElementById("live-chip");
+    const chipCount = document.getElementById("live-chip-count");
     try {
       const snap = await fetchPresence();
       const n = Math.max(0, snap?.now ?? 0);
-      if (n > 0) {
-        text.textContent = n === 1 ? "1 racer online now" : `${n} racers online now`;
-        el.classList.remove("hidden");
-      } else {
-        el.classList.add("hidden");
+      if (el && text) {
+        if (n > 0) {
+          text.textContent = n === 1 ? "1 racer online now" : `${n} racers online now`;
+          el.classList.remove("hidden");
+        } else {
+          el.classList.add("hidden");
+        }
+      }
+      // Top-left corner chip: just the count, tooltip carries the words
+      if (chip && chipCount) {
+        chipCount.textContent = String(n);
+        chip.title = n === 1 ? "1 racer online now" : `${n} racers online now`;
+        chip.classList.toggle("hidden", n <= 0);
       }
     } catch {
-      el.classList.add("hidden");
+      el?.classList.add("hidden");
+      chip?.classList.add("hidden");
     }
   }
 
