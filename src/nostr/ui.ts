@@ -5,7 +5,6 @@
  * resolves with the active session (existing or freshly logged-in), or null
  * when the user cancels.
  */
-import QRCode from "qrcode";
 import {
   createAccount,
   getLocalSecret,
@@ -18,6 +17,9 @@ import {
   type NostrSession,
 } from "./session";
 import { fetchProfile, profileLabel, publishProfileName, shortNpub, type NostrProfile } from "./profile";
+
+/** QRCode is only needed for the NIP-46 connect QR — lazy-load it. */
+const qrCode = () => import("qrcode");
 
 let currentProfile: NostrProfile | null = null;
 export function getCurrentProfile(): NostrProfile | null {
@@ -181,7 +183,8 @@ function handleQrFlow() {
   connectCancel = cancel;
   const img = el<HTMLImageElement>("nostr-qr-img");
   if (img) {
-    void QRCode.toDataURL(uri, { width: 224, margin: 1 })
+    void qrCode()
+      .then((QRCode) => QRCode.toDataURL(uri, { width: 224, margin: 1 }))
       .then((dataUrl) => {
         img.src = dataUrl;
       })

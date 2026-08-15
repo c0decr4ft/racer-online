@@ -1216,6 +1216,28 @@ html.touch-mode [contenteditable="true"] {
   display: none !important;
 }
 
+/* Keyboard navigation — consistent visible focus */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Respect reduced-motion preferences */
+@media (prefers-reduced-motion: reduce) {
+  .home-speedlines::before,
+  .home-live-dot,
+  .overlay-inner,
+  .toast,
+  .final-lap-flash,
+  .countdown,
+  .best-flash {
+    animation: none !important;
+  }
+}
+
 #nostr-btn.is-signed-in {
   border-color: #1dbf6a;
 }

@@ -40,7 +40,9 @@ import { getSession, onSessionChange } from "./nostr/session";
 import { ensureNostrLogin, getCurrentProfile } from "./nostr/ui";
 import { fetchProfile, shortNpub } from "./nostr/profile";
 import { fetchPresence } from "./net/presence";
-import QRCode from "qrcode";
+
+/** QRCode is only needed for payment/login QRs — lazy-load it off the hot path. */
+const qrCode = () => import("qrcode");
 import { GameAudio } from "./audio";
 import { setFeedbackBtnVisible } from "./feedbackCompose";
 import {
@@ -633,8 +635,10 @@ export class Game {
 
     this.bindMuteBtn();
 
-    // Live presence chip on the home hero ("N racers online now")
+    // Live presence chip on the home hero ("N racers online now").
+    // Refresh again shortly after boot — the first read can race our own heartbeat.
     void this.updateHomeLive();
+    window.setTimeout(() => void this.updateHomeLive(), 4_000);
     window.setInterval(() => void this.updateHomeLive(), 30_000);
   }
 
@@ -1250,11 +1254,13 @@ export class Game {
     const qr = document.getElementById("mp-invoice-qr") as HTMLImageElement | null;
     if (qr) {
       // creqB is bech32m — uppercase QRs scan denser/more reliably
-      void QRCode.toDataURL(paymentRequest.toUpperCase(), { width: 168, margin: 1 })
-        .then((url) => {
-          qr.src = url;
-        })
-        .catch(() => undefined);
+      void qrCode().then((QRCode) =>
+        QRCode.toDataURL(paymentRequest.toUpperCase(), { width: 168, margin: 1 })
+          .then((url) => {
+            qr.src = url;
+          })
+          .catch(() => undefined),
+      );
     }
     this.renderLobby();
   }

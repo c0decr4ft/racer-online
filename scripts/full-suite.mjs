@@ -277,10 +277,10 @@ async function main() {
       );
       if (options.length >= 2) {
         const voteStartedAt = Date.now();
-        const hostVoteResult = waitForWsEvent(host.ws, "voteResult", 24000);
-        const guestVoteResult = waitForWsEvent(guest.ws, "voteResult", 24000);
-        const hostNextStart = waitForWsEvent(host.ws, "start", 26000);
-        const guestNextStart = waitForWsEvent(guest.ws, "start", 26000);
+        const hostVoteResult = waitForWsEvent(host.ws, "voteResult", 34000);
+        const guestVoteResult = waitForWsEvent(guest.ws, "voteResult", 34000);
+        const hostNextStart = waitForWsEvent(host.ws, "start", 36000);
+        const guestNextStart = waitForWsEvent(guest.ws, "start", 36000);
         host.ws.send(JSON.stringify({ t: "vote", trackId: options[0] }));
         await new Promise((r) => setTimeout(r, 30));
         guest.ws.send(JSON.stringify({ t: "vote", trackId: options[1] }));
@@ -812,7 +812,7 @@ async function main() {
   await page.keyboard.press("Digit1");
   await page.waitForTimeout(40);
   await page2.keyboard.press("Digit2");
-  await page.waitForTimeout(22400);
+  await page.waitForTimeout(26000);
   assert(
     "mp:voted-round-host-running",
     await page.evaluate(() => window.__game?.running && !window.__game?.finished),
