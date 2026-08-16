@@ -336,6 +336,8 @@ export type RoomConnectOpts = {
   pubkey?: string;
   /** Event Mode (host, on create): buy-in per racer in sats. */
   eventBuyInSats?: number;
+  /** True when joining via Event Mode — server rejects cross-type joins. */
+  eventMode?: boolean;
   mode: "create" | "join";
 };
 
@@ -516,6 +518,7 @@ export class NetClient {
               color: opts.color,
               accent: opts.accent,
               pubkey: opts.pubkey,
+              event: opts.eventMode || undefined,
             };
       ws.send(JSON.stringify(payload));
       this.pingAt = performance.now();

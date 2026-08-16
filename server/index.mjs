@@ -945,6 +945,21 @@ function admitClient(ws, msg, mode) {
       }
       return null;
     }
+    // Room types stay separate — event rooms join from Event Mode, normal rooms from Multiplayer
+    if (room.isEvent !== !!msg.event) {
+      send(ws, {
+        t: "error",
+        message: room.isEvent
+          ? "that's an event room — join it from Event Mode"
+          : "not an event room — join it from Multiplayer",
+      });
+      try {
+        ws.close();
+      } catch {
+        /* ignore */
+      }
+      return null;
+    }
     if (password !== room.password) {
       send(ws, { t: "error", message: "wrong password" });
       try {
