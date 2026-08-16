@@ -40,7 +40,7 @@ const STATIC_BASE = (
       ? ""
       : "/racer-online"
 ).replace(/\/$/, "");
-const NET_TICK_MS = 1000 / 90;
+const NET_TICK_MS = 1000 / 30;
 /** Binary state frame type — must match src/net/protocol.ts STATE_BIN_TYPE. */
 const STATE_BIN_TYPE = 1;
 const MAP_VOTE_MS = 20_000;
@@ -1596,8 +1596,8 @@ wss.on("connection", (ws) => {
 setInterval(() => {
   const at = Date.now();
   for (const room of rooms.values()) {
-    // Same 90Hz binary state for every racing room size (2 through 8).
-    // ~218 B/frame × 90 × 8 clients ≈ 157 KB/s/room — fine for small lobbies.
+    // Same 30Hz binary state for every racing room size (2 through 8).
+    // ~218 B/frame × 30 × 8 clients ≈ 52 KB/s/room — easy on free-tier links.
     if (room.phase !== "racing" || room.clients.size === 0) continue;
     const raw = encodeStateBinary(roomPlayers(room), at);
     for (const c of room.clients.values()) {

@@ -83,6 +83,11 @@ export class RemotePlayer {
     return this.latest?.pose.lap;
   }
 
+  /** Measured snapshot arrival jitter (EMA, ms) — net-smoothness diagnostic. */
+  get jitter(): number {
+    return this.jitterMs;
+  }
+
   private rebuildMesh(kind: VehicleKind, color: number, accent: number) {
     this.scene.remove(this.mesh);
     disposeVehicleGroup(this.mesh);
@@ -156,10 +161,11 @@ export class RemotePlayer {
     const dt = this.lastUpdateAt > 0 ? Math.min(0.05, (now - this.lastUpdateAt) / 1000) : 0;
     this.lastUpdateAt = now;
 
-    // Adaptive jitter buffer: 19ms at 90Hz was far too tight for real internet —
-    // every jitter spike forced extrapolation → jagged remotes. Scale the render
-    // delay with measured arrival jitter (≈45ms on clean links, up to 200ms).
-    const interpDelay = THREE.MathUtils.clamp(40 + this.jitterMs * 2.5, 40, 200);
+    // Adaptive jitter buffer: render delay scales with measured arrival jitter.
+    // Floor ≈ 2.2 ticks so we almost always lerp between two snapshots; the cap
+    // (250ms) absorbs transatlantic spikes without a visible freeze → teleport.
+    const minDelay = NET_TICK_MS * 2.2;
+    const interpDelay = THREE.MathUtils.clamp(minDelay + this.jitterMs * 2.5, minDelay, 250);
     const renderAt = now - interpDelay;
     let x: number;
     let z: number;
@@ -390,6 +396,8 @@ export class NetClient {
   myBuyIn: { paymentRequest: string; amountSats: number; buyInSats?: number; feeSats?: number } | null = null;
   /** Bumps on each connect/disconnect so stale socket handlers are ignored. */
   private connGen = 0;
+  /** Lobby/race ping loop — keeps a live latency reading even outside races. */
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
   private finishSent = false;
 
   constructor(handlers: NetHandlers) {
@@ -543,6 +551,8 @@ export class NetClient {
       ws.send(JSON.stringify(payload));
       this.pingAt = performance.now();
       ws.send(JSON.stringify({ t: "ping", n: this.pingAt }));
+      // Keep pinging while connected so the lobby shows a live ping, not just races.
+      this.startPingLoop(ws, gen);
     };
 
     ws.onmessage = (ev) => {
@@ -706,7 +716,8 @@ export class NetClient {
 
   /** Close a failed admit without bumping connGen or shouting Disconnected. */
   private softClose(ws: WebSocket, gen: number) {
-    if (gen !== this.connGen || this.ws !== ws) return;
+    if (gen !== this.connGen) return;
+    this.stopPingLoop();
     this.connected = false;
     this.ws = null;
     this.pending = null;
@@ -722,6 +733,7 @@ export class NetClient {
 
   disconnect() {
     this.connGen++;
+    this.stopPingLoop();
     const ws = this.ws;
     this.ws = null;
     this.connected = false;
@@ -846,6 +858,26 @@ export class NetClient {
   ping() {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     const n = performance.now();
+    this.pingAt = n;
     this.ws.send(JSON.stringify({ t: "ping", n }));
+  }
+
+  /** 2s ping loop for the lifetime of a socket — self-stops when it goes stale. */
+  private startPingLoop(ws: WebSocket, gen: number) {
+    this.stopPingLoop();
+    this.pingTimer = setInterval(() => {
+      if (gen !== this.connGen || this.ws !== ws || ws.readyState !== WebSocket.OPEN) {
+        this.stopPingLoop();
+        return;
+      }
+      this.ping();
+    }, 2000);
+  }
+
+  private stopPingLoop() {
+    if (this.pingTimer) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
   }
 }
