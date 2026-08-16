@@ -1684,11 +1684,17 @@ wss.on("connection", (ws) => {
             const sent = await payments.sendToken(winnerSats, { includeFees: true });
             winnerToken = sent.token;
           }
-          const remaining = await payments.potBalanceSats().catch(() => 0);
+          // Balance read is informational — if it fails (or the helper is missing
+          // on a mixed deploy), fall back to the pot figure; sendToken validates
+          // the real wallet balance anyway. Never fail the payout over this.
+          const remaining = await Promise.resolve()
+            .then(() => payments.potBalanceSats?.())
+            .catch(() => Number.NaN);
+          const balanceSats = Number.isFinite(remaining) ? remaining : room.potSats;
           const tipSendFee = Math.max(0, await payments.sendFeeSats().catch(() => 0));
           const tipSats = Math.max(
             0,
-            Math.min(room.potSats - winnerSats, remaining - tipSendFee),
+            Math.min(room.potSats - winnerSats, balanceSats - tipSendFee),
           );
           if (winnerSats <= 0 && tipSats <= 0) throw new Error("pot too small to pay out");
           // Dev tip as a separate token, kept in the audit log for the dev to claim
