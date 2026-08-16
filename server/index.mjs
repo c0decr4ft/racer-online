@@ -1,6 +1,7 @@
 import { WebSocketServer } from "ws";
 import { verifyEvent } from "nostr-tools";
 import { createServer } from "node:http";
+import { networkInterfaces } from "node:os";
 import { payments, depositProofs, recordPayout } from "./payments.mjs";
 import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { dirname, join, extname, normalize } from "node:path";
@@ -10,10 +11,19 @@ const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "0.0.0.0";
 const ON_RENDER = Boolean(process.env.RENDER);
 /** Public base URL for NUT-18 payment-request transports (Render sets RENDER_EXTERNAL_URL). */
+function lanBaseUrl() {
+  // Phone wallets can't reach 127.0.0.1 — use this machine's LAN address by default
+  for (const infos of Object.values(networkInterfaces())) {
+    for (const info of infos ?? []) {
+      if (info && info.family === "IPv4" && !info.internal) return `http://${info.address}:${PORT}`;
+    }
+  }
+  return `http://127.0.0.1:${PORT}`;
+}
 const PUBLIC_BASE_URL = (
   process.env.PUBLIC_BASE_URL ||
   process.env.RENDER_EXTERNAL_URL ||
-  `http://127.0.0.1:${PORT}`
+  lanBaseUrl()
 ).replace(/\/+$/, "");
 /** When set (or when ../dist exists), serve the built web client from this process. */
 const DIST_DIR = process.env.STATIC_DIR
