@@ -277,10 +277,10 @@ async function main() {
       );
       if (options.length >= 2) {
         const voteStartedAt = Date.now();
-        const hostVoteResult = waitForWsEvent(host.ws, "voteResult", 24000);
-        const guestVoteResult = waitForWsEvent(guest.ws, "voteResult", 24000);
-        const hostNextStart = waitForWsEvent(host.ws, "start", 26000);
-        const guestNextStart = waitForWsEvent(guest.ws, "start", 26000);
+        const hostVoteResult = waitForWsEvent(host.ws, "voteResult", 34000);
+        const guestVoteResult = waitForWsEvent(guest.ws, "voteResult", 34000);
+        const hostNextStart = waitForWsEvent(host.ws, "start", 36000);
+        const guestNextStart = waitForWsEvent(guest.ws, "start", 36000);
         host.ws.send(JSON.stringify({ t: "vote", trackId: options[0] }));
         await new Promise((r) => setTimeout(r, 30));
         guest.ws.send(JSON.stringify({ t: "vote", trackId: options[1] }));
@@ -514,6 +514,14 @@ async function main() {
   await page.click("#home-garage-btn");
   await page.click("#garage-back-btn");
   assert("garage:back", await visible(page, "#overlay") && !(await visible(page, "#garage")));
+
+  // --- Live player-count chip (top-left) ---
+  const liveChipCount = await page.locator("#live-chip-count").innerText().catch(() => "0");
+  assert(
+    "boot:live-chip",
+    (await visible(page, "#live-chip")) && Number(liveChipCount) >= 1,
+    `count=${liveChipCount}`,
+  );
 
   // --- Leaderboard ---
   await page.click("#home-board-btn");
@@ -782,6 +790,15 @@ async function main() {
   // Signed score save — host (signed in via fake NIP-07) saves a real
   // signature-verified score through the server. Runs inside the 20s vote window.
   assert("mp:finish-save-row", await visible(page, "#name-entry"));
+  // Accomplishment pills on the results screen (fresh device → records expected)
+  const calloutText = await page.locator("#finish-callouts").innerText().catch(() => "");
+  assert("finish:callouts", /PERSONAL BEST|BEST LAP/.test(calloutText), calloutText.slice(0, 60));
+  // Final-lap flash element works
+  const flashOk = await page.evaluate(() => {
+    window.__game.showFinalLapFlash();
+    return !document.getElementById("final-lap-flash").classList.contains("hidden");
+  });
+  assert("hud:final-lap-flash", flashOk, "");
   await page.fill("#driver-name", "E2E");
   await page.click("#submit-score-btn");
   await page.waitForTimeout(1500);
@@ -793,7 +810,7 @@ async function main() {
   await page.keyboard.press("Digit1");
   await page.waitForTimeout(40);
   await page2.keyboard.press("Digit2");
-  await page.waitForTimeout(22400);
+  await page.waitForTimeout(26000);
   assert(
     "mp:voted-round-host-running",
     await page.evaluate(() => window.__game?.running && !window.__game?.finished),
@@ -897,6 +914,21 @@ async function main() {
   const fbName = await page.locator("#feedback-name").inputValue();
   assert("nostr:feedback-name-prefill", fbName === "SuiteRacer", `value="${fbName}"`);
   await page.click("#feedback-compose-cancel");
+
+  // --- Abuse guards (after the feedback:post test so the rate window can't collide) ---
+  const fbGet = await fetch("http://127.0.0.1:8787/api/feedback").then((r) => r.json());
+  assert("api:feedback-private", fbGet.ok === true && !("messages" in fbGet), "inbox contents not public");
+  let lastStatus = 0;
+  for (let i = 0; i < 7; i++) {
+    lastStatus = (
+      await fetch("http://127.0.0.1:8787/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: `rl-${i}-${Date.now()}`, text: "rate limit probe", createdAt: Date.now() }),
+      })
+    ).status;
+  }
+  assert("api:feedback-rate-limited", lastStatus === 429, `last=${lastStatus}`);
 
   // Presence API after traffic
   try {

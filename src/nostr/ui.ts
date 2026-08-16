@@ -5,9 +5,9 @@
  * resolves with the active session (existing or freshly logged-in), or null
  * when the user cancels.
  */
-import QRCode from "qrcode";
 import {
   createAccount,
+  getLocalSecret,
   getSession,
   loginWithBunker,
   loginWithExtension,
@@ -17,6 +17,9 @@ import {
   type NostrSession,
 } from "./session";
 import { fetchProfile, profileLabel, publishProfileName, shortNpub, type NostrProfile } from "./profile";
+
+/** QRCode is only needed for the NIP-46 connect QR — lazy-load it. */
+const qrCode = () => import("qrcode");
 
 let currentProfile: NostrProfile | null = null;
 export function getCurrentProfile(): NostrProfile | null {
@@ -69,6 +72,8 @@ async function refreshIdentityViews() {
   const displayName = profile?.displayName || profile?.name || "NOSTR RACER";
   if (chipLabel) chipLabel.textContent = profileLabel(session.pubkey, profile).toUpperCase().slice(0, 16);
   if (nameEl) nameEl.textContent = displayName;
+  // Local accounts get a backup-key reveal (extension/remote sessions hold no secret here)
+  el<HTMLDivElement>("nostr-backup-box")?.classList.toggle("hidden", session.method !== "local");
   const avatar = el<HTMLImageElement>("nostr-avatar");
   if (avatar) {
     if (profile?.picture) {
@@ -178,7 +183,8 @@ function handleQrFlow() {
   connectCancel = cancel;
   const img = el<HTMLImageElement>("nostr-qr-img");
   if (img) {
-    void QRCode.toDataURL(uri, { width: 224, margin: 1 })
+    void qrCode()
+      .then((QRCode) => QRCode.toDataURL(uri, { width: 224, margin: 1 }))
       .then((dataUrl) => {
         img.src = dataUrl;
       })
@@ -279,6 +285,16 @@ export function initNostrUi() {
     }
   });
   el<HTMLButtonElement>("nostr-create-back")?.addEventListener("click", () => showView("out"));
+  el<HTMLButtonElement>("nostr-backup-toggle")?.addEventListener("click", () => {
+    const secret = el<HTMLDivElement>("nostr-backup-secret");
+    const input = el<HTMLInputElement>("nostr-backup-nsec");
+    if (!secret || !input) return;
+    const opening = secret.classList.contains("hidden");
+    if (opening) input.value = getLocalSecret() ?? "";
+    else input.value = "";
+    secret.classList.toggle("hidden", !opening);
+    el<HTMLButtonElement>("nostr-backup-toggle")!.textContent = opening ? "HIDE BACKUP KEY" : "SHOW BACKUP KEY";
+  });
   el<HTMLButtonElement>("nostr-nsec-copy")?.addEventListener("click", (e) => void handleCopyNsec(e));
   el<HTMLButtonElement>("nostr-new-done")?.addEventListener("click", () => {
     const session = getSession();

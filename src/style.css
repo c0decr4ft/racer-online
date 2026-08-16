@@ -431,6 +431,70 @@ html.touch-mode [contenteditable="true"] {
   display: none;
 }
 
+/* Final-lap flash — same pulse family as best-flash, accent colored */
+.final-lap-flash {
+  position: absolute;
+  top: 26%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: clamp(1.6rem, 6vw, 2.6rem);
+  letter-spacing: 0.22em;
+  color: var(--accent);
+  text-shadow:
+    0 0 22px var(--glow),
+    0 3px 0 rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+  z-index: 7;
+  animation: best-flash-in 0.35s ease-out both;
+}
+
+.final-lap-flash.hidden {
+  display: none;
+}
+
+/* Finish-screen accomplishment pills */
+.finish-callouts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.45rem;
+  margin: 0.35rem 0 0.6rem;
+}
+
+.finish-callouts.hidden {
+  display: none !important;
+}
+
+.finish-callout {
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--line);
+  font-family: var(--font-display);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.finish-callout.is-pb {
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: 0 0 14px rgba(255, 59, 46, 0.25);
+}
+
+.finish-callout.is-lap {
+  border-color: var(--accent-soft);
+  color: var(--accent-soft);
+}
+
+.finish-callout.is-podium {
+  border-color: #ffc857;
+  color: #ffc857;
+  box-shadow: 0 0 14px rgba(255, 200, 87, 0.22);
+}
+
 @keyframes countdown-pulse {
   0% {
     opacity: 0;
@@ -921,6 +985,16 @@ html.touch-mode [contenteditable="true"] {
   text-align: center;
 }
 
+.mp-buyin-note {
+  margin: 0;
+  color: var(--muted);
+  font-family: "Rajdhani", sans-serif;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-align: center;
+  line-height: 1.35;
+}
+
 .mp-invoice-box {
   display: flex;
   flex-direction: column;
@@ -1140,6 +1214,28 @@ html.touch-mode [contenteditable="true"] {
 }
 .hidden {
   display: none !important;
+}
+
+/* Keyboard navigation — consistent visible focus */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Respect reduced-motion preferences */
+@media (prefers-reduced-motion: reduce) {
+  .home-speedlines::before,
+  .home-live-dot,
+  .overlay-inner,
+  .toast,
+  .final-lap-flash,
+  .countdown,
+  .best-flash {
+    animation: none !important;
+  }
 }
 
 #nostr-btn.is-signed-in {
@@ -2254,7 +2350,7 @@ html.touch-mode [contenteditable="true"] {
   flex-direction: column;
   gap: 0.65rem;
   align-items: stretch;
-  width: min(100%, 16rem);
+  width: min(100%, 20rem);
   margin: 0 auto 0.5rem;
 }
 
@@ -2265,6 +2361,36 @@ html.touch-mode [contenteditable="true"] {
 
 .menu-actions .btn-ghost {
   box-shadow: none;
+}
+
+/* Top-left corner player count — matches home-live / mute-btn */
+.live-chip {
+  position: fixed;
+  top: 1.35rem;
+  left: 4.05rem;
+  z-index: 20;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--line);
+  background: rgba(8, 12, 18, 0.72);
+  color: var(--text);
+  font-family: "Rajdhani", sans-serif;
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  line-height: 1;
+}
+
+.live-chip.hidden {
+  display: none !important;
+}
+
+.live-chip-icon {
+  width: 0.95rem;
+  height: 0.95rem;
+  color: #1dbf6a;
 }
 
 /* Course picker — minimap-style silhouettes only (no text labels) */

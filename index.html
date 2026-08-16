@@ -70,6 +70,7 @@
           <div class="best-flash-label">BEST</div>
           <div id="best-flash-time">--:--.---</div>
         </div>
+        <div id="final-lap-flash" class="final-lap-flash hidden" aria-live="polite">FINAL LAP</div>
         <div id="countdown" class="countdown hidden" aria-live="assertive">3</div>
         <canvas id="minimap" class="minimap hidden" width="160" height="160" aria-hidden="true"></canvas>
         <div id="rearview-frame" class="rearview-frame hidden" aria-hidden="true">
@@ -304,6 +305,13 @@
               </div>
             </div>
             <p class="feedback-compose-hint">Signed in — your race times are saved with your Nostr signature</p>
+            <div id="nostr-backup-box" class="nostr-backup-box hidden">
+              <button id="nostr-backup-toggle" class="btn-ghost" type="button">SHOW BACKUP KEY</button>
+              <div id="nostr-backup-secret" class="hidden">
+                <input id="nostr-backup-nsec" class="nostr-connect-uri" type="text" readonly aria-label="Your nsec secret key" />
+                <p class="nostr-warning">Never share this key — it controls your identity. Losing it means losing access.</p>
+              </div>
+            </div>
             <div class="feedback-compose-actions">
               <button id="nostr-logout-btn" class="btn-ghost" type="button">LOG OUT</button>
               <button id="nostr-in-close" class="btn-ghost" type="button">CLOSE</button>
@@ -312,8 +320,14 @@
         </div>
       </div>
 
-      <button id="mute-btn" class="mute-btn" type="button" aria-label="Mute sound" aria-pressed="false">
-        <svg class="mute-icon mute-icon-on" viewBox="0 0 24 24" aria-hidden="true">
+      <div id="live-chip" class="live-chip hidden" aria-live="polite" title="Racers online now">
+        <svg class="live-chip-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path fill="currentColor" d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4zm0 2c-3 0-9 1.5-9 4.5V21h18v-2.5c0-3-6-4.5-9-4.5z"/>
+        </svg>
+        <span id="live-chip-count">0</span>
+      </div>
+
+      <button id="mute-btn" class="mute-btn" type="button" aria-label="Mute sound" aria-pressed="false"><svg class="mute-icon mute-icon-on" viewBox="0 0 24 24" aria-hidden="true">
           <path
             fill="currentColor"
             d="M3 9v6h4l5 4V5L7 9H3zm13.5 3c0-1.77-1-3.29-2.5-4.03v8.05c1.5-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"
@@ -513,6 +527,7 @@
             <div id="mp-lobby-feed" class="mp-lobby-feed" aria-live="polite"></div>
             <div id="mp-buyin" class="mp-buyin hidden">
               <p id="mp-buyin-banner" class="mp-buyin-banner">BUY-IN · 100 SATS</p>
+              <p class="mp-buyin-note">Race starts when everyone's paid · unpaid requests expire · pots are final once racing starts</p>
               <div id="mp-invoice-box" class="mp-invoice-box">
                 <img id="mp-invoice-qr" class="mp-invoice-qr" alt="Buy-in payment request QR code" />
                 <input id="mp-invoice-bolt11" class="mp-invoice-bolt11" type="text" readonly aria-label="Buy-in payment request" />
@@ -585,6 +600,7 @@
             <p class="tagline finish-stat">Total <span id="final-time">0:00.000</span></p>
             <p class="tagline finish-stat">Best lap <span id="final-best">--:--.---</span></p>
           </div>
+          <div id="finish-callouts" class="finish-callouts hidden"></div>
           <div id="name-entry" class="name-entry hidden">
             <p class="name-entry-label" id="name-entry-label">Top 10 time — up to 15 letters or numbers</p>
             <input

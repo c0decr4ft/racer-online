@@ -28,6 +28,7 @@ import {
   boardSourceLabel,
   fetchLeaderboard,
   formatBoardTime,
+  getLocalBest,
   getLocalDriverName,
   sanitizeDriverName,
   saveLocalDriverName,
@@ -38,7 +39,10 @@ import {
 import { getSession, onSessionChange } from "./nostr/session";
 import { ensureNostrLogin, getCurrentProfile } from "./nostr/ui";
 import { fetchProfile, shortNpub } from "./nostr/profile";
-import QRCode from "qrcode";
+import { fetchPresence } from "./net/presence";
+
+/** QRCode is only needed for payment/login QRs — lazy-load it off the hot path. */
+const qrCode = () => import("qrcode");
 import { GameAudio } from "./audio";
 import { setFeedbackBtnVisible } from "./feedbackCompose";
 import {
@@ -347,7 +351,10 @@ export class Game {
       onWelcome: (info) => this.onNetWelcome(info),
       onJoin: (p) => {
         if (this.inLobby) this.upsertLobbyPlayer(p);
-        else if (this.running) this.spawnRemote(p);
+        else if (this.running) {
+          this.spawnRemote(p);
+          if (this.online) this.showToast(`${p.name} joined the race`);
+        }
       },
       onLeave: (id, hostId) => {
         if (this.inLobby) {
@@ -627,6 +634,41 @@ export class Game {
     });
 
     this.bindMuteBtn();
+
+    // Live presence chip on the home hero ("N racers online now").
+    // Refresh again shortly after boot — the first read can race our own heartbeat.
+    void this.updateHomeLive();
+    window.setTimeout(() => void this.updateHomeLive(), 4_000);
+    window.setInterval(() => void this.updateHomeLive(), 30_000);
+  }
+
+  /** Fetch presence and show the live-online chip on the home screen. */
+  private async updateHomeLive() {
+    const el = document.getElementById("home-live");
+    const text = document.getElementById("home-live-text");
+    const chip = document.getElementById("live-chip");
+    const chipCount = document.getElementById("live-chip-count");
+    try {
+      const snap = await fetchPresence();
+      const n = Math.max(0, snap?.now ?? 0);
+      if (el && text) {
+        if (n > 0) {
+          text.textContent = n === 1 ? "1 racer online now" : `${n} racers online now`;
+          el.classList.remove("hidden");
+        } else {
+          el.classList.add("hidden");
+        }
+      }
+      // Top-left corner chip: just the count, tooltip carries the words
+      if (chip && chipCount) {
+        chipCount.textContent = String(n);
+        chip.title = n === 1 ? "1 racer online now" : `${n} racers online now`;
+        chip.classList.toggle("hidden", n <= 0);
+      }
+    } catch {
+      el?.classList.add("hidden");
+      chip?.classList.add("hidden");
+    }
   }
 
   private bindMuteBtn() {
@@ -1217,11 +1259,13 @@ export class Game {
     const qr = document.getElementById("mp-invoice-qr") as HTMLImageElement | null;
     if (qr) {
       // creqB is bech32m — uppercase QRs scan denser/more reliably
-      void QRCode.toDataURL(paymentRequest.toUpperCase(), { width: 168, margin: 1 })
-        .then((url) => {
-          qr.src = url;
-        })
-        .catch(() => undefined);
+      void qrCode().then((QRCode) =>
+        QRCode.toDataURL(paymentRequest.toUpperCase(), { width: 168, margin: 1 })
+          .then((url) => {
+            qr.src = url;
+          })
+          .catch(() => undefined),
+      );
     }
     this.renderLobby();
   }
@@ -2710,6 +2754,7 @@ export class Game {
           this.finishRace();
         } else {
           this.el.lap.innerHTML = `${this.lap}<span>/${TOTAL_LAPS}</span>`;
+          if (this.lap === TOTAL_LAPS) this.showFinalLapFlash();
         }
       } else if (!this.crossedOnce) {
         this.crossedOnce = true;
@@ -2731,11 +2776,26 @@ export class Game {
     this.bestFlashUntil = performance.now() + 2000;
   }
 
+  private finalLapFlashUntil = 0;
+
+  private showFinalLapFlash() {
+    const el = document.getElementById("final-lap-flash");
+    if (!el) return;
+    el.classList.remove("hidden");
+    el.style.animation = "none";
+    void el.offsetWidth;
+    el.style.animation = "";
+    this.finalLapFlashUntil = performance.now() + 2200;
+  }
+
   private updateBestFlash() {
-    if (this.bestFlashUntil <= 0) return;
-    if (performance.now() >= this.bestFlashUntil) {
+    if (this.bestFlashUntil > 0 && performance.now() >= this.bestFlashUntil) {
       this.bestFlashUntil = 0;
       this.el.bestFlash.classList.add("hidden");
+    }
+    if (this.finalLapFlashUntil > 0 && performance.now() >= this.finalLapFlashUntil) {
+      this.finalLapFlashUntil = 0;
+      document.getElementById("final-lap-flash")?.classList.add("hidden");
     }
   }
 
@@ -2908,6 +2968,24 @@ export class Game {
     } else {
       this.el.finishEyebrow.textContent = "RACE COMPLETE";
       this.el.finishTitle.textContent = `P${place}`;
+    }
+
+    // Accomplishment pills — personal records vs device best, podium
+    const callouts = document.getElementById("finish-callouts");
+    if (callouts) {
+      const pills: string[] = [];
+      const pb = getLocalBest(this.trackId);
+      const isPersonalBest =
+        this.pendingFinishMs > 0 && (pb.timeMs === null || this.pendingFinishMs < pb.timeMs);
+      const isBestLap =
+        Number.isFinite(this.bestLap) &&
+        this.bestLap > 0 &&
+        (pb.bestLapMs === null || this.bestLap < pb.bestLapMs);
+      if (isPersonalBest) pills.push(`<span class="finish-callout is-pb">NEW PERSONAL BEST</span>`);
+      if (isBestLap) pills.push(`<span class="finish-callout is-lap">NEW BEST LAP</span>`);
+      if (place <= 3) pills.push(`<span class="finish-callout is-podium">PODIUM FINISH</span>`);
+      callouts.innerHTML = pills.join("");
+      callouts.classList.toggle("hidden", pills.length === 0);
     }
 
     // Event Mode: winner gets the pot checkout; everyone else sees "winner takes the pot".

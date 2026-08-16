@@ -576,6 +576,28 @@ export function formatBoardTime(ms: number): string {
   return `${m}:${s.toString().padStart(2, "0")}.${milli.toString().padStart(3, "0")}`;
 }
 
+/** Device-best race time + best lap for a track (from the local personal store). */
+export function getLocalBest(trackId: string): { timeMs: number | null; bestLapMs: number | null } {
+  const tid = normalizeTrackId(trackId);
+  const entries = readLocal(tid);
+  let timeMs: number | null = null;
+  let bestLapMs: number | null = null;
+  for (const e of entries) {
+    if (Number.isFinite(e.timeMs) && e.timeMs > 0 && (timeMs === null || e.timeMs < timeMs)) {
+      timeMs = e.timeMs;
+    }
+    if (
+      e.bestLapMs != null &&
+      Number.isFinite(e.bestLapMs) &&
+      e.bestLapMs > 0 &&
+      (bestLapMs === null || e.bestLapMs < bestLapMs)
+    ) {
+      bestLapMs = e.bestLapMs;
+    }
+  }
+  return { timeMs, bestLapMs };
+}
+
 export function boardSourceLabel(source: BoardSource, saved = false): string {
   if (source === "server") {
     return saved ? "Saved to online board" : "Live online board";

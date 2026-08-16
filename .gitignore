@@ -30,3 +30,6 @@ server/feedback.json
 # Event Mode payout audit log
 server/payouts.json
 server/cashu-proofs.json
+
+# stray nested clone, not part of the game
+elliptic-apparel-real/
