@@ -392,7 +392,8 @@ export class Game {
         this.updateMapVote(votes, received, total),
       onVoteResult: (trackId) => this.showMapVoteResult(trackId),
       onState: (players, at) => this.onNetState(players, at),
-      onEventInvoice: (bolt11, amountSats, mock) => this.showBuyInInvoice(bolt11, amountSats, mock),
+      onEventInvoice: (creq, amountSats, mock, buyInSats, feeSats) =>
+        this.showBuyInInvoice(creq, amountSats, mock, buyInSats, feeSats),
       onPayoutResult: (result) => this.onPayoutResult(result),
       onError: (message) => {
         this.setNetStatus(message, "bad");
@@ -437,6 +438,15 @@ export class Game {
         this.onResize();
       }, 250);
     });
+
+    // Live connection readout — the NetClient pings every 2s; refresh the status
+    // line so lobby and race always show current ping/jitter (never clobber errors).
+    setInterval(() => {
+      if (!this.net.connected || !this.online) return;
+      if (this.el.netStatus.classList.contains("bad")) return;
+      if (this.inLobby) this.setNetStatus(`Lobby · ${this.net.room}`, "ok");
+      else if (this.running) this.setNetStatus(`Online · ${this.net.room}`, "ok");
+    }, 2000);
     window.visualViewport?.addEventListener("resize", () => this.onResize());
     window.matchMedia("(pointer: coarse)").addEventListener("change", () => this.refreshTouchMode());
     window.matchMedia("(hover: none)").addEventListener("change", () => this.refreshTouchMode());
@@ -1177,7 +1187,10 @@ export class Game {
     if (event) {
       const banner = document.getElementById("mp-buyin-banner");
       if (banner) {
-        banner.textContent = `BUY-IN ${event.buyInSats} SATS · POT ${event.buyInSats * this.lobbyPlayers.length} SATS`;
+        const fee = event.feeSats ?? 0;
+        banner.textContent = fee
+          ? `BUY-IN ${event.buyInSats} SATS + ${fee} SAT MINT FEE · POT ${event.buyInSats * this.lobbyPlayers.length} SATS`
+          : `BUY-IN ${event.buyInSats} SATS · POT ${event.buyInSats * this.lobbyPlayers.length} SATS`;
       }
       const minePaid = event.paidIds.includes(this.net.id);
       const box = document.getElementById("mp-invoice-box");
@@ -1210,8 +1223,13 @@ export class Game {
   }
 
   /** Event Mode: show my buy-in payment request (QR + copyable creq + token fallback). */
-  private showBuyInInvoice(paymentRequest: string, amountSats: number, mock: boolean) {
-    void amountSats;
+  private showBuyInInvoice(
+    paymentRequest: string,
+    amountSats: number,
+    mock: boolean,
+    buyInSats?: number,
+    feeSats?: number,
+  ) {
     const box = document.getElementById("mp-invoice-box");
     if (!box) return;
     box.classList.remove("is-paid");
@@ -1221,11 +1239,16 @@ export class Game {
     if (status) {
       status.textContent = mock
         ? "Dev mode — auto-pays in a few seconds"
-        : "Scan with cashu.me or any Cashu wallet";
+        : feeSats
+          ? `Pay ${amountSats} sats (${buyInSats} buy-in + ${feeSats} mint fee) — scan with cashu.me or any Cashu wallet`
+          : "Scan with cashu.me or any Cashu wallet";
       status.classList.remove("is-paid");
     }
     const tokenInput = document.getElementById("mp-token-input") as HTMLInputElement | null;
-    if (tokenInput) tokenInput.value = "";
+    if (tokenInput) {
+      tokenInput.value = "";
+      tokenInput.placeholder = mock ? "cashuA…" : `cashuA token of ${amountSats} sats…`;
+    }
     const qr = document.getElementById("mp-invoice-qr") as HTMLImageElement | null;
     if (qr) {
       // creqB is bech32m — uppercase QRs scan denser/more reliably
@@ -1263,9 +1286,16 @@ export class Game {
       .catch(() => bolt.select());
   }
 
+  /** Pot figures for the winner's checkout: gross pot + the house-covered mint fee. */
+  private eventPotBreakdown(event: EventRoomInfo) {
+    const pot = event.potSats || event.buyInSats * Math.max(1, this.lobbyPlayers.length);
+    const fee = Math.min(pot, Math.max(0, event.potFeeSats ?? 0));
+    return { pot, fee };
+  }
+
   /** Winner's checkout: pot breakdown, tip slider (default 2%), Cashu token claim. */
   private setupEventCheckout(event: EventRoomInfo) {
-    const pot = event.potSats || event.buyInSats * Math.max(1, this.lobbyPlayers.length);
+    const { pot } = this.eventPotBreakdown(event);
     const potEl = document.getElementById("event-pot-sats");
     if (potEl) potEl.textContent = String(pot);
     const range = document.getElementById("event-tip-range") as HTMLInputElement | null;
@@ -1274,24 +1304,29 @@ export class Game {
     if (status) status.classList.add("hidden");
     document.getElementById("event-token-box")?.classList.add("hidden");
     const claim = document.getElementById("event-claim-btn") as HTMLButtonElement | null;
-    if (claim) claim.disabled = false;
+    if (claim) claim.disabled = pot <= 0;
     this.updateEventTipBreakdown();
   }
 
   private updateEventTipBreakdown() {
     const event = this.net.event;
     if (!event) return;
-    const pot = event.potSats || event.buyInSats * Math.max(1, this.lobbyPlayers.length);
+    const { pot, fee } = this.eventPotBreakdown(event);
     const range = document.getElementById("event-tip-range") as HTMLInputElement | null;
     const tipPercent = Math.max(0, Math.min(100, Number(range?.value ?? 2)));
     const label = document.getElementById("event-tip-label");
     if (label) label.textContent = `${tipPercent}%`;
+    // Winner gets the full share; the mint fee comes out of the tip/house side.
     const winnerSats = Math.floor((pot * (100 - tipPercent)) / 100);
-    const tipSats = pot - winnerSats;
+    const tipSats = Math.max(0, pot - winnerSats - fee);
     const winnerEl = document.getElementById("event-winner-sats");
     if (winnerEl) winnerEl.textContent = String(winnerSats);
     const tipEl = document.getElementById("event-tip-sats");
     if (tipEl) tipEl.textContent = String(tipSats);
+    const feePart = document.getElementById("event-fee-part");
+    if (feePart) feePart.classList.toggle("hidden", fee <= 0);
+    const feeEl = document.getElementById("event-fee-sats");
+    if (feeEl) feeEl.textContent = String(fee);
   }
 
   private claimEventPot() {
@@ -1310,6 +1345,7 @@ export class Game {
     token?: string;
     winnerSats?: number;
     tipSats?: number;
+    feeSats?: number;
     mock?: boolean;
     error?: string;
   }) {
@@ -1320,7 +1356,8 @@ export class Game {
     if (result.ok) {
       status.classList.remove("nostr-error");
       const tipNote = result.tipSats ? ` · ${result.tipSats} sats dev tip` : "";
-      status.textContent = `Paid! ${result.winnerSats} sats${tipNote} — paste the token into cashu.me to claim`;
+      const feeNote = result.feeSats ? " · mint fee covered" : "";
+      status.textContent = `Paid! ${result.winnerSats} sats${tipNote}${feeNote} — paste the token into cashu.me to claim`;
       if (claim) claim.disabled = true;
       const out = document.getElementById("event-payout-token") as HTMLInputElement | null;
       if (out) out.value = result.token || "";
@@ -1756,8 +1793,14 @@ export class Game {
   }
 
   private setNetStatus(text: string, kind: "ok" | "warn" | "bad" = "ok") {
-    this.el.netStatus.textContent =
-      this.net.latency > 0 ? `${text} · ${Math.round(this.net.latency)}ms` : text;
+    let suffix = "";
+    if (this.net.latency > 0) {
+      suffix = ` · ${Math.round(this.net.latency)}ms`;
+      let jitter = 0;
+      for (const r of this.remotes.values()) jitter = Math.max(jitter, r.jitter);
+      if (jitter >= 1) suffix += ` · ±${Math.round(jitter)}ms`;
+    }
+    this.el.netStatus.textContent = text + suffix;
     this.el.netStatus.classList.remove("hidden", "warn", "bad");
     if (kind === "warn") this.el.netStatus.classList.add("warn");
     if (kind === "bad") this.el.netStatus.classList.add("bad");
@@ -2889,6 +2932,22 @@ export class Game {
     this.el.finishTitle.textContent = won ? "YOU WIN" : "YOU LOST";
   }
 
+  /**
+   * Event Mode finish UI: the winner gets the pot checkout (claim as a Cashu
+   * token), everyone else gets "winner takes the pot". One race per event — no
+   * restart button. Idempotent: runs both on the local finish and again when the
+   * server's raceResult lands (the winner hits the second call only).
+   */
+  private applyEventResult(winnerId: string) {
+    const eventRoom = this.net.event;
+    if (!this.online || !eventRoom) return;
+    const won = winnerId === this.net.id;
+    document.getElementById("event-checkout")?.classList.toggle("hidden", !won);
+    document.getElementById("event-lost-note")?.classList.toggle("hidden", won);
+    this.el.restartBtn.classList.add("hidden");
+    if (won) this.setupEventCheckout(eventRoom);
+  }
+
   private finishRace(result?: {
     winnerId: string;
     winnerName: string;
@@ -2900,6 +2959,9 @@ export class Game {
       if (this.online && result) {
         this.applyOnlineResult(result.winnerId, result.winnerName);
         this.showMapVote(result.trackOptions, result.voteEndsAt);
+        // The winner lands here: they finished locally first, so the Event Mode
+        // checkout must be (re)applied when the server's raceResult arrives.
+        this.applyEventResult(result.winnerId);
       }
       return;
     }
@@ -2954,18 +3016,16 @@ export class Game {
     }
 
     // Event Mode: winner gets the pot checkout; everyone else sees "winner takes the pot".
-    const eventRoom = this.net.event;
-    const isEventResult = this.online && !!eventRoom && !!result;
-    document
-      .getElementById("event-checkout")
-      ?.classList.toggle("hidden", !(isEventResult && result!.winnerId === this.net.id));
-    document
-      .getElementById("event-lost-note")
-      ?.classList.toggle("hidden", !(isEventResult && result!.winnerId !== this.net.id));
-    if (isEventResult) {
-      // One race per event — no local restart, no next-track vote.
-      this.el.restartBtn.classList.add("hidden");
-      if (result!.winnerId === this.net.id) this.setupEventCheckout(eventRoom!);
+    if (this.online && this.net.event) {
+      if (result) {
+        this.applyEventResult(result.winnerId);
+      } else {
+        // Local finish before the server's raceResult — one race per event, no restart.
+        this.el.restartBtn.classList.add("hidden");
+      }
+    } else {
+      document.getElementById("event-checkout")?.classList.add("hidden");
+      document.getElementById("event-lost-note")?.classList.add("hidden");
     }
 
     this.el.finish.classList.remove("hidden");

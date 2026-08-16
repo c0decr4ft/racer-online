@@ -1,6 +1,11 @@
-/** Shared wire protocol — 90Hz pose sync with client-side snapshot interpolation. */
+/** Shared wire protocol — 30Hz pose sync with client-side snapshot interpolation. */
 
-export const NET_TICK_HZ = 90;
+/**
+ * 30Hz: at 90Hz over TCP, one lost packet head-of-line-blocks ~90 queued updates
+ * then dumps them as a burst — visible as freeze → teleport. 30Hz keeps frames
+ * fresh and queues short; the interp buffer hides the 33ms spacing entirely.
+ */
+export const NET_TICK_HZ = 30;
 export const NET_TICK_MS = 1000 / NET_TICK_HZ;
 /** Render remotes this far behind local time so we almost always lerp between two snapshots. */
 export const INTERP_DELAY_MS = NET_TICK_MS * 1.75;

@@ -351,7 +351,14 @@ async function main() {
     const startErr = await startErrP;
     assert("event:start-blocked-unpaid", /buy-ins/.test(startErr?.message || ""), startErr?.message);
     const hostInvoice = await hostInvoiceP;
-    assert("event:host-invoice", hostInvoice?.amountSats === 100 && !!hostInvoice?.paymentRequest, JSON.stringify(hostInvoice ?? {}).slice(0, 80));
+    // Invoice = buy-in + mint fee on top (fee is 0 in mock mode, ≥0 with a real mint)
+    assert(
+      "event:host-invoice",
+      hostInvoice?.buyInSats === 100 &&
+        hostInvoice?.amountSats === 100 + (hostInvoice?.feeSats ?? 0) &&
+        !!hostInvoice?.paymentRequest,
+      JSON.stringify(hostInvoice ?? {}).slice(0, 100),
+    );
 
     if (paymentsLive) {
       // Real payments: request must be a genuine creq, and nothing may auto-pay

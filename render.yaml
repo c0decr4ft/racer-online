@@ -5,7 +5,8 @@ services:
     name: racer-online
     runtime: node
     plan: free
-    region: oregon
+    # Frankfurt — players are mostly in Europe; Oregon added ~160ms RTT (jumpy remotes).
+    region: frankfurt
     buildCommand: npm ci && npm run build
     startCommand: npm start
     healthCheckPath: /healthz

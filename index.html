@@ -616,12 +616,25 @@
           </section>
           <section id="event-checkout" class="event-checkout hidden" aria-labelledby="event-checkout-title">
             <p class="eyebrow" id="event-checkout-title">POT WON</p>
-            <p class="event-pot"><span id="event-pot-sats">0</span> SATS</p>
+            <p class="event-pot"><span id="event-pot-sats">0</span><span class="event-pot-unit">SATS</span></p>
             <label class="event-tip-row" for="event-tip-range">
               <span>DEVELOPER TIP · <span id="event-tip-label">2%</span></span>
               <input id="event-tip-range" type="range" min="0" max="100" step="1" value="2" />
             </label>
-            <p class="event-breakdown">You receive <span id="event-winner-sats">0</span> sats · dev gets <span id="event-tip-sats">0</span></p>
+            <div class="event-rows">
+              <div class="event-row event-row-winner">
+                <span>You receive</span>
+                <strong><span id="event-winner-sats">0</span> sats</strong>
+              </div>
+              <div class="event-row">
+                <span>Dev tip</span>
+                <strong><span id="event-tip-sats">0</span> sats</strong>
+              </div>
+              <div class="event-row event-row-fee hidden" id="event-fee-part">
+                <span>Mint fee</span>
+                <strong>~<span id="event-fee-sats">0</span> sats · not taken from your prize</strong>
+              </div>
+            </div>
             <button id="event-claim-btn" type="button">CLAIM POT</button>
             <div id="event-token-box" class="event-token-box hidden">
               <input id="event-payout-token" class="event-payout-token" type="text" readonly aria-label="Your payout token" />
@@ -629,6 +642,7 @@
                 <button id="event-token-copy" class="btn-ghost" type="button">COPY TOKEN</button>
                 <a id="event-open-cashu" class="btn-ghost" href="https://wallet.cashu.me" target="_blank" rel="noopener noreferrer">OPEN CASHU.ME</a>
               </div>
+              <p class="event-token-hint">In your Cashu wallet: Receive → paste this token</p>
             </div>
             <p id="event-payout-status" class="event-payout-status hidden" aria-live="polite"></p>
           </section>
