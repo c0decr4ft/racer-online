@@ -1,18 +1,28 @@
 name: Keep Render awake
 
-# Render free tier sleeps after ~15 min idle, causing a ~30s cold start
-# for the next player. Ping /healthz every 10 minutes so it stays warm.
+# Render free tier sleeps after ~15 min idle, which kills every open lobby/race
+# socket ("everyone gets kicked out"). GitHub's scheduled-cron delivery jitters
+# to ~30 min, so a plain cron ping can't hold the line. Instead each run loops
+# for ~50 minutes, pinging every 30s — continuous coverage, and the first ping
+# of the next run re-wakes anything that dozed off in the gap.
 on:
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "*/45 * * * *"
   workflow_dispatch:
+
+concurrency:
+  group: keep-awake
+  cancel-in-progress: false
 
 jobs:
   ping:
     runs-on: ubuntu-latest
+    timeout-minutes: 55
     steps:
-      - name: Ping health endpoint
+      - name: Ping health endpoint for ~50 minutes
         run: |
-          status=$(curl -s -o /dev/null -w "%{http_code}" -m 60 https://racer-online.onrender.com/healthz)
-          echo "healthz → HTTP $status"
-          test "$status" = "200"
+          for i in $(seq 1 100); do
+            status=$(curl -s -o /dev/null -w "%{http_code}" -m 20 https://racer-online.onrender.com/healthz || true)
+            echo "$(date -u +%H:%M:%S) healthz → HTTP $status"
+            sleep 30
+          done

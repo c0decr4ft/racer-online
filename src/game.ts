@@ -28,7 +28,6 @@ import {
   boardSourceLabel,
   fetchLeaderboard,
   formatBoardTime,
-  getLocalBest,
   getLocalDriverName,
   sanitizeDriverName,
   saveLocalDriverName,
@@ -865,6 +864,8 @@ export class Game {
     this.mpCreateTrackId = DEFAULT_TRACK_ID;
     // Event Mode: show the buy-in field; plain multiplayer hides it.
     document.getElementById("mp-create-buyin-field")?.classList.toggle("hidden", !eventMode);
+    const entryTitle = document.querySelector("#mp-entry h1");
+    if (entryTitle) entryTitle.textContent = eventMode ? "EVENT MODE" : "MULTIPLAYER";
     const entryTagline = document.querySelector("#mp-entry .tagline");
     if (entryTagline) {
       entryTagline.textContent = eventMode
@@ -1104,6 +1105,7 @@ export class Game {
       color: this.garage.primary,
       accent: this.garage.accent,
       pubkey: getSession()?.pubkey,
+      eventMode: this.eventMode,
     });
   }
 
@@ -1185,6 +1187,10 @@ export class Game {
         status.textContent = "PAID ✓";
         status.classList.add("is-paid");
       }
+      // Once you've paid, BACK goes away — you can't leave the lobby and lose your buy-in
+      document.getElementById("mp-lobby-leave")?.classList.toggle("hidden", minePaid);
+    } else {
+      document.getElementById("mp-lobby-leave")?.classList.remove("hidden");
     }
 
     const host = this.net.isHost;
@@ -2939,22 +2945,12 @@ export class Game {
       this.el.finishTitle.textContent = `P${place}`;
     }
 
-    // Accomplishment pills — personal records vs device best, podium
+    // Accomplishment pill — podium only (personal-record pills removed by request).
     const callouts = document.getElementById("finish-callouts");
     if (callouts) {
-      const pills: string[] = [];
-      const pb = getLocalBest(this.trackId);
-      const isPersonalBest =
-        this.pendingFinishMs > 0 && (pb.timeMs === null || this.pendingFinishMs < pb.timeMs);
-      const isBestLap =
-        Number.isFinite(this.bestLap) &&
-        this.bestLap > 0 &&
-        (pb.bestLapMs === null || this.bestLap < pb.bestLapMs);
-      if (isPersonalBest) pills.push(`<span class="finish-callout is-pb">NEW PERSONAL BEST</span>`);
-      if (isBestLap) pills.push(`<span class="finish-callout is-lap">NEW BEST LAP</span>`);
-      if (place <= 3) pills.push(`<span class="finish-callout is-podium">PODIUM FINISH</span>`);
-      callouts.innerHTML = pills.join("");
-      callouts.classList.toggle("hidden", pills.length === 0);
+      const show = place <= 3;
+      callouts.innerHTML = show ? `<span class="finish-callout is-podium">PODIUM FINISH</span>` : "";
+      callouts.classList.toggle("hidden", !show);
     }
 
     // Event Mode: winner gets the pot checkout; everyone else sees "winner takes the pot".

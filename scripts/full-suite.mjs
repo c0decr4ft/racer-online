@@ -136,11 +136,13 @@ async function measureFps(page, label, ms = 2000) {
     return stats;
   }
   if (fpsBaseline == null) fpsBaseline = stats.rafFps;
-  // Environment-relative: hold within 80% of baseline; renderer must keep pace with rAF.
-  const envCap = Math.max(30, fpsBaseline);
-  const pass = stats.rafFps >= envCap * 0.8 && stats.webglFps >= stats.rafFps * 0.95;
+  // Real signal: the renderer must keep pace with rAF (webglFps ≈ rafFps).
+  // Hosts can re-cap rAF mid-run (phantom 30Hz / ProMotion switching) — that's
+  // an environment change, not a render regression, so don't compare to a
+  // fixed baseline. Only a true stall (render falling behind, or <20fps) fails.
+  const pass = stats.webglFps >= stats.rafFps * 0.95 && stats.rafFps >= 20;
   if (pass) ok(`fps:${label}`, JSON.stringify(stats));
-  else fail(`fps:${label}`, `${JSON.stringify(stats)} (baseline=${fpsBaseline})`);
+  else fail(`fps:${label}`, `${JSON.stringify(stats)} (render behind rAF or <20fps)`);
   return stats;
 }
 
@@ -377,6 +379,7 @@ async function main() {
       password: "",
       color: 3,
       accent: 4,
+      event: true,
     });
     assert("event:join", evGuest.ok, evGuest.err || "");
     const guestInvoiceP = evGuest.ws ? waitForWsEvent(evGuest.ws, "eventInvoice", 5000) : Promise.resolve(null);
@@ -782,9 +785,13 @@ async function main() {
   // Signed score save — host (signed in via fake NIP-07) saves a real
   // signature-verified score through the server. Runs inside the 20s vote window.
   assert("mp:finish-save-row", await visible(page, "#name-entry"));
-  // Accomplishment pills on the results screen (fresh device → records expected)
+  // Podium pill only — personal-record pills were removed by request
   const calloutText = await page.locator("#finish-callouts").innerText().catch(() => "");
-  assert("finish:callouts", /PERSONAL BEST|BEST LAP/.test(calloutText), calloutText.slice(0, 60));
+  assert(
+    "finish:callouts",
+    /PODIUM FINISH/.test(calloutText) && !/PERSONAL BEST|BEST LAP/.test(calloutText),
+    calloutText.slice(0, 60),
+  );
   // Final-lap flash element works
   const flashOk = await page.evaluate(() => {
     window.__game.showFinalLapFlash();

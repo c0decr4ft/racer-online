@@ -3,7 +3,6 @@ import { createVehicle, disposeVehicleGroup, stripVehicleSpotLights } from "../c
 import type { VehicleKind } from "../garage";
 import { VISUAL_RIDE_Y } from "../vehicle";
 import {
-  INTERP_DELAY_MS,
   MAX_EXTRAPOLATE_MS,
   NET_TICK_MS,
   decodeStateBinary,
@@ -38,6 +37,9 @@ export class RemotePlayer {
   mesh: THREE.Group;
   private buffer: Snapshot[] = [];
   private latest: Snapshot | null = null;
+  /** EMA of arrival-gap deviation — drives the adaptive render delay. */
+  private jitterMs = 0;
+  private lastArrivalAt = 0;
   label: HTMLDivElement;
   private scene: THREE.Scene;
   private color: number;
@@ -107,6 +109,13 @@ export class RemotePlayer {
 
   push(pose: PlayerPose, at = performance.now()) {
     this.applyMeta(pose);
+    // Measure arrival jitter for the adaptive render delay (push ≈ receipt time)
+    const now = performance.now();
+    if (this.lastArrivalAt > 0) {
+      const dev = Math.abs(now - this.lastArrivalAt - NET_TICK_MS);
+      this.jitterMs += (dev - this.jitterMs) * 0.08;
+    }
+    this.lastArrivalAt = now;
     const snap: Snapshot = { at, pose: { ...pose } };
     this.latest = snap;
     const buf = this.buffer;
@@ -147,7 +156,11 @@ export class RemotePlayer {
     const dt = this.lastUpdateAt > 0 ? Math.min(0.05, (now - this.lastUpdateAt) / 1000) : 0;
     this.lastUpdateAt = now;
 
-    const renderAt = now - INTERP_DELAY_MS;
+    // Adaptive jitter buffer: 19ms at 90Hz was far too tight for real internet —
+    // every jitter spike forced extrapolation → jagged remotes. Scale the render
+    // delay with measured arrival jitter (≈45ms on clean links, up to 200ms).
+    const interpDelay = THREE.MathUtils.clamp(40 + this.jitterMs * 2.5, 40, 200);
+    const renderAt = now - interpDelay;
     let x: number;
     let z: number;
     let h: number;
@@ -336,6 +349,8 @@ export type RoomConnectOpts = {
   pubkey?: string;
   /** Event Mode (host, on create): buy-in per racer in sats. */
   eventBuyInSats?: number;
+  /** True when joining via Event Mode — server rejects cross-type joins. */
+  eventMode?: boolean;
   mode: "create" | "join";
 };
 
@@ -516,6 +531,7 @@ export class NetClient {
               color: opts.color,
               accent: opts.accent,
               pubkey: opts.pubkey,
+              event: opts.eventMode || undefined,
             };
       ws.send(JSON.stringify(payload));
       this.pingAt = performance.now();

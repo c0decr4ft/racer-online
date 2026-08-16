@@ -80,6 +80,8 @@ export type ClientMsg =
       accent?: number;
       /** Nostr identity (64-hex pubkey) of the joining racer. */
       pubkey?: string;
+      /** True when joining via Event Mode — must match the room's type. */
+      event?: boolean;
     }
   | {
       t: "pose";
