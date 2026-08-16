@@ -39,7 +39,6 @@ import {
 import { getSession, onSessionChange } from "./nostr/session";
 import { ensureNostrLogin, getCurrentProfile } from "./nostr/ui";
 import { fetchProfile, shortNpub } from "./nostr/profile";
-import { fetchPresence } from "./net/presence";
 
 /** QRCode is only needed for payment/login QRs — lazy-load it off the hot path. */
 const qrCode = () => import("qrcode");
@@ -634,41 +633,6 @@ export class Game {
     });
 
     this.bindMuteBtn();
-
-    // Live presence chip on the home hero ("N racers online now").
-    // Refresh again shortly after boot — the first read can race our own heartbeat.
-    void this.updateHomeLive();
-    window.setTimeout(() => void this.updateHomeLive(), 4_000);
-    window.setInterval(() => void this.updateHomeLive(), 30_000);
-  }
-
-  /** Fetch presence and show the live-online chip on the home screen. */
-  private async updateHomeLive() {
-    const el = document.getElementById("home-live");
-    const text = document.getElementById("home-live-text");
-    const chip = document.getElementById("live-chip");
-    const chipCount = document.getElementById("live-chip-count");
-    try {
-      const snap = await fetchPresence();
-      const n = Math.max(0, snap?.now ?? 0);
-      if (el && text) {
-        if (n > 0) {
-          text.textContent = n === 1 ? "1 racer online now" : `${n} racers online now`;
-          el.classList.remove("hidden");
-        } else {
-          el.classList.add("hidden");
-        }
-      }
-      // Top-left corner chip: just the count, tooltip carries the words
-      if (chip && chipCount) {
-        chipCount.textContent = String(n);
-        chip.title = n === 1 ? "1 racer online now" : `${n} racers online now`;
-        chip.classList.toggle("hidden", n <= 0);
-      }
-    } catch {
-      el?.classList.add("hidden");
-      chip?.classList.add("hidden");
-    }
   }
 
   private bindMuteBtn() {
@@ -2434,7 +2398,9 @@ export class Game {
    *  @returns true while the vehicle is contacting / clamped to a wall. */
   private keepOnTrack(v: Vehicle): boolean {
     const proj = this.projectSticky(v, v.state.position);
-    const wall = this.track.width / 2 - 0.55;
+    // Bikes get a narrower wall margin than cars — the hitbox matches the machine.
+    const margin = v.mesh.userData.kind === "bike" ? 0.35 : 0.55;
+    const wall = this.track.width / 2 - margin;
     const d = proj.distanceFromCenter;
     if (Math.abs(d) <= wall) return false;
 
@@ -2626,26 +2592,29 @@ export class Game {
     }
   }
 
+  /** Collision radius per vehicle kind — bikes are far narrower than cars. */
+  private vehicleRadius(v: Vehicle): number {
+    return v.mesh.userData.kind === "bike" ? 1.1 : 1.7;
+  }
+
   /** Solid car bodies — separate overlap (capped per frame) and cancel only
    *  the closing velocity along the contact normal. No bounce, no fling. */
   private resolveCollisions() {
     const all = this.fillPack();
-    const radius = 1.7;
     for (let i = 0; i < all.length; i++) {
       for (let j = i + 1; j < all.length; j++) {
-        this.bumpVehicles(all[i]!, all[j]!, radius);
+        this.bumpVehicles(all[i]!, all[j]!);
       }
     }
   }
 
   private resolveRemoteCollisions() {
-    const radius = 1.7;
     const maxSep = 0.5;
     for (const remote of this.remotes.values()) {
       const dx = remote.mesh.position.x - this.player.state.position.x;
       const dz = remote.mesh.position.z - this.player.state.position.z;
       const dist = Math.hypot(dx, dz);
-      const min = radius * 2;
+      const min = (remote.kind === "bike" ? 1.1 : 1.7) + this.vehicleRadius(this.player);
       if (dist >= min || dist < 0.001) continue;
       const nx = dx / dist;
       const nz = dz / dist;
@@ -2661,11 +2630,11 @@ export class Game {
     }
   }
 
-  private bumpVehicles(a: Vehicle, b: Vehicle, radius: number) {
+  private bumpVehicles(a: Vehicle, b: Vehicle) {
     const dx = b.state.position.x - a.state.position.x;
     const dz = b.state.position.z - a.state.position.z;
     const dist = Math.hypot(dx, dz);
-    const min = radius * 2;
+    const min = this.vehicleRadius(a) + this.vehicleRadius(b);
     if (dist >= min || dist < 0.001) return;
 
     const nx = dx / dist;
