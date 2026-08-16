@@ -1427,6 +1427,10 @@ html.touch-mode [contenteditable="true"] {
   color: #9ad4a8;
 }
 
+.dev-tip-badge.is-failed {
+  color: #ff8a7a;
+}
+
 .dev-tip-badge.is-mock {
   color: var(--muted);
   opacity: 0.7;
