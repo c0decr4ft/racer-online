@@ -306,13 +306,20 @@ export type NetHandlers = {
   }) => void;
   onStart: (at: number, trackId: string, kind: NetVehicleKind, weather: NetWeatherMode) => void;
   /** Event Mode — your buy-in payment request (creq) arrived from the server. */
-  onEventInvoice: (paymentRequest: string, amountSats: number, mock: boolean) => void;
+  onEventInvoice: (
+    paymentRequest: string,
+    amountSats: number,
+    mock: boolean,
+    buyInSats?: number,
+    feeSats?: number,
+  ) => void;
   /** Event Mode — pot claim result; `token` is the cashuA payout to claim in cashu.me. */
   onPayoutResult: (result: {
     ok: boolean;
     token?: string;
     winnerSats?: number;
     tipSats?: number;
+    feeSats?: number;
     mock?: boolean;
     error?: string;
   }) => void;
@@ -380,7 +387,7 @@ export class NetClient {
   /** Event Mode room state — null in normal rooms. */
   event: EventRoomInfo | null = null;
   /** Event Mode — this client's own buy-in payment request (creq). */
-  myBuyIn: { paymentRequest: string; amountSats: number } | null = null;
+  myBuyIn: { paymentRequest: string; amountSats: number; buyInSats?: number; feeSats?: number } | null = null;
   /** Bumps on each connect/disconnect so stale socket handlers are ignored. */
   private connGen = 0;
   private finishSent = false;
@@ -636,14 +643,29 @@ export class NetClient {
         const at = this.localStamp(msg.at ?? 0, recvNow);
         this.emitState(msg.players, at);
       } else if (msg.t === "eventInvoice") {
-        this.myBuyIn = { paymentRequest: msg.paymentRequest, amountSats: msg.amountSats };
-        this.handlers.onEventInvoice(msg.paymentRequest, msg.amountSats, !!msg.mock);
+        this.myBuyIn = {
+          paymentRequest: msg.paymentRequest,
+          amountSats: msg.amountSats,
+          buyInSats: msg.buyInSats,
+          feeSats: msg.feeSats,
+        };
+        // The invoice carries the room's per-buy-in mint fee — keep the shared
+        // event state in sync so the lobby banner can show it immediately.
+        if (this.event && msg.feeSats != null) this.event.feeSats = msg.feeSats;
+        this.handlers.onEventInvoice(
+          msg.paymentRequest,
+          msg.amountSats,
+          !!msg.mock,
+          msg.buyInSats,
+          msg.feeSats,
+        );
       } else if (msg.t === "payoutResult") {
         this.handlers.onPayoutResult({
           ok: msg.ok,
           token: msg.token,
           winnerSats: msg.winnerSats,
           tipSats: msg.tipSats,
+          feeSats: msg.feeSats,
           mock: msg.mock,
           error: msg.error,
         });

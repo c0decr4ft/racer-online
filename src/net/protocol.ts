@@ -20,8 +20,12 @@ export type LobbyPhase = "lobby" | "racing" | "finished" | "starting";
 /** Event Mode room state — buy-in gate + pot. Present only in event rooms. */
 export type EventRoomInfo = {
   buyInSats: number;
+  /** Mint fee added on top of each buy-in (payers cover it, pot lands whole). */
+  feeSats?: number;
   paidIds: string[];
   potSats: number;
+  /** Mint fee reserved from the pot at payout (before the winner/tip split). */
+  potFeeSats?: number;
   /** True when the server runs the mock payment adapter (dev/testing — fake sats). */
   mock?: boolean;
 };
@@ -137,7 +141,16 @@ export type ServerMsg =
   | { t: "state"; players: PlayerPose[]; at?: number }
   | { t: "start"; at: number; trackId: string; kind: NetVehicleKind; weather: NetWeatherMode }
   /** Event Mode — your personal buy-in request (NUT-18 creq, payable by cashu.me & co). */
-  | { t: "eventInvoice"; paymentRequest: string; amountSats: number; mock?: boolean }
+  | {
+      t: "eventInvoice";
+      paymentRequest: string;
+      /** Total to pay (buyInSats + feeSats). */
+      amountSats: number;
+      buyInSats?: number;
+      /** Mint fee included in the request on top of the buy-in. */
+      feeSats?: number;
+      mock?: boolean;
+    }
   /** Event Mode — result of a pot claim attempt; `token` is the cashuA payout. */
   | {
       t: "payoutResult";
@@ -145,6 +158,8 @@ export type ServerMsg =
       token?: string;
       winnerSats?: number;
       tipSats?: number;
+      /** Mint fee reserved from the pot for this payout. */
+      feeSats?: number;
       mock?: boolean;
       error?: string;
     }

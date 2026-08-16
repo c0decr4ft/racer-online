@@ -152,8 +152,8 @@ function normalizeSessionId(raw) {
 /** @typedef {{ id: string, name: string, color: number, accent: number, kind: string, pubkey?: string, x: number, z: number, h: number, s: number, g: string, lap: number }} Pose */
 /** @typedef {{ id: string, name: string, color: number, room: string, ws: import('ws').WebSocket, pose: Pose, lastPoseAt: number }} Client */
 /** @typedef {{ trackId: string, order: number }} TrackVote */
-/** @typedef {{ paymentHash: string, paymentRequest: string, paidAt: number }} BuyIn */
-/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, lastCrashAt: number, clients: Map<string, Client>, isEvent: boolean, buyInSats: number, buyIns: Map<string, BuyIn>, potSats: number, potClaimed: boolean }} Room */
+/** @typedef {{ paymentHash: string, paymentRequest: string, paidAt: number, netSats?: number }} BuyIn */
+/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, lastCrashAt: number, clients: Map<string, Client>, isEvent: boolean, buyInSats: number, buyInFeeSats: number, buyIns: Map<string, BuyIn>, potSats: number, potClaimed: boolean }} Room */
 /** @typedef {{ name: string, timeMs: number, bestLapMs?: number, at: number, trackId?: string, pubkey: string, eventId?: string }} BoardEntry */
 /** @typedef {Record<string, BoardEntry[]>} BoardStore */
 /** @typedef {{ at: number, count: number }} PresenceSample */
@@ -838,15 +838,28 @@ function eventInfo(room) {
   if (!room.isEvent) return null;
   const paidIds = [];
   for (const [id, b] of room.buyIns) if (b.paidAt > 0) paidIds.push(id);
-  return { buyInSats: room.buyInSats, paidIds, potSats: room.potSats, mock: payments.mock };
+  return {
+    buyInSats: room.buyInSats,
+    feeSats: room.buyInFeeSats || 0,
+    paidIds,
+    potSats: room.potSats,
+    mock: payments.mock,
+  };
 }
 
 /** Create a buy-in payment request (NUT-18 creq) for a freshly joined event-room racer. */
 async function createBuyInInvoice(room, client) {
   try {
+    // The mint charges an input fee when we swap the payment in — request it on
+    // top of the buy-in so the pot lands whole and payers never hand-add sats.
+    const feeSats = await payments.receiveFeeSats(room.buyInSats);
+    room.buyInFeeSats = feeSats;
+    const totalSats = room.buyInSats + feeSats;
     const inv = await payments.createPaymentRequest({
-      amountSats: room.buyInSats,
-      memo: `Racer Online event ${room.name} — buy-in ${room.buyInSats} sats`,
+      amountSats: totalSats,
+      memo:
+        `Racer Online event ${room.name} — buy-in ${room.buyInSats} sats` +
+        (feeSats ? ` + ${feeSats} mint fee` : ""),
       baseUrl: PUBLIC_BASE_URL,
     });
     // Room may have been replaced/deleted or the racer left while awaiting
@@ -855,7 +868,9 @@ async function createBuyInInvoice(room, client) {
     send(client.ws, {
       t: "eventInvoice",
       paymentRequest: inv.paymentRequest,
-      amountSats: room.buyInSats,
+      amountSats: totalSats,
+      buyInSats: room.buyInSats,
+      feeSats,
       mock: payments.mock,
     });
   } catch (err) {
@@ -865,12 +880,14 @@ async function createBuyInInvoice(room, client) {
 }
 
 /** Mark a racer's buy-in as paid (from /api/ecash/pay or a pasted token). */
-function markBuyInPaid(room, clientId) {
+function markBuyInPaid(room, clientId, netSats) {
   const buyIn = room.buyIns.get(clientId);
   if (!buyIn || buyIn.paidAt) return false;
   buyIn.paidAt = Date.now();
+  // What actually landed in the pot wallet after mint fees (fallback: full buy-in)
+  buyIn.netSats = Number.isFinite(netSats) ? Math.max(0, Math.round(netSats)) : room.buyInSats;
   const client = room.clients.get(clientId);
-  console.log(`[event] ${room.name} buy-in paid by ${client?.name || clientId}`);
+  console.log(`[event] ${room.name} buy-in paid by ${client?.name || clientId} (net ${buyIn.netSats})`);
   if (client) broadcast(room, { t: "notice", text: `${client.name} paid the buy-in` });
   broadcast(room, lobbySnapshot(room));
   return true;
@@ -931,6 +948,7 @@ function admitClient(ws, msg, mode) {
       // Event Mode: buy-in gate + winner-takes-the-pot
       isEvent: !!msg.event,
       buyInSats: clampBuyIn(msg.event?.buyInSats),
+      buyInFeeSats: 0,
       buyIns: new Map(),
       potSats: 0,
       potClaimed: false,
@@ -1140,7 +1158,7 @@ const httpServer = createServer(async (req, res) => {
         payload,
       });
       depositProofs(fresh);
-      markBuyInPaid(found.room, found.clientId);
+      markBuyInPaid(found.room, found.clientId, fresh.reduce((a, p) => a + Number(p.amount), 0));
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
     } catch (err) {
@@ -1327,7 +1345,11 @@ wss.on("connection", (ws) => {
           send(ws, { t: "error", message: `waiting for buy-ins: ${unpaid.map((c) => c.name).join(", ")}` });
           return;
         }
-        room.potSats = room.buyInSats * room.clients.size;
+        // Pot = what actually landed (mint fees absorbed by the house)
+        room.potSats = [...room.clients.values()].reduce(
+          (sum, c) => sum + (room.buyIns.get(c.id)?.netSats ?? room.buyInSats),
+          0,
+        );
       }
       if (msg.trackId != null) room.trackId = normalizeTrackId(msg.trackId);
       // Host may re-assert create-room weather on play (belt-and-suspenders).
@@ -1405,15 +1427,21 @@ wss.on("connection", (ws) => {
       room.phase = "finished";
       // Event Mode: one race, winner takes the pot — no map vote / next round
       if (room.isEvent) {
-        broadcast(room, {
-          t: "raceResult",
-          winnerId: client.id,
-          winnerName: client.name,
-          timeMs,
-          trackOptions: [],
-          voteEndsAt: 0,
-          event: eventInfo(room),
-        });
+        void (async () => {
+          // Attach the payout fee reserve so the winner's checkout shows the real split.
+          const info = eventInfo(room);
+          if (info) info.potFeeSats = await payments.sendFeeSats().catch(() => 0);
+          if (rooms.get(room.name) !== room) return;
+          broadcast(room, {
+            t: "raceResult",
+            winnerId: client.id,
+            winnerName: client.name,
+            timeMs,
+            trackOptions: [],
+            voteEndsAt: 0,
+            event: info,
+          });
+        })();
         console.log(`[event] ${room.name} won by ${client.name} — pot ${room.potSats} sats`);
         return;
       }
@@ -1456,7 +1484,7 @@ wss.on("connection", (ws) => {
             token: String(msg.token || ""),
           });
           depositProofs(fresh);
-          markBuyInPaid(room, client.id);
+          markBuyInPaid(room, client.id, fresh.reduce((a, p) => a + Number(p.amount), 0));
         } catch (err) {
           send(ws, { t: "error", message: `token rejected — ${String(err?.message || err).slice(0, 100)}` });
         }
@@ -1472,11 +1500,21 @@ wss.on("connection", (ws) => {
         return;
       }
       const tipPercent = Math.max(0, Math.min(100, Math.round(Number(msg.tipPercent) || 0)));
-      const winnerSats = Math.floor((room.potSats * (100 - tipPercent)) / 100);
-      const tipSats = room.potSats - winnerSats;
       room.potClaimed = true; // lock before paying — no double claims
       void (async () => {
         try {
+          // Sending costs the mint's input fee too — keep a reserve back from the
+          // pot so the winner's claim (and the dev tip) can never run dry.
+          const feeReserve = Math.min(
+            room.potSats,
+            Math.max(0, await payments.sendFeeSats().catch(() => 0)),
+          );
+          const distributable = room.potSats - feeReserve;
+          const winnerSats = Math.floor((distributable * (100 - tipPercent)) / 100);
+          const tipSats = distributable - winnerSats;
+          if (winnerSats <= 0 && tipSats <= 0) {
+            throw new Error(`pot too small to cover the mint fee (${feeReserve} sats)`);
+          }
           // Winner's share as a cashuA token — they claim it in cashu.me (or any Cashu wallet)
           let winnerToken = "";
           if (winnerSats > 0) {
@@ -1501,12 +1539,23 @@ wss.on("connection", (ws) => {
             winnerSats,
             tipSats,
             tipPercent,
+            feeSats: feeReserve,
             tipToken: tipToken || null, // bearer token — dev claims it from this file
             mock: payments.mock,
           });
-          send(ws, { t: "payoutResult", ok: true, token: winnerToken, winnerSats, tipSats, mock: payments.mock });
+          send(ws, {
+            t: "payoutResult",
+            ok: true,
+            token: winnerToken,
+            winnerSats,
+            tipSats,
+            feeSats: feeReserve,
+            mock: payments.mock,
+          });
           broadcast(room, { t: "notice", text: `${client.name} claimed the pot — ${winnerSats} sats` });
-          console.log(`[event] ${room.name} pot ${room.potSats} sats → ${client.name} ${winnerSats} · tip ${tipSats}`);
+          console.log(
+            `[event] ${room.name} pot ${room.potSats} sats → ${client.name} ${winnerSats} · tip ${tipSats} · fee ${feeReserve}`,
+          );
         } catch (err) {
           room.potClaimed = false; // payment failed — allow retry
           send(ws, { t: "payoutResult", ok: false, error: String(err?.message || err).slice(0, 140) });
