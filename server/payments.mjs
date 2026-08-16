@@ -79,6 +79,67 @@ async function getWallet() {
   return walletPromise;
 }
 
+/* ---------------- mint fee schedule (input_fee_ppk) ---------------- */
+
+let feePpkPromise = null;
+/**
+ * Max `input_fee_ppk` across the mint's active sat keysets. The mint charges
+ * fee = ceil(proofs × ppk / 1000) per swap — both when we receive a buy-in and
+ * when we send a payout, so invoices/pots must account for it explicitly.
+ */
+function getMintFeePpk() {
+  if (!feePpkPromise) {
+    feePpkPromise = (async () => {
+      try {
+        const res = await fetch(`${CASHU_MINT_URL}/v1/keysets`, {
+          signal: AbortSignal.timeout(8_000),
+        });
+        const data = await res.json();
+        const keysets = Array.isArray(data?.keysets) ? data.keysets : [];
+        return keysets
+          .filter((k) => k && k.active && String(k.unit) === "sat")
+          .reduce((max, k) => Math.max(max, Number(k.input_fee_ppk) || 0), 0);
+      } catch (err) {
+        // Don't cache failure — retry next time; assume fee-less so play can go on.
+        feePpkPromise = null;
+        console.warn("[cashu] fee schedule fetch failed — assuming 0 fees:", err?.message || err);
+        return 0;
+      }
+    })();
+  }
+  return feePpkPromise;
+}
+
+/**
+ * Sats to add ON TOP of a buy-in so the pot keeps the full amount after the
+ * mint's receive-side input fee. A wallet paying A sats uses at most
+ * log2(A)+1 proofs (powers of two), so the fee is ceil(proofs × ppk / 1000) —
+ * usually 1 sat. Iterate to a fixpoint: the fee itself can bump the proof count.
+ */
+async function cashuReceiveFeeSats(amountSats) {
+  const ppk = await getMintFeePpk();
+  if (ppk <= 0) return 0;
+  const proofsFor = (a) => Math.max(1, Math.floor(Math.log2(Math.max(1, a))) + 1);
+  let fee = 0;
+  for (let i = 0; i < 8; i++) {
+    const next = Math.ceil((ppk * proofsFor(amountSats + fee)) / 1000);
+    if (next === fee) break;
+    fee = next;
+  }
+  return fee;
+}
+
+/**
+ * Upper-bound input fee for one swap spending the pot wallet's current proofs —
+ * the reserve the pot payout must keep back so winner + tip sends never fail.
+ */
+async function cashuSendFeeSats() {
+  const wallet = await getWallet();
+  const store = loadProofStore();
+  if (!store.proofs.length) return 0;
+  return wallet.getFeesForProofs(store.proofs).toNumber();
+}
+
 /* ---------------- mock adapter ---------------- */
 
 const mockInvoices = new Map(); // id → { amountSats, createdAt, paidAt }
@@ -117,18 +178,6 @@ async function cashuCreatePaymentRequest({ amountSats, memo, baseUrl }) {
   return { paymentHash, paymentRequest: request.toEncodedCreqB() };
 }
 
-/** Sum proofs minus the mint's input fees → net spendable sats (v4: amounts are bigint). */
-async function netOfFees(wallet, proofs) {
-  const gross = proofs.reduce((a, p) => a + BigInt(p.amount), 0n);
-  let fees = 0n;
-  try {
-    fees = BigInt(await wallet.getFeesForProofs(proofs));
-  } catch {
-    fees = 0n; // mints without fee reporting → assume zero
-  }
-  return gross - fees;
-}
-
 /** Normalize incoming proofs (v4: amounts must be bigint) and receive via encoded token. */
 async function receiveProofsFromMint(mintUrl, rawProofs) {
   const { getEncodedToken } = await import("@cashu/cashu-ts");
@@ -150,8 +199,11 @@ async function cashuReceivePayload({ paymentHash, amountSats, payload }) {
   if (mint !== CASHU_MINT_URL) throw new Error("wrong mint");
   if (String(payload.unit || "sat").toLowerCase() !== "sat") throw new Error("wrong unit");
   const proofs = Array.isArray(payload.proofs) ? payload.proofs : [];
-  const net = await netOfFees(wallet, proofs);
-  if (net < BigInt(amountSats)) throw new Error(`underpaid (net ${net} < ${amountSats} sats)`);
+  // Validate on GROSS, not net-of-fees: wallets send the exact requested amount
+  // and the mint's input fee is our cost of doing business — rejecting here
+  // burns the player's whole payment while we keep nothing.
+  const gross = proofs.reduce((a, p) => a + BigInt(p.amount), 0n);
+  if (gross < BigInt(amountSats)) throw new Error(`underpaid (${gross} < ${amountSats} sats)`);
   return receiveProofsFromMint(mint, proofs);
 }
 
@@ -164,8 +216,8 @@ async function cashuReceiveToken({ amountSats, token }) {
   if (mint !== CASHU_MINT_URL) {
     throw new Error(`token is from another mint (we use ${CASHU_MINT_URL})`);
   }
-  const net = await netOfFees(wallet, decoded.proofs);
-  if (net < BigInt(amountSats)) throw new Error(`token too small (net ${net} < ${amountSats} sats)`);
+  const gross = decoded.proofs.reduce((a, p) => a + BigInt(p.amount), 0n);
+  if (gross < BigInt(amountSats)) throw new Error(`token too small (${gross} < ${amountSats} sats)`);
   return receiveProofsFromMint(mint, decoded.proofs);
 }
 
@@ -193,6 +245,10 @@ export const payments = {
   receivePayload: PAYMENTS_MOCK ? null : cashuReceivePayload,
   receiveToken: PAYMENTS_MOCK ? async () => [] : cashuReceiveToken,
   sendToken: PAYMENTS_MOCK ? mockSendToken : cashuSendToken,
+  /** Mint fee added on top of each buy-in so the pot lands whole (0 in mock). */
+  receiveFeeSats: PAYMENTS_MOCK ? async () => 0 : cashuReceiveFeeSats,
+  /** Reserve deducted from the pot before the winner/tip split (0 in mock). */
+  sendFeeSats: PAYMENTS_MOCK ? async () => 0 : cashuSendFeeSats,
 };
 
 /** Record fresh buy-in proofs into the pot wallet store (real mode). */

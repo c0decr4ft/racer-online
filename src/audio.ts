@@ -41,9 +41,10 @@ export class GameAudio {
 
   constructor() {
     try {
-      this.userMuted = localStorage.getItem(USER_MUTE_KEY) === "1";
+      // First-time visitors start muted; a stored choice always wins.
+      this.userMuted = localStorage.getItem(USER_MUTE_KEY) !== "0";
     } catch {
-      this.userMuted = false;
+      this.userMuted = true;
     }
   }
 
