@@ -53,9 +53,9 @@ NUT-18 Cashu wallet; winners claim the pot as a `cashuA` token.
 - `PUBLIC_BASE_URL` — public URL of this server (needed for the payment-request callback;
   auto-detected on Render via `RENDER_EXTERNAL_URL`)
 - **Mint fees are automatic.** Cashu mints charge an input fee per swap (usually ~1 sat).
-  Buy-in requests add that fee on top of the buy-in (payer covers it, pot lands whole);
-  the payout keeps a small fee reserve from the pot before the winner/dev-tip split so the
-  winner's claim can never run dry. Both are shown in the UI.
+  Buy-in requests add that fee on top of the buy-in (payer covers it, pot lands whole).
+  At payout the winner always gets the full share — the token carries its own receive
+  fee (`includeFees`), paid by the dev tip / house float, never shaved off the prize.
 - `GET /api/status` reports `payments: "live" | "mock"` and the active `mint`.
 - The pot wallet lives in `server/cashu-proofs.json` (gitignored) — it's the money while a
   pot is unclaimed; back it up for real-money events.

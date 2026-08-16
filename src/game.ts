@@ -1286,16 +1286,16 @@ export class Game {
       .catch(() => bolt.select());
   }
 
-  /** Pot figures for the winner's checkout: gross pot, mint fee reserve, spendable split. */
+  /** Pot figures for the winner's checkout: gross pot + the house-covered mint fee. */
   private eventPotBreakdown(event: EventRoomInfo) {
     const pot = event.potSats || event.buyInSats * Math.max(1, this.lobbyPlayers.length);
     const fee = Math.min(pot, Math.max(0, event.potFeeSats ?? 0));
-    return { pot, fee, distributable: pot - fee };
+    return { pot, fee };
   }
 
   /** Winner's checkout: pot breakdown, tip slider (default 2%), Cashu token claim. */
   private setupEventCheckout(event: EventRoomInfo) {
-    const { pot, distributable } = this.eventPotBreakdown(event);
+    const { pot } = this.eventPotBreakdown(event);
     const potEl = document.getElementById("event-pot-sats");
     if (potEl) potEl.textContent = String(pot);
     const range = document.getElementById("event-tip-range") as HTMLInputElement | null;
@@ -1304,20 +1304,21 @@ export class Game {
     if (status) status.classList.add("hidden");
     document.getElementById("event-token-box")?.classList.add("hidden");
     const claim = document.getElementById("event-claim-btn") as HTMLButtonElement | null;
-    if (claim) claim.disabled = distributable <= 0;
+    if (claim) claim.disabled = pot <= 0;
     this.updateEventTipBreakdown();
   }
 
   private updateEventTipBreakdown() {
     const event = this.net.event;
     if (!event) return;
-    const { fee, distributable } = this.eventPotBreakdown(event);
+    const { pot, fee } = this.eventPotBreakdown(event);
     const range = document.getElementById("event-tip-range") as HTMLInputElement | null;
     const tipPercent = Math.max(0, Math.min(100, Number(range?.value ?? 2)));
     const label = document.getElementById("event-tip-label");
     if (label) label.textContent = `${tipPercent}%`;
-    const winnerSats = Math.floor((distributable * (100 - tipPercent)) / 100);
-    const tipSats = distributable - winnerSats;
+    // Winner gets the full share; the mint fee comes out of the tip/house side.
+    const winnerSats = Math.floor((pot * (100 - tipPercent)) / 100);
+    const tipSats = Math.max(0, pot - winnerSats - fee);
     const winnerEl = document.getElementById("event-winner-sats");
     if (winnerEl) winnerEl.textContent = String(winnerSats);
     const tipEl = document.getElementById("event-tip-sats");
@@ -1355,7 +1356,7 @@ export class Game {
     if (result.ok) {
       status.classList.remove("nostr-error");
       const tipNote = result.tipSats ? ` · ${result.tipSats} sats dev tip` : "";
-      const feeNote = result.feeSats ? ` · ${result.feeSats} sats mint fee` : "";
+      const feeNote = result.feeSats ? " · mint fee covered" : "";
       status.textContent = `Paid! ${result.winnerSats} sats${tipNote}${feeNote} — paste the token into cashu.me to claim`;
       if (claim) claim.disabled = true;
       const out = document.getElementById("event-payout-token") as HTMLInputElement | null;

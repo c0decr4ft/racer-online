@@ -221,13 +221,26 @@ async function cashuReceiveToken({ amountSats, token }) {
   return receiveProofsFromMint(mint, decoded.proofs);
 }
 
-/** Pay out sats as a fresh cashuA token string from the pot wallet. */
-async function cashuSendToken(amountSats) {
+/**
+ * Pay out sats as a fresh cashuA token string from the pot wallet.
+ * With `includeFees`, the token carries the mint's input fee on top, so the
+ * receiver redeems the EXACT amount (fee paid by the pot wallet, i.e. the
+ * house/tip side — never shaved off the winner's prize). Falls back to a plain
+ * token when the wallet can't cover the fee (empty house float).
+ */
+async function cashuSendToken(amountSats, { includeFees = false } = {}) {
   const wallet = await getWallet();
   const store = loadProofStore();
   const total = store.proofs.reduce((a, p) => a + Number(p.amount), 0);
   if (total < amountSats) throw new Error(`pot wallet short (${total} < ${amountSats} sats)`);
-  const { keep, send } = await wallet.send(amountSats, store.proofs);
+  let keep, send;
+  try {
+    ({ keep, send } = await wallet.send(amountSats, store.proofs, { includeFees }));
+  } catch (err) {
+    if (!includeFees) throw err;
+    console.warn("[cashu] fee-inclusive send failed — sending plain token:", err?.message || err);
+    ({ keep, send } = await wallet.send(amountSats, store.proofs));
+  }
   saveProofStore({ mintUrl: CASHU_MINT_URL, proofs: keep });
   const { getEncodedToken } = await import("@cashu/cashu-ts");
   return { token: getEncodedToken({ mint: CASHU_MINT_URL, proofs: send }) };

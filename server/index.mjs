@@ -1503,29 +1503,24 @@ wss.on("connection", (ws) => {
       room.potClaimed = true; // lock before paying — no double claims
       void (async () => {
         try {
-          // Sending costs the mint's input fee too — keep a reserve back from the
-          // pot so the winner's claim (and the dev tip) can never run dry.
+          // The winner gets the FULL share — win 100, receive 100. The mint's
+          // send fee is covered by the dev tip / house float (the payout token
+          // carries its own receive fee via includeFees), never by the prize.
           const feeReserve = Math.min(
             room.potSats,
             Math.max(0, await payments.sendFeeSats().catch(() => 0)),
           );
-          const distributable = room.potSats - feeReserve;
-          const winnerSats = Math.floor((distributable * (100 - tipPercent)) / 100);
-          const tipSats = distributable - winnerSats;
-          if (winnerSats <= 0 && tipSats <= 0) {
-            throw new Error(`pot too small to cover the mint fee (${feeReserve} sats)`);
-          }
+          const winnerSats = Math.floor((room.potSats * (100 - tipPercent)) / 100);
+          const tipSats = Math.max(0, room.potSats - winnerSats - feeReserve);
+          if (winnerSats <= 0) throw new Error("pot too small to pay out");
           // Winner's share as a cashuA token — they claim it in cashu.me (or any Cashu wallet)
-          let winnerToken = "";
-          if (winnerSats > 0) {
-            const sent = await payments.sendToken(winnerSats);
-            winnerToken = sent.token;
-          }
+          const sentWinner = await payments.sendToken(winnerSats, { includeFees: true });
+          const winnerToken = sentWinner.token;
           // Dev tip as a separate token, kept in the audit log for the dev to claim
           let tipToken = "";
           if (tipSats > 0) {
             try {
-              const sent = await payments.sendToken(tipSats);
+              const sent = await payments.sendToken(tipSats, { includeFees: true });
               tipToken = sent.token;
             } catch (err) {
               console.warn(`[event] dev tip token failed:`, err?.message || err);
