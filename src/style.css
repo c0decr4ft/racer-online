@@ -2363,36 +2363,6 @@ input:focus-visible,
   box-shadow: none;
 }
 
-/* Top-left corner player count — matches home-live / mute-btn */
-.live-chip {
-  position: fixed;
-  top: 1.35rem;
-  left: 4.05rem;
-  z-index: 20;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.55rem 0.7rem;
-  border: 1px solid var(--line);
-  background: rgba(8, 12, 18, 0.72);
-  color: var(--text);
-  font-family: "Rajdhani", sans-serif;
-  font-size: 0.95rem;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  line-height: 1;
-}
-
-.live-chip.hidden {
-  display: none !important;
-}
-
-.live-chip-icon {
-  width: 0.95rem;
-  height: 0.95rem;
-  color: #1dbf6a;
-}
-
 /* Course picker — minimap-style silhouettes only (no text labels) */
 .map-select-panel {
   max-width: min(36rem, 94vw);

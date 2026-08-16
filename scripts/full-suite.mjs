@@ -515,14 +515,6 @@ async function main() {
   await page.click("#garage-back-btn");
   assert("garage:back", await visible(page, "#overlay") && !(await visible(page, "#garage")));
 
-  // --- Live player-count chip (top-left) ---
-  const liveChipCount = await page.locator("#live-chip-count").innerText().catch(() => "0");
-  assert(
-    "boot:live-chip",
-    (await visible(page, "#live-chip")) && Number(liveChipCount) >= 1,
-    `count=${liveChipCount}`,
-  );
-
   // --- Leaderboard ---
   await page.click("#home-board-btn");
   await page.waitForTimeout(500);
