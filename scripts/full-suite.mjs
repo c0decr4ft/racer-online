@@ -389,7 +389,14 @@ async function main() {
       event: true,
     });
     assert("event:join", evGuest.ok, evGuest.err || "");
-    const guestInvoiceP = evGuest.ws ? waitForWsEvent(evGuest.ws, "eventInvoice", 5000) : Promise.resolve(null);
+    // The invoice can land in the gap between join resolving and the waiter
+    // attaching (mock pays instantly) — consult the socket's event buffer first.
+    const earlyGuestInvoice = evGuest.events?.find((m) => m.t === "eventInvoice") ?? null;
+    const guestInvoiceP = evGuest.ws
+      ? earlyGuestInvoice
+        ? Promise.resolve(earlyGuestInvoice)
+        : waitForWsEvent(evGuest.ws, "eventInvoice", 5000)
+      : Promise.resolve(null);
     // Persistent lobby watcher — sequential attach/detach waits can miss back-to-back broadcasts
     const allPaidP = new Promise((resolve) => {
       const timer = setTimeout(() => {

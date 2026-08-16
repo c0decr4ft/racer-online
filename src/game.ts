@@ -38,7 +38,7 @@ import {
 import { getSession, onSessionChange } from "./nostr/session";
 import { ensureNostrLogin, getCurrentProfile } from "./nostr/ui";
 import { fetchProfile, shortNpub } from "./nostr/profile";
-import { fetchDevPubkey, fetchDevTips, markTipsClaimed, type DevTipsSummary } from "./net/devTips";
+import { fetchDevPubkey, fetchDevTips, markTipsClaimed, retryDevTip, type DevTipsSummary } from "./net/devTips";
 
 /** QRCode is only needed for payment/login QRs — lazy-load it off the hot path. */
 const qrCode = () => import("qrcode");
@@ -1742,10 +1742,21 @@ export class Game {
 
         const side = document.createElement("span");
         side.className = "dev-tip-side";
+        const failed = !tip.mock && !tip.claimed && !tip.tipToken;
         const badge = document.createElement("span");
-        badge.className = `dev-tip-badge ${tip.mock ? "is-mock" : tip.claimed ? "is-claimed" : "is-pending"}`;
-        badge.textContent = tip.mock ? "TEST" : tip.claimed ? "CLAIMED" : "PENDING";
+        badge.className = `dev-tip-badge ${tip.mock ? "is-mock" : tip.claimed ? "is-claimed" : failed ? "is-failed" : "is-pending"}`;
+        badge.textContent = tip.mock ? "TEST" : tip.claimed ? "CLAIMED" : failed ? "FAILED" : "PENDING";
+        if (failed) badge.title = "Tip token never formed — the sats are still in the pot wallet";
         side.appendChild(badge);
+        if (failed) {
+          const retryBtn = document.createElement("button");
+          retryBtn.type = "button";
+          retryBtn.className = "dev-tip-copy";
+          retryBtn.textContent = "RETRY";
+          retryBtn.title = "Regenerate the tip token from the pot wallet";
+          retryBtn.onclick = () => void this.retryTip(tip.at);
+          side.appendChild(retryBtn);
+        }
         if (!tip.mock && !tip.claimed && tip.tipToken) {
           const copyBtn = document.createElement("button");
           copyBtn.type = "button";
@@ -1787,6 +1798,20 @@ export class Game {
       this.renderDevSummary(summary);
     } catch (err) {
       if (status) status.textContent = `Could not update — ${err instanceof Error ? err.message : err}`;
+    }
+  }
+
+  /** Retry a failed tip payout — the server regenerates the token from the pot wallet. */
+  private async retryTip(retryAt: number) {
+    const session = getSession();
+    if (!session) return;
+    const status = document.getElementById("dev-status");
+    if (status) status.textContent = "Retrying payout…";
+    try {
+      const summary = await retryDevTip(session.signer, retryAt);
+      this.renderDevSummary(summary);
+    } catch (err) {
+      if (status) status.textContent = `Retry failed — ${err instanceof Error ? err.message : err}`;
     }
   }
 

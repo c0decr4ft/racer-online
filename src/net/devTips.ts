@@ -91,3 +91,8 @@ export function fetchDevTips(signer: DevSigner): Promise<DevTipsSummary> {
 export function markTipsClaimed(signer: DevSigner, claimAt?: number): Promise<DevTipsSummary> {
   return postDev("/dev/claim", signer, claimAt != null ? { claimAt } : {});
 }
+
+/** Retry a failed tip payout (token never formed) — regenerates it from the pot wallet. */
+export function retryDevTip(signer: DevSigner, retryAt: number): Promise<DevTipsSummary> {
+  return postDev("/dev/claim", signer, { retryAt });
+}

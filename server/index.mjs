@@ -879,7 +879,10 @@ function resolveMapVote(room) {
   broadcast(room, { t: "voteResult", trackId: selected });
 
   setTimeout(() => {
-    if (rooms.get(room.name) !== room || room.phase !== "starting") return;
+    if (rooms.get(room.name) !== room || room.phase !== "starting") {
+      console.log(`[next-skip] ${room.name} exists=${rooms.get(room.name) === room} phase=${room.phase} clients=${room.clients.size}`);
+      return;
+    }
     room.phase = "racing";
     room.winnerId = "";
     room.voteOptions = [];
@@ -1287,6 +1290,37 @@ const httpServer = createServer(async (req, res) => {
     try {
       const data = JSON.parse(body || "{}");
       verifyDevEvent(data.event);
+      // Retry a failed tip payout (token never formed — money still in the pot wallet).
+      if (data.retryAt != null) {
+        const retryAt = Math.round(Number(data.retryAt));
+        const list = loadPayouts();
+        const rec = list.find(
+          (r) => r && Number(r.at) === retryAt && !r.claimedAt && Number(r.tipSats) > 0 && !r.mock && !r.tipToken,
+        );
+        if (!rec) {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "tip not found (or already claimed)" }));
+          return;
+        }
+        try {
+          const sent = await payments.sendToken(Math.round(Number(rec.tipSats)), { includeFees: true });
+          rec.tipToken = sent.token;
+          savePayouts(list);
+          console.log(`[dev] tip payout retried — ${rec.tipSats} sats (room ${rec.room})`);
+        } catch (err) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              ok: false,
+              error: `retry failed — ${String(err?.message || err).slice(0, 100)}`,
+            }),
+          );
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(devTipsSummary()));
+        return;
+      }
       const claimAt = data.claimAt != null ? Math.round(Number(data.claimAt)) : null;
       const marked = markTipsClaimed(Number.isFinite(claimAt) ? claimAt : null);
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -1560,9 +1594,13 @@ wss.on("connection", (ws) => {
       // Event Mode: one race, winner takes the pot — no map vote / next round
       if (room.isEvent) {
         void (async () => {
-          // Attach the payout fee reserve so the winner's checkout shows the real split.
+          // Attach the payout fee budget (both sends: winner + tip) so the
+          // winner's checkout shows the real split.
           const info = eventInfo(room);
-          if (info) info.potFeeSats = await payments.sendFeeSats().catch(() => 0);
+          if (info) {
+            const perSend = Math.max(0, await payments.sendFeeSats().catch(() => 0));
+            info.potFeeSats = perSend * 2;
+          }
           if (rooms.get(room.name) !== room) return;
           broadcast(room, {
             t: "raceResult",
@@ -1635,19 +1673,24 @@ wss.on("connection", (ws) => {
       room.potClaimed = true; // lock before paying — no double claims
       void (async () => {
         try {
-          // The winner gets the FULL share — win 100, receive 100. The mint's
-          // send fee is covered by the dev tip / house float (the payout token
-          // carries its own receive fee via includeFees), never by the prize.
-          const feeReserve = Math.min(
-            room.potSats,
-            Math.max(0, await payments.sendFeeSats().catch(() => 0)),
-          );
+          // The winner gets the FULL share — win 100, receive 100; the payout
+          // token carries its own receive fee (includeFees), covered by the dev
+          // tip / house float, never by the prize. The tip then gets everything
+          // left in the pot wallet minus its own send fee — so its token always
+          // forms, even at 99% tips where every sat counts.
           const winnerSats = Math.floor((room.potSats * (100 - tipPercent)) / 100);
-          const tipSats = Math.max(0, room.potSats - winnerSats - feeReserve);
-          if (winnerSats <= 0) throw new Error("pot too small to pay out");
-          // Winner's share as a cashuA token — they claim it in cashu.me (or any Cashu wallet)
-          const sentWinner = await payments.sendToken(winnerSats, { includeFees: true });
-          const winnerToken = sentWinner.token;
+          let winnerToken = "";
+          if (winnerSats > 0) {
+            const sent = await payments.sendToken(winnerSats, { includeFees: true });
+            winnerToken = sent.token;
+          }
+          const remaining = await payments.potBalanceSats().catch(() => 0);
+          const tipSendFee = Math.max(0, await payments.sendFeeSats().catch(() => 0));
+          const tipSats = Math.max(
+            0,
+            Math.min(room.potSats - winnerSats, remaining - tipSendFee),
+          );
+          if (winnerSats <= 0 && tipSats <= 0) throw new Error("pot too small to pay out");
           // Dev tip as a separate token, kept in the audit log for the dev to claim
           let tipToken = "";
           if (tipSats > 0) {
@@ -1658,6 +1701,7 @@ wss.on("connection", (ws) => {
               console.warn(`[event] dev tip token failed:`, err?.message || err);
             }
           }
+          const feeSats = room.potSats - winnerSats - tipSats;
           recordPayout({
             room: room.name,
             winnerId: client.id,
@@ -1666,7 +1710,7 @@ wss.on("connection", (ws) => {
             winnerSats,
             tipSats,
             tipPercent,
-            feeSats: feeReserve,
+            feeSats,
             tipToken: tipToken || null, // bearer token — dev claims it from this file
             mock: payments.mock,
           });
@@ -1676,12 +1720,12 @@ wss.on("connection", (ws) => {
             token: winnerToken,
             winnerSats,
             tipSats,
-            feeSats: feeReserve,
+            feeSats,
             mock: payments.mock,
           });
           broadcast(room, { t: "notice", text: `${client.name} claimed the pot — ${winnerSats} sats` });
           console.log(
-            `[event] ${room.name} pot ${room.potSats} sats → ${client.name} ${winnerSats} · tip ${tipSats} · fee ${feeReserve}`,
+            `[event] ${room.name} pot ${room.potSats} sats → ${client.name} ${winnerSats} · tip ${tipSats} · fee ${feeSats}`,
           );
         } catch (err) {
           room.potClaimed = false; // payment failed — allow retry

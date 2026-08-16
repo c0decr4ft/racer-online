@@ -140,6 +140,12 @@ async function cashuSendFeeSats() {
   return wallet.getFeesForProofs(store.proofs).toNumber();
 }
 
+/** Current pot wallet balance in sats (what's actually spendable right now). */
+async function cashuPotBalanceSats() {
+  const store = loadProofStore();
+  return store.proofs.reduce((a, p) => a + Number(p.amount), 0);
+}
+
 /* ---------------- mock adapter ---------------- */
 
 const mockInvoices = new Map(); // id → { amountSats, createdAt, paidAt }
@@ -262,6 +268,8 @@ export const payments = {
   receiveFeeSats: PAYMENTS_MOCK ? async () => 0 : cashuReceiveFeeSats,
   /** Reserve deducted from the pot before the winner/tip split (0 in mock). */
   sendFeeSats: PAYMENTS_MOCK ? async () => 0 : cashuSendFeeSats,
+  /** Current pot wallet balance (mock: unlimited — mock sends never fail). */
+  potBalanceSats: PAYMENTS_MOCK ? async () => Number.MAX_SAFE_INTEGER : cashuPotBalanceSats,
 };
 
 /** Record fresh buy-in proofs into the pot wallet store (real mode). */
