@@ -60,6 +60,17 @@ NUT-18 Cashu wallet; winners claim the pot as a `cashuA` token.
 - The pot wallet lives in `server/cashu-proofs.json` (gitignored) — it's the money while a
   pot is unclaimed; back it up for real-money events.
 
+## Dev dashboard (tips wallet)
+
+The dashboard is locked to the **DEV_c0decr4ft** Nostr account (pubkey baked into
+`server/index.mjs` + `render.yaml`; override with the `DEV_PUBKEY` env var). When signed
+in with that account in-game, a **DEV** button appears on the home screen: it shows how
+many tips you've received, each tip's amount, a wallet card with your pending/earned/
+claimed sats, and COPY buttons for the pending tip tokens (redeem them in cashu.me, then
+mark them claimed). Auth is a signed Nostr event verified server-side — only that pubkey
+gets in. Tip records live in `server/payouts.json` (gitignored; contains bearer tokens —
+keep it private and back it up).
+
 ## Local (your PC must stay on)
 
 ```bash

@@ -50,6 +50,14 @@ export class RemotePlayer {
   private labelVisible = true;
   private lean = 0;
   private lastUpdateAt = 0;
+  /** Correction smoothing — display state + decaying error offset (anti-jerk). */
+  private hasDisplay = false;
+  private prevTX = 0;
+  private prevTZ = 0;
+  private prevTH = 0;
+  private errX = 0;
+  private errZ = 0;
+  private errH = 0;
 
   constructor(pose: PlayerPose, scene: THREE.Scene, labelRoot: HTMLElement) {
     this.id = pose.id;
@@ -118,7 +126,7 @@ export class RemotePlayer {
     const now = performance.now();
     if (this.lastArrivalAt > 0) {
       const dev = Math.abs(now - this.lastArrivalAt - NET_TICK_MS);
-      this.jitterMs += (dev - this.jitterMs) * 0.08;
+      this.jitterMs += (dev - this.jitterMs) * 0.15;
     }
     this.lastArrivalAt = now;
     const snap: Snapshot = { at, pose: { ...pose } };
@@ -145,6 +153,8 @@ export class RemotePlayer {
     const snap: Snapshot = { at, pose: { ...pose } };
     this.buffer = [snap];
     this.latest = snap;
+    this.hasDisplay = false;
+    this.errX = this.errZ = this.errH = 0;
     this.mesh.position.set(pose.x, VISUAL_RIDE_Y, pose.z);
     this.mesh.rotation.y = pose.h;
     this.mesh.rotation.z = 0;
@@ -163,9 +173,9 @@ export class RemotePlayer {
 
     // Adaptive jitter buffer: render delay scales with measured arrival jitter.
     // Floor ≈ 2.2 ticks so we almost always lerp between two snapshots; the cap
-    // (250ms) absorbs transatlantic spikes without a visible freeze → teleport.
+    // (300ms) absorbs cellular/Wi-Fi spikes without a visible freeze → teleport.
     const minDelay = NET_TICK_MS * 2.2;
-    const interpDelay = THREE.MathUtils.clamp(minDelay + this.jitterMs * 2.5, minDelay, 250);
+    const interpDelay = THREE.MathUtils.clamp(minDelay + this.jitterMs * 2.5, minDelay, 300);
     const renderAt = now - interpDelay;
     let x: number;
     let z: number;
@@ -194,10 +204,14 @@ export class RemotePlayer {
         const extrapSec = extrapMs / 1000;
         const spanSec = span / 1000;
         const dh = wrapPi(newest.pose.h - prev.pose.h);
-        turnRate = dh / spanSec;
+        // Clamp to plausible car motion — a stale/corrupt pair would otherwise
+        // spin the extrapolated heading (cars "driving sideways") or fling the
+        // position off the track after a respawn.
+        turnRate = THREE.MathUtils.clamp(dh / spanSec, -2.4, 2.4);
         // Prefer reported heading×speed; blend a little measured delta to keep coasting honest.
-        const measuredVx = (newest.pose.x - prev.pose.x) / spanSec;
-        const measuredVz = (newest.pose.z - prev.pose.z) / spanSec;
+        const maxV = 55; // m/s ≈ 200 km/h — beyond that it's a teleport, not motion
+        const measuredVx = THREE.MathUtils.clamp((newest.pose.x - prev.pose.x) / spanSec, -maxV, maxV);
+        const measuredVz = THREE.MathUtils.clamp((newest.pose.z - prev.pose.z) / spanSec, -maxV, maxV);
         const reportBlend = Math.abs(newest.pose.s) < 0.5 ? 0.15 : 0.85;
         const baseVx = THREE.MathUtils.lerp(measuredVx, Math.sin(newest.pose.h) * newest.pose.s, reportBlend);
         const baseVz = THREE.MathUtils.lerp(measuredVz, Math.cos(newest.pose.h) * newest.pose.s, reportBlend);
@@ -229,6 +243,53 @@ export class RemotePlayer {
       }
     }
 
+    // Correction smoothing: when a fresh snapshot arrives after an extrapolation
+    // underrun, the target track snaps back — absorb that jump in a decaying
+    // error offset so the correction glides instead of jerking. Huge jumps are
+    // real teleports (crash reset): snap cleanly, no offset.
+    if (!this.hasDisplay) {
+      this.prevTX = x;
+      this.prevTZ = z;
+      this.prevTH = h;
+      this.hasDisplay = true;
+    } else {
+      const stepX = x - this.prevTX;
+      const stepZ = z - this.prevTZ;
+      const step = Math.hypot(stepX, stepZ);
+      const stepH = wrapPi(h - this.prevTH);
+      const expectStep = Math.max(0.4, Math.abs(s) * dt * 2.5 + 0.2);
+      if (step > 12 || Math.abs(stepH) > 1.4) {
+        this.errX = this.errZ = this.errH = 0;
+      } else {
+        if (step > expectStep) {
+          this.errX -= stepX;
+          this.errZ -= stepZ;
+          const cap = 4;
+          this.errX = THREE.MathUtils.clamp(this.errX, -cap, cap);
+          this.errZ = THREE.MathUtils.clamp(this.errZ, -cap, cap);
+        }
+        if (Math.abs(stepH) > Math.max(0.15, 6 * dt)) {
+          this.errH -= stepH;
+          this.errH = THREE.MathUtils.clamp(this.errH, -0.6, 0.6);
+        }
+      }
+      this.prevTX = x;
+      this.prevTZ = z;
+      this.prevTH = h;
+    }
+    if (dt > 0) {
+      const decay = Math.exp(-dt / 0.14);
+      this.errX *= decay;
+      this.errZ *= decay;
+      this.errH *= decay;
+      if (Math.abs(this.errX) < 0.005) this.errX = 0;
+      if (Math.abs(this.errZ) < 0.005) this.errZ = 0;
+      if (Math.abs(this.errH) < 0.002) this.errH = 0;
+    }
+    const dispX = x + this.errX;
+    const dispZ = z + this.errZ;
+    const dispH = h + this.errH;
+
     const targetLean =
       this.kind === "bike"
         ? THREE.MathUtils.clamp(-Math.atan((Math.abs(s) * turnRate) / 9.81) * 0.72, -0.42, 0.42)
@@ -241,8 +302,8 @@ export class RemotePlayer {
     }
 
     // Direct sample — no exponential chase on pose (that read as laggy remotes).
-    this.mesh.position.set(x, VISUAL_RIDE_Y, z);
-    this.mesh.rotation.y = h;
+    this.mesh.position.set(dispX, VISUAL_RIDE_Y, dispZ);
+    this.mesh.rotation.y = dispH;
     this.mesh.rotation.z = this.lean;
 
     // Spin wheels from interpolated speed so remotes don't look frozen/stuttery.
