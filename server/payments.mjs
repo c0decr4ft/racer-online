@@ -288,3 +288,23 @@ export function recordPayout(record) {
     /* ignore */
   }
 }
+
+/** Read the payout audit log (tips live here). */
+export function loadPayouts() {
+  try {
+    if (!existsSync(PAYOUTS_PATH)) return [];
+    const list = JSON.parse(readFileSync(PAYOUTS_PATH, "utf8"));
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Persist the payout audit log (e.g. after marking tips claimed). */
+export function savePayouts(list) {
+  try {
+    writeFileSync(PAYOUTS_PATH, JSON.stringify((Array.isArray(list) ? list : []).slice(-200), null, 2));
+  } catch {
+    /* ignore */
+  }
+}

@@ -1300,6 +1300,182 @@ html.touch-mode [contenteditable="true"] {
   text-align: center;
   opacity: 0.85;
 }
+
+/* ── Dev dashboard (tips wallet) ───────────────────────────────── */
+.dev-panel {
+  max-width: 30rem;
+}
+
+.dev-wallet {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0.35rem 0 0.6rem;
+  padding: 0.9rem 1rem 0.8rem;
+  border: 1px solid rgba(255, 200, 87, 0.55);
+  background:
+    radial-gradient(130% 150% at 50% -25%, rgba(255, 200, 87, 0.17), rgba(255, 200, 87, 0.04) 55%, transparent 78%),
+    rgba(8, 10, 16, 0.6);
+  box-shadow:
+    0 0 28px rgba(255, 200, 87, 0.14),
+    inset 0 0 22px rgba(255, 200, 87, 0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.dev-wallet.hidden {
+  display: none !important;
+}
+
+.dev-wallet-label {
+  margin: 0;
+  color: #ffd479;
+  font-family: var(--font-display);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.3em;
+  text-align: center;
+}
+
+.dev-wallet-amount {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 2.1rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-align: center;
+  line-height: 1.1;
+  background: linear-gradient(180deg, #fff3d6 10%, #ffc857 55%, #e8940a 95%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 0 16px rgba(255, 200, 87, 0.35));
+}
+
+.dev-wallet-unit {
+  margin-left: 0.45rem;
+  font-size: 0.95rem;
+  letter-spacing: 0.3em;
+}
+
+.dev-wallet-stats {
+  margin: 0.15rem 0 0;
+  display: flex;
+  justify-content: center;
+  gap: 1.1rem;
+  color: var(--muted);
+  font-family: "Rajdhani", sans-serif;
+  font-size: 0.85rem;
+  letter-spacing: 0.06em;
+}
+
+.dev-wallet-stats span span {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.dev-tips-list {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 14rem;
+  overflow-y: auto;
+  border-top: 1px solid var(--line);
+}
+
+.dev-tip {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.15rem;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-family: "Rajdhani", sans-serif;
+  font-size: 0.88rem;
+  letter-spacing: 0.04em;
+}
+
+.dev-tip-info strong {
+  color: #ffc857;
+  font-weight: 700;
+}
+
+.dev-tip-side {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+
+.dev-tip-badge {
+  font-family: var(--font-display);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  padding: 0.18rem 0.4rem;
+  border: 1px solid currentColor;
+}
+
+.dev-tip-badge.is-pending {
+  color: #ffc857;
+}
+
+.dev-tip-badge.is-claimed {
+  color: #9ad4a8;
+}
+
+.dev-tip-badge.is-mock {
+  color: var(--muted);
+  opacity: 0.7;
+}
+
+.dev-tip-copy,
+.dev-tip-mark {
+  padding: 0.28rem 0.55rem;
+  font-family: var(--font-display);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--line);
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.dev-tip-copy:hover,
+.dev-tip-mark:hover {
+  border-color: #ffc857;
+  transform: none;
+}
+
+.dev-tip-empty {
+  padding: 0.8rem 0.2rem;
+  color: var(--muted);
+  font-family: "Rajdhani", sans-serif;
+  font-size: 0.9rem;
+  text-align: center;
+  list-style: none;
+}
+
+.dev-actions {
+  display: flex;
+  gap: 0.6rem;
+  width: 100%;
+  margin-top: 0.7rem;
+}
+
+.dev-actions > * {
+  flex: 1;
+}
+
+.dev-actions #dev-claim-all.hidden {
+  display: none !important;
+}
+
 .hidden {
   display: none !important;
 }

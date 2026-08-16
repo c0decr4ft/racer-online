@@ -2,7 +2,7 @@ import { WebSocketServer } from "ws";
 import { verifyEvent } from "nostr-tools";
 import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
-import { payments, depositProofs, recordPayout } from "./payments.mjs";
+import { payments, depositProofs, recordPayout, loadPayouts, savePayouts } from "./payments.mjs";
 import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { dirname, join, extname, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -52,6 +52,17 @@ const PRESENCE_PATH = join(DIR, "presence.json");
 const FEEDBACK_PATH = join(DIR, "feedback.json");
 /** Where player feedback is emailed (FormSubmit relay — free, no SMTP creds needed). */
 const FEEDBACK_EMAIL = (process.env.FEEDBACK_EMAIL || "c0decr4ft.fr@gmail.com").trim();
+/**
+ * Dev dashboard access — only this Nostr pubkey may read tip stats / claim tip
+ * tokens. Default: the DEV_c0decr4ft account (npub1nratkqj…aud4). Override with
+ * the DEV_PUBKEY env var.
+ */
+const DEV_PUBKEY = (
+  process.env.DEV_PUBKEY || "98fabb025fc826ca032733ddd18a08f323061ea9c2ff8f9af41c50a07e3d905b"
+).trim().toLowerCase();
+const DEV_EVENT_KIND = 30078;
+const DEV_D_TAG = "racer-online:dev";
+const DEV_EVENT_MAX_AGE_S = 600;
 const FEEDBACK_RELAY_URL = (
   process.env.FEEDBACK_RELAY_URL || `https://formsubmit.co/ajax/${encodeURIComponent(FEEDBACK_EMAIL)}`
 ).trim();
@@ -214,6 +225,80 @@ const SCORE_MIN_TIME_MS = 5_000;
 const SCORE_MAX_TIME_MS = 3_600_000;
 const SCORE_FUTURE_SKEW_S = 900;
 const SCORE_MAX_AGE_S = 365 * 24 * 3600;
+
+/**
+ * Verify a signed dev-auth event (kind 30078, d = racer-online:dev, fresh,
+ * signed by DEV_PUBKEY). Returns true or throws { status, message }.
+ */
+function verifyDevEvent(event) {
+  if (!/^[0-9a-f]{64}$/.test(DEV_PUBKEY)) {
+    throw { status: 503, message: "dev dashboard not configured on this server" };
+  }
+  if (!event || typeof event !== "object") throw { status: 400, message: "signed auth event required" };
+  if (event.kind !== DEV_EVENT_KIND) throw { status: 400, message: "wrong event kind" };
+  const pubkey = normalizePubkey(event.pubkey);
+  if (!pubkey || pubkey !== DEV_PUBKEY) throw { status: 403, message: "not the dev account" };
+  const tags = Array.isArray(event.tags) ? event.tags : [];
+  const d = tags.find((t) => Array.isArray(t) && t[0] === "d")?.[1] ?? "";
+  if (d !== DEV_D_TAG) throw { status: 400, message: "wrong auth tag" };
+  const createdAt = Number(event.created_at);
+  const nowS = Math.floor(Date.now() / 1000);
+  if (!Number.isFinite(createdAt) || Math.abs(nowS - createdAt) > DEV_EVENT_MAX_AGE_S) {
+    throw { status: 400, message: "stale auth event — retry" };
+  }
+  try {
+    if (!verifyEvent(event)) throw new Error("bad sig");
+  } catch {
+    throw { status: 400, message: "invalid signature" };
+  }
+  return true;
+}
+
+/** Tip stats + history for the dev dashboard (live tips only; mock = test money). */
+function devTipsSummary() {
+  const list = loadPayouts()
+    .filter((r) => r && Number.isFinite(Number(r.tipSats)))
+    .map((r) => ({
+      at: Number(r.at) || 0,
+      room: String(r.room || ""),
+      potSats: Number(r.potSats) || 0,
+      tipSats: Math.max(0, Math.round(Number(r.tipSats))),
+      tipPercent: Number(r.tipPercent) || 0,
+      mock: r.mock === true,
+      claimed: Number.isFinite(Number(r.claimedAt)),
+      // Bearer token — only included while pending so the dev can copy+redeem it.
+      tipToken: !Number.isFinite(Number(r.claimedAt)) && typeof r.tipToken === "string" ? r.tipToken : undefined,
+    }))
+    .sort((a, b) => b.at - a.at)
+    .slice(0, 50);
+  const live = list.filter((t) => !t.mock);
+  const sum = (rows) => rows.reduce((a, t) => a + t.tipSats, 0);
+  const pending = live.filter((t) => !t.claimed);
+  return {
+    ok: true,
+    mint: payments.mintUrl,
+    count: live.length,
+    earnedSats: sum(live),
+    pendingSats: sum(pending),
+    pendingCount: pending.length,
+    claimedSats: sum(live.filter((t) => t.claimed)),
+    tips: list,
+  };
+}
+
+/** Mark tip records claimed. `claimAt` (ms epoch) marks one record; omit to mark all. */
+function markTipsClaimed(claimAt) {
+  const list = loadPayouts();
+  let marked = 0;
+  for (const r of list) {
+    if (!r || r.claimedAt || !r.tipToken) continue;
+    if (claimAt != null && Number(r.at) !== Number(claimAt)) continue;
+    r.claimedAt = Date.now();
+    marked += 1;
+  }
+  if (marked > 0) savePayouts(list);
+  return marked;
+}
 
 /**
  * Validate + verify a signed leaderboard score event (kind 30078).
@@ -1168,6 +1253,52 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
+  // Dev dashboard: tip stats + pending tip tokens (signed dev auth event required).
+  if (url.pathname === "/api/dev/tips" && req.method === "POST") {
+    if (tooMany(res, req, "dev", 30, 60_000)) return;
+    const body = await readBody(req, 64 * 1024);
+    if (body === null) {
+      res.writeHead(413, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "payload too large" }));
+      return;
+    }
+    try {
+      const data = JSON.parse(body || "{}");
+      verifyDevEvent(data.event);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(devTipsSummary()));
+    } catch (err) {
+      const status = Number(err?.status) || 400;
+      res.writeHead(status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: String(err?.message || err).slice(0, 120) }));
+    }
+    return;
+  }
+
+  // Dev dashboard: mark tip(s) claimed (after redeeming the tokens in a wallet).
+  if (url.pathname === "/api/dev/claim" && req.method === "POST") {
+    if (tooMany(res, req, "dev", 30, 60_000)) return;
+    const body = await readBody(req, 64 * 1024);
+    if (body === null) {
+      res.writeHead(413, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "payload too large" }));
+      return;
+    }
+    try {
+      const data = JSON.parse(body || "{}");
+      verifyDevEvent(data.event);
+      const claimAt = data.claimAt != null ? Math.round(Number(data.claimAt)) : null;
+      const marked = markTipsClaimed(Number.isFinite(claimAt) ? claimAt : null);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ...devTipsSummary(), marked }));
+    } catch (err) {
+      const status = Number(err?.status) || 400;
+      res.writeHead(status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: String(err?.message || err).slice(0, 120) }));
+    }
+    return;
+  }
+
   if (url.pathname === "/api/presence" && req.method === "POST") {
     if (tooMany(res, req, "presence", 30, 60_000)) return;
     const body = await readBody(req, 8 * 1024);
@@ -1277,6 +1408,7 @@ const httpServer = createServer(async (req, res) => {
         presence: presenceSnapshot(prunePresence(presence)),
         payments: payments.mock ? "mock" : "live",
         mint: payments.mintUrl,
+        devPubkey: /^[0-9a-f]{64}$/.test(DEV_PUBKEY) ? DEV_PUBKEY : null,
       }),
     );
     return;

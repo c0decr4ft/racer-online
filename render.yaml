@@ -22,3 +22,8 @@ services:
       # Unset CASHU_MINT_URL + RACER_PAYMENTS_MOCK=1 = mock mode for tests.
       - key: CASHU_MINT_URL
         value: https://testnut.cashu.space
+      # Dev dashboard (/api/dev/*) — only this Nostr account (DEV_c0decr4ft,
+      # npub1nratkqj…aud4) may read tip stats/claim tip tokens. Public key, safe
+      # to commit; the in-game DEV button appears only when signed in with it.
+      - key: DEV_PUBKEY
+        value: 98fabb025fc826ca032733ddd18a08f323061ea9c2ff8f9af41c50a07e3d905b

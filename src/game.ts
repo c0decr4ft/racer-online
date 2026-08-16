@@ -38,6 +38,7 @@ import {
 import { getSession, onSessionChange } from "./nostr/session";
 import { ensureNostrLogin, getCurrentProfile } from "./nostr/ui";
 import { fetchProfile, shortNpub } from "./nostr/profile";
+import { fetchDevPubkey, fetchDevTips, markTipsClaimed, type DevTipsSummary } from "./net/devTips";
 
 /** QRCode is only needed for payment/login QRs — lazy-load it off the hot path. */
 const qrCode = () => import("qrcode");
@@ -166,6 +167,9 @@ export class Game {
   private mpCreateWeather: WeatherMode = "dry";
   /** Create-room / lobby: show weather on the menu track before the race starts. */
   private mpWeatherPreview = false;
+  /** Dev dashboard: server-configured dev pubkey (null = not configured / unknown yet). */
+  private devPubkey: string | null = null;
+  private devPubkeyFetched = false;
 
   private lap = 1;
   private lastT = 0;
@@ -429,6 +433,7 @@ export class Game {
     this.snapCamera();
     this.bindUi();
     this.refreshTouchMode();
+    void this.refreshDevAccess();
 
     addEventListener("resize", () => this.onResize());
     addEventListener("orientationchange", () => {
@@ -541,6 +546,11 @@ export class Game {
     document.getElementById("home-board-btn")!.onclick = () => {
       void this.unlockAndMaybeMenuMusic().then(() => this.openLeaderboard());
     };
+    document.getElementById("dev-btn")!.onclick = () => {
+      void this.unlockAndMaybeMenuMusic().then(() => this.openDevDash());
+    };
+    document.getElementById("dev-close-btn")!.onclick = () => this.closeDevDash();
+    document.getElementById("dev-claim-all")!.onclick = () => void this.claimDevTip();
     document.getElementById("home-garage-btn")!.onclick = () => {
       void this.unlockAndMaybeMenuMusic().then(() => this.openGarage());
     };
@@ -619,6 +629,7 @@ export class Game {
     };
     onSessionChange(() => {
       if (!this.el.nameEntry.classList.contains("hidden")) this.renderNameEntryState();
+      void this.refreshDevAccess();
     });
     this.el.driverName.addEventListener("keydown", (e) => {
       if (e.key === "Enter") void this.saveDriverScore();
@@ -682,11 +693,12 @@ export class Game {
     const boardOpen = !this.el.leaderboard.classList.contains("hidden");
     const garageOpen = !this.el.garage.classList.contains("hidden");
     const mpOpen = !this.el.multiplayer.classList.contains("hidden");
+    const devOpen = !document.getElementById("dev-dash")?.classList.contains("hidden");
     return (
       !this.running &&
       !this.finished &&
       !this.paused &&
-      (!this.el.overlay.classList.contains("hidden") || mapOpen || boardOpen || garageOpen || mpOpen)
+      (!this.el.overlay.classList.contains("hidden") || mapOpen || boardOpen || garageOpen || mpOpen || devOpen)
     );
   }
 
@@ -694,6 +706,7 @@ export class Game {
     this.el.mapSelect.classList.add("hidden");
     this.el.leaderboard.classList.add("hidden");
     this.el.multiplayer.classList.add("hidden");
+    document.getElementById("dev-dash")?.classList.add("hidden");
     this.garage = loadGarage();
     this.closeGarageSwatchPalettes();
     this.syncGarageUi();
@@ -868,6 +881,7 @@ export class Game {
     this.el.mapSelect.classList.add("hidden");
     this.el.leaderboard.classList.add("hidden");
     this.el.garage.classList.add("hidden");
+    document.getElementById("dev-dash")?.classList.add("hidden");
     this.garage = loadGarage();
     this.mpCreateKind = this.garage.kind;
     this.mpCreateWeather = "dry";
@@ -1379,6 +1393,7 @@ export class Game {
     this.el.leaderboard.classList.add("hidden");
     this.el.garage.classList.add("hidden");
     this.el.multiplayer.classList.add("hidden");
+    document.getElementById("dev-dash")?.classList.add("hidden");
     this.el.mapSelectTitle.textContent = "TEST DRIVE";
     this.el.mapSelectTagline.textContent = "Choose a circuit";
     this.renderMapGrid(this.el.mapGrid, null, (trackId) => {
@@ -1568,6 +1583,7 @@ export class Game {
     this.el.mapSelect.classList.add("hidden");
     this.el.garage.classList.add("hidden");
     this.el.multiplayer.classList.add("hidden");
+    document.getElementById("dev-dash")?.classList.add("hidden");
     this.el.mpLobbyFeed.innerHTML = "";
     this.el.minimap.classList.add("hidden");
     this.el.rearview.classList.add("hidden");
@@ -1612,8 +1628,8 @@ export class Game {
     this.el.mapSelect.classList.add("hidden");
     this.el.garage.classList.add("hidden");
     this.el.multiplayer.classList.add("hidden");
-    this.el.leaderboard.classList.remove("hidden");
-    const boardEyebrow = document.getElementById("board-eyebrow");
+    document.getElementById("dev-dash")?.classList.add("hidden");
+    this.el.leaderboard.classList.remove("hidden");    const boardEyebrow = document.getElementById("board-eyebrow");
     if (boardEyebrow) {
       boardEyebrow.textContent = `WORLDWIDE · ${new Date().getFullYear()}`;
     }
@@ -1624,6 +1640,154 @@ export class Game {
     this.renderBoardTrackPicker();
     await this.loadBoardForTrack(this.boardTrackId);
     this.syncMuteBtn();
+  }
+
+  /* ── Dev dashboard (tips wallet — dev account only) ─────────────── */
+
+  /** Show the DEV home button only when signed in with the server's dev pubkey. */
+  private async refreshDevAccess() {
+    const btn = document.getElementById("dev-btn");
+    if (!btn) return;
+    const session = getSession();
+    if (!session) {
+      btn.classList.add("hidden");
+      return;
+    }
+    if (!this.devPubkeyFetched) {
+      this.devPubkeyFetched = true;
+      this.devPubkey = await fetchDevPubkey();
+    }
+    // Server not configured yet? Show the button to any signed-in user — the
+    // dashboard then displays their pubkey so they can set DEV_PUBKEY with it.
+    const show = this.devPubkey === null || session.pubkey === this.devPubkey;
+    btn.classList.toggle("hidden", !show);
+  }
+
+  private openDevDash() {
+    this.el.mapSelect.classList.add("hidden");
+    this.el.leaderboard.classList.add("hidden");
+    this.el.garage.classList.add("hidden");
+    this.el.multiplayer.classList.add("hidden");
+    this.el.overlay.classList.add("hidden");
+    document.getElementById("dev-dash")?.classList.remove("hidden");
+    this.syncMuteBtn();
+    void this.renderDevDash();
+  }
+
+  private closeDevDash() {
+    document.getElementById("dev-dash")?.classList.add("hidden");
+    this.el.overlay.classList.remove("hidden");
+    this.syncMuteBtn();
+  }
+
+  private async renderDevDash() {
+    const status = document.getElementById("dev-status");
+    const session = getSession();
+    if (!session) {
+      if (status) status.textContent = "Sign in with your dev account";
+      return;
+    }
+    if (status) status.textContent = "Loading…";
+    try {
+      const summary = await fetchDevTips(session.signer);
+      this.renderDevSummary(summary);
+    } catch (err) {
+      if (status) {
+        status.textContent =
+          err instanceof Error && /not configured/.test(err.message)
+            ? `Server has no DEV_PUBKEY yet — set it to your pubkey: ${session.pubkey}`
+            : `Could not load tips — ${err instanceof Error ? err.message : err}`;
+      }
+    }
+  }
+
+  private renderDevSummary(summary: DevTipsSummary) {
+    const status = document.getElementById("dev-status");
+    if (status) status.textContent = `${summary.mint.replace(/^https?:\/\//, "")} · signed in as dev`;
+    document.getElementById("dev-wallet")?.classList.remove("hidden");
+    const set = (id: string, v: number) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = String(v);
+    };
+    set("dev-pending-sats", summary.pendingSats);
+    set("dev-earned-sats", summary.earnedSats);
+    set("dev-count", summary.count);
+    set("dev-claimed-sats", summary.claimedSats);
+
+    const list = document.getElementById("dev-tips-list");
+    if (list) {
+      list.innerHTML = "";
+      if (summary.tips.length === 0) {
+        const li = document.createElement("li");
+        li.className = "dev-tip-empty";
+        li.textContent = "No tips yet — they land here when winners share the pot.";
+        list.appendChild(li);
+      }
+      for (const tip of summary.tips) {
+        const li = document.createElement("li");
+        li.className = "dev-tip";
+        const when = new Date(tip.at).toLocaleString(undefined, {
+          month: "short",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+        const info = document.createElement("span");
+        info.className = "dev-tip-info";
+        info.textContent = `${when} · ${tip.room || "event"} · pot ${tip.potSats} → `;
+        const amount = document.createElement("strong");
+        amount.textContent = `${tip.tipSats} sats`;
+        info.appendChild(amount);
+        li.appendChild(info);
+
+        const side = document.createElement("span");
+        side.className = "dev-tip-side";
+        const badge = document.createElement("span");
+        badge.className = `dev-tip-badge ${tip.mock ? "is-mock" : tip.claimed ? "is-claimed" : "is-pending"}`;
+        badge.textContent = tip.mock ? "TEST" : tip.claimed ? "CLAIMED" : "PENDING";
+        side.appendChild(badge);
+        if (!tip.mock && !tip.claimed && tip.tipToken) {
+          const copyBtn = document.createElement("button");
+          copyBtn.type = "button";
+          copyBtn.className = "dev-tip-copy";
+          copyBtn.textContent = "COPY";
+          copyBtn.onclick = () => {
+            void navigator.clipboard
+              .writeText(tip.tipToken!)
+              .then(() => {
+                copyBtn.textContent = "COPIED ✓";
+                setTimeout(() => (copyBtn.textContent = "COPY"), 1500);
+              })
+              .catch(() => undefined);
+          };
+          side.appendChild(copyBtn);
+          const markBtn = document.createElement("button");
+          markBtn.type = "button";
+          markBtn.className = "dev-tip-mark";
+          markBtn.textContent = "✓";
+          markBtn.title = "Mark claimed";
+          markBtn.onclick = () => void this.claimDevTip(tip.at);
+          side.appendChild(markBtn);
+        }
+        li.appendChild(side);
+        list.appendChild(li);
+      }
+    }
+    document.getElementById("dev-claim-all")?.classList.toggle("hidden", summary.pendingCount === 0);
+  }
+
+  /** Mark one tip (claimAt) or all pending tips as claimed, then refresh. */
+  private async claimDevTip(claimAt?: number) {
+    const session = getSession();
+    if (!session) return;
+    const status = document.getElementById("dev-status");
+    if (status) status.textContent = "Updating…";
+    try {
+      const summary = await markTipsClaimed(session.signer, claimAt);
+      this.renderDevSummary(summary);
+    } catch (err) {
+      if (status) status.textContent = `Could not update — ${err instanceof Error ? err.message : err}`;
+    }
   }
 
   private renderBoardTrackPicker() {
