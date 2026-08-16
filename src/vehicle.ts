@@ -124,7 +124,7 @@ export class Vehicle {
 
     stepVehiclePhysics(s, dt, physicsInput, this.powerMul);
 
-    this.syncMesh();
+    this.syncMesh(dt);
     this.animateWheels(dt);
   }
 
@@ -173,7 +173,9 @@ export class Vehicle {
     this.syncMesh();
   }
 
-  private syncMesh() {
+  private leanSmooth = 0;
+
+  private syncMesh(dt?: number) {
     const s = this.state;
     this.mesh.position.copy(s.position);
     this.mesh.position.y = VISUAL_RIDE_Y;
@@ -182,11 +184,21 @@ export class Vehicle {
     const isBike = this.mesh.userData.kind === "bike";
     const leanLimit = isBike ? 0.42 : 0.14;
     const leanSpeed = isBike ? 34 : 50;
-    this.mesh.rotation.z = THREE.MathUtils.clamp(
+    const targetLean = THREE.MathUtils.clamp(
       -s.steerAngle * (Math.abs(s.speed) / leanSpeed),
       -leanLimit,
       leanLimit,
     );
+    // Ease the tilt instead of snapping with steer jitter — bikes ease extra-slow
+    // so their lean sweeps; snap only on collision resync / first frame.
+    const rate = isBike ? 9 : 14;
+    if (dt && dt > 0) {
+      const k = 1 - Math.exp(-rate * dt);
+      this.leanSmooth += (targetLean - this.leanSmooth) * k;
+    } else {
+      this.leanSmooth = targetLean;
+    }
+    this.mesh.rotation.z = this.leanSmooth;
     this.mesh.rotation.x = THREE.MathUtils.clamp(-s.speed * 0.00055, -0.045, 0.03);
   }
 

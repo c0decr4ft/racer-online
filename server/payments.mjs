@@ -21,7 +21,12 @@ import { randomUUID } from "node:crypto";
 
 /** Mock is opt-in (tests/dev): RACER_PAYMENTS_MOCK=1. Everyone else gets real sats. */
 export const PAYMENTS_MOCK = process.env.RACER_PAYMENTS_MOCK === "1";
-const CASHU_MINT_URL = (process.env.CASHU_MINT_URL || "https://mint.minibits.cash").trim().replace(/\/+$/, "");
+/**
+ * Default mint: Testnut (test eCash — free, auto-paid test sats) while we test
+ * the money flow. For real sats, set CASHU_MINT_URL to a real mint
+ * (e.g. https://mint.minibits.cash).
+ */
+const CASHU_MINT_URL = (process.env.CASHU_MINT_URL || "https://testnut.cashu.space").trim().replace(/\/+$/, "");
 
 const DIR = dirname(fileURLToPath(import.meta.url));
 const PROOFS_PATH = join(DIR, "cashu-proofs.json");

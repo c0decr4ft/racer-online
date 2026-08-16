@@ -43,12 +43,13 @@ Then set the same GitHub Actions secrets to your `https://APP.fly.dev` / `wss://
 Event Mode buy-ins/payouts run through a Cashu mint — players pay with cashu.me or any
 NUT-18 Cashu wallet; winners claim the pot as a `cashuA` token.
 
-- **Real sats are the default** — the server uses `https://mint.minibits.cash` out of the
-  box (`CASHU_MINT_URL` overrides it; render.yaml pins the same value). Any Cashu mint URL
-  works; pick one you trust.
+- **Default mint: Testnut** (`https://testnut.cashu.space`) — a test mint whose Lightning
+  invoices auto-pay, so you can mint **free test sats** and exercise the whole money flow
+  (buy-in → pot → payout) with zero real funds. In cashu.me: add the Testnut mint in
+  settings, then mint any amount (quotes are instantly paid).
+- **Real sats later:** set `CASHU_MINT_URL` to a real mint (e.g. `https://mint.minibits.cash`).
 - **Mock mode is opt-in for dev/tests only** — start the server with `RACER_PAYMENTS_MOCK=1`
-  to get fake sats that auto-pay in ~3s (the e2e suite runs against this).
-  Players never see mock behavior otherwise — there is no automatic fake pay.
+  for fake sats that auto-pay in ~3s (the e2e suite runs against this).
 - `PUBLIC_BASE_URL` — public URL of this server (needed for the payment-request callback;
   auto-detected on Render via `RENDER_EXTERNAL_URL`)
 - `GET /api/status` reports `payments: "live" | "mock"` and the active `mint`.
