@@ -96,3 +96,46 @@ export function markTipsClaimed(signer: DevSigner, claimAt?: number): Promise<De
 export function retryDevTip(signer: DevSigner, retryAt: number): Promise<DevTipsSummary> {
   return postDev("/dev/claim", signer, { retryAt });
 }
+
+/* ── Dev feedback inbox ─────────────────────────────────────────── */
+
+export type DevFeedbackMessage = {
+  id: string;
+  text: string;
+  name?: string;
+  createdAt: number;
+  /** True when dismissed via READ (hidden from the default inbox view). */
+  read: boolean;
+};
+
+async function postDevFeedback(
+  signer: DevSigner,
+  action: "list" | "read" | "delete",
+  id?: string,
+): Promise<DevFeedbackMessage[]> {
+  const url = apiUrl("/dev/feedback");
+  if (!url) throw new Error("server unreachable");
+  const event = await signer.signEvent(devAuthTemplate());
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ event, action, id }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data?.ok !== true || !Array.isArray(data?.messages)) {
+    throw new Error(String(data?.error || `server ${res.status}`));
+  }
+  return data.messages as DevFeedbackMessage[];
+}
+
+export function fetchDevFeedback(signer: DevSigner): Promise<DevFeedbackMessage[]> {
+  return postDevFeedback(signer, "list");
+}
+
+export function markDevFeedbackRead(signer: DevSigner, id: string): Promise<DevFeedbackMessage[]> {
+  return postDevFeedback(signer, "read", id);
+}
+
+export function deleteDevFeedback(signer: DevSigner, id: string): Promise<DevFeedbackMessage[]> {
+  return postDevFeedback(signer, "delete", id);
+}

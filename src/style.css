@@ -1480,6 +1480,73 @@ html.touch-mode [contenteditable="true"] {
   display: none !important;
 }
 
+/* ── Dev feedback inbox ────────────────────────────────────────── */
+.dev-section-title {
+  margin: 0.9rem 0 0.15rem;
+  color: var(--accent-soft);
+}
+
+.dev-feedback-list {
+  max-height: 12rem;
+}
+
+.dev-feedback-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.dev-feedback-meta {
+  color: var(--muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  opacity: 0.85;
+}
+
+.dev-feedback-text {
+  color: var(--text);
+  font-size: 0.92rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.dev-feedback.is-read {
+  opacity: 0.45;
+}
+
+.dev-feedback-delete {
+  color: #ff8a7a;
+}
+
+.dev-feedback-delete:hover {
+  border-color: #ff8a7a !important;
+}
+
+.dev-feedback-toggle {
+  align-self: flex-start;
+  margin: 0.3rem 0 0;
+  padding: 0.2rem 0.1rem;
+  background: none;
+  border: none;
+  box-shadow: none;
+  color: var(--muted);
+  font-family: "Rajdhani", sans-serif;
+  font-size: 0.8rem;
+  letter-spacing: 0.08em;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.dev-feedback-toggle:hover {
+  color: var(--text);
+  transform: none;
+}
+
+.dev-feedback-toggle.hidden {
+  display: none !important;
+}
+
 .hidden {
   display: none !important;
 }

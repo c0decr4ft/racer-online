@@ -38,7 +38,17 @@ import {
 import { getSession, onSessionChange } from "./nostr/session";
 import { ensureNostrLogin, getCurrentProfile } from "./nostr/ui";
 import { fetchProfile, shortNpub } from "./nostr/profile";
-import { fetchDevPubkey, fetchDevTips, markTipsClaimed, retryDevTip, type DevTipsSummary } from "./net/devTips";
+import {
+  fetchDevPubkey,
+  fetchDevTips,
+  markTipsClaimed,
+  retryDevTip,
+  fetchDevFeedback,
+  markDevFeedbackRead,
+  deleteDevFeedback,
+  type DevTipsSummary,
+  type DevFeedbackMessage,
+} from "./net/devTips";
 
 /** QRCode is only needed for payment/login QRs — lazy-load it off the hot path. */
 const qrCode = () => import("qrcode");
@@ -176,6 +186,8 @@ export class Game {
   /** Dev dashboard: server-configured dev pubkey (null = not configured / unknown yet). */
   private devPubkey: string | null = null;
   private devPubkeyFetched = false;
+  /** Feedback inbox: reveal dismissed (read) messages when true. */
+  private devShowReadFeedback = false;
 
   private lap = 1;
   private lastT = 0;
@@ -1707,8 +1719,12 @@ export class Game {
     }
     if (status) status.textContent = "Loading…";
     try {
-      const summary = await fetchDevTips(session.signer);
+      const [summary, feedback] = await Promise.all([
+        fetchDevTips(session.signer),
+        fetchDevFeedback(session.signer),
+      ]);
       this.renderDevSummary(summary);
+      this.renderDevFeedback(feedback);
     } catch (err) {
       if (status) {
         status.textContent =
@@ -1716,6 +1732,104 @@ export class Game {
             ? `Server has no DEV_PUBKEY yet — set it to your pubkey: ${session.pubkey}`
             : `Could not load tips — ${err instanceof Error ? err.message : err}`;
       }
+    }
+  }
+
+  /** Feedback inbox: unread rows with READ (dismiss) + DELETE; read ones hidden unless toggled. */
+  private renderDevFeedback(messages: DevFeedbackMessage[]) {
+    const list = document.getElementById("dev-feedback-list");
+    const toggle = document.getElementById("dev-feedback-toggle") as HTMLButtonElement | null;
+    if (!list) return;
+    list.innerHTML = "";
+    const unread = messages.filter((m) => !m.read);
+    const read = messages.filter((m) => m.read);
+    const shown = this.devShowReadFeedback ? messages : unread;
+
+    if (shown.length === 0) {
+      const li = document.createElement("li");
+      li.className = "dev-tip-empty";
+      li.textContent = this.devShowReadFeedback
+        ? "No feedback yet — player messages land here."
+        : "Inbox zero — nothing unread.";
+      list.appendChild(li);
+    }
+    for (const msg of shown) {
+      const li = document.createElement("li");
+      li.className = `dev-tip dev-feedback${msg.read ? " is-read" : ""}`;
+      const when = new Date(msg.createdAt).toLocaleString(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      const info = document.createElement("span");
+      info.className = "dev-tip-info dev-feedback-info";
+      const meta = document.createElement("span");
+      meta.className = "dev-feedback-meta";
+      meta.textContent = `${when}${msg.name ? ` · ${msg.name}` : ""}`;
+      const text = document.createElement("span");
+      text.className = "dev-feedback-text";
+      text.textContent = msg.text;
+      info.append(meta, text);
+      li.appendChild(info);
+
+      const side = document.createElement("span");
+      side.className = "dev-tip-side";
+      if (!msg.read) {
+        const readBtn = document.createElement("button");
+        readBtn.type = "button";
+        readBtn.className = "dev-tip-copy";
+        readBtn.textContent = "READ";
+        readBtn.title = "Dismiss — hides this message";
+        readBtn.onclick = () => void this.devFeedbackAction("read", msg.id);
+        side.appendChild(readBtn);
+      }
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "dev-tip-mark dev-feedback-delete";
+      delBtn.textContent = "✕";
+      delBtn.title = "Delete permanently";
+      delBtn.onclick = () => void this.devFeedbackAction("delete", msg.id);
+      side.appendChild(delBtn);
+      li.appendChild(side);
+      list.appendChild(li);
+    }
+
+    if (toggle) {
+      toggle.classList.toggle("hidden", read.length === 0);
+      toggle.textContent = this.devShowReadFeedback
+        ? `Hide read (${read.length})`
+        : `Show read (${read.length})`;
+      toggle.onclick = () => {
+        this.devShowReadFeedback = !this.devShowReadFeedback;
+        void this.refreshDevFeedback();
+      };
+    }
+  }
+
+  private async refreshDevFeedback() {
+    const session = getSession();
+    if (!session) return;
+    try {
+      this.renderDevFeedback(await fetchDevFeedback(session.signer));
+    } catch {
+      /* keep the current list on transient errors */
+    }
+  }
+
+  /** READ (dismiss) or DELETE a feedback message, then refresh the inbox. */
+  private async devFeedbackAction(action: "read" | "delete", id: string) {
+    const session = getSession();
+    if (!session) return;
+    try {
+      const messages =
+        action === "read"
+          ? await markDevFeedbackRead(session.signer, id)
+          : await deleteDevFeedback(session.signer, id);
+      this.renderDevFeedback(messages);
+    } catch (err) {
+      const status = document.getElementById("dev-status");
+      if (status) status.textContent = `Could not update — ${err instanceof Error ? err.message : err}`;
     }
   }
 

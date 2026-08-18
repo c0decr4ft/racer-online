@@ -348,6 +348,41 @@ function markTipsClaimed(claimAt) {
   return marked;
 }
 
+/** Dev feedback inbox: newest first, with read state (read = dismissed from view). */
+function devFeedbackList() {
+  const store = loadFeedback();
+  return store.messages.map((m) => ({
+    id: m.id,
+    text: m.text,
+    name: m.name,
+    createdAt: m.createdAt,
+    read: Number.isFinite(Number(m.readAt)),
+  }));
+}
+
+/** Mark one feedback message read (dismissed). Returns updated inbox. */
+function markFeedbackRead(id) {
+  const store = loadFeedback();
+  let changed = false;
+  for (const m of store.messages) {
+    if (m.id === id && !Number.isFinite(Number(m.readAt))) {
+      m.readAt = Date.now();
+      changed = true;
+    }
+  }
+  if (changed) saveFeedback(store);
+  return devFeedbackList();
+}
+
+/** Permanently delete one feedback message. Returns updated inbox. */
+function deleteFeedback(id) {
+  const store = loadFeedback();
+  const before = store.messages.length;
+  store.messages = store.messages.filter((m) => m.id !== id);
+  if (store.messages.length !== before) saveFeedback(store);
+  return devFeedbackList();
+}
+
 /**
  * Validate + verify a signed leaderboard score event (kind 30078).
  * Returns { name, timeMs, bestLapMs, at, trackId, pubkey, eventId } or null.
@@ -618,7 +653,13 @@ function normalizeFeedbackMessage(raw) {
       : Date.now();
   const id = String(raw.id ?? "").trim() || `fb-${Date.now().toString(36)}`;
   const name = sanitizeFeedbackName(raw.name);
-  return name ? { id, text, createdAt, name } : { id, text, createdAt };
+  const readAt =
+    typeof raw.readAt === "number" && Number.isFinite(raw.readAt) && raw.readAt > 0
+      ? Math.round(raw.readAt)
+      : undefined;
+  const msg = name ? { id, text, createdAt, name } : { id, text, createdAt };
+  if (readAt !== undefined) msg.readAt = readAt;
+  return msg;
 }
 
 function loadFeedback() {
@@ -1373,6 +1414,38 @@ const httpServer = createServer(async (req, res) => {
       const marked = markTipsClaimed(Number.isFinite(claimAt) ? claimAt : null);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ...devTipsSummary(), marked }));
+    } catch (err) {
+      const status = Number(err?.status) || 400;
+      res.writeHead(status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: String(err?.message || err).slice(0, 120) }));
+    }
+    return;
+  }
+
+  // Dev dashboard: feedback inbox — list (default), mark read, or delete.
+  if (url.pathname === "/api/dev/feedback" && req.method === "POST") {
+    if (tooMany(res, req, "dev", 30, 60_000)) return;
+    const body = await readBody(req, 64 * 1024);
+    if (body === null) {
+      res.writeHead(413, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "payload too large" }));
+      return;
+    }
+    try {
+      const data = JSON.parse(body || "{}");
+      verifyDevEvent(data.event);
+      const action = String(data.action || "list").toLowerCase();
+      const id = String(data.id || "");
+      let messages;
+      if (action === "read" && id) {
+        messages = markFeedbackRead(id);
+      } else if (action === "delete" && id) {
+        messages = deleteFeedback(id);
+      } else {
+        messages = devFeedbackList();
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, messages }));
     } catch (err) {
       const status = Number(err?.status) || 400;
       res.writeHead(status, { "Content-Type": "application/json" });
