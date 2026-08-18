@@ -11,6 +11,35 @@
   --font-ui: "Rajdhani", sans-serif;
 }
 
+/* Mobile gate — full-screen DESKTOP ONLY cover (shown by index.html inline script) */
+.mobile-gate {
+  display: none;
+}
+html.mobile-blocked .mobile-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  color: var(--text);
+  text-align: center;
+  padding: 2rem;
+}
+.mobile-gate-inner h1 {
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: clamp(2.2rem, 10vw, 4.5rem);
+  letter-spacing: 0.08em;
+  margin: 0.35rem 0 0.6rem;
+}
+.mobile-gate-inner .tagline {
+  color: var(--muted);
+  font-size: 1.05rem;
+  letter-spacing: 0.05em;
+}
+
 * {
   box-sizing: border-box;
   margin: 0;
