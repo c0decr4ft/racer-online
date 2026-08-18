@@ -1,0 +1,39 @@
+name: Bump version
+
+# Every merge/push to main bumps the game version by one (3.4 → 3.5 → …),
+# keeping src/version.ts, package.json, and public/versions.json in lockstep.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: version-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    # Don't bump our own bump commits (infinite loop), nor manual [no bump] releases.
+    if: >-
+      !startsWith(github.event.head_commit.message, 'chore: bump version') &&
+      !contains(github.event.head_commit.message, '[no bump]')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Bump version files
+        run: node scripts/bump-version.mjs
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/version.ts package.json public/versions.json
+          version=$(node -p "require('./package.json').version")
+          git commit -m "chore: bump version to ${version%.*}"
+          git push origin main
