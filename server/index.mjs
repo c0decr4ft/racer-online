@@ -44,7 +44,7 @@ const NET_TICK_MS = 1000 / 30;
 /** Binary state frame type — must match src/net/protocol.ts STATE_BIN_TYPE. */
 const STATE_BIN_TYPE = 1;
 const MAP_VOTE_MS = 20_000;
-const MAX_PLAYERS = 8;
+const MAX_PLAYERS = 6;
 const PLAYER_COLORS = [0xe4eaf2, 0xe23b2e, 0x2a66f0, 0xf0c020, 0x1dbf6a, 0xb44dff, 0xff6b9d, 0x00d4ff];
 const DIR = dirname(fileURLToPath(import.meta.url));
 const LEADERBOARD_PATH = join(DIR, "leaderboard.json");
@@ -174,7 +174,7 @@ function normalizeSessionId(raw) {
 const rooms = new Map();
 
 const MIN_PLAYERS_CAP = 2;
-const DEFAULT_MAX_PLAYERS = 8;
+const DEFAULT_MAX_PLAYERS = 6;
 
 function sanitizeRoomName(raw) {
   return (
@@ -787,7 +787,7 @@ function roomPlayers(room) {
 }
 
 /**
- * Compact binary racing state for any lobby size (2–8).
+ * Compact binary racing state for any lobby size (2–6).
  * Layout: u8 type | f64 at | u8 count | count × (8-byte id | 4×f32 xzh s | u8 gear | u8 lap)
  * @param {Pose[]} players
  * @param {number} at
@@ -1778,9 +1778,9 @@ wss.on("connection", (ws) => {
 setInterval(() => {
   const at = Date.now();
   for (const room of rooms.values()) {
-    // Same 90Hz binary state for every room size (2 through 8) — keeps flowing
+    // Same 30Hz binary state for every room size (2 through 6) — keeps flowing
     // through the finished phase so remotes see finishers park instead of freezing.
-    // ~218 B/frame × 90 × 8 clients ≈ 157 KB/s/room — fine for small lobbies.
+    // ~218 B/frame × 30 × 6 clients ≈ 39 KB/s/room — fine for small lobbies.
     if ((room.phase !== "racing" && room.phase !== "finished") || room.clients.size === 0) continue;
     const raw = encodeStateBinary(roomPlayers(room), at);
     for (const c of room.clients.values()) {

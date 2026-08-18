@@ -40,7 +40,7 @@ function wrapPi(dh: number): number {
   return dh;
 }
 
-/** Remote racer — buffered snapshot lerp for every lobby size (2–8). */
+/** Remote racer — buffered snapshot lerp for every lobby size (2–6). */
 export class RemotePlayer {
   readonly id: string;
   name: string;
@@ -73,7 +73,6 @@ export class RemotePlayer {
   private track?: RemoteTrackAdapter;
   private projT = 0;
   private projSnapshotAt = 0;
-  private projDir = 1;
 
   constructor(pose: PlayerPose, scene: THREE.Scene, labelRoot: HTMLElement, track?: RemoteTrackAdapter) {
     this.id = pose.id;
@@ -178,7 +177,7 @@ export class RemotePlayer {
   }
 
   /**
-   * Lerp between buffered server snapshots (same path for 2–8 players).
+   * Lerp between buffered server snapshots (same path for 2–6 players).
    * Renders slightly in the past; extrapolates along heading/speed when late.
    */
   update(now: number, camera: THREE.Camera, viewportWidth: number, viewportHeight: number) {
@@ -188,10 +187,11 @@ export class RemotePlayer {
     const dt = this.lastUpdateAt > 0 ? Math.min(0.05, (now - this.lastUpdateAt) / 1000) : 0;
     this.lastUpdateAt = now;
 
-    // Adaptive jitter buffer: render delay scales with measured arrival jitter.
-    // Floor ≈ 2.2 ticks so we almost always lerp between two snapshots; the cap
-    // (300ms) absorbs cellular/Wi-Fi spikes without a visible freeze → teleport.
-    const minDelay = NET_TICK_MS * 2.2;
+    // Adaptive jitter buffer: on good links the remote renders just ~1.2 ticks
+    // behind (~40ms at 30Hz — much more present than the old 2.2-tick floor),
+    // while jitter still widens the buffer on bad links. Occasional underruns
+    // are covered by dead reckoning + correction smoothing.
+    const minDelay = NET_TICK_MS * 1.2;
     const interpDelay = THREE.MathUtils.clamp(minDelay + this.jitterMs * 2.5, minDelay, 300);
     const renderAt = now - interpDelay;
     let x: number;
@@ -228,20 +228,20 @@ export class RemotePlayer {
           // the circuit on lossy links instead of crab-flying off it.
           if (this.projSnapshotAt !== newest.at) {
             this.projT = this.track.project(newest.pose.x, newest.pose.z);
-            const tPrev = this.track.project(prev.pose.x, prev.pose.z);
-            let tDelta = this.projT - tPrev;
-            if (tDelta > 0.5) tDelta -= 1;
-            if (tDelta < -0.5) tDelta += 1;
-            this.projDir = tDelta >= 0 ? 1 : -1;
             this.projSnapshotAt = newest.at;
           }
-          const t2 = this.projT + (this.projDir * dampedS * extrapSec) / this.track.length;
+          // Race direction is always +t — never derive it from the tangent, which
+          // points the other way on a wrong parallel strand (180° flip).
+          const t2 = this.projT + (dampedS * extrapSec) / this.track.length;
           const p = this.track.poseAt(t2);
           x = p.x;
           z = p.z;
-          h = p.h;
+          // Orientation: if the projection landed on an opposing parallel strand,
+          // its tangent faces backwards — keep the driver's own heading instead.
+          const dh = wrapPi(p.h - newest.pose.h);
+          h = Math.abs(dh) > Math.PI / 2 ? newest.pose.h : p.h;
           s = dampedS;
-          turnRate = this.projDir * Math.min(2.4, (Math.abs(dampedS) * 2 * Math.PI) / this.track.length);
+          turnRate = Math.min(2.4, (Math.abs(dampedS) * 2 * Math.PI) / this.track.length);
         } else {
           const dh = wrapPi(newest.pose.h - prev.pose.h);
           // Clamp to plausible car motion — a stale/corrupt pair would otherwise
@@ -660,7 +660,7 @@ export class NetClient {
       if (gen !== this.connGen || this.ws !== ws) return;
       const recvNow = performance.now();
 
-      // Hot path: compact binary state (2–8 players, same encoder).
+      // Hot path: compact binary state (2–6 players, same encoder).
       if (ev.data instanceof ArrayBuffer) {
         const decoded = decodeStateBinary(ev.data);
         if (!decoded) return;

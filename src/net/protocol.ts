@@ -11,7 +11,7 @@ export const NET_TICK_MS = 1000 / NET_TICK_HZ;
 export const INTERP_DELAY_MS = NET_TICK_MS * 1.75;
 /** When the buffer runs dry, coast at most this far past the newest sample. */
 export const MAX_EXTRAPOLATE_MS = NET_TICK_MS * 3.5;
-export const MAX_PLAYERS = 8;
+export const MAX_PLAYERS = 6;
 export const MIN_PLAYERS = 2;
 
 /** Binary WebSocket frame type for racing state (keeps 8-player downlink small). */
