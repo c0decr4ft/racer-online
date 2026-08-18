@@ -1,6 +1,6 @@
 {
   "versions": [
-    { "id": "3.2", "path": "/racer-online/" },
+    { "id": "3.3", "path": "/racer-online/" },
     { "id": "1.8", "path": "/racer-online/v1.8/" },
     { "id": "1.7", "path": "/racer-online/v1.7/" },
     { "id": "1.6", "path": "/racer-online/v1.6/" },

@@ -6,7 +6,7 @@ GitHub Pages only hosts the **static game**. Multiplayer + live presence need a 
 
 1. Open [Render Blueprint](https://dashboard.render.com/select-repo?type=blueprint) and connect `c0decr4ft/racer-online` (uses `render.yaml`), **or** fix an existing Web Service:
    - **Branch:** `main`
-   - **Build Command:** `npm install && npm run build`
+   - **Build Command:** `npm ci --include=dev && npm run build` (`--include=dev` matters: with `NODE_ENV=production` set, plain `npm ci` skips devDependencies and the build dies on `tsc`/`vite` not being installed)
    - **Start Command:** `npm start` (runs `node server/index.mjs` — must NOT be the old Vite `dev:online`)
 2. **Manual Deploy → Deploy latest commit** and wait until Live.
 3. Play: `https://racer-online.onrender.com/`  
