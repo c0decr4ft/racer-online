@@ -109,8 +109,10 @@ export function initFeedbackCompose(): void {
     void submitFeedback(text, nameInput.value.trim() || undefined).then((snap) => {
       if (snap.source === "local") {
         status.textContent = "Saved offline — will sync when online";
+      } else if (snap.emailed) {
+        status.textContent = "Thanks — sent to the developer's inbox";
       } else {
-        status.textContent = "Thanks — sent to the developer";
+        status.textContent = "Thanks — saved for the developer";
       }
       setTimeout(close, 900);
     });

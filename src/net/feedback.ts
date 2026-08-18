@@ -22,6 +22,8 @@ export type FeedbackMessage = {
 export type FeedbackSnapshot = {
   messages: FeedbackMessage[];
   source: "server" | "online" | "local";
+  /** True when the server also forwarded the message to the dev's email inbox. */
+  emailed?: boolean;
 };
 
 type FeedbackStore = { messages: FeedbackMessage[] };
@@ -124,7 +126,7 @@ async function fetchServerFeedback(): Promise<FeedbackStore | null> {
   }
 }
 
-async function postServerFeedback(msg: FeedbackMessage): Promise<FeedbackStore | null> {
+async function postServerFeedback(msg: FeedbackMessage): Promise<{ store: FeedbackStore; emailed: boolean } | null> {
   const url = apiUrl("/feedback");
   if (!url) return null;
   try {
@@ -134,7 +136,8 @@ async function postServerFeedback(msg: FeedbackMessage): Promise<FeedbackStore |
       body: JSON.stringify(msg),
     });
     if (!res.ok) return null;
-    return normalizeStore(await res.json());
+    const data = await res.json();
+    return { store: normalizeStore(data), emailed: data?.emailed === true };
   } catch {
     return null;
   }
@@ -188,10 +191,10 @@ export async function submitFeedback(text: string, name?: string): Promise<Feedb
 
   const fromServer = await postServerFeedback(msg);
   if (fromServer) {
-    writeLocal(fromServer.messages);
+    writeLocal(fromServer.store.messages);
     // Best-effort mirror to public blob
-    void putBlobStore(fromServer).catch(() => undefined);
-    return { messages: fromServer.messages, source: "server" };
+    void putBlobStore(fromServer.store).catch(() => undefined);
+    return { messages: fromServer.store.messages, source: "server", emailed: fromServer.emailed };
   }
 
   try {
