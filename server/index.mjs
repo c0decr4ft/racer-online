@@ -1459,6 +1459,9 @@ const httpServer = createServer(async (req, res) => {
 const wss = new WebSocketServer({ server: httpServer });
 
 wss.on("connection", (ws) => {
+  // Disable Nagle: 30Hz pose frames are tiny — buffering them for ACKs clumps
+  // delivery into freeze-then-burst (the classic "everyone teleports" jank).
+  ws._socket?.setNoDelay?.(true);
   /** @type {Client | null} */
   let client = null;
 
@@ -1541,7 +1544,9 @@ wss.on("connection", (ws) => {
     }
 
     if (msg.t === "pose") {
-      if (room.phase !== "racing") return;
+      // Keep poses flowing while finished too — the finisher's car coasts to a
+      // stop and remotes must see it settle, not freeze mid-corner.
+      if (room.phase !== "racing" && room.phase !== "finished") return;
       const now = Date.now();
       // Accept jitter around the 90Hz client cadence (drops ~2× tick-rate senders).
       if (now - client.lastPoseAt < NET_TICK_MS * 0.55) return;
@@ -1773,9 +1778,10 @@ wss.on("connection", (ws) => {
 setInterval(() => {
   const at = Date.now();
   for (const room of rooms.values()) {
-    // Same 30Hz binary state for every racing room size (2 through 8).
-    // ~218 B/frame × 30 × 8 clients ≈ 52 KB/s/room — easy on free-tier links.
-    if (room.phase !== "racing" || room.clients.size === 0) continue;
+    // Same 90Hz binary state for every room size (2 through 8) — keeps flowing
+    // through the finished phase so remotes see finishers park instead of freezing.
+    // ~218 B/frame × 90 × 8 clients ≈ 157 KB/s/room — fine for small lobbies.
+    if ((room.phase !== "racing" && room.phase !== "finished") || room.clients.size === 0) continue;
     const raw = encodeStateBinary(roomPlayers(room), at);
     for (const c of room.clients.values()) {
       if (c.ws.readyState === 1) c.ws.send(raw);
