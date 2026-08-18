@@ -22,7 +22,7 @@ import { drawTrackPreview } from "./mapPreview";
 import { Input } from "./input";
 import { isTouchPrimary, TouchControls, viewportSize } from "./touch";
 import { Vehicle, RivalAI } from "./vehicle";
-import { NetClient, RemotePlayer, type WelcomeInfo } from "./net/client";
+import { NetClient, RemotePlayer, type RemoteTrackAdapter, type WelcomeInfo } from "./net/client";
 import type { EventRoomInfo, PlayerPose } from "./net/protocol";
 import {
   boardSourceLabel,
@@ -139,6 +139,12 @@ export class Game {
   private wantRearview = false;
   /** One-shot shadow rebuild after home/track transitions (menu orbit is static-lit). */
   private shadowNeedsWarmup = true;
+  /** FPS scaler: sustained slow frames throttle shadow-map rebuilds (mobile GPUs). */
+  private fpsEmaMs = 16.7;
+  private lowFpsSince = 0;
+  private highFpsSince = 0;
+  private shadowThrottle = false;
+  private shadowFrame = 0;
 
   running = false;
   finished = false;
@@ -1957,7 +1963,19 @@ export class Game {
 
   private spawnRemote(pose: PlayerPose) {
     if (pose.id === this.net.id || this.remotes.has(pose.id)) return;
-    const remote = new RemotePlayer(pose, this.scene, this.labelRoot);
+    let remote!: RemotePlayer;
+    const scratch = new THREE.Vector3();
+    // Dead reckoning adapter: project onto the racing line / advance along it
+    // when snapshots run out (keyed sticky projection, cleaned up on remove).
+    const adapter: RemoteTrackAdapter = {
+      project: (x, z) => this.projectSticky(remote, scratch.set(x, 0, z)).t,
+      poseAt: (t) => {
+        const p = this.spawnPose(t, 0);
+        return { x: p.pos.x, z: p.pos.z, h: p.heading };
+      },
+      length: this.track.path.getLength(),
+    };
+    remote = new RemotePlayer(pose, this.scene, this.labelRoot, adapter);
     // Local-only beams: remotes keep emissive lenses, never SpotLights.
     stripVehicleSpotLights(remote.mesh);
     this.remotes.set(pose.id, remote);
@@ -1966,12 +1984,16 @@ export class Game {
   private removeRemote(id: string) {
     const r = this.remotes.get(id);
     if (!r) return;
+    this.resetSticky(r);
     r.dispose(this.scene);
     this.remotes.delete(id);
   }
 
   private clearRemotes() {
-    for (const remote of this.remotes.values()) remote.dispose(this.scene);
+    for (const remote of this.remotes.values()) {
+      this.resetSticky(remote);
+      remote.dispose(this.scene);
+    }
     this.remotes.clear();
   }
 
@@ -2383,6 +2405,29 @@ export class Game {
     return performance.now() - this.pauseTotal - extra;
   }
 
+  /** FPS scaler with hysteresis: >21ms EMA for 1.5s throttles shadows, <16ms for 4s restores. */
+  private updateShadowThrottle(now: number) {
+    if (!this.running || this.paused || this.finished) {
+      this.shadowThrottle = false;
+      this.lowFpsSince = 0;
+      this.highFpsSince = 0;
+      return;
+    }
+    if (!this.shadowThrottle) {
+      if (this.fpsEmaMs > 21) {
+        if (!this.lowFpsSince) this.lowFpsSince = now;
+        if (now - this.lowFpsSince > 1500) this.shadowThrottle = true;
+      } else {
+        this.lowFpsSince = 0;
+      }
+    } else if (this.fpsEmaMs < 16) {
+      if (!this.highFpsSince) this.highFpsSince = now;
+      if (now - this.highFpsSince > 4000) this.shadowThrottle = false;
+    } else {
+      this.highFpsSince = 0;
+    }
+  }
+
   private onResize() {
     this.viewport = viewportSize();
     const { w, h } = this.viewport;
@@ -2400,8 +2445,13 @@ export class Game {
       this.lastFrame = now;
       return;
     }
-    const dt = Math.min((now - this.lastFrame) / 1000, 0.05);
+    const rawDeltaMs = now - this.lastFrame;
+    const dt = Math.min(rawDeltaMs / 1000, 0.05);
     this.lastFrame = now;
+    // FPS scaler: watch real frame pacing and throttle shadow rebuilds on
+    // sustained slow frames (mobile GPUs), restore when healthy again.
+    this.fpsEmaMs += (Math.min(rawDeltaMs, 100) - this.fpsEmaMs) * 0.05;
+    this.updateShadowThrottle(now);
 
     // Always interpolate remotes (cheap) even if paused locally
     if (this.remotes.size > 0) {
@@ -2422,7 +2472,7 @@ export class Game {
       else if (this.running && !this.finished && !this.exploding) this.pause();
     }
 
-    if (this.running && !this.finished && !this.paused) {
+    if (this.running && !this.paused && (!this.finished || this.online)) {
       if (this.exploding) {
         this.updateExplode(dt);
         this.updateCamera(dt);
@@ -2446,7 +2496,13 @@ export class Game {
           this.updateHud();
           this.updateCamera(dt);
         } else {
-          const input = inputPeek;
+          // After finishing online, driving input is ignored — the car coasts to
+          // a stop and keeps streaming poses so remotes watch the same settled
+          // car we see (instead of a frozen mid-corner ghost).
+          const input =
+            this.finished && this.online
+              ? { ...inputPeek, throttle: 0, brake: 0, steer: 0, gear: null, shiftDelta: 0 as const, reset: false }
+              : inputPeek;
           if (input.reset) {
             this.player.reset(this.track.startPosition.clone(), this.track.startHeading);
             this.resetSticky(this.player);
@@ -2559,8 +2615,11 @@ export class Game {
     // driving — a low-Hz map lagged behind the car (looked like a rear trail)
     // and popped when it finally caught up. Soft PCF + ride height unchanged.
     // Home/pause/finish: casters are still — skip rebuilds after a warmup.
+    // FPS scaler: sustained slow frames → rebuild every 3rd frame instead.
     const liveShadows = this.running && !this.paused && !this.finished;
-    this.renderer.shadowMap.needsUpdate = liveShadows || this.shadowNeedsWarmup;
+    this.shadowFrame = (this.shadowFrame + 1) % 3;
+    const shadowTick = !this.shadowThrottle || this.shadowFrame === 0;
+    this.renderer.shadowMap.needsUpdate = (liveShadows || this.shadowNeedsWarmup) && shadowTick;
     if (this.shadowNeedsWarmup) this.shadowNeedsWarmup = false;
     this.renderer.render(this.scene, this.camera);
 

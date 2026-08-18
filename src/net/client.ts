@@ -19,6 +19,17 @@ import { configuredApiBase, configuredWsUrl, sameOriginOnline } from "./onlineCo
 
 type Snapshot = { at: number; pose: PlayerPose };
 
+/**
+ * Optional track adapter for dead reckoning: project world (x,z) → arclength t,
+ * and arclength t → track pose. Lets remotes coast along the racing line on bad
+ * links instead of free-flying off it.
+ */
+export type RemoteTrackAdapter = {
+  project: (x: number, z: number) => number;
+  poseAt: (t: number) => { x: number; z: number; h: number };
+  length: number;
+};
+
 function poseKind(pose: PlayerPose): VehicleKind {
   return pose.kind === "bike" ? "bike" : "car";
 }
@@ -58,8 +69,13 @@ export class RemotePlayer {
   private errX = 0;
   private errZ = 0;
   private errH = 0;
+  /** Dead reckoning — track projection state (recomputed once per new snapshot). */
+  private track?: RemoteTrackAdapter;
+  private projT = 0;
+  private projSnapshotAt = 0;
+  private projDir = 1;
 
-  constructor(pose: PlayerPose, scene: THREE.Scene, labelRoot: HTMLElement) {
+  constructor(pose: PlayerPose, scene: THREE.Scene, labelRoot: HTMLElement, track?: RemoteTrackAdapter) {
     this.id = pose.id;
     this.name = pose.name;
     this.kind = poseKind(pose);
@@ -77,6 +93,7 @@ export class RemotePlayer {
     this.mesh.position.set(pose.x, VISUAL_RIDE_Y, pose.z);
     this.mesh.rotation.y = pose.h;
     scene.add(this.mesh);
+    this.track = track;
 
     this.label = document.createElement("div");
     this.label.className = "player-tag";
@@ -203,29 +220,52 @@ export class RemotePlayer {
         const extrapMs = Math.min(MAX_EXTRAPOLATE_MS, renderAt - newest.at);
         const extrapSec = extrapMs / 1000;
         const spanSec = span / 1000;
-        const dh = wrapPi(newest.pose.h - prev.pose.h);
-        // Clamp to plausible car motion — a stale/corrupt pair would otherwise
-        // spin the extrapolated heading (cars "driving sideways") or fling the
-        // position off the track after a respawn.
-        turnRate = THREE.MathUtils.clamp(dh / spanSec, -2.4, 2.4);
-        // Prefer reported heading×speed; blend a little measured delta to keep coasting honest.
-        const maxV = 55; // m/s ≈ 200 km/h — beyond that it's a teleport, not motion
-        const measuredVx = THREE.MathUtils.clamp((newest.pose.x - prev.pose.x) / spanSec, -maxV, maxV);
-        const measuredVz = THREE.MathUtils.clamp((newest.pose.z - prev.pose.z) / spanSec, -maxV, maxV);
-        const reportBlend = Math.abs(newest.pose.s) < 0.5 ? 0.15 : 0.85;
-        const baseVx = THREE.MathUtils.lerp(measuredVx, Math.sin(newest.pose.h) * newest.pose.s, reportBlend);
-        const baseVz = THREE.MathUtils.lerp(measuredVz, Math.cos(newest.pose.h) * newest.pose.s, reportBlend);
-        // Curve the coast with turn rate so late packets don't skate straight through corners.
-        const midH = newest.pose.h + turnRate * extrapSec * 0.5;
-        const speed = newest.pose.s;
-        const curvedVx = Math.sin(midH) * speed;
-        const curvedVz = Math.cos(midH) * speed;
-        const vx = THREE.MathUtils.lerp(baseVx, curvedVx, 0.65);
-        const vz = THREE.MathUtils.lerp(baseVz, curvedVz, 0.65);
-        x = newest.pose.x + vx * extrapSec;
-        z = newest.pose.z + vz * extrapSec;
-        h = newest.pose.h + turnRate * extrapSec;
-        s = newest.pose.s;
+        // Ease speed off while coasting — corrections arrive smaller.
+        const dampedS = newest.pose.s * Math.max(0.25, Math.exp(-extrapSec / 0.45));
+        if (this.track && newest.pose.s > 0.5) {
+          // Dead reckoning along the racing line: project the newest snapshot
+          // onto the track once, then advance arclength — cars stay glued to
+          // the circuit on lossy links instead of crab-flying off it.
+          if (this.projSnapshotAt !== newest.at) {
+            this.projT = this.track.project(newest.pose.x, newest.pose.z);
+            const tPrev = this.track.project(prev.pose.x, prev.pose.z);
+            let tDelta = this.projT - tPrev;
+            if (tDelta > 0.5) tDelta -= 1;
+            if (tDelta < -0.5) tDelta += 1;
+            this.projDir = tDelta >= 0 ? 1 : -1;
+            this.projSnapshotAt = newest.at;
+          }
+          const t2 = this.projT + (this.projDir * dampedS * extrapSec) / this.track.length;
+          const p = this.track.poseAt(t2);
+          x = p.x;
+          z = p.z;
+          h = p.h;
+          s = dampedS;
+          turnRate = this.projDir * Math.min(2.4, (Math.abs(dampedS) * 2 * Math.PI) / this.track.length);
+        } else {
+          const dh = wrapPi(newest.pose.h - prev.pose.h);
+          // Clamp to plausible car motion — a stale/corrupt pair would otherwise
+          // spin the extrapolated heading (cars "driving sideways") or fling the
+          // position off the track after a respawn.
+          turnRate = THREE.MathUtils.clamp(dh / spanSec, -2.4, 2.4);
+          // Prefer reported heading×speed; blend a little measured delta to keep coasting honest.
+          const maxV = 55; // m/s ≈ 200 km/h — beyond that it's a teleport, not motion
+          const measuredVx = THREE.MathUtils.clamp((newest.pose.x - prev.pose.x) / spanSec, -maxV, maxV);
+          const measuredVz = THREE.MathUtils.clamp((newest.pose.z - prev.pose.z) / spanSec, -maxV, maxV);
+          const reportBlend = Math.abs(newest.pose.s) < 0.5 ? 0.15 : 0.85;
+          const baseVx = THREE.MathUtils.lerp(measuredVx, Math.sin(newest.pose.h) * dampedS, reportBlend);
+          const baseVz = THREE.MathUtils.lerp(measuredVz, Math.cos(newest.pose.h) * dampedS, reportBlend);
+          // Curve the coast with turn rate so late packets don't skate straight through corners.
+          const midH = newest.pose.h + turnRate * extrapSec * 0.5;
+          const curvedVx = Math.sin(midH) * dampedS;
+          const curvedVz = Math.cos(midH) * dampedS;
+          const vx = THREE.MathUtils.lerp(baseVx, curvedVx, 0.65);
+          const vz = THREE.MathUtils.lerp(baseVz, curvedVz, 0.65);
+          x = newest.pose.x + vx * extrapSec;
+          z = newest.pose.z + vz * extrapSec;
+          h = newest.pose.h + turnRate * extrapSec;
+          s = dampedS;
+        }
       } else {
         let i = 0;
         while (i < buf.length - 2 && buf[i + 1]!.at < renderAt) i++;
@@ -886,7 +926,7 @@ export class NetClient {
     );
   }
 
-  /** Call from render loop; sends at ~60Hz during a live race. */
+  /** Call from render loop; sends at ~90Hz while racing (and while finished, so the settled car syncs). */
   maybeSendPose(
     dt: number,
     pose: {
@@ -899,7 +939,7 @@ export class NetClient {
     },
   ) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.myId) return;
-    if (this.phase !== "racing") return;
+    if (this.phase !== "racing" && this.phase !== "finished") return;
     this.sendAcc += dt * 1000;
     if (this.sendAcc < NET_TICK_MS) return;
     this.sendAcc = Math.min(this.sendAcc - NET_TICK_MS, NET_TICK_MS);
