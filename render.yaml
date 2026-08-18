@@ -7,7 +7,9 @@ services:
     plan: free
     # Frankfurt — players are mostly in Europe; Oregon added ~160ms RTT (jumpy remotes).
     region: frankfurt
-    buildCommand: npm ci && npm run build
+    # --include=dev: NODE_ENV=production is set on the service, which would make
+    # npm ci skip devDependencies — but tsc + vite are needed to build.
+    buildCommand: npm ci --include=dev && npm run build
     startCommand: npm start
     healthCheckPath: /healthz
     envVars:
