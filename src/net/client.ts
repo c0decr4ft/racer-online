@@ -228,18 +228,20 @@ export class RemotePlayer {
           // the circuit on lossy links instead of crab-flying off it.
           if (this.projSnapshotAt !== newest.at) {
             this.projT = this.track.project(newest.pose.x, newest.pose.z);
-            const tPrev = this.track.project(prev.pose.x, prev.pose.z);
-            let tDelta = this.projT - tPrev;
-            if (tDelta > 0.5) tDelta -= 1;
-            if (tDelta < -0.5) tDelta += 1;
-            this.projDir = tDelta >= 0 ? 1 : -1;
+            // Direction of travel from the pose heading vs the track tangent —
+            // a delta of two noisy projections flips the car 180° on jitter.
+            const tanH = this.track.poseAt(this.projT).h;
+            const along =
+              Math.sin(newest.pose.h) * Math.sin(tanH) + Math.cos(newest.pose.h) * Math.cos(tanH);
+            this.projDir = along >= 0 ? 1 : -1;
             this.projSnapshotAt = newest.at;
           }
           const t2 = this.projT + (this.projDir * dampedS * extrapSec) / this.track.length;
           const p = this.track.poseAt(t2);
           x = p.x;
           z = p.z;
-          h = p.h;
+          // Face the direction of travel — backwards along the line when reversing it
+          h = this.projDir >= 0 ? p.h : wrapPi(p.h + Math.PI);
           s = dampedS;
           turnRate = this.projDir * Math.min(2.4, (Math.abs(dampedS) * 2 * Math.PI) / this.track.length);
         } else {
