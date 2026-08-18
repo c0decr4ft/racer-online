@@ -685,6 +685,25 @@
         </div>
       </div>
     </div>
+    <div id="mobile-gate" class="mobile-gate">
+      <div class="mobile-gate-inner">
+        <p class="eyebrow">RACER ONLINE</p>
+        <h1>DESKTOP ONLY</h1>
+        <p class="tagline">Open this page on a computer to play</p>
+      </div>
+    </div>
+    <script>
+      // Mobile gate: phones/tablets get the desktop-only message, never the game.
+      // Runs before the module bundle so the 3D engine never boots on mobile.
+      (function () {
+        var coarse = window.matchMedia && matchMedia("(pointer: coarse)").matches;
+        var smallScreen = Math.min(screen.width, screen.height) < 820;
+        var mobileUA = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        if ((coarse && smallScreen) || mobileUA) {
+          document.documentElement.classList.add("mobile-blocked");
+        }
+      })();
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

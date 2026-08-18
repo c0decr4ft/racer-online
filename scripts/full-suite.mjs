@@ -968,43 +968,24 @@ async function main() {
   const mobileErrors = [];
   mobile.on("pageerror", (e) => mobileErrors.push(String(e)));
   await mobile.goto(BASE, { waitUntil: "domcontentloaded", timeout: 45000 });
-  await mobile.waitForFunction(() => window.__game, null, { timeout: 15000 });
+  await mobile.waitForTimeout(1200);
+  // Mobile is gated: the DESKTOP ONLY cover shows and the engine never boots.
   assert(
-    "mobile:touch-mode",
-    await mobile.evaluate(() => document.documentElement.classList.contains("touch-mode")),
+    "mobile:gate-class",
+    await mobile.evaluate(() => document.documentElement.classList.contains("mobile-blocked")),
   );
-  await mobile.click("#solo-race-btn");
-  await mobile.waitForTimeout(4500);
-  assert("mobile:controls-visible", await visible(mobile, "#touch-controls"));
-  const gas = mobile.locator('[data-touch="gas"]');
-  await gas.dispatchEvent("pointerdown", {
-    pointerId: 41,
-    pointerType: "touch",
-    isPrimary: true,
-    button: 0,
-  });
-  await mobile.waitForTimeout(700);
-  const mobileSpeed = await mobile.evaluate(() => window.__game?.player?.state?.speed ?? 0);
-  assert("mobile:touch-gas", mobileSpeed > 0.5, `speed=${mobileSpeed.toFixed(2)}`);
-  await mobile.evaluate(() => window.dispatchEvent(new Event("blur")));
+  assert("mobile:gate-visible", await visible(mobile, "#mobile-gate"));
   assert(
-    "mobile:blur-clears-input",
-    await mobile.evaluate(
-      () =>
-        window.__game?.input?.getState?.().throttle === 0 &&
-        !document.querySelector("#touch-controls .is-active"),
-    ),
+    "mobile:gate-text",
+    await mobile.evaluate(() => /desktop/i.test(document.getElementById("mobile-gate")?.textContent || "")),
+  );
+  assert(
+    "mobile:engine-not-booted",
+    await mobile.evaluate(() => typeof window.__game === "undefined"),
   );
   await mobile.setViewportSize({ width: 844, height: 390 });
-  await mobile.waitForTimeout(250);
-  const controlsInsideViewport = await mobile.locator("#touch-controls .touch-btn").evaluateAll(
-    (buttons) =>
-      buttons.every((button) => {
-        const box = button.getBoundingClientRect();
-        return box.left >= 0 && box.top >= 0 && box.right <= innerWidth && box.bottom <= innerHeight;
-      }),
-  );
-  assert("mobile:landscape-controls-fit", controlsInsideViewport);
+  await mobile.waitForTimeout(300);
+  assert("mobile:gate-visible-landscape", await visible(mobile, "#mobile-gate"));
   assert("mobile:pageerrors-none", mobileErrors.length === 0, mobileErrors.slice(0, 3).join(" | "));
   await mobile.close();
   await browser.close();
