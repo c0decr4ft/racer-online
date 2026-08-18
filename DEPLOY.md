@@ -63,15 +63,16 @@ NUT-18 Cashu wallet; winners claim the pot as a `cashuA` token.
 ## Player feedback → your email
 
 In-game feedback posts to `/api/feedback` (stored in `server/feedback.json`, gitignored)
-and is forwarded to your inbox. **Use Web3Forms** — FormSubmit's relay needs a one-time
-email activation and rate-limits bursts:
+and is forwarded to your inbox. **Use Resend** — reliable, server-side, free tier
+(100 emails/day):
 
-1. Go to [web3forms.com](https://web3forms.com) → enter your email → they send you a free
-   **access key** instantly (no activation flow, no domain verification).
-2. Render dashboard → your service → **Environment** → add `FEEDBACK_ACCESS_KEY` = that key →
+1. Sign up at [resend.com](https://resend.com) (GitHub login works) → **API Keys** →
+   **Create API Key** → copy it.
+2. Render dashboard → your service → **Environment** → add `RESEND_API_KEY` = that key →
    save (redeploys).
-3. Done — feedback lands in your inbox within seconds. The server retries the relay once
-   on failure, and the API response reports `emailed: true/false` honestly.
+3. Done — feedback lands in your inbox within seconds. Sending to your own account email
+   from `onboarding@resend.dev` needs **no domain verification**. The server retries the
+   relay once on failure, and the API response reports `emailed: true/false` honestly.
 
 Fallback without the key: FormSubmit (`FEEDBACK_EMAIL`) — requires clicking the
 "Activate Form" link it emails you once, or nothing is ever delivered.

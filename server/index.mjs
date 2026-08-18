@@ -67,11 +67,11 @@ const FEEDBACK_RELAY_URL = (
   process.env.FEEDBACK_RELAY_URL || `https://formsubmit.co/ajax/${encodeURIComponent(FEEDBACK_EMAIL)}`
 ).trim();
 /**
- * Web3Forms access key (free at web3forms.com — key arrives by email instantly,
- * no activation flow, no rate-limit surprises). When set, feedback is delivered
- * through it instead of the flaky FormSubmit relay.
+ * Resend API key (resend.com — free tier, no domain verification needed when
+ * sending to your own account email from onboarding@resend.dev). When set,
+ * feedback is delivered through it instead of the flaky FormSubmit relay.
  */
-const FEEDBACK_ACCESS_KEY = (process.env.FEEDBACK_ACCESS_KEY || "").trim();
+const RESEND_API_KEY = (process.env.RESEND_API_KEY || "").trim();
 const GAME_VERSION_LABEL = (() => {
   try {
     return JSON.parse(readFileSync(join(DIR, "..", "package.json"), "utf8")).version || "unknown";
@@ -83,25 +83,29 @@ const GAME_VERSION_LABEL = (() => {
 /** Forward one feedback message to the inbox. Throws on relay failure (caller logs). */
 async function sendFeedbackEmailOnce(msg) {
   const subject = `Racer Online feedback${msg.name ? ` — ${msg.name}` : ""}`;
-  // Preferred path: Web3Forms (key-based, no activation, built for server-side use).
-  if (FEEDBACK_ACCESS_KEY) {
-    const res = await fetch("https://api.web3forms.com/submit", {
+  // Preferred path: Resend (real email API — reliable, server-side, free tier).
+  if (RESEND_API_KEY) {
+    const res = await fetch("https://api.resend.com/emails", {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${RESEND_API_KEY}`,
+      },
       body: JSON.stringify({
-        access_key: FEEDBACK_ACCESS_KEY,
+        from: "Racer Online <onboarding@resend.dev>",
+        to: [FEEDBACK_EMAIL],
         subject,
-        from_name: "Racer Online",
-        name: msg.name || "anonymous",
-        message: msg.text,
-        game_version: GAME_VERSION_LABEL,
-        received_at: new Date(msg.createdAt || Date.now()).toISOString(),
+        text:
+          `From: ${msg.name || "anonymous"}\n` +
+          `Game version: ${GAME_VERSION_LABEL}\n` +
+          `At: ${new Date(msg.createdAt || Date.now()).toISOString()}\n\n` +
+          msg.text,
       }),
       signal: AbortSignal.timeout(8_000),
     });
     const data = await res.json().catch(() => null);
-    if (!res.ok || data?.success !== true) {
-      throw new Error(String(data?.message || `web3forms ${res.status}`).slice(0, 140));
+    if (!res.ok) {
+      throw new Error(String(data?.message || `resend ${res.status}`).slice(0, 140));
     }
     return;
   }
