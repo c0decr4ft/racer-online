@@ -1371,6 +1371,9 @@ export class Game {
     if (feePart) feePart.classList.toggle("hidden", fee <= 0);
     const feeEl = document.getElementById("event-fee-sats");
     if (feeEl) feeEl.textContent = String(fee);
+    // Under 2% tip: gentle shame from the dev (winner keeps it all — c'mon).
+    const guilt = document.getElementById("event-tip-guilt");
+    if (guilt) guilt.classList.toggle("hidden", tipPercent >= 2);
   }
 
   private claimEventPot() {

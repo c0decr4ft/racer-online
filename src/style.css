@@ -555,8 +555,9 @@ html.touch-mode [contenteditable="true"] {
   background:
     radial-gradient(ellipse at 30% 20%, rgba(255, 59, 46, 0.18), transparent 45%),
     radial-gradient(ellipse at 70% 80%, rgba(40, 70, 120, 0.25), transparent 50%),
-    linear-gradient(160deg, rgba(6, 8, 12, 0.92), rgba(10, 14, 22, 0.88));
-  backdrop-filter: blur(6px);
+    linear-gradient(160deg, rgba(6, 8, 12, 0.95), rgba(10, 14, 22, 0.93));
+  /* No backdrop-filter blur: full-screen blur over the live WebGL canvas costs
+     GPU every frame and made menu clicks feel laggy. Higher alpha instead. */
   overflow-x: hidden;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
@@ -1105,8 +1106,9 @@ html.touch-mode [contenteditable="true"] {
 
 .event-checkout {
   width: 100%;
+  box-sizing: border-box;
   margin: 0.4rem 0 0.55rem;
-  padding: 1rem 1rem 0.9rem;
+  padding: 1.1rem 1.1rem 1rem;
   border: 1px solid rgba(255, 200, 87, 0.55);
   background:
     radial-gradient(130% 150% at 50% -25%, rgba(255, 200, 87, 0.17), rgba(255, 200, 87, 0.04) 55%, transparent 78%),
@@ -1116,7 +1118,7 @@ html.touch-mode [contenteditable="true"] {
     inset 0 0 22px rgba(255, 200, 87, 0.05);
   display: flex;
   flex-direction: column;
-  gap: 0.7rem;
+  gap: 0.75rem;
 }
 
 .event-checkout.hidden,
@@ -1153,7 +1155,7 @@ html.touch-mode [contenteditable="true"] {
 .event-tip-row {
   display: flex;
   flex-direction: column;
-  gap: 0.3rem;
+  gap: 0.45rem;
   color: var(--text);
   font-family: "Rajdhani", sans-serif;
   font-size: 0.9rem;
@@ -1161,9 +1163,68 @@ html.touch-mode [contenteditable="true"] {
   text-align: left;
 }
 
+/* Custom gold slider — accent-color alone looked browser-default. */
 .event-tip-row input[type="range"] {
+  appearance: none;
+  -webkit-appearance: none;
   width: 100%;
-  accent-color: #ffc857;
+  height: 4px;
+  margin: 0.35rem 0 0.15rem;
+  background: linear-gradient(90deg, rgba(255, 200, 87, 0.55), rgba(255, 200, 87, 0.18));
+  outline: none;
+  cursor: pointer;
+}
+
+.event-tip-row input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 15px;
+  height: 15px;
+  background: linear-gradient(180deg, #ffe1a1, #f0a818);
+  border: 1px solid #ffe9c4;
+  box-shadow: 0 0 10px rgba(255, 200, 87, 0.55);
+  cursor: grab;
+}
+
+.event-tip-row input[type="range"]::-moz-range-thumb {
+  width: 15px;
+  height: 15px;
+  border-radius: 0;
+  background: linear-gradient(180deg, #ffe1a1, #f0a818);
+  border: 1px solid #ffe9c4;
+  box-shadow: 0 0 10px rgba(255, 200, 87, 0.55);
+  cursor: grab;
+}
+
+.event-tip-row input[type="range"]::-moz-range-track {
+  height: 4px;
+  background: linear-gradient(90deg, rgba(255, 200, 87, 0.55), rgba(255, 200, 87, 0.18));
+}
+
+/* Sub-2% tip: the dev's disappointed one-liner. */
+.event-tip-guilt {
+  margin: -0.4rem 0 0;
+  font-family: "Rajdhani", sans-serif;
+  font-size: 0.84rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: #ff8f5c;
+  text-align: center;
+  animation: guilt-pulse 1.6s ease-in-out infinite;
+}
+
+.event-tip-guilt.hidden {
+  display: none !important;
+}
+
+@keyframes guilt-pulse {
+  0%,
+  100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 .event-rows {
@@ -2853,19 +2914,26 @@ input:focus-visible,
   align-items: center;
 }
 
+/* Same width for every pause button — text-length-sized buttons looked lopsided. */
+#pause .overlay-inner button {
+  width: min(100%, 16rem);
+  box-sizing: border-box;
+}
+
 .overlay-inner {
   text-align: center;
   max-width: 34rem;
   padding: 2rem;
   margin-block: auto;
   flex-shrink: 0;
-  animation: rise 0.7s ease both;
+  /* Short rise: 0.7s made every screen switch feel laggy. */
+  animation: rise 0.28s ease-out both;
 }
 
 @keyframes rise {
   from {
     opacity: 0;
-    transform: translateY(18px);
+    transform: translateY(12px);
   }
   to {
     opacity: 1;
