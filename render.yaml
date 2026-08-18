@@ -29,3 +29,8 @@ services:
       # to commit; the in-game DEV button appears only when signed in with it.
       - key: DEV_PUBKEY
         value: 98fabb025fc826ca032733ddd18a08f323061ea9c2ff8f9af41c50a07e3d905b
+      # Feedback → email inbox. Set this in the Render dashboard (free key from
+      # web3forms.com — arrives by email instantly). Without it, feedback falls
+      # back to the flaky FormSubmit relay (needs one-time activation).
+      - key: FEEDBACK_ACCESS_KEY
+        sync: false
