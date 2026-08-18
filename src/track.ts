@@ -1554,12 +1554,24 @@ function plantBiomeProps(
       const a = ((i + 0.5) / midN) * Math.PI * 2;
       const x = cx + Math.cos(a) * midR;
       const z = cz + Math.sin(a) * midR;
-      // Skip if somehow still too close to asphalt
-      if (!clearance.sceneryOk(x, z, 20)) continue;
       const along = 40 + hash2(i, 17) * 18;
       const thick = 12 + hash2(i, 19) * 8;
       const h = 18 + hash2(i, 23) * 16;
       const yaw = a + Math.PI / 2;
+      // Clearance must cover the whole foothill body, not just its center
+      if (!clearance.sceneryOk(x, z, Math.max(24, along * 0.5 + 6))) continue;
+      // …and never plant a foothill on top of a pine (trees sinking into mountains)
+      const foothillFootprint = Math.max(along, thick) * 0.5 + 4;
+      let hitsTree = false;
+      for (const p of poses) {
+        const dx = p.x - x;
+        const dz = p.z - z;
+        if (dx * dx + dz * dz < foothillFootprint * foothillFootprint) {
+          hitsTree = true;
+          break;
+        }
+      }
+      if (hitsTree) continue;
 
       dummy.position.set(x, -2.5, z);
       dummy.scale.set(along, h, thick);
@@ -3669,9 +3681,16 @@ export function createTrack(
   const path = new THREE.CatmullRomCurve3(pts, true, "catmullrom", 0.5);
   const bounds = pathBounds(path);
 
-  // Biome ground — baseColor preserved so weather tint doesn't flatten the palette
+  // Biome ground — baseColor preserved so weather tint doesn't flatten the palette.
+  // Mountains biome: the horizon rings sit well past the path bounding box — pad
+  // the ground out beyond the backdrop ring or there's a see-through void band
+  // under the mountains (sky where terrain should be).
+  const groundPad =
+    biome.props === "mountains"
+      ? Math.min(290, Math.max(bounds.spanX, bounds.spanZ) * 0.55 + 180) + 60
+      : 0;
   const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(bounds.spanX, bounds.spanZ),
+    new THREE.PlaneGeometry(bounds.spanX + groundPad * 2, bounds.spanZ + groundPad * 2),
     new THREE.MeshStandardMaterial({ color: biome.ground, roughness: 1 }),
   );
   ground.userData.surface = "grass";
