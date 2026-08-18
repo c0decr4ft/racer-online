@@ -103,9 +103,9 @@ const GRID = [
   { offset: 2.6, t: -0.006, skill: 2.35 }, // front — pace setter, still behind SF
 ];
 
-/** Multiplayer grid uses up to four evenly spaced cars per row. */
+/** Multiplayer grid uses up to three evenly spaced cars per row (3 in front, 3 in back). */
 const ONLINE_GRID_HALF_WIDTH = 3.4;
-const ONLINE_GRID_MAX_COLUMNS = 4;
+const ONLINE_GRID_MAX_COLUMNS = 3;
 /** Track-t of the front row — behind start/finish, facing race direction. */
 const ONLINE_START_T = -0.016;
 const ONLINE_ROW_GAP_T = 0.011;
@@ -593,6 +593,18 @@ export class Game {
       e.preventDefault();
       void this.joinMultiplayerRoom();
     });
+    // Max players: hard-capped at 6 (2 rows of 3 — room to move). Live-clamp
+    // manual typing so this can't be bypassed with the keyboard; the server
+    // re-clamps anyway.
+    this.el.mpCreateMax.max = "6";
+    this.el.mpCreateMax.addEventListener("input", () => {
+      const v = Number(this.el.mpCreateMax.value);
+      if (Number.isFinite(v) && v > 6) this.el.mpCreateMax.value = "6";
+    });
+    this.el.mpCreateMax.addEventListener("change", () => {
+      const v = Number(this.el.mpCreateMax.value);
+      if (Number.isFinite(v) && this.el.mpCreateMax.value && v < 2) this.el.mpCreateMax.value = "2";
+    });
     document.getElementById("mp-create-kind-car")!.onclick = () => this.setMpCreateKind("car");
     document.getElementById("mp-create-kind-bike")!.onclick = () => this.setMpCreateKind("bike");
     document.getElementById("mp-create-weather-dry")!.onclick = () => this.setMpCreateWeather("dry");
@@ -1066,7 +1078,7 @@ export class Game {
     const room = this.sanitizeRoomName(this.el.mpCreateRoom.value);
     this.el.mpCreateRoom.value = room;
     const password = this.el.mpCreatePass.value.slice(0, 32);
-    const maxPlayers = Math.max(2, Math.min(8, Number(this.el.mpCreateMax.value) || 4));
+    const maxPlayers = Math.max(2, Math.min(6, Number(this.el.mpCreateMax.value) || 4));
     this.el.mpCreateMax.value = String(maxPlayers);
     // Event Mode: validate the host-chosen buy-in before creating the room.
     let eventBuyInSats: number | undefined;
