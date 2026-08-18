@@ -22,11 +22,13 @@ import { randomUUID } from "node:crypto";
 /** Mock is opt-in (tests/dev): RACER_PAYMENTS_MOCK=1. Everyone else gets real sats. */
 export const PAYMENTS_MOCK = process.env.RACER_PAYMENTS_MOCK === "1";
 /**
- * Default mint: Testnut (test eCash — free, auto-paid test sats) while we test
- * the money flow. For real sats, set CASHU_MINT_URL to a real mint
- * (e.g. https://mint.minibits.cash).
+ * Default mint: Coinos (`https://mint.coinos.io`) — real Lightning-backed sats.
+ * Minibits' mint is dead (404s); Coinos serves NUT-04/05 with sat keysets at
+ * input_fee_ppk 100 (≈1 sat per ≤10 proofs per swap — the same fee shape the
+ * buy-in/payout fee logic is built around). Override with CASHU_MINT_URL; for
+ * free test sats while developing use `https://testnut.cashu.space`.
  */
-const CASHU_MINT_URL = (process.env.CASHU_MINT_URL || "https://testnut.cashu.space").trim().replace(/\/+$/, "");
+const CASHU_MINT_URL = (process.env.CASHU_MINT_URL || "https://mint.coinos.io").trim().replace(/\/+$/, "");
 
 const DIR = dirname(fileURLToPath(import.meta.url));
 const PROOFS_PATH = join(DIR, "cashu-proofs.json");
