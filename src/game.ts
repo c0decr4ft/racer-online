@@ -2656,7 +2656,7 @@ export class Game {
           const launch = this.launchPower();
           this.player.powerMul = launch;
           const aiPower = launch * (this.godMode ? GOD_MODE_AI_POWER : 1);
-          for (const r of this.rivals) r.vehicle.powerMul = aiPower;
+          for (const r of this.rivals) r.godBoost = aiPower;
 
           this.player.update(dt, input);
           const onWall = this.keepOnTrack(this.player);

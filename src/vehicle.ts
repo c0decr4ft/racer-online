@@ -182,7 +182,9 @@ export class Vehicle {
     this.mesh.rotation.order = "YXZ";
     this.mesh.rotation.y = s.heading;
     const isBike = this.mesh.userData.kind === "bike";
-    const leanLimit = isBike ? 0.42 : 0.14;
+    // Cars: subtle body roll only (0.07 ≈ 4° — the old 0.14 looked like a boat).
+    // Bikes keep the deep lean — two-wheelers are supposed to dive into corners.
+    const leanLimit = isBike ? 0.42 : 0.07;
     const leanSpeed = isBike ? 34 : 50;
     const targetLean = THREE.MathUtils.clamp(
       -s.steerAngle * (Math.abs(s.speed) / leanSpeed),
@@ -212,8 +214,11 @@ export class Vehicle {
       typeof this.mesh.userData.steerCount === "number"
         ? Math.max(0, this.mesh.userData.steerCount as number)
         : Math.min(2, steers.length);
+    // Visual yaw cap: a full 0.68 rad lock swept the tire's leading corner
+    // through the body panels. ~0.3 rad still reads as steering while the
+    // wheel stays inside its arch/fairing envelope (see car.ts geometry).
     steers.forEach((steer, i) => {
-      steer.rotation.y = i < steerCount ? this.state.steerAngle * 0.85 : 0;
+      steer.rotation.y = i < steerCount ? this.state.steerAngle * 0.45 : 0;
     });
     spinners.forEach((spinner) => spinner.rotateX(-spin));
   }
@@ -258,6 +263,8 @@ export class RivalAI {
   laps = 0;
   /** True after completing the race distance (race mode only). */
   raceDone = false;
+  /** External power multiplier (launch ramp, dev GOD MODE) — scales driveMul. */
+  godBoost = 1;
   /** Fixed lateral racing line (m from centerline) — never changes mid-race. */
   private laneOffset: number;
   private skill: number;
@@ -559,7 +566,7 @@ export class RivalAI {
     let gap = bestT - playerT;
     if (gap > 0.5) gap -= 1;
     if (gap < -0.5) gap += 1;
-    this.vehicle.powerMul = driveMul;
+    this.vehicle.powerMul = driveMul * this.godBoost;
     if (gap < -0.10) {
       throttle = Math.min(1, throttle + (0.08 + Math.min(0.1, -gap * 0.4)) * launchEase);
     } else if (gap > 0.45) {
