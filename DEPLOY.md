@@ -58,6 +58,11 @@ NUT-18 Cashu wallet; winners claim the pot as a `cashuA` token.
   for fake sats that auto-pay in ~3s (the e2e suite runs against this).
 - `PUBLIC_BASE_URL` — public URL of this server (needed for the payment-request callback;
   auto-detected on Render via `RENDER_EXTERNAL_URL`)
+- **Leaderboard survives redeploys.** Scores are signed Nostr events (kind 30078) that
+  clients also publish to public relays (`nos.lol`, `relay.primal.net`). The server
+  rebuilds its board from those relays on boot and re-merges every 15 min, so
+  `server/leaderboard.json` (ephemeral on Render) is only a cache — updates never wipe
+  the board anymore.
 - **Mint fees are automatic.** Cashu mints charge an input fee per swap (usually ~1 sat).
   Buy-in requests add that fee on top of the buy-in (payer covers it, pot lands whole).
   At payout the winner always gets the full share — the token carries its own receive
