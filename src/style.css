@@ -197,6 +197,25 @@ html.touch-mode [contenteditable="true"] {
   min-width: 9.5rem;
 }
 
+/* Live sector delta under the lap clock — green when beating best, red when losing */
+.delta {
+  font-family: var(--font-display), ui-monospace, "Cascadia Mono", monospace;
+  font-weight: 700;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  min-height: 1.1em;
+  white-space: nowrap;
+}
+
+.delta.gain {
+  color: #2fd16f;
+}
+
+.delta.loss {
+  color: #ff5646;
+}
+
 .best-block {
   min-width: 9.5rem;
 }
@@ -370,41 +389,6 @@ html.touch-mode [contenteditable="true"] {
     opacity: 0;
     transform: translate(-50%, -50%) scale(0.92);
   }
-}
-
-.best-flash {
-  position: absolute;
-  top: 38%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  text-align: center;
-  pointer-events: none;
-  z-index: 6;
-  padding: 0.85rem 1.6rem;
-  background: rgba(8, 12, 18, 0.72);
-  border: 1px solid rgba(255, 200, 87, 0.55);
-  animation: best-flash-in 0.25s ease both;
-}
-
-.best-flash.hidden {
-  display: none;
-}
-
-.best-flash-label {
-  font-family: var(--font-display);
-  font-size: 0.65rem;
-  letter-spacing: 0.28em;
-  color: #ffc857;
-  margin-bottom: 0.25rem;
-}
-
-#best-flash-time {
-  font-family: var(--font-display);
-  font-weight: 700;
-  font-size: clamp(1.4rem, 4vw, 2rem);
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.06em;
-  color: #fff;
 }
 
 @keyframes best-flash-in {
@@ -1657,8 +1641,7 @@ input:focus-visible,
   .overlay-inner,
   .toast,
   .final-lap-flash,
-  .countdown,
-  .best-flash {
+  .countdown {
     animation: none !important;
   }
 }
@@ -1937,6 +1920,8 @@ input:focus-visible,
 .garage-kind {
   display: grid;
   grid-template-columns: 1fr 1fr;
+  /* Equal-height buttons — the dev extras (truck/tank) match car/bike. */
+  grid-auto-rows: 1fr;
   gap: 0.5rem;
   width: min(100%, 16rem);
   margin: 1rem auto 0.85rem;

@@ -36,6 +36,8 @@ export type InputState = {
   gear: Gear | null;
   /** Sequential shift request: +1 = up, -1 = down. Consumed once per frame. */
   shiftDelta: -1 | 0 | 1;
+  /** One-shot fire (dev tank cannon). Consumed once per frame. */
+  fire: boolean;
 };
 
 export class Input {
@@ -44,10 +46,16 @@ export class Input {
   pausePressed = false;
   private gearPress: Gear | null = null;
   private shiftPress: -1 | 0 | 1 = 0;
+  private firePress = false;
   /** On-screen touch pads (phones) — merged with keyboard in getState. */
   private touchThrottle = 0;
   private touchBrake = 0;
   private touchSteer = 0;
+  /** Gamepad — polled each getState() and merged like the touch pads. */
+  private padIndex: number | null = null;
+  private padPrevButtons: boolean[] = [];
+  /** Called once when a gamepad first appears (e.g. to toast the player). */
+  onPadConnected?: (name: string) => void;
   /** Mutated in place by getState — avoid a new object every frame. */
   private readonly state: InputState = {
     throttle: 0,
@@ -57,6 +65,7 @@ export class Input {
     pause: false,
     gear: null,
     shiftDelta: 0,
+    fire: false,
   };
 
   constructor() {
@@ -84,6 +93,7 @@ export class Input {
 
       if (e.code === "ArrowUp" && !e.repeat) this.shiftPress = 1;
       if (e.code === "ArrowDown" && !e.repeat) this.shiftPress = -1;
+      if (e.code === "KeyF" && !e.repeat) this.firePress = true;
 
       if (BLOCKED_KEYS.has(e.code)) e.preventDefault();
     });
@@ -116,7 +126,65 @@ export class Input {
     this.shiftPress = delta;
   }
 
+  /**
+   * Poll the first connected standard-mapping gamepad.
+   * Analog stick/triggers merge with keyboard/touch (highest input wins);
+   * shoulder buttons shift, Start pauses, Y resets — all edge-triggered.
+   */
+  private readPad(): { throttle: number; brake: number; steer: number } {
+    const none = { throttle: 0, brake: 0, steer: 0 };
+    if (typeof navigator === "undefined" || !navigator.getGamepads) return none;
+    const pads = navigator.getGamepads();
+    let pad: Gamepad | null = null;
+    if (this.padIndex != null && pads[this.padIndex]?.connected) {
+      pad = pads[this.padIndex];
+    } else {
+      for (const p of pads) {
+        if (p?.connected) {
+          pad = p;
+          if (this.padIndex !== p.index) {
+            this.padIndex = p.index;
+            this.onPadConnected?.(p.id);
+          }
+          break;
+        }
+      }
+    }
+    if (!pad) return none;
+
+    const pressedNow = (i: number) => pad.buttons[i]?.pressed ?? false;
+    const value = (i: number) => pad.buttons[i]?.value ?? 0;
+    // Edge-triggered buttons — same one-shot fields the keyboard uses
+    const prev = this.padPrevButtons;
+    const edge = (i: number) => {
+      const now = pressedNow(i);
+      const was = prev[i] ?? false;
+      prev[i] = now;
+      return now && !was;
+    };
+    if (edge(5)) this.shiftPress = 1; // RB
+    if (edge(4)) this.shiftPress = -1; // LB
+    if (edge(9)) this.pausePressed = true; // Start
+    if (edge(3)) this.resetPressed = true; // Y / Triangle
+    if (edge(2)) this.firePress = true; // X / Square — tank cannon
+
+    // Positive steer = LEFT (A key). Left stick: left is -x, so flip the sign.
+    const ax = pad.axes[0] ?? 0;
+    let steer = 0;
+    const dz = 0.14;
+    if (Math.abs(ax) > dz) {
+      const n = (Math.abs(ax) - dz) / (1 - dz);
+      steer = -Math.sign(ax) * Math.pow(n, 1.5); // finer control near center
+    }
+    steer += (pressedNow(14) ? 1 : 0) - (pressedNow(15) ? 1 : 0); // d-pad fallback
+
+    const throttle = Math.max(value(7), pressedNow(0) ? 1 : 0); // RT, A fallback
+    const brake = Math.max(value(6), pressedNow(1) ? 1 : 0); // LT, B fallback
+    return { throttle, brake, steer };
+  }
+
   getState(): InputState {
+    const pad = this.readPad();
     // ArrowUp/ArrowDown are dedicated to sequential shifting (not throttle/brake)
     const up = this.keys.has("KeyW");
     const down = this.keys.has("KeyS");
@@ -132,20 +200,23 @@ export class Input {
     this.gearPress = null;
     const shiftDelta = this.shiftPress;
     this.shiftPress = 0;
+    const fire = this.firePress;
+    this.firePress = false;
 
     const s = this.state;
-    s.throttle = Math.max(up ? 1 : 0, this.touchThrottle);
-    s.brake = Math.max(down || space ? 1 : 0, this.touchBrake);
+    s.throttle = Math.max(up ? 1 : 0, this.touchThrottle, pad.throttle);
+    s.brake = Math.max(down || space ? 1 : 0, this.touchBrake, pad.brake);
     // Positive steer increases heading, which turns the car LEFT
     // (heading: x += sin(h), z += cos(h); +h rotates forward toward +x,
     // and +x is screen-left with the chase cam). So A = +1, D = -1.
     const keySteer = (left ? 1 : 0) + (right ? -1 : 0);
-    const steer = keySteer + this.touchSteer;
+    const steer = keySteer + this.touchSteer + pad.steer;
     s.steer = Math.max(-1, Math.min(1, steer));
     s.reset = reset;
     s.pause = pause;
     s.gear = gear;
     s.shiftDelta = shiftDelta;
+    s.fire = fire;
     return s;
   }
 }
