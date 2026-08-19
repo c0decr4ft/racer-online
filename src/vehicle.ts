@@ -263,6 +263,8 @@ export class RivalAI {
   laps = 0;
   /** True after completing the race distance (race mode only). */
   raceDone = false;
+  /** Crushed/shot by a dev vehicle — hidden + inert until this wall-clock ms. */
+  disabledUntil = 0;
   /** External power multiplier (launch ramp, dev GOD MODE) — scales driveMul. */
   godBoost = 1;
   /** Fixed lateral racing line (m from centerline) — never changes mid-race. */
@@ -296,6 +298,7 @@ export class RivalAI {
     pause: false,
     gear: null,
     shiftDelta: 0,
+    fire: false,
   };
 
   constructor(vehicle: Vehicle, laneOffset: number, skill: number, gridIndex = 0) {
@@ -331,6 +334,18 @@ export class RivalAI {
   /** Mark as finished — coasts out of the way; no more lap scoring. */
   markRaceDone() {
     this.raceDone = true;
+  }
+
+  /**
+   * Reappear after a crush/shot timeout — keeps laps/raceDone (the timeout is
+   * the penalty), but re-arms sticky projection + mid-lap gates so the respawn
+   * can never score a free wrap.
+   */
+  respawn() {
+    this.disabledUntil = 0;
+    this.lastT = null;
+    this.stuckTimer = 0;
+    this.gates.reset();
   }
 
   /** Build / reuse this car's invisible offset line from the track centerline. */

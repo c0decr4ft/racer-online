@@ -69,6 +69,8 @@ export class RemotePlayer {
   private errX = 0;
   private errZ = 0;
   private errH = 0;
+  /** Easing state for the adaptive render delay (prevents rubber-banding). */
+  private delaySmooth = 0;
   /** Dead reckoning — track projection state (recomputed once per new snapshot). */
   private track?: RemoteTrackAdapter;
   private projT = 0;
@@ -150,12 +152,10 @@ export class RemotePlayer {
     const buf = this.buffer;
     const last = buf[buf.length - 1];
     if (last) {
-      if (at < last.at - 1) return; // stale / out-of-order
-      if (at <= last.at) {
-        last.at = at;
-        last.pose = snap.pose;
-        return;
-      }
+      // Reject stale/out-of-order arrivals. Before, near-simultaneous packets
+      // OVERWROTE the newest buffer entry with the older pose — yanking the
+      // newest lerp target backwards (visible micro-jump every few frames).
+      if (at <= last.at) return;
     }
     buf.push(snap);
     // ~0.6s at 60Hz — enough history for jitter without unbounded growth.
@@ -193,7 +193,11 @@ export class RemotePlayer {
     // are covered by dead reckoning + correction smoothing.
     const minDelay = NET_TICK_MS * 1.2;
     const interpDelay = THREE.MathUtils.clamp(minDelay + this.jitterMs * 2.5, minDelay, 300);
-    const renderAt = now - interpDelay;
+    // Ease the delay (~3 Hz): otherwise every jitter EMA wobble re-times the
+    // render point and the remote visibly rubber-bands.
+    if (this.delaySmooth === 0) this.delaySmooth = interpDelay;
+    if (dt > 0) this.delaySmooth += (interpDelay - this.delaySmooth) * Math.min(1, dt * 3);
+    const renderAt = now - this.delaySmooth;
     let x: number;
     let z: number;
     let h: number;
@@ -471,7 +475,8 @@ export type RoomConnectOpts = {
 export class NetClient {
   private ws: WebSocket | null = null;
   private myId = "";
-  private sendAcc = 0;
+  /** Wall-clock of the last pose uplink (steadier than a dt accumulator). */
+  private lastPoseAt = 0;
   private pingAt = 0;
   private handlers: NetHandlers;
   private pending: RoomConnectOpts | null = null;
@@ -521,9 +526,12 @@ export class NetClient {
       this.clockOffset = sample;
       this.clockReady = true;
     } else {
-      // Faster lock so jitter doesn't starve the interp buffer (underrun → extrap stutter).
+      // Slow, clamped convergence: latency spikes used to yank the offset by
+      // up to ~10ms per packet — every remote's render timeline lurched with
+      // it (whole-pack micro-jump). Cap each packet's adjustment to ~1.5ms;
+      // it still converges (a tick is ~22 packets) without timeline churn.
       const err = sample - this.clockOffset;
-      this.clockOffset += err * (Math.abs(err) > 40 ? 0.25 : 0.08);
+      this.clockOffset += THREE.MathUtils.clamp(err * (Math.abs(err) > 40 ? 0.2 : 0.06), -1.5, 1.5);
     }
     return serverAt + this.clockOffset;
   }
@@ -926,9 +934,9 @@ export class NetClient {
     );
   }
 
-  /** Call from render loop; sends at ~90Hz while racing (and while finished, so the settled car syncs). */
+  /** Call from render loop; sends at ~30Hz on a wall clock (frame dt accumulators clump on stalls). */
   maybeSendPose(
-    dt: number,
+    _dt: number,
     pose: {
       x: number;
       z: number;
@@ -940,9 +948,9 @@ export class NetClient {
   ) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.myId) return;
     if (this.phase !== "racing" && this.phase !== "finished") return;
-    this.sendAcc += dt * 1000;
-    if (this.sendAcc < NET_TICK_MS) return;
-    this.sendAcc = Math.min(this.sendAcc - NET_TICK_MS, NET_TICK_MS);
+    const now = performance.now();
+    if (now - this.lastPoseAt < NET_TICK_MS) return;
+    this.lastPoseAt = now;
     this.ws.send(
       JSON.stringify({
         t: "pose",

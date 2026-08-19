@@ -39,6 +39,7 @@
             <div class="time-block">
               <div class="label">TIME</div>
               <div id="time">0:00.000</div>
+              <div id="delta" class="delta" aria-live="polite"></div>
             </div>
           </div>
           <button id="pause-btn" class="pause-btn hidden" type="button" aria-label="Pause">❚❚</button>
@@ -66,10 +67,6 @@
         <div id="wrong-way" class="wrong-way hidden" aria-live="assertive">WRONG WAY</div>
         <div id="explode-flash" class="explode-flash hidden" aria-live="assertive">DESTROYED</div>
         <div id="animal-hit" class="animal-hit hidden" aria-live="assertive">COW!</div>
-        <div id="best-flash" class="best-flash hidden" aria-live="polite">
-          <div class="best-flash-label">BEST</div>
-          <div id="best-flash-time">--:--.---</div>
-        </div>
         <div id="final-lap-flash" class="final-lap-flash hidden" aria-live="polite">FINAL LAP</div>
         <div id="countdown" class="countdown hidden" aria-live="assertive">3</div>
         <canvas id="minimap" class="minimap hidden" width="160" height="160" aria-hidden="true"></canvas>
@@ -181,6 +178,7 @@
                 <div class="controls-help-row"><dt>D / →</dt><dd>Steer right</dd></div>
                 <div class="controls-help-row"><dt>W</dt><dd>Gas</dd></div>
                 <div class="controls-help-row"><dt>S / Space</dt><dd>Brake</dd></div>
+                <div class="controls-help-row"><dt>F</dt><dd>Tank cannon</dd></div>
               </dl>
             </section>
             <section class="controls-help-group" aria-labelledby="controls-help-gears">
@@ -197,6 +195,17 @@
               <dl class="controls-help-list">
                 <div class="controls-help-row"><dt>Esc / P</dt><dd>Pause</dd></div>
                 <div class="controls-help-row"><dt>Backspace</dt><dd>Reset car</dd></div>
+              </dl>
+            </section>
+            <section class="controls-help-group" aria-labelledby="controls-help-pad">
+              <h3 class="controls-help-group-title" id="controls-help-pad">Controller</h3>
+              <dl class="controls-help-list">
+                <div class="controls-help-row"><dt>Stick / D-pad</dt><dd>Steer</dd></div>
+                <div class="controls-help-row"><dt>RT / LT</dt><dd>Gas / brake</dd></div>
+                <div class="controls-help-row"><dt>RB / LB</dt><dd>Shift up / down</dd></div>
+                <div class="controls-help-row"><dt>X / Square</dt><dd>Tank cannon</dd></div>
+                <div class="controls-help-row"><dt>Start</dt><dd>Pause</dd></div>
+                <div class="controls-help-row"><dt>Y / Triangle</dt><dd>Reset car</dd></div>
               </dl>
             </section>
             <section class="controls-help-group" aria-labelledby="controls-help-touch">
@@ -385,6 +394,8 @@
           <div class="garage-kind" role="group" aria-label="Vehicle type">
             <button id="garage-kind-car" class="garage-kind-btn is-active" type="button" data-kind="car">CAR</button>
             <button id="garage-kind-bike" class="garage-kind-btn" type="button" data-kind="bike">BIKE</button>
+            <button id="garage-kind-truck" class="garage-kind-btn garage-kind-dev hidden" type="button" data-kind="truck">MONSTER TRUCK</button>
+            <button id="garage-kind-tank" class="garage-kind-btn garage-kind-dev hidden" type="button" data-kind="tank">TANK</button>
           </div>
 
           <div class="garage-colors">

@@ -23,7 +23,7 @@ import { Input } from "./input";
 import { isTouchPrimary, TouchControls, viewportSize } from "./touch";
 import { Vehicle, RivalAI } from "./vehicle";
 import { NetClient, RemotePlayer, type RemoteTrackAdapter, type WelcomeInfo } from "./net/client";
-import type { EventRoomInfo, PlayerPose } from "./net/protocol";
+import type { EventRoomInfo, NetVehicleKind, PlayerPose } from "./net/protocol";
 import {
   boardSourceLabel,
   fetchLeaderboard,
@@ -93,11 +93,21 @@ const WALL_HIT_LIMIT = 10;
 const WALL_HIT_COOLDOWN = 0.4;
 /** Brief DESTROYED hold before auto-restart. */
 const EXPLODE_RESTART_MS = 1600;
+/** Sector splits — track-t fractions where a sector boundary is crossed (S1/S2 end). */
+const SECTOR_T = [1 / 3, 2 / 3];
+/** localStorage prefix for best-ever sector times per course/kind. */
+const SECTOR_STORAGE_PREFIX = "racer.sectors.";
 /** Launch ramp — off-the-line power starts low and ramps like short-shifting. */
 const LAUNCH_MIN_POWER = 0.42;
 const LAUNCH_RAMP_S = 3.6;
 /** Dev-only GOD MODE: AI power multiplier (a lot faster, that is the point). */
 const GOD_MODE_AI_POWER = 1.5;
+/** Dev extras: a crushed/shot AI car sits out this long, then reappears. */
+const RIVAL_DISABLE_MS = 10_000;
+/** Tank cannon — shell speed (m/s), max flight time, refire delay. */
+const SHELL_SPEED = 95;
+const SHELL_LIFE_S = 1.4;
+const SHELL_COOLDOWN_MS = 220;
 
 /**
  * Skill tiers + fixed racing-line offsets (same every race). Player is slot 0.
@@ -176,7 +186,7 @@ export class Game {
   private net: NetClient;
   private pingTimer = 0;
   private labelRoot = document.getElementById("player-tags")!;
-  /** Player garage loadout — bots always match `kind`. */
+  /** Player garage loadout — bots match `kind` (dev extras race cars). */
   private garage: GarageLoadout = loadGarage();
   /** Waiting in multiplayer lobby (connected, race not started). */
   private inLobby = false;
@@ -184,7 +194,8 @@ export class Game {
   private expectingLobby = false;
   private lobbyPlayers: PlayerPose[] = [];
   private mpCreateTrackId = DEFAULT_TRACK_ID;
-  private mpCreateKind: VehicleKind = "car";
+  /** Rooms are car/bike only — dev garage extras never leave the local garage. */
+  private mpCreateKind: NetVehicleKind = "car";
   private mpCreateWeather: WeatherMode = "dry";
   /** Create-room / lobby: show weather on the menu track before the race starts. */
   private mpWeatherPreview = false;
@@ -202,6 +213,11 @@ export class Game {
   private raceStart = 0;
   private lapStart = 0;
   private bestLap = Infinity;
+  /** Sector splits — index of the next boundary (0..SECTOR_T.length). */
+  private sectorIdx = 0;
+  private sectorStartMs = 0;
+  /** Best-ever sector times for the active course/kind (loaded from storage). */
+  private sectorRef: number[] | null = null;
   private pauseTotal = 0;
   private pauseBegan = 0;
   private lastFrame = performance.now();
@@ -234,8 +250,7 @@ export class Game {
     position: document.getElementById("position"),
     netStatus: document.getElementById("net-status")!,
     wrongWay: document.getElementById("wrong-way")!,
-    bestFlash: document.getElementById("best-flash")!,
-    bestFlashTime: document.getElementById("best-flash-time")!,
+    delta: document.getElementById("delta")!,
     leaderboard: document.getElementById("leaderboard")!,
     boardList: document.getElementById("board-list")!,
     boardSource: document.getElementById("board-source")!,
@@ -287,7 +302,6 @@ export class Game {
   private mapVoteTotal = 0;
   private mapVoteTimer = 0;
   private scoreSaveInFlight = false;
-  private bestFlashUntil = 0;
   /** Animal-hit name banner (e.g. "COW!") — hide after fade. */
   private animalHitUntil = 0;
   /** Ignore stale async board fetches when switching maps quickly. */
@@ -297,6 +311,22 @@ export class Game {
   private wallHits = 0;
   private wallTouching = false;
   private wallHitCooldown = 0;
+  /** Wall damage: which CAR side the last wall hit was on (+1 right / -1 left). */
+  private lastWallSideCar = 1;
+  /** Accumulated scuff meshes — removed again in restoreBodywork. */
+  private damageScuffs: THREE.Mesh[] = [];
+  /** Named panels skewed loose — stored with their pristine rotations. */
+  private damagePanels: { mesh: THREE.Mesh; rx: number; rz: number }[] = [];
+  /** Cracked glass material snapshot (restored on bodywork restore). */
+  private damageGlass: { mat: THREE.MeshStandardMaterial; color: number; rough: number } | null = null;
+  /** Body paint emissive before the first hit (restored on bodywork restore). */
+  private damageBodyEmissive: { mat: THREE.MeshStandardMaterial; emission: number } | null = null;
+  private readonly _scuffGeo = new THREE.BoxGeometry(0.02, 0.18, 0.34);
+  private readonly _scuffMat = new THREE.MeshStandardMaterial({
+    color: 0x0a0c10,
+    roughness: 0.95,
+    metalness: 0.05,
+  });
   private exploding = false;
   /** Dev dashboard GOD MODE — boosts AI power locally only (never syncs). */
   private godMode = false;
@@ -309,6 +339,17 @@ export class Game {
     life: number;
   }[] = [];
   private explodeFlashLight: THREE.PointLight | null = null;
+  /** Live tank shells (dev tank only, offline). */
+  private shells: { mesh: THREE.Mesh; dir: THREE.Vector3; life: number }[] = [];
+  private shellCooldownUntil = 0;
+  private readonly _shellGeo = new THREE.SphereGeometry(0.16, 10, 8);
+  private readonly _shellMat = new THREE.MeshStandardMaterial({
+    color: 0x1a1d22,
+    roughness: 0.4,
+    metalness: 0.8,
+    emissive: 0xff5a2e,
+    emissiveIntensity: 0.9,
+  });
 
   /** Per-track wildlife herd — null only if a track has no animal spec. */
   private wildlife: WildlifeHerd | null = null;
@@ -373,6 +414,9 @@ export class Game {
     enableHeadlightCameras(this.camera, this.rearCamera);
     this.scene.background = new THREE.Color(0x87a0bc);
     this.scene.fog = new THREE.Fog(0x87a0bc, 160, 520);
+
+    this.input.onPadConnected = () =>
+      this.showToast("Controller connected — stick steers, RT gas, LT brake");
 
     this.net = new NetClient({
       onWelcome: (info) => this.onNetWelcome(info),
@@ -588,6 +632,8 @@ export class Game {
     document.getElementById("garage-save-btn")!.onclick = () => this.closeGarage(true);
     document.getElementById("garage-kind-car")!.onclick = () => this.setGarageKind("car");
     document.getElementById("garage-kind-bike")!.onclick = () => this.setGarageKind("bike");
+    document.getElementById("garage-kind-truck")!.onclick = () => this.setGarageKind("truck");
+    document.getElementById("garage-kind-tank")!.onclick = () => this.setGarageKind("tank");
     this.el.garagePrimary.addEventListener("input", () => {
       this.setGarageChannel("primary", parseHexColor(this.el.garagePrimary.value, this.garage.primary));
     });
@@ -750,6 +796,8 @@ export class Game {
     this.syncGarageUi();
     this.el.garage.classList.remove("hidden");
     this.syncMuteBtn();
+    // Reveal monster truck / tank buttons for the dev profile only.
+    void this.devAccessAllowed().then((allowed) => this.syncGarageDevKinds(allowed));
   }
 
   private closeGarage(save: boolean) {
@@ -777,15 +825,20 @@ export class Game {
   private syncGarageUi() {
     document.getElementById("garage-kind-car")?.classList.toggle("is-active", this.garage.kind === "car");
     document.getElementById("garage-kind-bike")?.classList.toggle("is-active", this.garage.kind === "bike");
+    document.getElementById("garage-kind-truck")?.classList.toggle("is-active", this.garage.kind === "truck");
+    document.getElementById("garage-kind-tank")?.classList.toggle("is-active", this.garage.kind === "tank");
     this.el.garagePrimary.value = hexColor(this.garage.primary);
     this.el.garageAccent.value = hexColor(this.garage.accent);
     this.syncGarageSwatches();
     const hint = document.getElementById("garage-hint");
     if (hint) {
-      hint.textContent =
-        this.garage.kind === "bike"
-          ? "Bike selected — all AI rivals become bikes"
-          : "Car selected — all AI rivals become cars";
+      const hints: Record<VehicleKind, string> = {
+        car: "Car selected — all AI rivals become cars",
+        bike: "Bike selected — all AI rivals become bikes",
+        truck: "Monster truck selected — AI rivals stay in cars",
+        tank: "Tank selected — AI rivals stay in cars",
+      };
+      hint.textContent = hints[this.garage.kind];
     }
     this.syncGarageSwatchPaletteActive();
   }
@@ -921,7 +974,8 @@ export class Game {
     this.el.garage.classList.add("hidden");
     document.getElementById("dev-dash")?.classList.add("hidden");
     this.garage = loadGarage();
-    this.mpCreateKind = this.garage.kind;
+    // Rooms are car/bike only — dev garage extras (truck/tank) fall back to car.
+    this.mpCreateKind = this.garage.kind === "bike" ? "bike" : "car";
     this.mpCreateWeather = "dry";
     this.mpCreateTrackId = DEFAULT_TRACK_ID;
     // Event Mode: show the buy-in field; plain multiplayer hides it.
@@ -1010,7 +1064,7 @@ export class Game {
     this.syncMuteBtn();
   }
 
-  private setMpCreateKind(kind: VehicleKind) {
+  private setMpCreateKind(kind: NetVehicleKind) {
     this.mpCreateKind = kind;
     this.syncMpCreateKindUi();
   }
@@ -1538,6 +1592,7 @@ export class Game {
     // Offline races / practice with AI — rivals share the same hit slowdown.
     if (!this.online && !this.solo) {
       for (const r of this.rivals) {
+        if (r.disabledUntil > 0) continue;
         pack.push(r.vehicle);
       }
     }
@@ -1604,9 +1659,9 @@ export class Game {
     this.el.netStatus.classList.add("hidden");
     this.pauseTotal = 0;
     this.pauseBegan = 0;
-    this.bestFlashUntil = 0;
     this.clearCountdown();
     this.clearExplode(true);
+    this.clearShells();
     this.hideAnimalHit();
     this.resetWallHits();
     this.resetMapVote();
@@ -1617,7 +1672,6 @@ export class Game {
     this.el.finish.classList.add("hidden");
     this.el.pauseBtn.classList.add("hidden");
     this.el.wrongWay.classList.add("hidden");
-    this.el.bestFlash.classList.add("hidden");
     this.el.explodeFlash.classList.add("hidden");
     this.el.animalHit.classList.add("hidden");
     this.el.nameEntry.classList.add("hidden");
@@ -1686,23 +1740,40 @@ export class Game {
 
   /* ── Dev dashboard (tips wallet — dev account only) ─────────────── */
 
-  /** Show the DEV home button only when signed in with the server's dev pubkey. */
-  private async refreshDevAccess() {
-    const btn = document.getElementById("dev-btn");
-    if (!btn) return;
+  /** True when the current session is the dev profile (server DEV_PUBKEY match). */
+  private async devAccessAllowed(): Promise<boolean> {
     const session = getSession();
-    if (!session) {
-      btn.classList.add("hidden");
-      return;
-    }
+    if (!session) return false;
     if (!this.devPubkeyFetched) {
       this.devPubkeyFetched = true;
       this.devPubkey = await fetchDevPubkey();
     }
-    // Server not configured yet? Show the button to any signed-in user — the
-    // dashboard then displays their pubkey so they can set DEV_PUBKEY with it.
-    const show = this.devPubkey === null || session.pubkey === this.devPubkey;
+    // Server not configured yet? Any signed-in user counts — the dashboard
+    // displays their pubkey so they can set DEV_PUBKEY with it.
+    return this.devPubkey === null || session.pubkey === this.devPubkey;
+  }
+
+  /** Show the DEV home button only when signed in with the server's dev pubkey. */
+  private async refreshDevAccess() {
+    const btn = document.getElementById("dev-btn");
+    if (!btn) return;
+    const show = await this.devAccessAllowed();
     btn.classList.toggle("hidden", !show);
+    // Dev garage extras follow the same gate (sign in/out while garage is open).
+    this.syncGarageDevKinds(show);
+  }
+
+  /**
+   * Monster truck + tank are dev-profile-only. Hides their garage buttons and
+   * falls back to CAR if a non-dev session somehow has one stored.
+   */
+  private syncGarageDevKinds(allowed: boolean) {
+    document.getElementById("garage-kind-truck")?.classList.toggle("hidden", !allowed);
+    document.getElementById("garage-kind-tank")?.classList.toggle("hidden", !allowed);
+    if (!allowed && (this.garage.kind === "truck" || this.garage.kind === "tank")) {
+      this.garage.kind = "car";
+    }
+    if (!this.el.garage.classList.contains("hidden")) this.syncGarageUi();
   }
 
   private openDevDash() {
@@ -2274,7 +2345,7 @@ export class Game {
     disposeVehicleGroup(vehicle.mesh);
   }
 
-  /** Rebuild player + AI meshes from garage (bots match player kind; keep own paint). */
+  /** Rebuild player + AI meshes from garage (bots match player kind, except dev extras; keep own paint). */
   private applyGarageToWorld(force = false) {
     const next = loadGarage();
     const currentKind = (this.player?.mesh.userData.kind as VehicleKind | undefined) ?? null;
@@ -2296,6 +2367,8 @@ export class Game {
 
     this.disposeVehicleMesh(this.player);
     for (const r of this.rivals) this.disposeVehicleMesh(r.vehicle);
+    // Shells in flight referenced the old rival objects — drop them
+    this.clearShells();
 
     const playerMesh = createVehicle(kind, this.garage.primary, 7, this.garage.accent, {
       headlights: true,
@@ -2306,8 +2379,11 @@ export class Game {
     this.rivals = CAR_PALETTE.rivals.map((color, i) => {
       const slot = GRID[i + 1] ?? GRID[GRID.length - 1];
       const accent = CAR_PALETTE.rivalAccents[i] ?? 0xf0f4f8;
+      // AI matches the player's class — except dev extras (truck/tank) race
+      // against normal cars.
+      const rivalKind: VehicleKind = kind === "truck" || kind === "tank" ? "car" : kind;
       // No SpotLight beams on AI — keeps MeshStandard fragment cost low
-      const mesh = createVehicle(kind, color, 11 + i * 3, accent);
+      const mesh = createVehicle(rivalKind, color, 11 + i * 3, accent);
       this.scene.add(mesh);
       const { pos, heading } = this.spawnPose(slot.t, slot.offset);
       return new RivalAI(new Vehicle(mesh, pos, heading, false), slot.offset, slot.skill, i);
@@ -2342,7 +2418,6 @@ export class Game {
     this.el.pause.classList.add("hidden");
     this.el.leaderboard.classList.add("hidden");
     this.el.nameEntry.classList.add("hidden");
-    this.el.bestFlash.classList.add("hidden");
     this.hideAnimalHit();
     this.resetMapVote();
     this.el.pauseBtn.classList.remove("hidden");
@@ -2355,7 +2430,11 @@ export class Game {
     this.syncTouchControls();
     this.lap = 1;
     this.bestLap = Infinity;
-    this.bestFlashUntil = 0;
+    // Sector splits: best-ever reference loads per course/kind, progress restarts
+    this.sectorRef = this.loadSectorRef();
+    this.sectorIdx = 0;
+    this.sectorStartMs = 0;
+    this.el.delta.textContent = "";
     this.hideAnimalHit();
     this.pauseTotal = 0;
     this.pauseBegan = 0;
@@ -2364,6 +2443,7 @@ export class Game {
     this.lapStart = 0;
     this.input.clearDriveKeys();
     this.clearExplode(true);
+    this.clearShells();
     this.resetWallHits();
     // Online: host-chosen weather only. Solo/practice: random pick.
     // Never call pickWeather() while online — that used to overwrite the room choice.
@@ -2373,7 +2453,10 @@ export class Game {
     this.weather.setParticlesEnabled(true);
     const raceWeather = this.online
       ? normalizeWeatherMode(opts.weather ?? this.net.weather)
-      : pickWeather();
+      : // Dev extras (monster truck / tank) always race in daylight
+        this.garage.kind === "truck" || this.garage.kind === "tank"
+        ? "dry"
+        : pickWeather();
     if (this.online) this.net.weather = raceWeather;
     this.weather.setMode(raceWeather);
 
@@ -2408,6 +2491,7 @@ export class Game {
         const { pos, heading: h } = this.spawnPose(slot.t, r.racingOffset);
         r.vehicle.reset(pos, h);
         r.vehicle.state.speed = 0; // held on grid until GO
+        r.disabledUntil = 0;
         this.resetSticky(r.vehicle);
         r.resetProgress();
       });
@@ -2474,6 +2558,9 @@ export class Game {
   private releaseGrid() {
     this.raceStart = this.raceNow();
     this.lapStart = this.raceStart;
+    this.sectorIdx = 0;
+    // First lap: arm the S1 timer exactly at GO so S1 gets a clean reference
+    this.sectorStartMs = this.raceStart;
     this.audio.playDriveMusic();
     if (!this.online && !this.solo) {
       for (const r of this.rivals) {
@@ -2646,6 +2733,10 @@ export class Game {
             this.resetSticky(this.player);
             this.lastT = this.projectSticky(this.player, this.player.state.position).t;
             this.gates.reset();
+            // Reset arm — delta hides until the next boundary is crossed again
+            this.sectorIdx = 0;
+            this.sectorStartMs = 0;
+            this.el.delta.textContent = "";
             this.el.wrongWay.classList.add("hidden");
             this.snapCamera();
           }
@@ -2659,6 +2750,7 @@ export class Game {
           for (const r of this.rivals) r.godBoost = aiPower;
 
           this.player.update(dt, input);
+          if (input.fire) this.tryFireTankShell();
           const onWall = this.keepOnTrack(this.player);
           this.notePlayerWallHit(onWall, dt);
 
@@ -2666,10 +2758,16 @@ export class Game {
             // keepOnTrack already refreshed sticky t — reuse instead of projecting again
             const playerT = this.stickyT.get(this.player) ?? this.projectSticky(this.player, this.player.state.position).t;
             const cars = this.fillPack();
-            for (const r of this.rivals) r.update(dt, this.track.path, playerT, now * 0.001, cars);
             for (const r of this.rivals) {
+              // Crushed/shot rivals sit out their 10s, then reappear
+              if (r.disabledUntil > 0) {
+                if (now >= r.disabledUntil) this.respawnRival(r);
+                continue;
+              }
+              r.update(dt, this.track.path, playerT, now * 0.001, cars);
               this.keepOnTrack(r.vehicle);
             }
+            this.updateShells(dt);
             // Race mode: AI that complete TOTAL_LAPS finish ahead; practice never ends for them
             if (!this.practice) {
               for (const r of this.rivals) {
@@ -2707,6 +2805,8 @@ export class Game {
         }
       }
       this.updateWildlife(dt);
+      // Crush/shot debris animates even when the player isn't mid-explosion
+      if (!this.exploding && this.explodeParts.length > 0) this.updateExplode(dt);
     } else if (this.paused) {
       this.updateCamera(0);
     } else if (!this.running && !this.finished) {
@@ -2747,7 +2847,11 @@ export class Game {
     const pack = this._pack;
     pack.length = 0;
     pack.push(this.player);
-    for (const r of this.rivals) pack.push(r.vehicle);
+    // Crushed/shot rivals are gone — nobody dodges or bumps a ghost
+    for (const r of this.rivals) {
+      if (r.disabledUntil > 0) continue;
+      pack.push(r.vehicle);
+    }
     return pack;
   }
 
@@ -2853,6 +2957,13 @@ export class Game {
     v.state.position.addScaledVector(this._wallN, side * wall - d);
 
     const s = v.state;
+    // Player only: remember which CAR side the wall is on — wall damage
+    // scuffs land on that side (track-space side alone flips with heading).
+    if (v === this.player) {
+      const carSide =
+        (Math.cos(s.heading) * this._wallN.x - Math.sin(s.heading) * this._wallN.z) * side;
+      this.lastWallSideCar = Math.sign(carSide) || 1;
+    }
     const intoWall = (Math.sin(s.heading) * this._wallN.x + Math.cos(s.heading) * this._wallN.z) * side;
     if (s.speed * intoWall > 0) {
       s.speed *= 1 - intoWall * intoWall;
@@ -2876,6 +2987,7 @@ export class Game {
     if (touching && !this.wallTouching && this.wallHitCooldown <= 0) {
       this.wallHits += 1;
       this.wallHitCooldown = WALL_HIT_COOLDOWN;
+      this.applyWallDamage(this.wallHits);
       this.updateWallHitsHud();
       if (this.wallHits >= WALL_HIT_LIMIT) {
         this.triggerExplode();
@@ -2888,7 +3000,90 @@ export class Game {
     this.wallHits = 0;
     this.wallTouching = false;
     this.wallHitCooldown = 0;
+    this.restoreBodywork();
     this.updateWallHitsHud();
+  }
+
+  private restoreBodywork() {
+    for (const s of this.damageScuffs) s.removeFromParent();
+    this.damageScuffs.length = 0;
+    for (const p of this.damagePanels) {
+      p.mesh.rotation.x = p.rx;
+      p.mesh.rotation.z = p.rz;
+    }
+    this.damagePanels.length = 0;
+    if (this.damageGlass) {
+      this.damageGlass.mat.color.setHex(this.damageGlass.color);
+      this.damageGlass.mat.roughness = this.damageGlass.rough;
+      this.damageGlass = null;
+    }
+    if (this.damageBodyEmissive) {
+      this.damageBodyEmissive.mat.emissiveIntensity = this.damageBodyEmissive.emission;
+      this.damageBodyEmissive = null;
+    }
+  }
+
+  /**
+   * Progressive body damage — every counted wall hit adds a scuff on the
+   * wall side; at ≥4 hits the named panels (hood/tank + ducktail/tail) hang
+   * loose; at ≥8 the windshield looks smashed; paint dulls slightly per hit.
+   * All purely visual — restored when the race restarts.
+   */
+  private applyWallDamage(hitCount: number) {
+    const root = this.player?.mesh;
+    if (!root) return;
+    const isBike = root.userData.kind === "bike";
+    const halfWidth = isBike ? 0.32 : 1.08;
+    const yBase = isBike ? 0.55 : 0.4;
+    const zSpan = isBike ? 0.9 : 1.35;
+
+    // 1 scuff per hit, capped at 5 — thrown at the remembered wall side
+    if (this.damageScuffs.length < 5) {
+      const scuff = new THREE.Mesh(this._scuffGeo, this._scuffMat);
+      scuff.position.set(
+        this.lastWallSideCar * halfWidth,
+        yBase + Math.random() * 0.22,
+        (Math.random() - 0.5) * zSpan * 2,
+      );
+      root.add(scuff);
+      this.damageScuffs.push(scuff);
+    }
+
+    // Body paint dulls a touch each hit (snapshot the pristine emission once)
+    const bodyMat = root.userData.bodyMaterial as THREE.MeshStandardMaterial | undefined;
+    if (bodyMat) {
+      if (!this.damageBodyEmissive) {
+        this.damageBodyEmissive = { mat: bodyMat, emission: bodyMat.emissiveIntensity };
+      }
+      bodyMat.emissiveIntensity = Math.max(0.02, bodyMat.emissiveIntensity - 0.012);
+    }
+
+    // Loose panels from the 4th hit on
+    if (hitCount >= 4) {
+      for (const name of ["panel-hood", "panel-tail"] as const) {
+        if (this.damagePanels.some((p) => p.mesh.name === name)) continue;
+        const panel = root.getObjectByName(name) as THREE.Mesh | undefined;
+        if (!panel) continue;
+        this.damagePanels.push({ mesh: panel, rx: panel.rotation.x, rz: panel.rotation.z });
+        panel.rotation.x = panel.rotation.x + (name === "panel-hood" ? 0.085 : -0.07);
+        panel.rotation.z = panel.rotation.z + (Math.random() < 0.5 ? 0.06 : -0.06);
+      }
+    }
+
+    // Smashed glass from the 8th hit on
+    if (hitCount >= 8 && !this.damageGlass) {
+      const glass = root.getObjectByName("glass-front") as THREE.Mesh | undefined;
+      const glassMat = glass?.material;
+      if (glassMat instanceof THREE.MeshStandardMaterial) {
+        this.damageGlass = {
+          mat: glassMat,
+          color: glassMat.color.getHex(),
+          rough: glassMat.roughness,
+        };
+        glassMat.color.setHex(0x8fa4b8);
+        glassMat.roughness = 0.85;
+      }
+    }
   }
 
   private updateWallHitsHud() {
@@ -2939,7 +3134,6 @@ export class Game {
     this.el.wrongWay.classList.add("hidden");
     this.lap = 1;
     this.bestLap = Infinity;
-    this.bestFlashUntil = 0;
     this.hideAnimalHit();
     this.pauseTotal = 0;
     this.pauseBegan = 0;
@@ -3035,6 +3229,103 @@ export class Game {
     }
   }
 
+  /** Truck crush / tank hit — rival explodes and sits out RIVAL_DISABLE_MS. */
+  private crushRival(r: RivalAI, toast: string) {
+    if (r.disabledUntil > 0) return;
+    r.disabledUntil = performance.now() + RIVAL_DISABLE_MS;
+    r.vehicle.state.speed = 0;
+    r.vehicle.mesh.visible = false;
+    this.spawnRivalExplodeFx(r.vehicle.state.position);
+    this.audio.playExplode();
+    this.showToast(toast);
+  }
+
+  /** Back on its racing line where it was taken out (laps kept — the 10s
+   *  timeout is the penalty). */
+  private respawnRival(r: RivalAI) {
+    const t = this.projectSticky(r.vehicle, r.vehicle.state.position).t;
+    const { pos, heading } = this.spawnPose(t, r.racingOffset);
+    r.vehicle.reset(pos, heading);
+    r.respawn();
+    this.resetSticky(r.vehicle);
+    r.vehicle.mesh.visible = true;
+  }
+
+  /** Smaller burst for crushed/shot AI cars — particles only, no flash light. */
+  private spawnRivalExplodeFx(origin: THREE.Vector3) {
+    const colors = [0xff6a2e, 0xffc857, 0xff3b2e, 0xffeeaa, 0x888888];
+    for (let i = 0; i < 22; i++) {
+      const mat = new THREE.MeshBasicMaterial({
+        color: colors[i % colors.length]!,
+        transparent: true,
+        opacity: 1,
+      });
+      const mesh = new THREE.Mesh(this._explodeGeo, mat);
+      mesh.position.set(
+        origin.x + (Math.random() - 0.5) * 1.2,
+        0.6 + Math.random() * 0.8,
+        origin.z + (Math.random() - 0.5) * 1.2,
+      );
+      const speed = 7 + Math.random() * 12;
+      const vel = new THREE.Vector3(
+        (Math.random() - 0.5) * speed,
+        4 + Math.random() * 9,
+        (Math.random() - 0.5) * speed,
+      );
+      this.scene.add(mesh);
+      this.explodeParts.push({ mesh, vel, life: 0.5 + Math.random() * 0.5 });
+    }
+  }
+
+  /** Dev tank cannon — F / gamepad X. Offline only (tank never races online). */
+  private tryFireTankShell() {
+    if (this.online || this.finished || this.gridHeld || this.countingDown) return;
+    if (this.player.mesh.userData.kind !== "tank") return;
+    const now = performance.now();
+    if (now < this.shellCooldownUntil) return;
+    this.shellCooldownUntil = now + SHELL_COOLDOWN_MS;
+    const h = this.player.state.heading;
+    const dir = new THREE.Vector3(Math.sin(h), 0, Math.cos(h));
+    const p = this.player.state.position;
+    const mesh = new THREE.Mesh(this._shellGeo, this._shellMat);
+    // Barrel tip ≈ 2.8 ahead of hull center at turret height
+    mesh.position.set(p.x + dir.x * 2.8, 1.5, p.z + dir.z * 2.8);
+    this.scene.add(mesh);
+    this.shells.push({ mesh, dir, life: SHELL_LIFE_S });
+    this.audio.playBoom();
+  }
+
+  private updateShells(dt: number) {
+    for (let i = this.shells.length - 1; i >= 0; i--) {
+      const s = this.shells[i]!;
+      s.life -= dt;
+      s.mesh.position.addScaledVector(s.dir, SHELL_SPEED * dt);
+      let dead = s.life <= 0;
+      if (!dead) {
+        for (const r of this.rivals) {
+          if (r.disabledUntil > 0) continue;
+          const dx = r.vehicle.state.position.x - s.mesh.position.x;
+          const dz = r.vehicle.state.position.z - s.mesh.position.z;
+          if (Math.hypot(dx, dz) < this.vehicleRadius(r.vehicle) + 0.4) {
+            this.crushRival(r, "DIRECT HIT!");
+            dead = true;
+            break;
+          }
+        }
+      }
+      if (dead) {
+        this.scene.remove(s.mesh);
+        this.shells.splice(i, 1);
+      }
+    }
+  }
+
+  private clearShells() {
+    for (const s of this.shells) this.scene.remove(s.mesh);
+    this.shells.length = 0;
+    this.shellCooldownUntil = 0;
+  }
+
   /** 0.42 → 1.0 power in the first seconds after GO — cars work through the gears. */
   private launchPower() {
     if (this.raceStart <= 0) return LAUNCH_MIN_POWER;
@@ -3064,9 +3355,27 @@ export class Game {
     const all = this.fillPack();
     for (let i = 0; i < all.length; i++) {
       for (let j = i + 1; j < all.length; j++) {
+        if (this.tryTruckCrush(all[i]!, all[j]!)) continue;
         this.bumpVehicles(all[i]!, all[j]!);
       }
     }
+  }
+
+  /** Monster truck drives OVER cars — a moving truck crushes rivals on contact. */
+  private tryTruckCrush(a: Vehicle, b: Vehicle): boolean {
+    if (this.player.mesh.userData.kind !== "truck") return false;
+    if (a !== this.player && b !== this.player) return false;
+    const other = a === this.player ? b : a;
+    const dx = other.state.position.x - this.player.state.position.x;
+    const dz = other.state.position.z - this.player.state.position.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist >= this.vehicleRadius(this.player) + this.vehicleRadius(other)) return false;
+    // A parked truck just bumps — crushing needs some speed
+    if (Math.abs(this.player.state.speed) < 4) return false;
+    const rival = this.rivals.find((r) => r.vehicle === other);
+    if (!rival) return false;
+    this.crushRival(rival, "CRUSHED!");
+    return true; // no bump — the truck rolls straight through
   }
 
   private resolveRemoteCollisions() {
@@ -3164,11 +3473,27 @@ export class Game {
     // Backward wrap — ignore for scoring, still update lastT below
     const wrappedBackward = this.lastT < 0.22 && t > 0.78 && travelAlign < -0.15;
 
+    // Sector boundaries crossed this frame (plain forward motion, no line wrap)
+    if (
+      !wrappedForward &&
+      !wrappedBackward &&
+      travelAlign > 0.2 &&
+      this.lapStart > 0 &&
+      this.sectorIdx < SECTOR_T.length &&
+      this.lastT < SECTOR_T[this.sectorIdx] &&
+      t >= SECTOR_T[this.sectorIdx]
+    ) {
+      this.closeSector(this.raceNow());
+    }
+
     if (wrappedForward && !wrappedBackward && this.gates.readyForFinish) {
       const now = this.raceNow();
       const lapTime = now - this.lapStart;
       // Ignore jitter / spawn-line false positives
       if (this.crossedOnce && lapTime > 8000) {
+        // The finish line closes the last sector of the lap
+        if (this.lapStart > 0) this.closeSector(now);
+        this.sectorIdx = 0;
         if (lapTime < this.bestLap) {
           this.bestLap = lapTime;
           this.el.best.textContent = formatTime(this.bestLap);
@@ -3179,7 +3504,6 @@ export class Game {
         if (this.practice) {
           // Practice: time laps forever — never finish the session
           this.el.lap.textContent = String(this.lap);
-          this.showBestFlash(this.bestLap);
         } else if (this.lap > TOTAL_LAPS) {
           this.finishRace();
         } else {
@@ -3196,16 +3520,6 @@ export class Game {
     this.lastT = t;
   }
 
-  private showBestFlash(ms: number) {
-    this.el.bestFlashTime.textContent = formatTime(ms);
-    this.el.bestFlash.classList.remove("hidden");
-    // Retrigger CSS enter animation
-    this.el.bestFlash.style.animation = "none";
-    void this.el.bestFlash.offsetWidth;
-    this.el.bestFlash.style.animation = "";
-    this.bestFlashUntil = performance.now() + 2000;
-  }
-
   private finalLapFlashUntil = 0;
 
   private showFinalLapFlash() {
@@ -3218,15 +3532,108 @@ export class Game {
     this.finalLapFlashUntil = performance.now() + 2200;
   }
 
-  private updateBestFlash() {
-    if (this.bestFlashUntil > 0 && performance.now() >= this.bestFlashUntil) {
-      this.bestFlashUntil = 0;
-      this.el.bestFlash.classList.add("hidden");
-    }
+  private updateFinalLapFlash() {
     if (this.finalLapFlashUntil > 0 && performance.now() >= this.finalLapFlashUntil) {
       this.finalLapFlashUntil = 0;
       document.getElementById("final-lap-flash")?.classList.add("hidden");
     }
+  }
+
+  /** Static label so screen readers get a stable string. */
+  private formatDelta(ms: number): string {
+    const sign = ms <= 0 ? "-" : "+";
+    return `${sign}${Math.abs(ms / 1000).toFixed(1)}`;
+  }
+
+  /** Live delta vs best-ever sectors (shown once the lap's first sector is done). */
+  private updateDelta(_clockMs: number) {
+    const d = this.el.delta;
+    if (
+      !this.running ||
+      this.finished ||
+      this.gridHeld ||
+      this.lapStart === 0 ||
+      !this.sectorRef ||
+      this.sectorIdx === 0
+    ) {
+      if (d.textContent !== "") d.textContent = "";
+      return;
+    }
+    // Delta needs a real reference for every completed sector — the very
+    // first recorded lap has none yet (entries still Infinity).
+    let refElapsed = 0;
+    for (let i = 0; i < this.sectorIdx; i++) {
+      const best = this.sectorRef[i] ?? Infinity;
+      if (!Number.isFinite(best)) {
+        if (d.textContent !== "") d.textContent = "";
+        return;
+      }
+      refElapsed += best;
+    }
+    const delta = this.raceNow() - this.lapStart - refElapsed;
+    d.textContent = this.formatDelta(delta);
+    d.classList.toggle("gain", delta <= 0);
+    d.classList.toggle("loss", delta > 0);
+  }
+
+  private sectorStorageKey(): string {
+    const kind = this.player?.mesh.userData.kind ?? "car";
+    return `${SECTOR_STORAGE_PREFIX}${this.trackId}.${kind}`;
+  }
+
+  /** null = no stored lap → no reference yet (first lap hides delta/flash rates). */
+  private loadSectorRef(): number[] | null {
+    try {
+      const raw = localStorage.getItem(this.sectorStorageKey());
+      if (!raw) return null;
+      const arr = JSON.parse(raw);
+      if (
+        Array.isArray(arr) &&
+        arr.length === SECTOR_T.length + 1 &&
+        arr.every((n) => typeof n === "number" && n > 0)
+      ) {
+        return arr;
+      }
+    } catch {
+      /* corrupt storage → start fresh */
+    }
+    return null;
+  }
+
+  private saveSectorRef(ref: number[]) {
+    try {
+      localStorage.setItem(this.sectorStorageKey(), JSON.stringify(ref));
+    } catch {
+      /* storage full/blocked — PB kept for the session anyway */
+    }
+  }
+
+  /**
+   * Close the current sector: compare against the best-ever reference and fold
+   * a PB into the reference + storage. Called on each boundary cross AND on
+   * the finish-line wrap (closing the last sector).
+   */
+  private closeSector(now: number) {
+    let needsSave = false;
+    if (this.sectorRef == null) {
+      // First recorded lap → build the reference one sector at a time
+      this.sectorRef = new Array(SECTOR_T.length + 1).fill(Infinity);
+    }
+    if (this.sectorStartMs > 0) {
+      const idx = this.sectorIdx;
+      const sectorTime = now - this.sectorStartMs;
+      // Sanity: plausibility guard like the lap filter (ignore stalled laps)
+      if (sectorTime > 1000 && sectorTime < 900_000) {
+        const prevBest = this.sectorRef[idx];
+        if (sectorTime < prevBest) {
+          this.sectorRef[idx] = sectorTime;
+          needsSave = true;
+        }
+      }
+    }
+    if (needsSave) this.saveSectorRef(this.sectorRef);
+    this.sectorIdx += 1;
+    this.sectorStartMs = now;
   }
 
   private resetMapVote() {
@@ -3516,7 +3923,8 @@ export class Game {
           ? this.raceNow() - this.lapStart
           : this.raceNow() - this.raceStart;
     this.el.time.textContent = formatTime(clockMs);
-    this.updateBestFlash();
+    this.updateFinalLapFlash();
+    this.updateDelta(clockMs);
     this.updateAnimalHit();
     this.updateMinimap();
 
@@ -3635,7 +4043,9 @@ export class Game {
       }
     } else if (!this.solo) {
       for (let i = 0; i < this.rivals.length; i++) {
-        const pos = this.rivals[i]!.vehicle.state.position;
+        const r = this.rivals[i]!;
+        if (r.disabledUntil > 0) continue; // crushed/shot — off the map for now
+        const pos = r.vehicle.state.position;
         drawDot(pos.x, pos.z, this._rivalCss[i] ?? "#e23b2e", 3.2);
       }
     }
