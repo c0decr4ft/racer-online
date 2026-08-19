@@ -93,6 +93,11 @@ const WALL_HIT_LIMIT = 10;
 const WALL_HIT_COOLDOWN = 0.4;
 /** Brief DESTROYED hold before auto-restart. */
 const EXPLODE_RESTART_MS = 1600;
+/** Launch ramp — off-the-line power starts low and ramps like short-shifting. */
+const LAUNCH_MIN_POWER = 0.42;
+const LAUNCH_RAMP_S = 3.6;
+/** Dev-only GOD MODE: AI power multiplier (a lot faster, that is the point). */
+const GOD_MODE_AI_POWER = 1.5;
 
 /**
  * Skill tiers + fixed racing-line offsets (same every race). Player is slot 0.
@@ -293,6 +298,8 @@ export class Game {
   private wallTouching = false;
   private wallHitCooldown = 0;
   private exploding = false;
+  /** Dev dashboard GOD MODE — boosts AI power locally only (never syncs). */
+  private godMode = false;
   private explodeRestartAt = 0;
   /** Prevent double grid-reset from crashReset + local explode timer. */
   private lastCrashResetAt = 0;
@@ -569,6 +576,7 @@ export class Game {
     };
     document.getElementById("dev-close-btn")!.onclick = () => this.closeDevDash();
     document.getElementById("dev-claim-all")!.onclick = () => void this.claimDevTip();
+    document.getElementById("dev-god-btn")!.onclick = () => this.toggleGodMode();
     document.getElementById("home-garage-btn")!.onclick = () => {
       void this.unlockAndMaybeMenuMusic().then(() => this.openGarage());
     };
@@ -1360,9 +1368,10 @@ export class Game {
     const tipPercent = Math.max(0, Math.min(100, Number(range?.value ?? 2)));
     const label = document.getElementById("event-tip-label");
     if (label) label.textContent = `${tipPercent}%`;
-    // Winner gets the full share; the mint fee comes out of the tip/house side.
-    const winnerSats = Math.floor((pot * (100 - tipPercent)) / 100);
-    const tipSats = Math.max(0, pot - winnerSats - fee);
+    // The dev tip is paid whole at the chosen percent; the mint fee comes out
+    // of the pot (the winner's share), never out of the tip.
+    const tipSats = Math.floor((pot * tipPercent) / 100);
+    const winnerSats = Math.max(0, pot - tipSats - fee);
     const winnerEl = document.getElementById("event-winner-sats");
     if (winnerEl) winnerEl.textContent = String(winnerSats);
     const tipEl = document.getElementById("event-tip-sats");
@@ -1403,7 +1412,7 @@ export class Game {
     if (result.ok) {
       status.classList.remove("nostr-error");
       const tipNote = result.tipSats ? ` · ${result.tipSats} sats dev tip` : "";
-      const feeNote = result.feeSats ? " · mint fee covered" : "";
+      const feeNote = result.feeSats ? " · mint fee taken from the pot" : "";
       status.textContent = `Paid! ${result.winnerSats} sats${tipNote}${feeNote} — paste the token into cashu.me to claim`;
       if (claim) claim.disabled = true;
       const out = document.getElementById("event-payout-token") as HTMLInputElement | null;
@@ -2641,6 +2650,14 @@ export class Game {
             this.snapCamera();
           }
 
+          // Launch ramp: cars pull away gently then build power through the
+          // gears off the line. GOD MODE (dev only) gives AI the same ramp
+          // times a big multiplier — the player is untouched.
+          const launch = this.launchPower();
+          this.player.powerMul = launch;
+          const aiPower = launch * (this.godMode ? GOD_MODE_AI_POWER : 1);
+          for (const r of this.rivals) r.vehicle.powerMul = aiPower;
+
           this.player.update(dt, input);
           const onWall = this.keepOnTrack(this.player);
           this.notePlayerWallHit(onWall, dt);
@@ -3016,6 +3033,24 @@ export class Game {
     if (restoreCar && this.player) {
       this.player.mesh.visible = true;
     }
+  }
+
+  /** 0.42 → 1.0 power in the first seconds after GO — cars work through the gears. */
+  private launchPower() {
+    if (this.raceStart <= 0) return LAUNCH_MIN_POWER;
+    const t = (this.raceNow() - this.raceStart) / 1000;
+    return Math.min(1, LAUNCH_MIN_POWER + (1 - LAUNCH_MIN_POWER) * (t / LAUNCH_RAMP_S));
+  }
+
+  /** Dev dashboard GOD MODE toggle — AI rivals get a big power boost, locally only. */
+  private toggleGodMode() {
+    this.godMode = !this.godMode;
+    const btn = document.getElementById("dev-god-btn");
+    if (btn) {
+      btn.textContent = `GOD MODE: ${this.godMode ? "ON" : "OFF"}`;
+      btn.classList.toggle("is-active", this.godMode);
+    }
+    this.showToast(this.godMode ? "GOD MODE — rivals unchained" : "GOD MODE OFF");
   }
 
   /** Collision radius per vehicle kind — bikes are far narrower than cars. */

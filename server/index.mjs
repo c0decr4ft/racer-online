@@ -1841,31 +1841,21 @@ wss.on("connection", (ws) => {
       room.potClaimed = true; // lock before paying — no double claims
       void (async () => {
         try {
-          // The winner gets the FULL share — win 100, receive 100; the payout
-          // token carries its own receive fee (includeFees), covered by the dev
-          // tip / house float, never by the prize. The tip then gets everything
-          // left in the pot wallet minus its own send fee — so its token always
-          // forms, even at 99% tips where every sat counts.
-          const winnerSats = Math.floor((room.potSats * (100 - tipPercent)) / 100);
-          let winnerToken = "";
-          if (winnerSats > 0) {
-            const sent = await payments.sendToken(winnerSats, { includeFees: true });
-            winnerToken = sent.token;
-          }
-          // Balance read is informational — if it fails (or the helper is missing
-          // on a mixed deploy), fall back to the pot figure; sendToken validates
-          // the real wallet balance anyway. Never fail the payout over this.
-          const remaining = await Promise.resolve()
-            .then(() => payments.potBalanceSats?.())
-            .catch(() => Number.NaN);
-          const balanceSats = Number.isFinite(remaining) ? remaining : room.potSats;
-          const tipSendFee = Math.max(0, await payments.sendFeeSats().catch(() => 0));
-          const tipSats = Math.max(
-            0,
-            Math.min(room.potSats - winnerSats, balanceSats - tipSendFee),
-          );
-          if (winnerSats <= 0 && tipSats <= 0) throw new Error("pot too small to pay out");
-          // Dev tip as a separate token, kept in the audit log for the dev to claim
+          // Fee comes OUT OF THE POT, never out of the dev tip. The tip is paid
+          // FIRST and whole at the chosen percent; the winner then gets what's
+          // left of the pot minus the winner's own send fee — the winner's share
+          // carries the mint fees. Both tokens includeFees so each redeems exact.
+          const perSendFee = Math.max(0, await payments.sendFeeSats().catch(() => 0));
+          const balanceNow = async () =>
+            Promise.resolve()
+              .then(() => payments.potBalanceSats?.())
+              .then((v) => (Number.isFinite(v) ? v : room.potSats))
+              .catch(() => room.potSats);
+
+          // 1) Dev tip first — whole at the chosen percent, capped only by what
+          //    the pot wallet can cover (100% edge: its own fee must fit too).
+          const tipWanted = Math.floor((room.potSats * tipPercent) / 100);
+          const tipSats = Math.min(tipWanted, Math.max(0, (await balanceNow()) - perSendFee));
           let tipToken = "";
           if (tipSats > 0) {
             try {
@@ -1875,6 +1865,17 @@ wss.on("connection", (ws) => {
               console.warn(`[event] dev tip token failed:`, err?.message || err);
             }
           }
+
+          // 2) Winner gets the rest, minus the winner's own send fee.
+          const remaining = await balanceNow();
+          const winnerSats = Math.max(0, Math.min(room.potSats - tipSats, remaining - perSendFee));
+          if (winnerSats <= 0 && tipSats <= 0) throw new Error("pot too small to pay out");
+          let winnerToken = "";
+          if (winnerSats > 0) {
+            const sent = await payments.sendToken(winnerSats, { includeFees: true });
+            winnerToken = sent.token;
+          }
+
           const feeSats = room.potSats - winnerSats - tipSats;
           recordPayout({
             room: room.name,

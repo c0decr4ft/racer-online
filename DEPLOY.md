@@ -63,10 +63,10 @@ NUT-18 Cashu wallet; winners claim the pot as a `cashuA` token.
   rebuilds its board from those relays on boot and re-merges every 15 min, so
   `server/leaderboard.json` (ephemeral on Render) is only a cache — updates never wipe
   the board anymore.
-- **Mint fees are automatic.** Cashu mints charge an input fee per swap (usually ~1 sat).
-  Buy-in requests add that fee on top of the buy-in (payer covers it, pot lands whole).
-  At payout the winner always gets the full share — the token carries its own receive
-  fee (`includeFees`), paid by the dev tip / house float, never shaved off the prize.
+- **Mint fees are automatic.** Buy-in requests add ~1 sat on top (payer covers it, pot
+  lands whole). At payout, the **dev tip is paid whole** at the winner's chosen percent,
+  and the mint's send fees come **out of the pot** (the winner's share) — both tokens
+  carry their own receive fee (`includeFees`), so each redeems to the exact amount shown.
 - `GET /api/status` reports `payments: "live" | "mock"` and the active `mint`.
 - The pot wallet lives in `server/cashu-proofs.json` (gitignored) — it's the money while a
   pot is unclaimed; back it up for real-money events.
