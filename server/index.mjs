@@ -248,6 +248,9 @@ function clampMaxPlayers(raw) {
 
 const MIN_BUYIN_SATS = 1;
 const MAX_BUYIN_SATS = 1_000_000;
+/** Fee allowance added on top of each buy-in request so the mint's input fee
+ *  doesn't eat into the pot — players pay buyIn + 1, the pot lands buyIn. */
+const EVENT_FEE_SATS = Math.max(0, Math.min(10, Number(process.env.EVENT_FEE_SATS ?? 1) || 0));
 
 function clampBuyIn(raw) {
   const n = Math.round(Number(raw));
@@ -1029,7 +1032,7 @@ async function createBuyInInvoice(room, client) {
   try {
     // The mint charges an input fee when we swap the payment in — request it on
     // top of the buy-in so the pot lands whole and payers never hand-add sats.
-    const feeSats = await payments.receiveFeeSats(room.buyInSats);
+    const feeSats = EVENT_FEE_SATS;
     room.buyInFeeSats = feeSats;
     const totalSats = room.buyInSats + feeSats;
     const inv = await payments.createPaymentRequest({

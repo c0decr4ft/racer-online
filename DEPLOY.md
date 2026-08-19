@@ -38,22 +38,22 @@ fly deploy
 
 Then set the same GitHub Actions secrets to your `https://APP.fly.dev` / `wss://APP.fly.dev` URLs.
 
-## Event Mode payments (Cashu eCash — REAL sats)
+## Event Mode payments (Cashu eCash — TEST sats)
 
 Event Mode buy-ins/payouts run through a Cashu mint — players pay with cashu.me or any
 NUT-18 Cashu wallet; winners claim the pot as a `cashuA` token.
 
-- **Default mint: Coinos** (`https://mint.coinos.io`) — **real Lightning-backed sats**
-  (Minibits' mint is dead). Players add the Coinos mint in cashu.me (Settings → Mints →
-  +) and fund it with real sats first, then buy-ins/payouts work end-to-end.
-- **Custodial warning (real money):** the mint holds the actual Bitcoin — keep buy-ins
-  small enough that losing them is a shrug, and note the pot wallet
+- **Default mint: Testnut** (`https://testnut.cashu.space`) — a test mint whose
+  Lightning invoices auto-pay, so everyone can mint **free test sats** and play the
+  whole money flow (buy-in → pot → payout) with zero real funds. In cashu.me: add the
+  Testnut mint in settings, then mint any amount (quotes are instantly paid).
+- **Real sats later:** set `CASHU_MINT_URL` to a real mint (e.g. Coinos,
+  `https://mint.coinos.io` — Minibits' mint is dead). Then it's **real money**: keep
+  buy-ins small enough that losing them is a shrug, and note the pot wallet
   (`server/cashu-proofs.json`, gitignored) **lives on Render's ephemeral disk**: a
   redeploy/restart wipes unclaimed pots and tip tokens (`server/payouts.json`). Claim
   pots/tips promptly; for anything beyond pocket change, attach a persistent disk
   (paid plan) or move to a VPS (Oracle free tier / Hetzner).
-- **Free test sats while developing:** set `CASHU_MINT_URL=https://testnut.cashu.space`
-  (auto-paid test invoices, zero real funds).
 - **Mock mode is opt-in for dev/tests only** — start the server with `RACER_PAYMENTS_MOCK=1`
   for fake sats that auto-pay in ~3s (the e2e suite runs against this).
 - `PUBLIC_BASE_URL` — public URL of this server (needed for the payment-request callback;

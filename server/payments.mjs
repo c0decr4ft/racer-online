@@ -2,8 +2,8 @@
  * Cashu (eCash) payments for Event Mode.
  *
  * The server runs a cashu-ts Wallet against CASHU_MINT_URL (defaults to the
- * public minibits mint — real sats out of the box). Mock mode (fake sats
- * auto-pay in ~3s) exists ONLY for dev/tests and must be forced via
+ * Testnut test mint — FREE test sats out of the box, no real money). Mock mode
+ * (fake sats auto-pay in ~3s) exists ONLY for dev/tests and must be forced via
  * RACER_PAYMENTS_MOCK=1 — players never see it otherwise.
  *
  * Buy-ins arrive as NUT-18 payment-request payloads (POST /api/ecash/pay) or
@@ -22,13 +22,15 @@ import { randomUUID } from "node:crypto";
 /** Mock is opt-in (tests/dev): RACER_PAYMENTS_MOCK=1. Everyone else gets real sats. */
 export const PAYMENTS_MOCK = process.env.RACER_PAYMENTS_MOCK === "1";
 /**
- * Default mint: Coinos (`https://mint.coinos.io`) — real Lightning-backed sats.
- * Minibits' mint is dead (404s); Coinos serves NUT-04/05 with sat keysets at
- * input_fee_ppk 100 (≈1 sat per ≤10 proofs per swap — the same fee shape the
- * buy-in/payout fee logic is built around). Override with CASHU_MINT_URL; for
- * free test sats while developing use `https://testnut.cashu.space`.
+ * Default mint: Testnut (`https://testnut.cashu.space`) — a test mint whose
+ * Lightning invoices auto-pay, so the whole money flow (buy-in → pot → payout)
+ * works with FREE test sats and zero real funds while we test. For real sats
+ * later, set CASHU_MINT_URL to a real mint (e.g. Coinos `https://mint.coinos.io`
+ * — Minibits' mint is dead (404s); Coinos serves NUT-04/05 with sat keysets at
+ * input_fee_ppk 100, ≈1 sat per ≤10 proofs per swap — the same fee shape the
+ * buy-in/payout fee logic is built around).
  */
-const CASHU_MINT_URL = (process.env.CASHU_MINT_URL || "https://mint.coinos.io").trim().replace(/\/+$/, "");
+const CASHU_MINT_URL = (process.env.CASHU_MINT_URL || "https://testnut.cashu.space").trim().replace(/\/+$/, "");
 
 const DIR = dirname(fileURLToPath(import.meta.url));
 const PROOFS_PATH = join(DIR, "cashu-proofs.json");
