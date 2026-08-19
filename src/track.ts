@@ -3380,7 +3380,9 @@ function plantMeadowFarmPlot(
     [1.05, 0.4, -0.58, frontWheelGeo],
   ] as const) {
     const wheel = new THREE.Mesh(geo, wheelMat);
-    wheel.rotation.z = Math.PI / 2;
+    // Cylinder axis is +Y; rotate around X so the axle runs left-right (±Z).
+    // (rotation.z laid it along the tractor's length — wheels looked twisted.)
+    wheel.rotation.x = Math.PI / 2;
     wheel.position.set(x, y, z);
     tractor.add(wheel);
   }
