@@ -276,6 +276,11 @@ const SCORE_MIN_TIME_MS = 5_000;
 const SCORE_MAX_TIME_MS = 3_600_000;
 const SCORE_FUTURE_SKEW_S = 900;
 const SCORE_MAX_AGE_S = 365 * 24 * 3600;
+/** Public relays the client already publishes signed scores to — the durable
+ * board store. leaderboard.json on disk is only a cache: any fresh instance
+ * (redeploy) rebuilds its board from these. */
+const SCORE_RELAYS = ["wss://nos.lol", "wss://relay.primal.net"];
+const BOARD_RELAY_REFRESH_MS = 15 * 60_000;
 
 /**
  * Verify a signed dev-auth event (kind 30078, d = racer-online:dev, fresh,
@@ -477,6 +482,40 @@ function saveStore(store) {
   const byTrack = {};
   for (const id of TRACK_IDS) byTrack[id] = sortBoard(store[id] || [], id);
   writeFileSync(LEADERBOARD_PATH, JSON.stringify({ byTrack }, null, 2));
+}
+
+/**
+ * Merge signed score events from the public relays into the local board.
+ * The relays are the durable store — a redeployed instance rebuilds here.
+ * Merge keeps each racer's fastest time per track (sortBoard dedupe), so a
+ * sync can never downgrade a local best.
+ */
+async function syncBoardFromRelays() {
+  try {
+    const { SimplePool } = await import("nostr-tools");
+    const pool = new SimplePool();
+    let events = [];
+    try {
+      events = await pool.querySync(
+        SCORE_RELAYS,
+        { kinds: [SCORE_EVENT_KIND], "#t": ["racer-online"], limit: 300 },
+      );
+    } finally {
+      pool.close(SCORE_RELAYS);
+    }
+    const store = loadStore();
+    let merged = 0;
+    for (const ev of events) {
+      const score = verifyScoreEvent(ev);
+      if (!score) continue;
+      store[score.trackId] = sortBoard([...(store[score.trackId] || []), score], score.trackId);
+      merged++;
+    }
+    if (merged > 0) saveStore(store);
+    console.log(`[board] relay sync — ${merged} signed scores merged, ${events.length} events seen`);
+  } catch (err) {
+    console.warn("[board] relay sync failed:", err?.message || err);
+  }
 }
 
 /**
@@ -1944,4 +1983,8 @@ httpServer.listen(PORT, HOST, () => {
   console.log(
     `Racer Online http://${HOST}:${PORT} (WS + /api/*${DIST_DIR ? ` + static ${STATIC_BASE || "/"}` : ""})`,
   );
+  // Rebuild the board from the relays on boot (redeploys wipe the disk cache),
+  // then keep merging every 15 min so instances converge.
+  void syncBoardFromRelays();
+  setInterval(() => void syncBoardFromRelays(), BOARD_RELAY_REFRESH_MS).unref();
 });
