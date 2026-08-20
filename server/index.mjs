@@ -1529,7 +1529,9 @@ const httpServer = createServer(async (req, res) => {
       if (payments.mock) throw new Error("mock mode");
       const raw = JSON.parse(body || "{}");
       const payload = raw?.payload && typeof raw.payload === "object" ? raw.payload : raw;
-      found = findBuyInByHash(String(payload.id || raw.id || payload.paymentId || ""));
+      found = findBuyInByHash(
+        String(payload.id || raw.id || payload.paymentId || raw.payment_id || payload.i || ""),
+      );
       if (!found) {
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: false, error: "unknown payment id" }));
@@ -1557,6 +1559,13 @@ const httpServer = createServer(async (req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
     } catch (err) {
+      const buyIn = found?.clientId ? found.room.buyIns.get(found.clientId) : null;
+      if (found?.room && buyIn && payments.alreadyReceived?.(buyIn.paymentHash, found.room.potId)) {
+        markBuyInPaid(found.room, found.clientId, found.room.buyInSats);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
       if (found?.room) {
         potLog(found.room, "error", `Cashu receive failed: ${String(err?.message || err).slice(0, 160)}`);
       }
