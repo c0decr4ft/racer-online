@@ -49,6 +49,7 @@ import {
   deleteDevFeedback,
   type DevTipsSummary,
   type DevWalletAudit,
+  type DevEventRow,
   type DevFeedbackMessage,
 } from "./net/devTips";
 
@@ -2010,33 +2011,14 @@ export class Game {
     set("dev-count", summary.count);
     set("dev-claimed-sats", summary.withdrawnSats ?? summary.claimedSats);
 
-    const pot = summary.custody?.pot;
-    const potBox = document.getElementById("dev-pot-wallet");
-    if (potBox) {
-      potBox.classList.remove("hidden");
-      set("dev-pot-sats", pot?.error ? pot.localSats : (pot?.unspentSats ?? pot?.localSats ?? 0));
-      const potAudit = document.getElementById("dev-pot-audit");
-      if (potAudit) potAudit.textContent = this.formatWalletAudit(pot, summary.custody?.error);
-    }
+    this.renderDevEvents(summary.events || []);
     const tipAudit = document.getElementById("dev-tip-audit");
     if (tipAudit) tipAudit.textContent = this.formatWalletAudit(summary.custody?.tip, null);
 
-    const liveEl = document.getElementById("dev-live-events");
-    const events = summary.liveEvents || [];
-    if (liveEl) {
-      liveEl.classList.toggle("hidden", events.length === 0);
-      liveEl.textContent = events
-        .map(
-          (e) =>
-            `${e.name}: ${e.paid}/${e.players} paid · pot ${e.potSats} sats · ${e.phase}${e.potClaimed ? " · claimed" : ""}`,
-        )
-        .join(" · ");
-    }
-
-    const rescue =
-      summary.custody?.pot?.rescueToken || summary.custody?.tip?.rescueToken || "";
-    const orphanMint = summary.custody?.pot?.orphaned
-      ? summary.custody.pot.mintUrl
+    const rescueEvent = (summary.events || []).find((e) => e.rescueToken);
+    const rescue = rescueEvent?.rescueToken || summary.custody?.tip?.rescueToken || "";
+    const orphanMint = rescueEvent?.orphaned
+      ? rescueEvent.mintUrl
       : summary.custody?.tip?.orphaned
         ? summary.custody.tip.mintUrl
         : "";
@@ -2118,6 +2100,102 @@ export class Game {
     document.getElementById("dev-claim-all")?.classList.toggle("hidden", !pending?.token);
   }
 
+  private renderDevEvents(events: DevEventRow[]) {
+    const empty = document.getElementById("dev-events-empty");
+    const wrap = document.getElementById("dev-event-table-wrap");
+    const body = document.getElementById("dev-event-rows");
+    if (!body) return;
+    body.replaceChildren();
+    empty?.classList.toggle("hidden", events.length > 0);
+    wrap?.classList.toggle("hidden", events.length === 0);
+    for (const event of events) {
+      const row = document.createElement("tr");
+      row.className = "dev-event-row";
+      if (event.leftover) row.classList.add("is-leftover");
+      if (event.error) row.classList.add("is-error");
+
+      const nameCell = document.createElement("td");
+      nameCell.className = "dev-event-name";
+      const name = document.createElement("strong");
+      name.textContent = event.name || "event";
+      nameCell.appendChild(name);
+      if (event.potId && event.potId !== "legacy") {
+        const id = document.createElement("span");
+        id.className = "dev-event-id";
+        id.textContent = event.potId.slice(0, 8);
+        id.title = event.potId;
+        nameCell.appendChild(id);
+      }
+      row.appendChild(nameCell);
+
+      const statusCell = document.createElement("td");
+      const status = [
+        event.live ? event.phase : "offline",
+        event.potClaimed ? "claimed" : "",
+        event.orphaned ? "other mint" : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      statusCell.textContent = status;
+      row.appendChild(statusCell);
+
+      const paidCell = document.createElement("td");
+      paidCell.textContent = event.live ? `${event.paid}/${event.players}` : "—";
+      row.appendChild(paidCell);
+
+      const accountedCell = document.createElement("td");
+      accountedCell.textContent = event.live ? String(event.potSats) : String(event.localSats);
+      row.appendChild(accountedCell);
+
+      const unspentCell = document.createElement("td");
+      const mintBits = [
+        String(event.unspentSats),
+        event.spentSats ? `${event.spentSats} spent` : "",
+        event.pendingSats ? `${event.pendingSats} pending` : "",
+        event.error || "",
+      ].filter(Boolean);
+      unspentCell.textContent = mintBits.join(" · ");
+      row.appendChild(unspentCell);
+      body.appendChild(row);
+
+      const logRow = document.createElement("tr");
+      logRow.className = "dev-event-log-row";
+      const logCell = document.createElement("td");
+      logCell.colSpan = 5;
+      const details = document.createElement("details");
+      details.className = "dev-event-logs";
+      const summary = document.createElement("summary");
+      const logs = event.logs || [];
+      const last = logs[logs.length - 1];
+      summary.textContent = last
+        ? `${logs.length} log${logs.length === 1 ? "" : "s"} · ${last.msg}`
+        : "no log yet";
+      details.appendChild(summary);
+      if (logs.length) {
+        const list = document.createElement("ol");
+        for (const entry of logs) {
+          const li = document.createElement("li");
+          li.className = `dev-event-log is-${entry.level}`;
+          const when = entry.at
+            ? new Date(entry.at).toLocaleString(undefined, {
+                month: "short",
+                day: "numeric",
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+              })
+            : "";
+          li.textContent = when ? `${when} · ${entry.msg}` : entry.msg;
+          list.appendChild(li);
+        }
+        details.appendChild(list);
+      }
+      logCell.appendChild(details);
+      logRow.appendChild(logCell);
+      body.appendChild(logRow);
+    }
+  }
+
   private formatWalletAudit(audit: DevWalletAudit | null | undefined, extraError: string | null | undefined) {
     if (extraError && !audit) return extraError;
     if (!audit || (!audit.file && !audit.proofs && !audit.localSats)) {
@@ -2127,7 +2205,6 @@ export class Game {
       `${audit.unspentSats} unspent at mint`,
       audit.spentSats ? `${audit.spentSats} spent` : "",
       audit.pendingSats ? `${audit.pendingSats} pending` : "",
-      audit.events ? `${audit.events} event pot${audit.events === 1 ? "" : "s"}` : "",
       audit.error ? audit.error : "",
     ].filter(Boolean);
     return bits.join(" · ") || "checked mint";

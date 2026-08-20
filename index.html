@@ -599,10 +599,23 @@
           <p class="eyebrow">DEV DASHBOARD</p>
           <h1>TIPS</h1>
           <p id="dev-status" class="tagline board-source">Loading…</p>
-          <div id="dev-pot-wallet" class="dev-wallet dev-wallet-pot hidden">
-            <p class="dev-wallet-label">EVENT POT</p>
-            <p class="dev-wallet-amount"><span id="dev-pot-sats">0</span><span class="dev-wallet-unit">SATS</span></p>
-            <p id="dev-pot-audit" class="dev-wallet-stats">—</p>
+          <p class="eyebrow dev-section-title">EVENTS</p>
+          <div id="dev-events-box" class="dev-events-box">
+            <p id="dev-events-empty" class="dev-tip-empty">No live or leftover event pots.</p>
+            <div id="dev-event-table-wrap" class="dev-event-table-wrap hidden">
+              <table class="dev-event-table">
+                <thead>
+                  <tr>
+                    <th>Event</th>
+                    <th>Status</th>
+                    <th>Paid</th>
+                    <th>Accounted</th>
+                    <th>Unspent</th>
+                  </tr>
+                </thead>
+                <tbody id="dev-event-rows"></tbody>
+              </table>
+            </div>
           </div>
           <div id="dev-wallet" class="dev-wallet hidden">
             <p class="dev-wallet-label">TIP WALLET</p>
@@ -614,7 +627,6 @@
             </p>
             <p id="dev-tip-audit" class="dev-wallet-stats">—</p>
           </div>
-          <p id="dev-live-events" class="dev-live-events hidden"></p>
           <div id="dev-orphan-box" class="event-token-box hidden">
             <p id="dev-orphan-hint" class="event-token-hint">Unspent proofs on disk from another mint — paste into a wallet that has that mint.</p>
             <input id="dev-orphan-token" class="event-payout-token" type="text" readonly aria-label="Orphan mint token" />
