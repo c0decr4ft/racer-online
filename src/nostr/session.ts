@@ -127,7 +127,7 @@ export function startConnectLogin(): {
 } {
   const signer = new NostrConnectSigner({ relays: DEFAULT_RELAYS });
   const uri = signer.getNostrConnectURI({
-    name: "Racer Online",
+    name: "Sats Racer",
     url: location.origin,
     permissions: signingPermissions(),
   });

@@ -603,8 +603,8 @@ export class NetClient {
     const sameOrigin = sameOriginOnline()?.wsUrl ?? null;
     const url = hosted || fromApi || sameOrigin || direct || proxied;
     if (!url) {
-      this.handlers.onStatus("Online server not configured — multiplayer needs a hosted game server");
-      this.handlers.onError("Online server not configured");
+      this.handlers.onStatus("Sats Racer server not configured — multiplayer needs a hosted game server");
+      this.handlers.onError("Sats Racer server not configured");
       return;
     }
 
