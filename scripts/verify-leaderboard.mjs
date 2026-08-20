@@ -198,6 +198,52 @@ check(
 check("error payload is not a board", !isBoardPayload({ error: "nope" }));
 check("error payload parses empty", storeEntryCount(parseStore({ error: "nope" })) === 0);
 
+/** Mirrors src/net/leaderboard.ts collectBlobEvents — skip unknown ids. */
+function collectBlobEvents(data) {
+  const lists = {};
+  if (data?.byTrack && typeof data.byTrack === "object") {
+    for (const [id, list] of Object.entries(data.byTrack)) {
+      if (!TRACK_IDS.includes(id) || !Array.isArray(list)) continue;
+      lists[id] = list;
+    }
+  } else if (Array.isArray(data)) {
+    lists[DEFAULT_TRACK_ID] = data;
+  }
+  return lists;
+}
+
+/** Old buggy path: normalize unknown ids onto forest-loop via assignment. */
+function buggyCollectBlobEvents(data) {
+  const lists = {};
+  if (data?.byTrack && typeof data.byTrack === "object") {
+    for (const [id, list] of Object.entries(data.byTrack)) {
+      if (Array.isArray(list)) lists[normalizeTrackId(id)] = list;
+    }
+  }
+  return lists;
+}
+
+const forestEvents = [{ id: "forest-evt", pubkey: "a", sig: "s", kind: 1, created_at: 1, content: "{}", tags: [] }];
+const twinEvents = [{ id: "twin-evt", pubkey: "b", sig: "s", kind: 1, created_at: 1, content: "{}", tags: [] }];
+const blobWithLegacy = {
+  byTrack: {
+    "forest-loop": forestEvents,
+    "twin-lakes": twinEvents, // renamed → oval-circuit; must not clobber forest-loop
+  },
+};
+const buggyLists = buggyCollectBlobEvents(blobWithLegacy);
+check(
+  "repro: legacy twin-lakes assignment clobbers forest-loop",
+  buggyLists["forest-loop"] === twinEvents,
+  `forest=${buggyLists["forest-loop"]?.[0]?.id}`,
+);
+const fixedLists = collectBlobEvents(blobWithLegacy);
+check(
+  "fix: unknown track ids skipped so forest-loop kept",
+  fixedLists["forest-loop"] === forestEvents && fixedLists["twin-lakes"] == null,
+  `forest=${fixedLists["forest-loop"]?.[0]?.id}`,
+);
+
 const top = normalize(
   Array.from({ length: 15 }, (_, i) => ({ name: `N${i}`, timeMs: 100000 - i * 100, at: i })),
 );
