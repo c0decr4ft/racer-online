@@ -470,7 +470,7 @@
                 </label>
               </div>
               <label class="mp-field hidden" id="mp-create-buyin-field">
-                <span>Buy-in per racer (sats) · winner takes the pot</span>
+                <span>Buy-in per racer (real sats) · winner takes the pot</span>
                 <input id="mp-create-buyin" type="number" min="1" max="1000000" step="1" value="100" />
               </label>
               <div class="mp-fields-row mp-pickers-row">
@@ -596,20 +596,29 @@
           <h1>TIPS</h1>
           <p id="dev-status" class="tagline board-source">Loading…</p>
           <div id="dev-wallet" class="dev-wallet hidden">
-            <p class="dev-wallet-label">PENDING BALANCE</p>
+            <p class="dev-wallet-label">TIP WALLET</p>
             <p class="dev-wallet-amount"><span id="dev-pending-sats">0</span><span class="dev-wallet-unit">SATS</span></p>
             <p class="dev-wallet-stats">
               <span><span id="dev-earned-sats">0</span> earned</span>
               <span><span id="dev-count">0</span> tips</span>
-              <span><span id="dev-claimed-sats">0</span> claimed</span>
+              <span><span id="dev-claimed-sats">0</span> withdrawn</span>
             </p>
           </div>
           <ol id="dev-tips-list" class="dev-tips-list"></ol>
+          <div id="dev-withdraw-box" class="event-token-box hidden">
+            <input id="dev-withdraw-token" class="event-payout-token" type="text" readonly aria-label="Withdraw token" />
+            <div class="event-token-actions">
+              <button id="dev-withdraw-copy" class="btn-ghost" type="button">COPY TOKEN</button>
+              <a id="dev-open-cashu" class="btn-ghost" href="https://wallet.cashu.me" target="_blank" rel="noopener noreferrer">OPEN CASHU.ME</a>
+            </div>
+            <p class="event-token-hint">Paste into cashu.me once — then mark copied. Don’t redeem it twice.</p>
+          </div>
           <p class="eyebrow dev-section-title">FEEDBACK</p>
           <ol id="dev-feedback-list" class="dev-tips-list dev-feedback-list"></ol>
           <button id="dev-feedback-toggle" class="dev-feedback-toggle hidden" type="button"></button>
           <div class="dev-actions">
-            <button id="dev-claim-all" class="btn-ghost hidden" type="button">MARK ALL CLAIMED</button>
+            <button id="dev-withdraw-btn" class="btn-ghost hidden" type="button">WITHDRAW TO CASHU.ME</button>
+            <button id="dev-claim-all" class="btn-ghost hidden" type="button">MARK WITHDRAW COPIED</button>
             <button id="dev-god-btn" class="btn-ghost" type="button">GOD MODE: OFF</button>
             <button id="dev-close-btn" type="button">BACK</button>
           </div>
@@ -671,7 +680,7 @@
                 <strong><span id="event-winner-sats">0</span> sats</strong>
               </div>
               <div class="event-row">
-                <span>Dev tip</span>
+                <span>Dev tip (auto-collected)</span>
                 <strong><span id="event-tip-sats">0</span> sats</strong>
               </div>
               <div class="event-row event-row-fee hidden" id="event-fee-part">
@@ -679,6 +688,13 @@
                 <strong>~<span id="event-fee-sats">0</span> sats · comes out of the pot</strong>
               </div>
             </div>
+            <ol class="event-schedule" aria-label="Payment schedule">
+              <li><span id="event-sched-n">0</span> racers each pay <strong><span id="event-sched-pay">0</span> sats</strong> (<span id="event-sched-buyin">0</span> buy-in<span id="event-sched-infee-row"> + <span id="event-sched-infee">0</span> mint fee</span>)</li>
+              <li>Pot <strong><span id="event-sched-pot">0</span> sats</strong> sits in the event wallet</li>
+              <li>Tip <strong><span id="event-sched-tip">0</span> sats</strong> swaps into the developer Cashu wallet automatically</li>
+              <li>You get <strong><span id="event-sched-you">0</span> sats</strong> as a Cashu token</li>
+              <li>Mint keeps ~<strong><span id="event-sched-outfee">0</span> sats</strong> for the payout swaps</li>
+            </ol>
             <button id="event-claim-btn" type="button">CLAIM POT</button>
             <div id="event-token-box" class="event-token-box hidden">
               <input id="event-payout-token" class="event-payout-token" type="text" readonly aria-label="Your payout token" />

@@ -43,6 +43,7 @@ import {
   fetchDevTips,
   markTipsClaimed,
   retryDevTip,
+  withdrawDevTips,
   fetchDevFeedback,
   markDevFeedbackRead,
   deleteDevFeedback,
@@ -620,6 +621,8 @@ export class Game {
     };
     document.getElementById("dev-close-btn")!.onclick = () => this.closeDevDash();
     document.getElementById("dev-claim-all")!.onclick = () => void this.claimDevTip();
+    document.getElementById("dev-withdraw-btn")!.onclick = () => void this.withdrawDevWallet();
+    document.getElementById("dev-withdraw-copy")!.onclick = () => this.copyDevWithdrawToken();
     document.getElementById("dev-god-btn")!.onclick = () => this.toggleGodMode();
     document.getElementById("home-garage-btn")!.onclick = () => {
       void this.unlockAndMaybeMenuMusic().then(() => this.openGarage());
@@ -1346,8 +1349,8 @@ export class Game {
       status.textContent = mock
         ? "Dev mode — auto-pays in a few seconds"
         : feeSats
-          ? `Pay ${amountSats} sats (${buyInSats} buy-in + ${feeSats} mint fee) — scan with cashu.me or any Cashu wallet`
-          : "Scan with cashu.me or any Cashu wallet";
+          ? `Pay ${amountSats} sats (${buyInSats} buy-in + ${feeSats} mint fee) — real Bitcoin via cashu.me`
+          : "Scan with cashu.me — real Bitcoin sats";
       status.classList.remove("is-paid");
     }
     const tokenInput = document.getElementById("mp-token-input") as HTMLInputElement | null;
@@ -1434,6 +1437,22 @@ export class Game {
     if (feePart) feePart.classList.toggle("hidden", fee <= 0);
     const feeEl = document.getElementById("event-fee-sats");
     if (feeEl) feeEl.textContent = String(fee);
+    const racers = Math.max(1, this.lobbyPlayers.length);
+    const buyIn = event.buyInSats || 0;
+    const buyInFee = event.feeSats ?? 0;
+    const setText = (id: string, v: string) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = v;
+    };
+    setText("event-sched-n", String(racers));
+    setText("event-sched-pay", String(buyIn + buyInFee));
+    setText("event-sched-buyin", String(buyIn));
+    setText("event-sched-infee", String(buyInFee));
+    setText("event-sched-pot", String(pot));
+    setText("event-sched-tip", String(tipSats));
+    setText("event-sched-you", String(winnerSats));
+    setText("event-sched-outfee", String(fee));
+    document.getElementById("event-sched-infee-row")?.classList.toggle("hidden", buyInFee <= 0);
     // Under 2% tip: gentle shame from the dev (winner keeps it all — c'mon).
     const guilt = document.getElementById("event-tip-guilt");
     if (guilt) guilt.classList.toggle("hidden", tipPercent >= 2);
@@ -1456,6 +1475,7 @@ export class Game {
     winnerSats?: number;
     tipSats?: number;
     feeSats?: number;
+    tipCollected?: boolean;
     mock?: boolean;
     error?: string;
   }) {
@@ -1465,7 +1485,11 @@ export class Game {
     status.classList.remove("hidden");
     if (result.ok) {
       status.classList.remove("nostr-error");
-      const tipNote = result.tipSats ? ` · ${result.tipSats} sats dev tip` : "";
+      const tipNote = result.tipSats
+        ? result.tipCollected
+          ? ` · ${result.tipSats} sats tip auto-collected`
+          : ` · ${result.tipSats} sats dev tip`
+        : "";
       const feeNote = result.feeSats ? " · mint fee taken from the pot" : "";
       status.textContent = `Paid! ${result.winnerSats} sats${tipNote}${feeNote} — paste the token into cashu.me to claim`;
       if (claim) claim.disabled = true;
@@ -1924,10 +1948,22 @@ export class Game {
       const el = document.getElementById(id);
       if (el) el.textContent = String(v);
     };
-    set("dev-pending-sats", summary.pendingSats);
+    const walletSats = summary.walletSats ?? summary.pendingSats;
+    set("dev-pending-sats", walletSats);
     set("dev-earned-sats", summary.earnedSats);
     set("dev-count", summary.count);
-    set("dev-claimed-sats", summary.claimedSats);
+    set("dev-claimed-sats", summary.withdrawnSats ?? summary.claimedSats);
+
+    const pending = summary.pendingWithdraw;
+    const withdrawBox = document.getElementById("dev-withdraw-box");
+    const tokenInput = document.getElementById("dev-withdraw-token") as HTMLInputElement | null;
+    if (pending?.token) {
+      withdrawBox?.classList.remove("hidden");
+      if (tokenInput) tokenInput.value = pending.token;
+    } else {
+      withdrawBox?.classList.add("hidden");
+      if (tokenInput) tokenInput.value = "";
+    }
 
     const list = document.getElementById("dev-tips-list");
     if (list) {
@@ -1935,7 +1971,7 @@ export class Game {
       if (summary.tips.length === 0) {
         const li = document.createElement("li");
         li.className = "dev-tip-empty";
-        li.textContent = "No tips yet — they land here when winners share the pot.";
+        li.textContent = "No tips yet — they land in this wallet when winners share the pot.";
         list.appendChild(li);
       }
       for (const tip of summary.tips) {
@@ -1957,71 +1993,79 @@ export class Game {
 
         const side = document.createElement("span");
         side.className = "dev-tip-side";
-        const failed = !tip.mock && !tip.claimed && !tip.tipToken;
+        const failed = !tip.mock && !tip.collected && tip.tipSats > 0;
         const badge = document.createElement("span");
-        badge.className = `dev-tip-badge ${tip.mock ? "is-mock" : tip.claimed ? "is-claimed" : failed ? "is-failed" : "is-pending"}`;
-        badge.textContent = tip.mock ? "TEST" : tip.claimed ? "CLAIMED" : failed ? "FAILED" : "PENDING";
-        if (failed) badge.title = "Tip token never formed — the sats are still in the pot wallet";
+        badge.className = `dev-tip-badge ${tip.mock ? "is-mock" : tip.collected ? "is-collected" : failed ? "is-failed" : "is-pending"}`;
+        badge.textContent = tip.mock ? "TEST" : tip.collected ? "IN WALLET" : failed ? "FAILED" : "PENDING";
+        if (failed) badge.title = "Tip never reached the tip wallet — retry to collect it";
+        else if (tip.collected) badge.title = "Already swapped into the tip wallet";
         side.appendChild(badge);
         if (failed) {
           const retryBtn = document.createElement("button");
           retryBtn.type = "button";
           retryBtn.className = "dev-tip-copy";
           retryBtn.textContent = "RETRY";
-          retryBtn.title = "Regenerate the tip token from the pot wallet";
+          retryBtn.title = "Collect this tip into the tip wallet";
           retryBtn.onclick = () => void this.retryTip(tip.at);
           side.appendChild(retryBtn);
-        }
-        if (!tip.mock && !tip.claimed && tip.tipToken) {
-          const copyBtn = document.createElement("button");
-          copyBtn.type = "button";
-          copyBtn.className = "dev-tip-copy";
-          copyBtn.textContent = "COPY";
-          copyBtn.onclick = () => {
-            void navigator.clipboard
-              .writeText(tip.tipToken!)
-              .then(() => {
-                copyBtn.textContent = "COPIED ✓";
-                setTimeout(() => (copyBtn.textContent = "COPY"), 1500);
-              })
-              .catch(() => undefined);
-          };
-          side.appendChild(copyBtn);
-          const markBtn = document.createElement("button");
-          markBtn.type = "button";
-          markBtn.className = "dev-tip-mark";
-          markBtn.textContent = "✓";
-          markBtn.title = "Mark claimed";
-          markBtn.onclick = () => void this.claimDevTip(tip.at);
-          side.appendChild(markBtn);
         }
         li.appendChild(side);
         list.appendChild(li);
       }
     }
-    document.getElementById("dev-claim-all")?.classList.toggle("hidden", summary.pendingCount === 0);
+    const canWithdraw = walletSats > 0 && !pending?.token;
+    document.getElementById("dev-withdraw-btn")?.classList.toggle("hidden", !canWithdraw);
+    document.getElementById("dev-claim-all")?.classList.toggle("hidden", !pending?.token);
   }
 
-  /** Mark one tip (claimAt) or all pending tips as claimed, then refresh. */
-  private async claimDevTip(claimAt?: number) {
+  /** Export the tip wallet as a cashuA token to paste into cashu.me. */
+  private async withdrawDevWallet() {
+    const session = getSession();
+    if (!session) return;
+    const status = document.getElementById("dev-status");
+    if (status) status.textContent = "Withdrawing…";
+    try {
+      const summary = await withdrawDevTips(session.signer);
+      this.renderDevSummary(summary);
+    } catch (err) {
+      if (status) status.textContent = `Could not withdraw — ${err instanceof Error ? err.message : err}`;
+    }
+  }
+
+  private copyDevWithdrawToken() {
+    const input = document.getElementById("dev-withdraw-token") as HTMLInputElement | null;
+    const btn = document.getElementById("dev-withdraw-copy");
+    const token = input?.value.trim() ?? "";
+    if (!token || !btn) return;
+    void navigator.clipboard
+      .writeText(token)
+      .then(() => {
+        btn.textContent = "COPIED ✓";
+        setTimeout(() => (btn.textContent = "COPY TOKEN"), 1500);
+      })
+      .catch(() => input?.select());
+  }
+
+  /** Mark the pending withdraw as copied, then refresh. */
+  private async claimDevTip(_claimAt?: number) {
     const session = getSession();
     if (!session) return;
     const status = document.getElementById("dev-status");
     if (status) status.textContent = "Updating…";
     try {
-      const summary = await markTipsClaimed(session.signer, claimAt);
+      const summary = await markTipsClaimed(session.signer);
       this.renderDevSummary(summary);
     } catch (err) {
       if (status) status.textContent = `Could not update — ${err instanceof Error ? err.message : err}`;
     }
   }
 
-  /** Retry a failed tip payout — the server regenerates the token from the pot wallet. */
+  /** Retry a failed tip collect — the server swaps it into the tip wallet. */
   private async retryTip(retryAt: number) {
     const session = getSession();
     if (!session) return;
     const status = document.getElementById("dev-status");
-    if (status) status.textContent = "Retrying payout…";
+    if (status) status.textContent = "Collecting tip…";
     try {
       const summary = await retryDevTip(session.signer, retryAt);
       this.renderDevSummary(summary);
@@ -2750,6 +2794,11 @@ export class Game {
           for (const r of this.rivals) r.godBoost = aiPower;
 
           this.player.update(dt, input);
+          if (this.player.mesh.userData.kind === "bike") {
+            this.audio.updateBikeEngine(this.player.state.speed, input.throttle);
+          } else {
+            this.audio.stopBikeEngine();
+          }
           if (input.fire) this.tryFireTankShell();
           const onWall = this.keepOnTrack(this.player);
           this.notePlayerWallHit(onWall, dt);
@@ -3288,8 +3337,8 @@ export class Game {
     const dir = new THREE.Vector3(Math.sin(h), 0, Math.cos(h));
     const p = this.player.state.position;
     const mesh = new THREE.Mesh(this._shellGeo, this._shellMat);
-    // Barrel tip ≈ 2.8 ahead of hull center at turret height
-    mesh.position.set(p.x + dir.x * 2.8, 1.5, p.z + dir.z * 2.8);
+    // Barrel tip ≈ 3.4 ahead of hull center at turret height
+    mesh.position.set(p.x + dir.x * 3.4, 1.3, p.z + dir.z * 3.4);
     this.scene.add(mesh);
     this.shells.push({ mesh, dir, life: SHELL_LIFE_S });
     this.audio.playBoom();

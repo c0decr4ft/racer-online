@@ -10,8 +10,8 @@ import { DEFAULT_RELAYS, pool } from "./relays";
 
 export const SCORE_EVENT_KIND = 30078;
 export const SCORE_D_PREFIX = "racer-online:";
-/** Plausibility window for a race total — keeps junk off the board. */
-export const MIN_TIME_MS = 5_000;
+/** Plausibility window for a race total — keeps junk / e2e spam off the board. */
+export const MIN_TIME_MS = 15_000;
 export const MAX_TIME_MS = 3_600_000;
 
 export type ScoreEventTemplate = {

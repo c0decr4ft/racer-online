@@ -1,5 +1,5 @@
 /**
- * Dev dashboard API — tip stats + claim tracking, gated by a signed Nostr
+ * Dev dashboard API — tip wallet + history, gated by a signed Nostr
  * auth event from the server's configured DEV_PUBKEY (kind 30078, d=…:dev).
  */
 import { apiUrl } from "./apiBase";
@@ -14,8 +14,15 @@ export type DevTip = {
   tipSats: number;
   tipPercent: number;
   mock: boolean;
+  /** Swapped into the server tip wallet (mint burned the old secrets). */
+  collected: boolean;
   claimed: boolean;
-  tipToken?: string;
+};
+
+export type DevPendingWithdraw = {
+  amountSats: number;
+  at: number;
+  token: string;
 };
 
 export type DevTipsSummary = {
@@ -23,9 +30,13 @@ export type DevTipsSummary = {
   mint: string;
   count: number;
   earnedSats: number;
+  /** Current tip-wallet balance (auto-collected, not yet withdrawn). */
   pendingSats: number;
+  walletSats: number;
   pendingCount: number;
   claimedSats: number;
+  withdrawnSats: number;
+  pendingWithdraw?: DevPendingWithdraw | null;
   tips: DevTip[];
   marked?: number;
 };
@@ -82,19 +93,24 @@ async function postDev(path: string, signer: DevSigner, extra?: Record<string, u
   return data as DevTipsSummary;
 }
 
-/** Tip stats + pending tip tokens (tokens are bearer — dev eyes only). */
+/** Tip wallet balance + history (tokens never leave the server until you withdraw). */
 export function fetchDevTips(signer: DevSigner): Promise<DevTipsSummary> {
   return postDev("/dev/tips", signer);
 }
 
-/** Mark one tip (by `claimAt`) or all pending tips as claimed. */
-export function markTipsClaimed(signer: DevSigner, claimAt?: number): Promise<DevTipsSummary> {
-  return postDev("/dev/claim", signer, claimAt != null ? { claimAt } : {});
+/** Mark the pending withdraw as copied (after pasting into cashu.me). */
+export function markTipsClaimed(signer: DevSigner, _claimAt?: number): Promise<DevTipsSummary> {
+  return postDev("/dev/claim", signer);
 }
 
-/** Retry a failed tip payout (token never formed) — regenerates it from the pot wallet. */
+/** Retry a failed tip collect — swaps it into the tip wallet at the mint. */
 export function retryDevTip(signer: DevSigner, retryAt: number): Promise<DevTipsSummary> {
   return postDev("/dev/claim", signer, { retryAt });
+}
+
+/** Export the tip wallet as a cashuA token to paste into cashu.me. */
+export function withdrawDevTips(signer: DevSigner, amountSats?: number): Promise<DevTipsSummary> {
+  return postDev("/dev/withdraw", signer, amountSats != null ? { amountSats } : {});
 }
 
 /* ── Dev feedback inbox ─────────────────────────────────────────── */
