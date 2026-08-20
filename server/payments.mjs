@@ -5,16 +5,18 @@
  * a live mint: Lightning in → sat Cashu tokens). Mock mode (fake sats auto-pay
  * in ~3s) exists ONLY for dev/tests and must be forced via RACER_PAYMENTS_MOCK=1.
  *
- * Two wallets, two files (both gitignored — the files ARE the money):
- *   server/cashu-proofs.json  — event pot (buy-ins until the winner claims)
- *   server/cashu-tips.json    — developer tip wallet (auto-collected at payout)
+ * Wallets (the files ARE the money, all gitignored):
+ *   server/cashu-pots/<uuid>.json  — one pot per event (buy-ins until that winner claims)
+ *   server/cashu-tips.json         — developer tip wallet (auto-collected at payout)
+ *   server/cashu-proofs.json       — legacy shared pot (pre-partition; still audited)
  *
- * Buy-ins arrive as NUT-18 payloads (POST /api/ecash/pay) or pasted cashuA
- * tokens. The winner is paid a cashuA token. The tip is swapped at the mint
+ * Buy-ins arrive as NUT-18 creqA payloads (POST /api/ecash/pay), Lightning
+ * mint quotes (bolt11 → tokens minted at Minibits), or pasted cashuA tokens.
+ * The winner is paid a cashuA token. The tip is swapped at the mint
  * straight into the tip wallet so a bearer token never sits around to be
  * double-spent.
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -22,33 +24,86 @@ import { randomUUID } from "node:crypto";
 /** Mock is opt-in (tests/dev): RACER_PAYMENTS_MOCK=1. Everyone else gets real sats. */
 export const PAYMENTS_MOCK = process.env.RACER_PAYMENTS_MOCK === "1";
 /**
+ * Canonical mint URL: host lowercased, trailing slash stripped. Wallets compare
+ * this byte-for-byte against the `m` field in a NUT-18 request — a mismatch
+ * makes cashu.me fall back to its default mint (CoinOS).
+ */
+function canonicalizeMint(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return raw.replace(/\/+$/, "");
+    const path = u.pathname.replace(/\/+$/, "");
+    return `${u.protocol}//${u.hostname.toLowerCase()}${u.port ? `:${u.port}` : ""}${path}`;
+  } catch {
+    return raw.replace(/\/+$/, "");
+  }
+}
+
+function sameMint(a, b) {
+  return canonicalizeMint(a) === canonicalizeMint(b);
+}
+
+/**
  * Default mint: Minibits (`https://mint.minibits.cash/Bitcoin`) — real sat Cashu
  * tokens minted against Lightning invoices. Override with CASHU_MINT_URL (e.g.
  * Testnut `https://testnut.cashu.space` for free fake sats while iterating).
  */
-const CASHU_MINT_URL = (process.env.CASHU_MINT_URL || "https://mint.minibits.cash/Bitcoin").trim().replace(/\/+$/, "");
+const CASHU_MINT_URL = canonicalizeMint(
+  process.env.CASHU_MINT_URL || "https://mint.minibits.cash/Bitcoin",
+);
 
 const DIR = dirname(fileURLToPath(import.meta.url));
 const PROOFS_PATH = join(DIR, "cashu-proofs.json");
 const TIPS_PATH = join(DIR, "cashu-tips.json");
 const PAYOUTS_PATH = join(DIR, "payouts.json");
+const POTS_DIR = join(DIR, "cashu-pots");
+
+const storeTails = new Map();
+function withStoreLock(path, fn) {
+  const prev = storeTails.get(path) || Promise.resolve();
+  const run = prev.catch(() => {}).then(fn);
+  storeTails.set(
+    path,
+    run.then(
+      () => {},
+      () => {},
+    ),
+  );
+  return run;
+}
+
+function requirePotId(potId) {
+  const id = String(potId || "").trim().toLowerCase();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)) {
+    throw new Error("missing event pot id");
+  }
+  return id;
+}
+
+function ensurePotsDir() {
+  mkdirSync(POTS_DIR, { recursive: true });
+}
+
+function potFile(potId) {
+  ensurePotsDir();
+  return join(POTS_DIR, `${requirePotId(potId)}.json`);
+}
 
 /* ---------------- proof stores (pot + tip wallets) ---------------- */
 
 function emptyStore() {
-  return { mintUrl: CASHU_MINT_URL, proofs: [], withdrawnSats: 0, pendingWithdraw: null };
+  return { mintUrl: CASHU_MINT_URL, proofs: [], withdrawnSats: 0, pendingWithdraw: null, receivedIds: [] };
 }
 
-function loadStore(path) {
+function peekStore(path) {
   try {
-    if (!existsSync(path)) return emptyStore();
+    if (!existsSync(path)) return null;
     const data = JSON.parse(readFileSync(path, "utf8"));
-    if (data?.mintUrl !== CASHU_MINT_URL || !Array.isArray(data?.proofs)) {
-      return emptyStore();
-    }
-    // JSON round-trip stringifies amounts — v4 wallets need real bigints
+    if (!data || !Array.isArray(data.proofs)) return null;
     return {
-      mintUrl: CASHU_MINT_URL,
+      mintUrl: String(data.mintUrl || ""),
       proofs: data.proofs.map((p) => ({ ...p, amount: BigInt(p.amount ?? 0) })),
       withdrawnSats: Math.max(0, Math.round(Number(data.withdrawnSats) || 0)),
       pendingWithdraw:
@@ -59,10 +114,31 @@ function loadStore(path) {
               at: Number(data.pendingWithdraw.at) || Date.now(),
             }
           : null,
+      receivedIds: Array.isArray(data.receivedIds)
+        ? data.receivedIds.map((id) => String(id)).filter(Boolean).slice(-500)
+        : [],
     };
   } catch {
+    return null;
+  }
+}
+
+function loadStore(path) {
+  const peeked = peekStore(path);
+  if (!peeked) return emptyStore();
+  if (!sameMint(peeked.mintUrl, CASHU_MINT_URL)) {
+    console.error(
+      `[cashu] refusing to load ${path} — file mint ${peeked.mintUrl} ≠ ${CASHU_MINT_URL} (proofs not destroyed, just ignored)`,
+    );
     return emptyStore();
   }
+  return {
+    mintUrl: CASHU_MINT_URL,
+    proofs: peeked.proofs,
+    withdrawnSats: peeked.withdrawnSats,
+    pendingWithdraw: peeked.pendingWithdraw,
+    receivedIds: peeked.receivedIds,
+  };
 }
 
 function saveStore(path, store) {
@@ -72,8 +148,10 @@ function saveStore(path, store) {
       path,
       JSON.stringify(store, (key, v) => (typeof v === "bigint" ? v.toString() : v), 2),
     );
+    return true;
   } catch (err) {
     console.error("[cashu] failed to persist proofs — money at risk!", err?.message || err);
+    return false;
   }
 }
 
@@ -81,17 +159,151 @@ function proofsSum(proofs) {
   return (proofs || []).reduce((a, p) => a + Number(p.amount), 0);
 }
 
+/** Persist buy-in proofs into THAT event's pot immediately — before the HTTP response. */
+async function persistPotProofs(freshProofs, paymentHash, potId) {
+  if (PAYMENTS_MOCK || !Array.isArray(freshProofs) || !freshProofs.length) return;
+  const path = potFile(potId);
+  await withStoreLock(path, async () => {
+    const store = loadStore(path);
+    const id = String(paymentHash || "");
+    if (id && (store.receivedIds || []).includes(id)) return;
+    store.proofs.push(...freshProofs);
+    if (id) store.receivedIds = [...(store.receivedIds || []), id].slice(-500);
+    if (!saveStore(path, store)) {
+      throw new Error("could not persist buy-in proofs to disk");
+    }
+  });
+}
+
+function alreadyReceived(paymentHash, potId) {
+  const id = String(paymentHash || "");
+  if (!id || !potId) return false;
+  try {
+    return (loadStore(potFile(potId)).receivedIds || []).includes(id);
+  } catch {
+    return false;
+  }
+}
+
 function loadPotStore() {
   return loadStore(PROOFS_PATH);
 }
 function savePotStore(store) {
-  saveStore(PROOFS_PATH, store);
+  return saveStore(PROOFS_PATH, store);
 }
 function loadTipStore() {
   return loadStore(TIPS_PATH);
 }
 function saveTipStore(store) {
-  saveStore(TIPS_PATH, store);
+  return saveStore(TIPS_PATH, store);
+}
+
+function emptyAudit(label) {
+  return {
+    label,
+    file: false,
+    mintUrl: "",
+    localSats: 0,
+    proofs: 0,
+    unspentSats: 0,
+    spentSats: 0,
+    pendingSats: 0,
+    orphaned: false,
+    receivedIds: 0,
+    events: 0,
+    error: null,
+    rescueToken: null,
+  };
+}
+
+/**
+ * Ask a mint whether proofs we have on disk are still spendable (NUT-07).
+ * Also peeks files whose mint URL no longer matches (e.g. leftover CoinOS
+ * proofs after the Minibits switch) so they can be rescued if still unspent.
+ */
+async function auditOne(label, path) {
+  const peeked = peekStore(path);
+  if (!peeked) return emptyAudit(label);
+  const fileMint = canonicalizeMint(peeked.mintUrl) || peeked.mintUrl;
+  const orphaned = Boolean(fileMint && !sameMint(fileMint, CASHU_MINT_URL));
+  const out = {
+    ...emptyAudit(label),
+    file: true,
+    mintUrl: fileMint || CASHU_MINT_URL,
+    localSats: proofsSum(peeked.proofs),
+    proofs: peeked.proofs.length,
+    orphaned,
+    receivedIds: (peeked.receivedIds || []).length,
+  };
+  if (!peeked.proofs.length) return out;
+  try {
+    const mint = out.mintUrl || CASHU_MINT_URL;
+    let wallet;
+    if (orphaned) {
+      const { Wallet } = await import("@cashu/cashu-ts");
+      wallet = new Wallet(mint, { unit: "sat" });
+      await wallet.loadMint();
+    } else {
+      wallet = await getWallet();
+    }
+    const grouped = await wallet.groupProofsByState(peeked.proofs);
+    out.unspentSats = proofsSum(grouped.unspent);
+    out.spentSats = proofsSum(grouped.spent);
+    out.pendingSats = proofsSum(grouped.pending);
+    if (orphaned && grouped.unspent.length) {
+      const { getEncodedToken } = await import("@cashu/cashu-ts");
+      out.rescueToken = getEncodedToken({ mint, proofs: grouped.unspent });
+    }
+  } catch (err) {
+    out.error = String(err?.message || err).slice(0, 160);
+  }
+  return out;
+}
+
+function listEventPotFiles() {
+  try {
+    if (!existsSync(POTS_DIR)) return [];
+    return readdirSync(POTS_DIR)
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => ({
+        id: name.slice(0, -5),
+        path: join(POTS_DIR, name),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function mergePotAudits(parts) {
+  const merged = emptyAudit("pot");
+  merged.file = parts.some((p) => p.file);
+  merged.mintUrl = CASHU_MINT_URL;
+  merged.localSats = parts.reduce((a, p) => a + p.localSats, 0);
+  merged.proofs = parts.reduce((a, p) => a + p.proofs, 0);
+  merged.unspentSats = parts.reduce((a, p) => a + p.unspentSats, 0);
+  merged.spentSats = parts.reduce((a, p) => a + p.spentSats, 0);
+  merged.pendingSats = parts.reduce((a, p) => a + p.pendingSats, 0);
+  merged.receivedIds = parts.reduce((a, p) => a + p.receivedIds, 0);
+  merged.orphaned = parts.some((p) => p.orphaned);
+  merged.events = parts.filter((p) => p.label !== "legacy").length;
+  merged.error = parts.map((p) => p.error).find(Boolean) || null;
+  merged.rescueToken = parts.find((p) => p.rescueToken)?.rescueToken || null;
+  return merged;
+}
+
+async function cashuAuditCustody() {
+  if (PAYMENTS_MOCK) {
+    return { mock: true, mintUrl: CASHU_MINT_URL, pot: emptyAudit("pot"), tip: emptyAudit("tip") };
+  }
+  const files = listEventPotFiles();
+  const [tip, legacy, ...pots] = await Promise.all([
+    auditOne("tip", TIPS_PATH),
+    auditOne("legacy", PROOFS_PATH),
+    ...files.map((f) => auditOne(f.id, f.path)),
+  ]);
+  const parts = [...pots];
+  if (legacy.file && (legacy.localSats > 0 || legacy.proofs > 0)) parts.push(legacy);
+  return { mock: false, mintUrl: CASHU_MINT_URL, pot: mergePotAudits(parts), tip };
 }
 
 /* ---------------- wallet init (real mode) ---------------- */
@@ -102,7 +314,7 @@ async function getWallet() {
   if (!walletPromise) {
     walletPromise = (async () => {
       const { Wallet } = await import("@cashu/cashu-ts");
-      const wallet = new Wallet(CASHU_MINT_URL);
+      const wallet = new Wallet(CASHU_MINT_URL, { unit: "sat" });
       await wallet.loadMint();
       return wallet;
     })();
@@ -164,15 +376,15 @@ async function cashuReceiveFeeSats(amountSats) {
  * Upper-bound input fee for one swap spending the pot wallet's current proofs —
  * the reserve the pot payout must keep back so winner + tip sends never fail.
  */
-async function cashuSendFeeSats() {
+async function cashuSendFeeSats(potId) {
   const wallet = await getWallet();
-  const store = loadPotStore();
+  const store = loadStore(potFile(potId));
   if (!store.proofs.length) return 0;
   return wallet.getFeesForProofs(store.proofs).toNumber();
 }
 
-async function cashuPotBalanceSats() {
-  return proofsSum(loadPotStore().proofs);
+async function cashuPotBalanceSats(potId) {
+  return proofsSum(loadStore(potFile(potId)).proofs);
 }
 
 async function cashuTipBalanceSats() {
@@ -189,7 +401,14 @@ let mockPendingWithdraw = null;
 async function mockCreatePaymentRequest({ amountSats, memo }) {
   const paymentHash = randomUUID().replaceAll("-", "");
   mockInvoices.set(paymentHash, { amountSats, memo, createdAt: Date.now(), paidAt: 0 });
-  return { paymentHash, paymentRequest: `creq-mock-${paymentHash}` };
+  return { paymentHash, paymentRequest: `creq-mock-${paymentHash}`, bolt11: "" };
+}
+
+/** Mock auto-pay after ~3s — no proofs (depositProofs is a no-op in mock). */
+async function mockSettleIfPaid(paymentHash) {
+  if (!(await mockIsPaid(paymentHash))) return null;
+  // Omit netSats so the room records the buy-in (not the request total with fee).
+  return {};
 }
 
 async function mockIsPaid(paymentHash) {
@@ -237,19 +456,95 @@ function mockMarkWithdrawCopied() {
 
 /* ---------------- real adapter (cashu-ts) ---------------- */
 
-async function cashuCreatePaymentRequest({ amountSats, memo, baseUrl }) {
+/** Live Lightning mint quotes: paymentHash → { quoteId, amountSats, minting }. */
+const mintQuotes = new Map();
+
+async function cashuCreatePaymentRequest({ amountSats, memo, baseUrl, potId }) {
+  requirePotId(potId);
   const { PaymentRequest, PaymentRequestTransportType } = await import("@cashu/cashu-ts");
   const paymentHash = randomUUID().replaceAll("-", "").slice(0, 24);
-  // cashu-ts v4: PaymentRequest takes positional args (transport, id, amount, unit, mints, description)
+  const payUrl = `${String(baseUrl || "").replace(/\/+$/, "")}/api/ecash/pay`;
+  // NUT-18 creqA (CBOR+base64) — Minibits and cashu.me both support this.
+  // creqB (NUT-26 / experimental) is NOT implemented by Minibits; wallets that
+  // fail to parse it fall back to cashu.me's default mint (CoinOS).
   const request = new PaymentRequest(
-    [{ type: PaymentRequestTransportType.POST, target: `${baseUrl}/api/ecash/pay` }],
+    [{ type: PaymentRequestTransportType.POST, target: payUrl }],
     paymentHash,
     amountSats,
     "sat",
     [CASHU_MINT_URL],
     memo,
+    true, // singleUse
   );
-  return { paymentHash, paymentRequest: request.toEncodedCreqB() };
+  const paymentRequest = request.toEncodedRequest();
+  try {
+    const decoded = PaymentRequest.fromEncodedRequest(paymentRequest);
+    const mints = decoded.mints || [];
+    if (!mints.some((m) => sameMint(m, CASHU_MINT_URL))) {
+      console.error("[cashu] encoded creq is missing our mint", { mints, want: CASHU_MINT_URL });
+    }
+  } catch (err) {
+    console.error("[cashu] could not round-trip payment request:", err?.message || err);
+  }
+
+  // Parallel Lightning invoice: paying it mints tokens straight into the pot
+  // at Minibits (NUT-04). Any LN wallet can pay this — no Cashu app required.
+  let bolt11 = "";
+  try {
+    const wallet = await getWallet();
+    let quote;
+    try {
+      quote = await wallet.createMintQuoteBolt11(amountSats, memo || undefined);
+    } catch (err) {
+      console.warn("[cashu] mint quote with memo failed — retrying without:", err?.message || err);
+      quote = await wallet.createMintQuoteBolt11(amountSats);
+    }
+    bolt11 = String(quote.request || "").trim();
+    const quoteId = String(quote.quote || "").trim();
+    if (bolt11 && quoteId) {
+      mintQuotes.set(paymentHash, { quoteId, amountSats, minting: false, potId: requirePotId(potId) });
+    }
+  } catch (err) {
+    console.warn("[cashu] Lightning mint quote failed — Cashu request still valid:", err?.message || err);
+  }
+
+  return { paymentHash, paymentRequest, bolt11 };
+}
+
+function quoteState(status) {
+  return String(status?.state || (status?.paid ? "PAID" : "UNPAID")).toUpperCase();
+}
+
+/**
+ * If the Lightning mint quote for this request is PAID, mint the tokens into
+ * the pot wallet and return the net sats. Returns null while unpaid / in-flight.
+ */
+async function cashuSettleIfPaid(paymentHash) {
+  const q = mintQuotes.get(paymentHash);
+  if (!q) return null;
+  if (q.settled) return q.settled;
+  if (q.minting) return null;
+  q.minting = true;
+  try {
+    const wallet = await getWallet();
+    const status = await wallet.checkMintQuoteBolt11(q.quoteId);
+    const state = quoteState(status);
+    if (state !== "PAID") {
+      q.minting = false;
+      return null;
+    }
+    const proofs = await wallet.mintProofsBolt11(q.amountSats, status);
+    await persistPotProofs(proofs, paymentHash, q.potId);
+    const netSats = proofsSum(proofs);
+    q.settled = { netSats };
+    q.minting = false;
+    console.log(`[cashu] Lightning buy-in minted — ${netSats} sats into pot`);
+    return q.settled;
+  } catch (err) {
+    q.minting = false;
+    console.warn("[cashu] mint-quote redeem failed:", err?.message || err);
+    return null;
+  }
 }
 
 /** Normalize incoming proofs (v4: amounts must be bigint) and receive via encoded token. */
@@ -257,27 +552,64 @@ async function receiveProofsFromMint(mintUrl, rawProofs) {
   const { getEncodedToken } = await import("@cashu/cashu-ts");
   const wallet = await getWallet();
   const proofs = rawProofs.map((p) => ({ ...p, amount: BigInt(p.amount) }));
-  const token = getEncodedToken({ mint: mintUrl, proofs });
+  const token = getEncodedToken({ mint: canonicalizeMint(mintUrl) || mintUrl, proofs });
   return wallet.receive(token);
+}
+
+function payloadMint(payload) {
+  if (payload?.mint) return payload.mint;
+  if (payload?.token && typeof payload.token === "object") return payload.token.mint;
+  return "";
+}
+
+function payloadProofs(payload) {
+  if (Array.isArray(payload?.proofs)) return payload.proofs;
+  if (Array.isArray(payload?.token?.proofs)) return payload.token.proofs;
+  return [];
 }
 
 /**
  * Validate + receive a NUT-18 payment payload {id, mint, unit, proofs}.
+ * Also accepts a wrapped `{payload:…}` or a `{token: cashuA…}` body.
  * Returns fresh proofs (swapped to our secrets). Throws on any
  * mismatch/shortfall — callers must treat that as unpaid.
  */
-async function cashuReceivePayload({ paymentHash, amountSats, payload }) {
-  if (String(payload.id || "") !== paymentHash) throw new Error("payment id mismatch");
-  const mint = String(payload.mint || "").replace(/\/+$/, "");
-  if (mint !== CASHU_MINT_URL) throw new Error("wrong mint");
-  if (String(payload.unit || "sat").toLowerCase() !== "sat") throw new Error("wrong unit");
-  const proofs = Array.isArray(payload.proofs) ? payload.proofs : [];
-  // Validate on GROSS, not net-of-fees: wallets send the exact requested amount
-  // and the mint's input fee is our cost of doing business — rejecting here
-  // burns the player's whole payment while we keep nothing.
-  const gross = proofs.reduce((a, p) => a + BigInt(p.amount), 0n);
-  if (gross < BigInt(amountSats)) throw new Error(`underpaid (${gross} < ${amountSats} sats)`);
-  return receiveProofsFromMint(mint, proofs);
+async function cashuReceivePayload({ paymentHash, amountSats, payload: raw, potId }) {
+  const payload = raw?.payload && typeof raw.payload === "object" ? raw.payload : raw;
+  const payId = String(payload.id || payload.paymentId || raw.id || "");
+  if (payId && payId !== paymentHash) {
+    throw new Error("payment id mismatch");
+  }
+  if (alreadyReceived(paymentHash, potId)) {
+    console.log(`[cashu] buy-in ${paymentHash} already in pot — idempotent replay`);
+    return [];
+  }
+  const tokenStr = typeof payload.token === "string" ? payload.token.trim() : "";
+  const fresh = tokenStr
+    ? await cashuReceiveToken({ amountSats, token: tokenStr })
+    : await (async () => {
+        const mint = canonicalizeMint(payloadMint(payload));
+        if (!sameMint(mint, CASHU_MINT_URL)) {
+          throw new Error(`wrong mint (${mint || "none"} — this event uses ${CASHU_MINT_URL})`);
+        }
+        if (String(payload.unit || "sat").toLowerCase() !== "sat") throw new Error("wrong unit");
+        const proofs = payloadProofs(payload);
+        const gross = proofs.reduce((a, p) => a + BigInt(p.amount), 0n);
+        if (gross < BigInt(amountSats)) throw new Error(`underpaid (${gross} < ${amountSats} sats)`);
+        return receiveProofsFromMint(mint, proofs);
+      })();
+  try {
+    await persistPotProofs(fresh, paymentHash, potId);
+  } catch (err) {
+    const { getEncodedToken } = await import("@cashu/cashu-ts");
+    console.error(
+      "[cashu] EMERGENCY buy-in token — disk persist failed, redeem this once:",
+      getEncodedToken({ mint: CASHU_MINT_URL, proofs: fresh }),
+    );
+    throw err;
+  }
+  console.log(`[cashu] buy-in received — ${proofsSum(fresh)} sats into pot (${paymentHash})`);
+  return fresh;
 }
 
 /** Receive a pasted cashuA token (manual fallback path). */
@@ -285,8 +617,8 @@ async function cashuReceiveToken({ amountSats, token }) {
   const wallet = await getWallet();
   // v4: short keyset IDs need the mint's keysets to decode — use wallet-aware decode
   const decoded = await wallet.decodeToken(String(token).trim());
-  const mint = String(decoded.mint).replace(/\/+$/, "");
-  if (mint !== CASHU_MINT_URL) {
+  const mint = canonicalizeMint(decoded.mint);
+  if (!sameMint(mint, CASHU_MINT_URL)) {
     throw new Error(`token is from another mint (we use ${CASHU_MINT_URL})`);
   }
   const gross = decoded.proofs.reduce((a, p) => a + BigInt(p.amount), 0n);
@@ -301,40 +633,42 @@ async function cashuReceiveToken({ amountSats, token }) {
  */
 async function sendTokenFromStore(path, amountSats, { includeFees = false } = {}) {
   const wallet = await getWallet();
-  const store = loadStore(path);
-  const total = proofsSum(store.proofs);
-  if (total < amountSats) throw new Error(`wallet short (${total} < ${amountSats} sats)`);
-  let keep, send;
-  try {
-    ({ keep, send } = await wallet.send(amountSats, store.proofs, { includeFees }));
-  } catch (err) {
-    if (!includeFees) throw err;
-    console.warn("[cashu] fee-inclusive send failed — sending plain token:", err?.message || err);
-    ({ keep, send } = await wallet.send(amountSats, store.proofs));
-  }
-  store.proofs = keep;
-  saveStore(path, store);
-  const { getEncodedToken } = await import("@cashu/cashu-ts");
-  return { token: getEncodedToken({ mint: CASHU_MINT_URL, proofs: send }) };
+  return withStoreLock(path, async () => {
+    const store = loadStore(path);
+    const total = proofsSum(store.proofs);
+    if (total < amountSats) throw new Error(`wallet short (${total} < ${amountSats} sats)`);
+    let keep, send;
+    try {
+      ({ keep, send } = await wallet.send(amountSats, store.proofs, { includeFees }));
+    } catch (err) {
+      if (!includeFees) throw err;
+      console.warn("[cashu] fee-inclusive send failed — sending plain token:", err?.message || err);
+      ({ keep, send } = await wallet.send(amountSats, store.proofs));
+    }
+    store.proofs = keep;
+    if (!saveStore(path, store)) throw new Error("could not persist remaining proofs");
+    const { getEncodedToken } = await import("@cashu/cashu-ts");
+    return { token: getEncodedToken({ mint: CASHU_MINT_URL, proofs: send }) };
+  });
 }
 
-async function cashuSendToken(amountSats, { includeFees = false } = {}) {
-  return sendTokenFromStore(PROOFS_PATH, amountSats, { includeFees });
+async function cashuSendToken(amountSats, { includeFees = false, potId } = {}) {
+  return sendTokenFromStore(potId ? potFile(potId) : PROOFS_PATH, amountSats, { includeFees });
 }
 
 /**
- * Move `amountSats` from the pot wallet into the tip wallet.
- * The mint swap burns the old secrets — the intermediate token is never stored
- * unless the receive fails, in which case it is returned so the caller can
- * retry the collect without sending a second time (double-spend).
+ * Move `amountSats` from one event pot into the tip wallet.
  */
-async function cashuCollectTip(amountSats) {
-  const { token } = await sendTokenFromStore(PROOFS_PATH, amountSats, { includeFees: true });
+async function cashuCollectTip(amountSats, potId) {
+  const path = potId ? potFile(potId) : PROOFS_PATH;
+  const { token } = await sendTokenFromStore(path, amountSats, { includeFees: true });
   try {
     const fresh = await cashuReceiveToken({ amountSats: 1, token });
-    const store = loadTipStore();
-    store.proofs.push(...fresh);
-    saveTipStore(store);
+    await withStoreLock(TIPS_PATH, async () => {
+      const store = loadTipStore();
+      store.proofs.push(...fresh);
+      saveTipStore(store);
+    });
     const sats = proofsSum(fresh);
     console.log(`[cashu] tip collected — ${sats} sats into tip wallet`);
     return { sats, collected: true };
@@ -347,9 +681,11 @@ async function cashuCollectTip(amountSats) {
 /** Redeem a leftover tip bearer token into the tip wallet (burns it at the mint). */
 async function cashuReceiveTipToken(token) {
   const fresh = await cashuReceiveToken({ amountSats: 1, token: String(token || "").trim() });
-  const store = loadTipStore();
-  store.proofs.push(...fresh);
-  saveTipStore(store);
+  await withStoreLock(TIPS_PATH, async () => {
+    const store = loadTipStore();
+    store.proofs.push(...fresh);
+    saveTipStore(store);
+  });
   return proofsSum(fresh);
 }
 
@@ -398,7 +734,8 @@ export const payments = {
   createPaymentRequest: PAYMENTS_MOCK
     ? mockCreatePaymentRequest
     : cashuCreatePaymentRequest,
-  isPaid: PAYMENTS_MOCK ? mockIsPaid : null, // real mode: paid via POST /api/ecash/pay (push)
+  /** Poll Lightning mint quotes (real) or the mock auto-pay timer. Returns {netSats} or null. */
+  settleIfPaid: PAYMENTS_MOCK ? mockSettleIfPaid : cashuSettleIfPaid,
   receivePayload: PAYMENTS_MOCK ? null : cashuReceivePayload,
   receiveToken: PAYMENTS_MOCK ? async () => [] : cashuReceiveToken,
   sendToken: PAYMENTS_MOCK ? mockSendToken : cashuSendToken,
@@ -419,14 +756,13 @@ export const payments = {
   potBalanceSats: PAYMENTS_MOCK ? async () => Number.MAX_SAFE_INTEGER : cashuPotBalanceSats,
   /** Current tip wallet balance (mock: in-memory). */
   tipBalanceSats: PAYMENTS_MOCK ? async () => mockTipBalance : cashuTipBalanceSats,
+  /** NUT-07 audit of pot + tip files against their mint(s). */
+  auditCustody: cashuAuditCustody,
 };
 
 /** Record fresh buy-in proofs into the pot wallet store (real mode). */
-export function depositProofs(freshProofs) {
-  if (PAYMENTS_MOCK || !Array.isArray(freshProofs) || !freshProofs.length) return;
-  const store = loadPotStore();
-  store.proofs.push(...freshProofs);
-  savePotStore(store);
+export async function depositProofs(freshProofs, potId) {
+  await persistPotProofs(freshProofs, "", potId);
 }
 
 /** Append a payout attempt to the audit log (gitignored). */

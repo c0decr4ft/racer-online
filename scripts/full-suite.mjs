@@ -364,7 +364,7 @@ async function main() {
       // Real payments: request must be a genuine creq, and nothing may auto-pay
       assert(
         "event:real-creq-request",
-        /^(CREQB1|creqA)/.test(hostInvoice?.paymentRequest || ""),
+        /^creqA/.test(hostInvoice?.paymentRequest || ""),
         (hostInvoice?.paymentRequest || "").slice(0, 14),
       );
       await new Promise((r) => setTimeout(r, 6000));

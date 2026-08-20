@@ -1025,6 +1025,23 @@ body:has(#mute-btn.hidden) .hud-top {
   background: rgba(255, 255, 255, 0.03);
 }
 
+.mp-invoice-pay-tabs {
+  display: flex;
+  gap: 0.4rem;
+  width: 100%;
+}
+
+.mp-invoice-pay-tabs .garage-kind-btn {
+  flex: 1;
+  margin: 0;
+  padding: 0.5rem 0.4rem;
+  font-size: 0.68rem;
+}
+
+.mp-invoice-pay-tabs.hidden {
+  display: none;
+}
+
 .mp-invoice-qr {
   width: 168px;
   height: 168px;
@@ -1076,7 +1093,9 @@ body:has(#mute-btn.hidden) .hud-top {
 /* Paid — collapse the payment UI down to just the status line */
 .mp-invoice-box.is-paid .mp-invoice-qr,
 .mp-invoice-box.is-paid .mp-invoice-bolt11,
-.mp-invoice-box.is-paid .mp-invoice-actions {
+.mp-invoice-box.is-paid .mp-invoice-actions,
+.mp-invoice-box.is-paid .mp-invoice-pay-tabs,
+.mp-invoice-box.is-paid .event-or {
   display: none;
 }
 
@@ -1425,6 +1444,31 @@ body:has(#mute-btn.hidden) .hud-top {
 
 .dev-wallet.hidden {
   display: none !important;
+}
+
+.dev-wallet-pot {
+  border-color: rgba(80, 200, 140, 0.5);
+  background:
+    radial-gradient(130% 150% at 50% -25%, rgba(80, 200, 140, 0.16), rgba(80, 200, 140, 0.04) 55%, transparent 78%),
+    rgba(8, 10, 16, 0.6);
+  box-shadow:
+    0 0 28px rgba(80, 200, 140, 0.12),
+    inset 0 0 22px rgba(80, 200, 140, 0.05);
+}
+
+.dev-wallet-pot .dev-wallet-label {
+  color: #8dffc0;
+}
+
+.dev-live-events {
+  margin: 0 0 0.55rem;
+  width: 100%;
+  color: var(--muted);
+  font-family: "Rajdhani", sans-serif;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  text-align: center;
+  line-height: 1.35;
 }
 
 .dev-wallet-label {

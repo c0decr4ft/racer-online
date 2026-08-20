@@ -53,7 +53,7 @@ per swap.
 
 | Step | Who | Amount | Where it lands |
 | --- | --- | --- | --- |
-| 1. Buy-in | Each racer | 100 + 1 = **101 sats** | Paid from their Cashu wallet (Minibits mint) |
+| 1. Buy-in | Each racer | 100 + 1 = **101 sats** | Cashu (Minibits) or Lightning → pot tokens |
 | 2. Mint receive | Mint | **~1 sat** each | Mint fee for swapping the buy-in in |
 | 3. Pot | Event wallet | 4 × 100 = **400 sats** | `server/cashu-proofs.json` until claimed |
 | 4. Tip (2%) | Dev tip wallet | floor(400 × 2%) = **8 sats** | Auto-swapped into `server/cashu-tips.json` (mint burns the old secrets) |
@@ -71,8 +71,12 @@ Formula for any race:
 ### Mint + custody
 
 - **Default mint: Minibits** (`https://mint.minibits.cash/Bitcoin`) — real
-  Lightning-backed sats. In cashu.me (or the Minibits app): add that mint, mint
-  sats by paying a Lightning invoice, then scan the event buy-in QR.
+  Lightning-backed sats. Buy-in QRs are NUT-18 `creqA` payment requests that
+  name this mint (so Cashu wallets do **not** fall back to CoinOS). Each request
+  also includes a Lightning invoice from the same mint: paying it mints tokens
+  straight into the event pot. In Minibits or cashu.me: scan the Cashu QR (or
+  paste a `cashuA` token from this mint). Any Lightning wallet can pay the
+  Lightning tab instead.
 - **Test/fake sats:** only for local tests. `RACER_PAYMENTS_MOCK=1` (auto-pay fake
   sats) or `CASHU_MINT_URL=https://testnut.cashu.space` (Testnut). Do not use
   Testnut in production — those invoices auto-pay and are not real Bitcoin.
@@ -87,7 +91,8 @@ Formula for any race:
 - **Mint fees are automatic.** Buy-in requests add ~1 sat on top (payer covers it, pot
   lands whole). At payout, the **dev tip is paid whole** at the winner's chosen percent
   and swapped into the tip wallet; the mint's send fees come **out of the pot** (the
-  winner's share).
+  winner's share). Each event has its own pot file (`server/cashu-pots/<id>.json`) so
+  two live races cannot spend each other's buy-ins.
 - `GET /api/status` reports `payments: "live" | "mock"` and the active `mint`.
 - **Two wallets, both gitignored:** pot `server/cashu-proofs.json`, tips
   `server/cashu-tips.json`. They **live on Render's ephemeral disk**: a

@@ -48,6 +48,7 @@ import {
   markDevFeedbackRead,
   deleteDevFeedback,
   type DevTipsSummary,
+  type DevWalletAudit,
   type DevFeedbackMessage,
 } from "./net/devTips";
 
@@ -200,6 +201,16 @@ export class Game {
   private mpCreateWeather: WeatherMode = "dry";
   /** Create-room / lobby: show weather on the menu track before the race starts. */
   private mpWeatherPreview = false;
+  /** Event Mode buy-in: which QR is showing (Cashu creqA vs Lightning bolt11). */
+  private buyInPayMethod: "cashu" | "lightning" = "cashu";
+  private buyInInvoice: {
+    paymentRequest: string;
+    bolt11: string;
+    amountSats: number;
+    mock: boolean;
+    buyInSats?: number;
+    feeSats?: number;
+  } | null = null;
   /** Dev dashboard: server-configured dev pubkey (null = not configured / unknown yet). */
   private devPubkey: string | null = null;
   private devPubkeyFetched = false;
@@ -466,8 +477,8 @@ export class Game {
         this.updateMapVote(votes, received, total),
       onVoteResult: (trackId) => this.showMapVoteResult(trackId),
       onState: (players, at) => this.onNetState(players, at),
-      onEventInvoice: (creq, amountSats, mock, buyInSats, feeSats) =>
-        this.showBuyInInvoice(creq, amountSats, mock, buyInSats, feeSats),
+      onEventInvoice: (creq, amountSats, mock, buyInSats, feeSats, bolt11) =>
+        this.showBuyInInvoice(creq, amountSats, mock, buyInSats, feeSats, bolt11),
       onPayoutResult: (result) => this.onPayoutResult(result),
       onError: (message) => {
         this.setNetStatus(message, "bad");
@@ -623,6 +634,7 @@ export class Game {
     document.getElementById("dev-claim-all")!.onclick = () => void this.claimDevTip();
     document.getElementById("dev-withdraw-btn")!.onclick = () => void this.withdrawDevWallet();
     document.getElementById("dev-withdraw-copy")!.onclick = () => this.copyDevWithdrawToken();
+    document.getElementById("dev-orphan-copy")!.onclick = () => this.copyDevOrphanToken();
     document.getElementById("dev-god-btn")!.onclick = () => this.toggleGodMode();
     document.getElementById("home-garage-btn")!.onclick = () => {
       void this.unlockAndMaybeMenuMusic().then(() => this.openGarage());
@@ -694,6 +706,8 @@ export class Game {
     };
     // Event Mode: invoice copy, cashu token fallback submit, tip slider, pot claim.
     document.getElementById("mp-invoice-copy")!.onclick = () => this.copyBuyInInvoice();
+    document.getElementById("mp-pay-cashu")!.onclick = () => this.setBuyInPayMethod("cashu");
+    document.getElementById("mp-pay-ln")!.onclick = () => this.setBuyInPayMethod("lightning");
     document.getElementById("mp-token-submit")!.onclick = () => this.submitBuyInToken();
     document.getElementById("mp-token-input")!.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
@@ -1317,59 +1331,99 @@ export class Game {
 
     const host = this.net.isHost;
     const paidCount = event ? this.lobbyPlayers.filter((p) => event.paidIds.includes(p.id)).length : 0;
+    const unpaidNames = event
+      ? this.lobbyPlayers.filter((p) => !event.paidIds.includes(p.id)).map((p) => p.name)
+      : [];
     const allPaid = !event || (this.lobbyPlayers.length > 0 && paidCount === this.lobbyPlayers.length);
     this.el.mpStartBtn.classList.toggle("hidden", !host);
     this.el.mpStartBtn.disabled = !host || !allPaid;
+    const unpaidNote = unpaidNames.length ? ` — waiting on ${unpaidNames.join(", ")}` : "";
     this.el.mpStatus.textContent = host
       ? allPaid
         ? "All buy-ins paid — start when ready"
-        : `Waiting for buy-ins (${paidCount}/${this.lobbyPlayers.length} paid)`
+        : `Waiting for buy-ins (${paidCount}/${this.lobbyPlayers.length} paid)${unpaidNote}`
       : event
         ? allPaid
           ? "All paid — waiting for host to start…"
-          : `Waiting for buy-ins (${paidCount}/${this.lobbyPlayers.length} paid)…`
+          : `Waiting for buy-ins (${paidCount}/${this.lobbyPlayers.length} paid)${unpaidNote}`
         : "Waiting for host to start the race…";
   }
 
-  /** Event Mode: show my buy-in payment request (QR + copyable creq + token fallback). */
+  /** Event Mode: show my buy-in (Cashu creqA QR + optional Lightning invoice). */
   private showBuyInInvoice(
     paymentRequest: string,
     amountSats: number,
     mock: boolean,
     buyInSats?: number,
     feeSats?: number,
+    bolt11?: string,
   ) {
+    this.buyInInvoice = {
+      paymentRequest,
+      bolt11: String(bolt11 || "").trim(),
+      amountSats,
+      mock,
+      buyInSats,
+      feeSats,
+    };
+    this.buyInPayMethod = "cashu";
+    this.renderBuyInInvoice();
+    this.renderLobby();
+  }
+
+  private setBuyInPayMethod(method: "cashu" | "lightning") {
+    if (method === "lightning" && !this.buyInInvoice?.bolt11) return;
+    this.buyInPayMethod = method;
+    this.renderBuyInInvoice();
+  }
+
+  private renderBuyInInvoice() {
+    const inv = this.buyInInvoice;
     const box = document.getElementById("mp-invoice-box");
-    if (!box) return;
+    if (!box || !inv) return;
     box.classList.remove("is-paid");
-    const creq = document.getElementById("mp-invoice-bolt11") as HTMLInputElement | null;
-    if (creq) creq.value = paymentRequest;
+    const lightning = this.buyInPayMethod === "lightning" && !!inv.bolt11;
+    const payload = lightning ? inv.bolt11 : inv.paymentRequest;
+    const tabs = document.getElementById("mp-invoice-pay-tabs");
+    tabs?.classList.toggle("hidden", inv.mock || !inv.bolt11);
+    document.getElementById("mp-pay-cashu")?.classList.toggle("is-active", !lightning);
+    document.getElementById("mp-pay-ln")?.classList.toggle("is-active", lightning);
+    const field = document.getElementById("mp-invoice-bolt11") as HTMLInputElement | null;
+    if (field) {
+      field.value = payload;
+      field.setAttribute("aria-label", lightning ? "Lightning invoice" : "Cashu payment request");
+    }
+    const copyBtn = document.getElementById("mp-invoice-copy");
+    if (copyBtn) copyBtn.textContent = lightning ? "COPY INVOICE" : "COPY REQUEST";
     const status = document.getElementById("mp-invoice-status");
     if (status) {
-      status.textContent = mock
+      status.textContent = inv.mock
         ? "Dev mode — auto-pays in a few seconds"
-        : feeSats
-          ? `Pay ${amountSats} sats (${buyInSats} buy-in + ${feeSats} mint fee) — real Bitcoin via cashu.me`
-          : "Scan with cashu.me — real Bitcoin sats";
+        : lightning
+          ? `Pay ${inv.amountSats} sats over Lightning — minted as Cashu on Minibits`
+          : inv.feeSats
+            ? `Pay ${inv.amountSats} sats (${inv.buyInSats} buy-in + ${inv.feeSats} mint fee) — Minibits or cashu.me`
+            : "Scan with Minibits or cashu.me — real Bitcoin sats";
       status.classList.remove("is-paid");
     }
     const tokenInput = document.getElementById("mp-token-input") as HTMLInputElement | null;
     if (tokenInput) {
       tokenInput.value = "";
-      tokenInput.placeholder = mock ? "cashuA…" : `cashuA token of ${amountSats} sats…`;
+      tokenInput.placeholder = inv.mock ? "cashuA…" : `cashuA token of ${inv.amountSats} sats from Minibits…`;
     }
     const qr = document.getElementById("mp-invoice-qr") as HTMLImageElement | null;
     if (qr) {
-      // creqB is bech32m — uppercase QRs scan denser/more reliably
+      // bolt11 / creqB are bech32 (uppercase QRs scan denser). creqA is case-sensitive base64.
+      const qrText = /^(lnbc|creqb)/i.test(payload) ? payload.toUpperCase() : payload;
       void qrCode().then((QRCode) =>
-        QRCode.toDataURL(paymentRequest.toUpperCase(), { width: 168, margin: 1 })
+        QRCode.toDataURL(qrText, { width: 168, margin: 1, errorCorrectionLevel: "M" })
           .then((url) => {
             qr.src = url;
+            qr.alt = lightning ? "Lightning invoice QR code" : "Cashu payment request QR code";
           })
           .catch(() => undefined),
       );
     }
-    this.renderLobby();
   }
 
   /** Manual fallback: paste a cashuA token instead of scanning the payment request. */
@@ -1390,7 +1444,9 @@ export class Game {
       .writeText(bolt.value)
       .then(() => {
         btn.textContent = "COPIED ✓";
-        setTimeout(() => (btn.textContent = "COPY REQUEST"), 1500);
+        setTimeout(() => {
+          btn.textContent = this.buyInPayMethod === "lightning" ? "COPY INVOICE" : "COPY REQUEST";
+        }, 1500);
       })
       .catch(() => bolt.select());
   }
@@ -1954,6 +2010,50 @@ export class Game {
     set("dev-count", summary.count);
     set("dev-claimed-sats", summary.withdrawnSats ?? summary.claimedSats);
 
+    const pot = summary.custody?.pot;
+    const potBox = document.getElementById("dev-pot-wallet");
+    if (potBox) {
+      potBox.classList.remove("hidden");
+      set("dev-pot-sats", pot?.error ? pot.localSats : (pot?.unspentSats ?? pot?.localSats ?? 0));
+      const potAudit = document.getElementById("dev-pot-audit");
+      if (potAudit) potAudit.textContent = this.formatWalletAudit(pot, summary.custody?.error);
+    }
+    const tipAudit = document.getElementById("dev-tip-audit");
+    if (tipAudit) tipAudit.textContent = this.formatWalletAudit(summary.custody?.tip, null);
+
+    const liveEl = document.getElementById("dev-live-events");
+    const events = summary.liveEvents || [];
+    if (liveEl) {
+      liveEl.classList.toggle("hidden", events.length === 0);
+      liveEl.textContent = events
+        .map(
+          (e) =>
+            `${e.name}: ${e.paid}/${e.players} paid · pot ${e.potSats} sats · ${e.phase}${e.potClaimed ? " · claimed" : ""}`,
+        )
+        .join(" · ");
+    }
+
+    const rescue =
+      summary.custody?.pot?.rescueToken || summary.custody?.tip?.rescueToken || "";
+    const orphanMint = summary.custody?.pot?.orphaned
+      ? summary.custody.pot.mintUrl
+      : summary.custody?.tip?.orphaned
+        ? summary.custody.tip.mintUrl
+        : "";
+    const orphanBox = document.getElementById("dev-orphan-box");
+    const orphanInput = document.getElementById("dev-orphan-token") as HTMLInputElement | null;
+    const orphanHint = document.getElementById("dev-orphan-hint");
+    if (rescue) {
+      orphanBox?.classList.remove("hidden");
+      if (orphanInput) orphanInput.value = rescue;
+      if (orphanHint) {
+        orphanHint.textContent = `Unspent proofs on disk from ${orphanMint.replace(/^https?:\/\//, "")} — add that mint in cashu.me, then paste once.`;
+      }
+    } else {
+      orphanBox?.classList.add("hidden");
+      if (orphanInput) orphanInput.value = "";
+    }
+
     const pending = summary.pendingWithdraw;
     const withdrawBox = document.getElementById("dev-withdraw-box");
     const tokenInput = document.getElementById("dev-withdraw-token") as HTMLInputElement | null;
@@ -2016,6 +2116,35 @@ export class Game {
     const canWithdraw = walletSats > 0 && !pending?.token;
     document.getElementById("dev-withdraw-btn")?.classList.toggle("hidden", !canWithdraw);
     document.getElementById("dev-claim-all")?.classList.toggle("hidden", !pending?.token);
+  }
+
+  private formatWalletAudit(audit: DevWalletAudit | null | undefined, extraError: string | null | undefined) {
+    if (extraError && !audit) return extraError;
+    if (!audit || (!audit.file && !audit.proofs && !audit.localSats)) {
+      return "empty on this server · mint has nothing for us";
+    }
+    const bits = [
+      `${audit.unspentSats} unspent at mint`,
+      audit.spentSats ? `${audit.spentSats} spent` : "",
+      audit.pendingSats ? `${audit.pendingSats} pending` : "",
+      audit.events ? `${audit.events} event pot${audit.events === 1 ? "" : "s"}` : "",
+      audit.error ? audit.error : "",
+    ].filter(Boolean);
+    return bits.join(" · ") || "checked mint";
+  }
+
+  private copyDevOrphanToken() {
+    const input = document.getElementById("dev-orphan-token") as HTMLInputElement | null;
+    const btn = document.getElementById("dev-orphan-copy");
+    const token = input?.value.trim() ?? "";
+    if (!token || !btn) return;
+    void navigator.clipboard
+      .writeText(token)
+      .then(() => {
+        btn.textContent = "COPIED ✓";
+        setTimeout(() => (btn.textContent = "COPY RESCUE TOKEN"), 1500);
+      })
+      .catch(() => input?.select());
   }
 
   /** Export the tip wallet as a cashuA token to paste into cashu.me. */

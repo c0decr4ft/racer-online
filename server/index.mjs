@@ -6,6 +6,7 @@ import { payments, depositProofs, recordPayout, loadPayouts, savePayouts } from 
 import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { dirname, join, extname, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -211,8 +212,8 @@ function normalizeSessionId(raw) {
 /** @typedef {{ id: string, name: string, color: number, accent: number, kind: string, pubkey?: string, x: number, z: number, h: number, s: number, g: string, lap: number }} Pose */
 /** @typedef {{ id: string, name: string, color: number, room: string, ws: import('ws').WebSocket, pose: Pose, lastPoseAt: number }} Client */
 /** @typedef {{ trackId: string, order: number }} TrackVote */
-/** @typedef {{ paymentHash: string, paymentRequest: string, paidAt: number, netSats?: number }} BuyIn */
-/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, lastCrashAt: number, clients: Map<string, Client>, isEvent: boolean, buyInSats: number, buyInFeeSats: number, buyIns: Map<string, BuyIn>, potSats: number, potClaimed: boolean }} Room */
+/** @typedef {{ paymentHash: string, paymentRequest: string, bolt11?: string, paidAt: number, netSats?: number }} BuyIn */
+/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, lastCrashAt: number, clients: Map<string, Client>, isEvent: boolean, buyInSats: number, buyInFeeSats: number, buyIns: Map<string, BuyIn>, potSats: number, potId: string, potClaimed: boolean }} Room */
 /** @typedef {{ name: string, timeMs: number, bestLapMs?: number, at: number, trackId?: string, pubkey: string, eventId?: string }} BoardEntry */
 /** @typedef {Record<string, BoardEntry[]>} BoardStore */
 /** @typedef {{ at: number, count: number }} PresenceSample */
@@ -361,6 +362,22 @@ async function devTipsSummary() {
   const walletSats = Math.max(0, Math.round(Number(await payments.tipBalanceSats()) || 0));
   const withdrawnSats = Math.max(0, Math.round(Number(payments.withdrawnSats()) || 0));
   const pendingWithdraw = payments.pendingWithdraw();
+  let custody = { mock: payments.mock, mintUrl: payments.mintUrl, pot: null, tip: null, error: null };
+  try {
+    custody = await payments.auditCustody();
+  } catch (err) {
+    custody.error = String(err?.message || err).slice(0, 160);
+  }
+  const liveEvents = [...rooms.values()]
+    .filter((room) => room.isEvent)
+    .map((room) => ({
+      name: room.name,
+      players: room.clients.size,
+      paid: [...room.buyIns.values()].filter((b) => b.paidAt > 0).length,
+      potSats: room.potSats || 0,
+      potClaimed: room.potClaimed === true,
+      phase: room.phase,
+    }));
   return {
     ok: true,
     mint: payments.mintUrl,
@@ -375,6 +392,8 @@ async function devTipsSummary() {
       ? { amountSats: pendingWithdraw.amountSats, at: pendingWithdraw.at, token: pendingWithdraw.token }
       : null,
     tips: list,
+    custody,
+    liveEvents,
   };
 }
 
@@ -826,7 +845,8 @@ function presenceSnapshot(store) {
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept");
+  res.setHeader("Access-Control-Max-Age", "86400");
 }
 
 /* ── Abuse guards ─────────────────────────────────────────────── */
@@ -1102,13 +1122,20 @@ async function createBuyInInvoice(room, client) {
         `Sats Racer event ${room.name} — buy-in ${room.buyInSats} sats` +
         (feeSats ? ` + ${feeSats} mint fee` : ""),
       baseUrl: PUBLIC_BASE_URL,
+      potId: room.potId,
     });
     // Room may have been replaced/deleted or the racer left while awaiting
     if (rooms.get(room.name) !== room || !room.clients.has(client.id)) return;
-    room.buyIns.set(client.id, { paymentHash: inv.paymentHash, paymentRequest: inv.paymentRequest, paidAt: 0 });
+    room.buyIns.set(client.id, {
+      paymentHash: inv.paymentHash,
+      paymentRequest: inv.paymentRequest,
+      bolt11: inv.bolt11 || "",
+      paidAt: 0,
+    });
     send(client.ws, {
       t: "eventInvoice",
       paymentRequest: inv.paymentRequest,
+      bolt11: inv.bolt11 || "",
       amountSats: totalSats,
       buyInSats: room.buyInSats,
       feeSats,
@@ -1192,6 +1219,7 @@ function admitClient(ws, msg, mode) {
       buyInFeeSats: 0,
       buyIns: new Map(),
       potSats: 0,
+      potId: msg.event ? randomUUID() : "",
       potClaimed: false,
       payoutTipSats: 0,
       payoutTipCollected: false,
@@ -1388,21 +1416,33 @@ const httpServer = createServer(async (req, res) => {
     }
     try {
       if (payments.mock) throw new Error("mock mode");
-      const payload = JSON.parse(body || "{}");
-      const found = findBuyInByHash(String(payload.id || ""));
+      const raw = JSON.parse(body || "{}");
+      const payload = raw?.payload && typeof raw.payload === "object" ? raw.payload : raw;
+      const found = findBuyInByHash(String(payload.id || raw.id || payload.paymentId || ""));
       if (!found) {
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: false, error: "unknown payment id" }));
         return;
       }
       const buyIn = found.room.buyIns.get(found.clientId);
+      // Idempotent: a timeout after a successful mint-swap looks like a failure
+      // in the wallet, which then retries. 409 made that retry look like a
+      // second error even though the sats were already in the pot.
+      if (buyIn.paidAt) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
       const fresh = await payments.receivePayload({
         paymentHash: buyIn.paymentHash,
         amountSats: found.room.buyInSats,
         payload,
+        potId: found.room.potId,
       });
-      depositProofs(fresh);
-      markBuyInPaid(found.room, found.clientId, fresh.reduce((a, p) => a + Number(p.amount), 0));
+      const netSats = Array.isArray(fresh) && fresh.length
+        ? fresh.reduce((a, p) => a + Number(p.amount), 0)
+        : found.room.buyInSats;
+      markBuyInPaid(found.room, found.clientId, netSats);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
     } catch (err) {
@@ -1465,7 +1505,7 @@ const httpServer = createServer(async (req, res) => {
             rec.tipSats = Number.isFinite(net) && net > 0 ? net : rec.tipSats;
           } else {
             // Never left the pot — collect now.
-            const result = await payments.collectTip(Math.round(Number(rec.tipSats)));
+            const result = await payments.collectTip(Math.round(Number(rec.tipSats)), rec.potId);
             rec.tipSats = result.sats;
             if (!result.collected) {
               rec.tipToken = result.token || rec.tipToken;
@@ -1839,7 +1879,7 @@ wss.on("connection", (ws) => {
           // winner's checkout shows the real split.
           const info = eventInfo(room);
           if (info) {
-            const perSend = Math.max(0, await payments.sendFeeSats().catch(() => 0));
+            const perSend = Math.max(0, await payments.sendFeeSats(room.potId).catch(() => 0));
             info.potFeeSats = perSend * 2;
           }
           if (rooms.get(room.name) !== room) return;
@@ -1894,7 +1934,7 @@ wss.on("connection", (ws) => {
             amountSats: room.buyInSats,
             token: String(msg.token || ""),
           });
-          depositProofs(fresh);
+          await depositProofs(fresh, room.potId);
           markBuyInPaid(room, client.id, fresh.reduce((a, p) => a + Number(p.amount), 0));
         } catch (err) {
           send(ws, { t: "error", message: `token rejected — ${String(err?.message || err).slice(0, 100)}` });
@@ -1918,12 +1958,12 @@ wss.on("connection", (ws) => {
           // FIRST and whole at the chosen percent, then swapped into the tip
           // wallet at the mint so the bearer token never sits around to be
           // double-spent. The winner then gets what's left minus their send fee.
-          const perSendFee = Math.max(0, await payments.sendFeeSats().catch(() => 0));
+          const perSendFee = Math.max(0, await payments.sendFeeSats(room.potId).catch(() => 0));
           const balanceNow = async () =>
             Promise.resolve()
-              .then(() => payments.potBalanceSats?.())
-              .then((v) => (Number.isFinite(v) ? v : room.potSats))
-              .catch(() => room.potSats);
+              .then(() => payments.potBalanceSats?.(room.potId))
+              .then((v) => (Number.isFinite(v) ? v : 0))
+              .catch(() => 0);
 
           // 1) Dev tip first — collect into the tip wallet. Skip if a previous
           //    attempt already moved it (winner send may have failed after).
@@ -1945,7 +1985,7 @@ wss.on("connection", (ws) => {
             const tipWanted = Math.floor((room.potSats * tipPercent) / 100);
             const tipCap = Math.min(tipWanted, Math.max(0, (await balanceNow()) - perSendFee));
             if (tipCap > 0) {
-              const result = await payments.collectTip(tipCap);
+              const result = await payments.collectTip(tipCap, room.potId);
               tipSats = result.sats;
               tipCollected = result.collected === true;
               room.payoutTipSats = tipSats;
@@ -1957,19 +1997,20 @@ wss.on("connection", (ws) => {
             }
           }
 
-          // 2) Winner gets the rest, minus the winner's own send fee.
+          // 2) Winner gets everything left in THIS event's pot, minus send fee.
           const remaining = await balanceNow();
-          const winnerSats = Math.max(0, Math.min(room.potSats - tipSats, remaining - perSendFee));
+          const winnerSats = Math.max(0, remaining - perSendFee);
           if (winnerSats <= 0 && tipSats <= 0) throw new Error("pot too small to pay out");
           let winnerToken = "";
           if (winnerSats > 0) {
-            const sent = await payments.sendToken(winnerSats, { includeFees: true });
+            const sent = await payments.sendToken(winnerSats, { includeFees: true, potId: room.potId });
             winnerToken = sent.token;
           }
 
-          const feeSats = room.potSats - winnerSats - tipSats;
+          const feeSats = Math.max(0, room.potSats - winnerSats - tipSats);
           recordPayout({
             room: room.name,
+            potId: room.potId,
             winnerId: client.id,
             winnerPubkey: client.pose.pubkey || null,
             potSats: room.potSats,
@@ -2048,21 +2089,24 @@ setInterval(() => {
   }
 }, NET_TICK_MS);
 
-// Event Mode: mock adapter auto-pays after ~3s — poll to notice. Real mode is
-// push-based: payments land via POST /api/ecash/pay (no polling needed).
+// Event Mode: mock auto-pays after ~3s; live mode also polls Lightning mint
+// quotes (Cashu POSTs land via /api/ecash/pay without polling).
 setInterval(() => {
-  if (!payments.isPaid) return;
+  if (!payments.settleIfPaid) return;
   for (const room of rooms.values()) {
     if (!room.isEvent || room.phase !== "lobby") continue;
     for (const [id, buyIn] of room.buyIns) {
       if (buyIn.paidAt > 0) continue;
-      void payments.isPaid(buyIn.paymentHash).then((paid) => {
-        if (!paid || rooms.get(room.name) !== room) return;
-        markBuyInPaid(room, id);
+      void payments.settleIfPaid(buyIn.paymentHash).then((settled) => {
+        if (!settled || rooms.get(room.name) !== room) return;
+        if (buyIn.paidAt > 0) return;
+        markBuyInPaid(room, id, settled.netSats);
+      }).catch((err) => {
+        console.warn("[event] settleIfPaid failed:", err?.message || err);
       });
     }
   }
-}, 3_000);
+}, 2_000);
 
 // Drop stale presence sessions periodically so GET stays fresh without heartbeats.
 setInterval(() => {

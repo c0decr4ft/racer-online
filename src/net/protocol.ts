@@ -145,10 +145,12 @@ export type ServerMsg =
     }
   | { t: "state"; players: PlayerPose[]; at?: number }
   | { t: "start"; at: number; trackId: string; kind: NetVehicleKind; weather: NetWeatherMode }
-  /** Event Mode — your personal buy-in request (NUT-18 creq, payable by cashu.me & co). */
+  /** Event Mode — your personal buy-in (NUT-18 creqA + optional Lightning invoice). */
   | {
       t: "eventInvoice";
       paymentRequest: string;
+      /** Minibits mint quote (bolt11) — pay with any Lightning wallet. */
+      bolt11?: string;
       /** Total to pay (buyInSats + feeSats). */
       amountSats: number;
       buyInSats?: number;

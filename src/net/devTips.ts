@@ -25,6 +25,39 @@ export type DevPendingWithdraw = {
   token: string;
 };
 
+export type DevWalletAudit = {
+  label: string;
+  file: boolean;
+  mintUrl: string;
+  localSats: number;
+  proofs: number;
+  unspentSats: number;
+  spentSats: number;
+  pendingSats: number;
+  orphaned: boolean;
+  receivedIds?: number;
+  events?: number;
+  error?: string | null;
+  rescueToken?: string | null;
+};
+
+export type DevCustody = {
+  mock?: boolean;
+  mintUrl: string;
+  pot: DevWalletAudit | null;
+  tip: DevWalletAudit | null;
+  error?: string | null;
+};
+
+export type DevLiveEvent = {
+  name: string;
+  players: number;
+  paid: number;
+  potSats: number;
+  potClaimed: boolean;
+  phase: string;
+};
+
 export type DevTipsSummary = {
   ok: boolean;
   mint: string;
@@ -39,6 +72,8 @@ export type DevTipsSummary = {
   pendingWithdraw?: DevPendingWithdraw | null;
   tips: DevTip[];
   marked?: number;
+  custody?: DevCustody;
+  liveEvents?: DevLiveEvent[];
 };
 
 type DevSigner = {

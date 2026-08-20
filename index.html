@@ -539,12 +539,16 @@
               <p id="mp-buyin-banner" class="mp-buyin-banner">BUY-IN · 100 SATS</p>
               <p class="mp-buyin-note">Race starts when everyone's paid · unpaid requests expire · pots are final once racing starts</p>
               <div id="mp-invoice-box" class="mp-invoice-box">
+                <div id="mp-invoice-pay-tabs" class="mp-invoice-pay-tabs hidden">
+                  <button id="mp-pay-cashu" class="garage-kind-btn is-active" type="button">CASHU</button>
+                  <button id="mp-pay-ln" class="garage-kind-btn" type="button">LIGHTNING</button>
+                </div>
                 <img id="mp-invoice-qr" class="mp-invoice-qr" alt="Buy-in payment request QR code" />
                 <input id="mp-invoice-bolt11" class="mp-invoice-bolt11" type="text" readonly aria-label="Buy-in payment request" />
                 <div class="mp-invoice-actions">
                   <button id="mp-invoice-copy" class="btn-ghost" type="button">COPY REQUEST</button>
                 </div>
-                <p class="event-or">— or paste a cashuA token —</p>
+                <p class="event-or">— or paste a cashuA token from the Minibits mint —</p>
                 <div class="mp-invoice-actions">
                   <input id="mp-token-input" class="mp-invoice-bolt11" type="text" placeholder="cashuA…" spellcheck="false" autocomplete="off" aria-label="Paste cashu token" />
                   <button id="mp-token-submit" type="button">PAY</button>
@@ -595,6 +599,11 @@
           <p class="eyebrow">DEV DASHBOARD</p>
           <h1>TIPS</h1>
           <p id="dev-status" class="tagline board-source">Loading…</p>
+          <div id="dev-pot-wallet" class="dev-wallet dev-wallet-pot hidden">
+            <p class="dev-wallet-label">EVENT POT</p>
+            <p class="dev-wallet-amount"><span id="dev-pot-sats">0</span><span class="dev-wallet-unit">SATS</span></p>
+            <p id="dev-pot-audit" class="dev-wallet-stats">—</p>
+          </div>
           <div id="dev-wallet" class="dev-wallet hidden">
             <p class="dev-wallet-label">TIP WALLET</p>
             <p class="dev-wallet-amount"><span id="dev-pending-sats">0</span><span class="dev-wallet-unit">SATS</span></p>
@@ -603,6 +612,15 @@
               <span><span id="dev-count">0</span> tips</span>
               <span><span id="dev-claimed-sats">0</span> withdrawn</span>
             </p>
+            <p id="dev-tip-audit" class="dev-wallet-stats">—</p>
+          </div>
+          <p id="dev-live-events" class="dev-live-events hidden"></p>
+          <div id="dev-orphan-box" class="event-token-box hidden">
+            <p id="dev-orphan-hint" class="event-token-hint">Unspent proofs on disk from another mint — paste into a wallet that has that mint.</p>
+            <input id="dev-orphan-token" class="event-payout-token" type="text" readonly aria-label="Orphan mint token" />
+            <div class="event-token-actions">
+              <button id="dev-orphan-copy" class="btn-ghost" type="button">COPY RESCUE TOKEN</button>
+            </div>
           </div>
           <ol id="dev-tips-list" class="dev-tips-list"></ol>
           <div id="dev-withdraw-box" class="event-token-box hidden">

@@ -416,13 +416,14 @@ export type NetHandlers = {
     maxPlayers: number;
   }) => void;
   onStart: (at: number, trackId: string, kind: NetVehicleKind, weather: NetWeatherMode) => void;
-  /** Event Mode — your buy-in payment request (creq) arrived from the server. */
+  /** Event Mode — your buy-in payment request (creqA) and optional Lightning invoice. */
   onEventInvoice: (
     paymentRequest: string,
     amountSats: number,
     mock: boolean,
     buyInSats?: number,
     feeSats?: number,
+    bolt11?: string,
   ) => void;
   /** Event Mode — pot claim result; `token` is the cashuA payout to claim in cashu.me. */
   onPayoutResult: (result: {
@@ -499,8 +500,14 @@ export class NetClient {
   phase: LobbyPhase | "" = "";
   /** Event Mode room state — null in normal rooms. */
   event: EventRoomInfo | null = null;
-  /** Event Mode — this client's own buy-in payment request (creq). */
-  myBuyIn: { paymentRequest: string; amountSats: number; buyInSats?: number; feeSats?: number } | null = null;
+  /** Event Mode — this client's own buy-in (Cashu creqA + optional Lightning invoice). */
+  myBuyIn: {
+    paymentRequest: string;
+    bolt11?: string;
+    amountSats: number;
+    buyInSats?: number;
+    feeSats?: number;
+  } | null = null;
   /** Bumps on each connect/disconnect so stale socket handlers are ignored. */
   private connGen = 0;
   /** Lobby/race ping loop — keeps a live latency reading even outside races. */
@@ -765,6 +772,7 @@ export class NetClient {
       } else if (msg.t === "eventInvoice") {
         this.myBuyIn = {
           paymentRequest: msg.paymentRequest,
+          bolt11: msg.bolt11,
           amountSats: msg.amountSats,
           buyInSats: msg.buyInSats,
           feeSats: msg.feeSats,
@@ -778,6 +786,7 @@ export class NetClient {
           !!msg.mock,
           msg.buyInSats,
           msg.feeSats,
+          msg.bolt11,
         );
       } else if (msg.t === "payoutResult") {
         this.handlers.onPayoutResult({
