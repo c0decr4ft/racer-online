@@ -376,7 +376,11 @@ function collectBlobEvents(data: unknown): Record<string, RawEvent[]> {
   const lists: Record<string, unknown[]> = {};
   if (obj && typeof obj === "object" && obj.byTrack && typeof obj.byTrack === "object") {
     for (const [id, list] of Object.entries(obj.byTrack as Record<string, unknown>)) {
-      if (Array.isArray(list)) lists[normalizeTrackId(id)] = list;
+      // Skip unknown / legacy ids (e.g. twin-lakes → oval-circuit rename).
+      // normalizeTrackId would map them onto forest-loop and a later assignment
+      // would clobber that track's real event list before the next PUT.
+      if (!isTrackId(id) || !Array.isArray(list)) continue;
+      lists[id] = list;
     }
   } else if (Array.isArray(data)) {
     lists[DEFAULT_TRACK_ID] = data;

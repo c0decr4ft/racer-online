@@ -39,46 +39,141 @@ function emptyStore() {
   return { mintUrl: CASHU_MINT_URL, proofs: [], withdrawnSats: 0, pendingWithdraw: null };
 }
 
+function jsonReplacer(_key, v) {
+  return typeof v === "bigint" ? v.toString() : v;
+}
+
+function proofsSum(proofs) {
+  return (proofs || []).reduce((a, p) => a + Number(p.amount), 0);
+}
+
+function mintSlug(url) {
+  return String(url || "unknown")
+    .replace(/^https?:\/\//, "")
+    .replace(/[^a-zA-Z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 48);
+}
+
+/**
+ * Serialize load→await→save mutations per wallet file. Without this, a buy-in
+ * deposit can interleave with an in-flight payout `wallet.send` and the later
+ * save clobbers the deposit (real sats vanish from the pot file).
+ */
+const storeChains = new Map();
+function withStoreLock(path, fn) {
+  const prev = storeChains.get(path) || Promise.resolve();
+  const run = prev.then(() => fn(), () => fn());
+  storeChains.set(
+    path,
+    run.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return run;
+}
+
+/**
+ * If the on-disk wallet was written for a different mint and still holds
+ * proofs, back it up before returning an empty store for the configured mint.
+ *
+ * Previously we returned emptyStore() and the next deposit/payout save
+ * silently overwrote the file — destroying unclaimed pot/tip sats whenever
+ * CASHU_MINT_URL changed (e.g. Coinos → Minibits).
+ */
+function backupMismatchedStore(path, raw, data) {
+  const sats = proofsSum(data.proofs);
+  const backupPath = `${path}.bak-${mintSlug(data.mintUrl)}-${Date.now()}`;
+  writeFileSync(backupPath, raw);
+  const fresh = emptyStore();
+  writeFileSync(path, JSON.stringify(fresh, jsonReplacer, 2));
+  console.error(
+    `[cashu] mint URL changed (${data.mintUrl} → ${CASHU_MINT_URL}). ` +
+      `Backed up ${data.proofs.length} proofs (~${sats} sats) to ${backupPath}. ` +
+      `Those tokens are only spendable on the old mint — restore CASHU_MINT_URL or redeem the backup manually.`,
+  );
+  return fresh;
+}
+
+function normalizeStore(data) {
+  return {
+    mintUrl: CASHU_MINT_URL,
+    proofs: data.proofs.map((p) => ({ ...p, amount: BigInt(p.amount ?? 0) })),
+    withdrawnSats: Math.max(0, Math.round(Number(data.withdrawnSats) || 0)),
+    pendingWithdraw:
+      data.pendingWithdraw && typeof data.pendingWithdraw.token === "string"
+        ? {
+            token: data.pendingWithdraw.token,
+            amountSats: Math.max(0, Math.round(Number(data.pendingWithdraw.amountSats) || 0)),
+            at: Number(data.pendingWithdraw.at) || Date.now(),
+          }
+        : null,
+  };
+}
+
 function loadStore(path) {
   try {
     if (!existsSync(path)) return emptyStore();
-    const data = JSON.parse(readFileSync(path, "utf8"));
-    if (data?.mintUrl !== CASHU_MINT_URL || !Array.isArray(data?.proofs)) {
+    const raw = readFileSync(path, "utf8");
+    const data = JSON.parse(raw);
+    if (!Array.isArray(data?.proofs)) return emptyStore();
+    if (data.mintUrl !== CASHU_MINT_URL) {
+      if (data.proofs.length > 0) return backupMismatchedStore(path, raw, data);
       return emptyStore();
     }
-    // JSON round-trip stringifies amounts — v4 wallets need real bigints
-    return {
-      mintUrl: CASHU_MINT_URL,
-      proofs: data.proofs.map((p) => ({ ...p, amount: BigInt(p.amount ?? 0) })),
-      withdrawnSats: Math.max(0, Math.round(Number(data.withdrawnSats) || 0)),
-      pendingWithdraw:
-        data.pendingWithdraw && typeof data.pendingWithdraw.token === "string"
-          ? {
-              token: data.pendingWithdraw.token,
-              amountSats: Math.max(0, Math.round(Number(data.pendingWithdraw.amountSats) || 0)),
-              at: Number(data.pendingWithdraw.at) || Date.now(),
-            }
-          : null,
-    };
-  } catch {
+    return normalizeStore(data);
+  } catch (err) {
+    // Mint-mismatch backup/write failures must not fall through to emptyStore —
+    // that would let the next save destroy the only copy of the proofs.
+    if (existsSync(path)) {
+      try {
+        const data = JSON.parse(readFileSync(path, "utf8"));
+        if (Array.isArray(data?.proofs) && data.proofs.length > 0 && data.mintUrl !== CASHU_MINT_URL) {
+          console.error(
+            `[cashu] CRITICAL: cannot migrate ${path} after mint change — leaving file untouched:`,
+            err?.message || err,
+          );
+          throw err;
+        }
+      } catch (inner) {
+        if (inner === err) throw err;
+        /* parse failed — fall through to empty */
+      }
+    }
     return emptyStore();
   }
 }
 
 function saveStore(path, store) {
+  // Refuse to clobber a different-mint wallet that still holds proofs.
+  if (existsSync(path)) {
+    try {
+      const existing = JSON.parse(readFileSync(path, "utf8"));
+      if (
+        existing?.mintUrl &&
+        existing.mintUrl !== store.mintUrl &&
+        Array.isArray(existing.proofs) &&
+        existing.proofs.length > 0
+      ) {
+        const msg =
+          `refusing to overwrite ${path} (mint ${existing.mintUrl} → ${store.mintUrl}, ` +
+          `${existing.proofs.length} proofs still on disk)`;
+        console.error(`[cashu] CRITICAL: ${msg}`);
+        throw new Error(msg);
+      }
+    } catch (err) {
+      if (String(err?.message || err).includes("refusing to overwrite")) throw err;
+      /* unreadable existing file — proceed with write */
+    }
+  }
   try {
     // v4 proofs use bigint amounts — JSON can't serialize them without a replacer
-    writeFileSync(
-      path,
-      JSON.stringify(store, (key, v) => (typeof v === "bigint" ? v.toString() : v), 2),
-    );
+    writeFileSync(path, JSON.stringify(store, jsonReplacer, 2));
   } catch (err) {
     console.error("[cashu] failed to persist proofs — money at risk!", err?.message || err);
+    throw err;
   }
-}
-
-function proofsSum(proofs) {
-  return (proofs || []).reduce((a, p) => a + Number(p.amount), 0);
 }
 
 function loadPotStore() {
@@ -299,23 +394,26 @@ async function cashuReceiveToken({ amountSats, token }) {
  * With `includeFees`, the token carries the mint's input fee on top, so the
  * receiver redeems the EXACT amount (fee paid by the sending wallet).
  */
-async function sendTokenFromStore(path, amountSats, { includeFees = false } = {}) {
+async function sendTokenFromStore(path, amountSats, { includeFees = false, alreadyLocked = false } = {}) {
   const wallet = await getWallet();
-  const store = loadStore(path);
-  const total = proofsSum(store.proofs);
-  if (total < amountSats) throw new Error(`wallet short (${total} < ${amountSats} sats)`);
-  let keep, send;
-  try {
-    ({ keep, send } = await wallet.send(amountSats, store.proofs, { includeFees }));
-  } catch (err) {
-    if (!includeFees) throw err;
-    console.warn("[cashu] fee-inclusive send failed — sending plain token:", err?.message || err);
-    ({ keep, send } = await wallet.send(amountSats, store.proofs));
-  }
-  store.proofs = keep;
-  saveStore(path, store);
-  const { getEncodedToken } = await import("@cashu/cashu-ts");
-  return { token: getEncodedToken({ mint: CASHU_MINT_URL, proofs: send }) };
+  const run = async () => {
+    const store = loadStore(path);
+    const total = proofsSum(store.proofs);
+    if (total < amountSats) throw new Error(`wallet short (${total} < ${amountSats} sats)`);
+    let keep, send;
+    try {
+      ({ keep, send } = await wallet.send(amountSats, store.proofs, { includeFees }));
+    } catch (err) {
+      if (!includeFees) throw err;
+      console.warn("[cashu] fee-inclusive send failed — sending plain token:", err?.message || err);
+      ({ keep, send } = await wallet.send(amountSats, store.proofs));
+    }
+    store.proofs = keep;
+    saveStore(path, store);
+    const { getEncodedToken } = await import("@cashu/cashu-ts");
+    return { token: getEncodedToken({ mint: CASHU_MINT_URL, proofs: send }) };
+  };
+  return alreadyLocked ? run() : withStoreLock(path, run);
 }
 
 async function cashuSendToken(amountSats, { includeFees = false } = {}) {
@@ -332,9 +430,11 @@ async function cashuCollectTip(amountSats) {
   const { token } = await sendTokenFromStore(PROOFS_PATH, amountSats, { includeFees: true });
   try {
     const fresh = await cashuReceiveToken({ amountSats: 1, token });
-    const store = loadTipStore();
-    store.proofs.push(...fresh);
-    saveTipStore(store);
+    await withStoreLock(TIPS_PATH, () => {
+      const store = loadTipStore();
+      store.proofs.push(...fresh);
+      saveTipStore(store);
+    });
     const sats = proofsSum(fresh);
     console.log(`[cashu] tip collected — ${sats} sats into tip wallet`);
     return { sats, collected: true };
@@ -347,33 +447,42 @@ async function cashuCollectTip(amountSats) {
 /** Redeem a leftover tip bearer token into the tip wallet (burns it at the mint). */
 async function cashuReceiveTipToken(token) {
   const fresh = await cashuReceiveToken({ amountSats: 1, token: String(token || "").trim() });
-  const store = loadTipStore();
-  store.proofs.push(...fresh);
-  saveTipStore(store);
+  await withStoreLock(TIPS_PATH, () => {
+    const store = loadTipStore();
+    store.proofs.push(...fresh);
+    saveTipStore(store);
+  });
   return proofsSum(fresh);
 }
 
 /** Export sats from the tip wallet as a cashuA token (for cashu.me). Reuses a pending withdraw. */
 async function cashuWithdrawTip(amountSats) {
-  const store = loadTipStore();
-  if (store.pendingWithdraw?.token) return store.pendingWithdraw;
   const amt = Math.max(0, Math.round(Number(amountSats) || 0));
   if (amt <= 0) throw new Error("nothing to withdraw");
-  const { token } = await sendTokenFromStore(TIPS_PATH, amt, { includeFees: true });
-  const next = loadTipStore();
-  next.pendingWithdraw = { token, amountSats: amt, at: Date.now() };
-  saveTipStore(next);
-  return next.pendingWithdraw;
+  return withStoreLock(TIPS_PATH, async () => {
+    const store = loadTipStore();
+    if (store.pendingWithdraw?.token) return store.pendingWithdraw;
+    const { token } = await sendTokenFromStore(TIPS_PATH, amt, {
+      includeFees: true,
+      alreadyLocked: true,
+    });
+    const next = loadTipStore();
+    next.pendingWithdraw = { token, amountSats: amt, at: Date.now() };
+    saveTipStore(next);
+    return next.pendingWithdraw;
+  });
 }
 
-function cashuMarkWithdrawCopied() {
-  const store = loadTipStore();
-  if (!store.pendingWithdraw) return 0;
-  const n = store.pendingWithdraw.amountSats;
-  store.withdrawnSats += n;
-  store.pendingWithdraw = null;
-  saveTipStore(store);
-  return n;
+async function cashuMarkWithdrawCopied() {
+  return withStoreLock(TIPS_PATH, () => {
+    const store = loadTipStore();
+    if (!store.pendingWithdraw) return 0;
+    const n = store.pendingWithdraw.amountSats;
+    store.withdrawnSats += n;
+    store.pendingWithdraw = null;
+    saveTipStore(store);
+    return n;
+  });
 }
 
 function cashuPendingWithdraw() {
@@ -422,11 +531,13 @@ export const payments = {
 };
 
 /** Record fresh buy-in proofs into the pot wallet store (real mode). */
-export function depositProofs(freshProofs) {
+export async function depositProofs(freshProofs) {
   if (PAYMENTS_MOCK || !Array.isArray(freshProofs) || !freshProofs.length) return;
-  const store = loadPotStore();
-  store.proofs.push(...freshProofs);
-  savePotStore(store);
+  await withStoreLock(PROOFS_PATH, () => {
+    const store = loadPotStore();
+    store.proofs.push(...freshProofs);
+    savePotStore(store);
+  });
 }
 
 /** Append a payout attempt to the audit log (gitignored). */
