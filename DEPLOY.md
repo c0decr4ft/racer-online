@@ -53,7 +53,7 @@ per swap.
 
 | Step | Who | Amount | Where it lands |
 | --- | --- | --- | --- |
-| 1. Buy-in | Each racer | 100 + 1 = **101 sats** | Paid from their Cashu wallet (Coinos mint) |
+| 1. Buy-in | Each racer | 100 + 1 = **101 sats** | Paid from their Cashu wallet (Minibits mint) |
 | 2. Mint receive | Mint | **~1 sat** each | Mint fee for swapping the buy-in in |
 | 3. Pot | Event wallet | 4 × 100 = **400 sats** | `server/cashu-proofs.json` until claimed |
 | 4. Tip (2%) | Dev tip wallet | floor(400 × 2%) = **8 sats** | Auto-swapped into `server/cashu-tips.json` (mint burns the old secrets) |
@@ -70,9 +70,9 @@ Formula for any race:
 
 ### Mint + custody
 
-- **Default mint: Coinos** (`https://mint.coinos.io`) — real Lightning-backed
-  sats. In cashu.me: add that mint, mint sats by paying a Lightning invoice, then
-  scan the event buy-in QR.
+- **Default mint: Minibits** (`https://mint.minibits.cash/Bitcoin`) — real
+  Lightning-backed sats. In cashu.me (or the Minibits app): add that mint, mint
+  sats by paying a Lightning invoice, then scan the event buy-in QR.
 - **Test/fake sats:** only for local tests. `RACER_PAYMENTS_MOCK=1` (auto-pay fake
   sats) or `CASHU_MINT_URL=https://testnut.cashu.space` (Testnut). Do not use
   Testnut in production — those invoices auto-pay and are not real Bitcoin.
