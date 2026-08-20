@@ -74,6 +74,26 @@ function withStoreLock(path, fn) {
   return run;
 }
 
+const receiveTails = new Map();
+function withReceiveLock(paymentHash, fn) {
+  const key = String(paymentHash || "");
+  const prev = receiveTails.get(key) || Promise.resolve();
+  const run = prev.catch(() => {}).then(fn);
+  receiveTails.set(
+    key,
+    run.then(
+      () => {},
+      () => {},
+    ),
+  );
+  return run;
+}
+
+function isSpentError(err) {
+  const msg = String(err?.message || err).toLowerCase();
+  return /already spent|token already spent|proof already spent|inputs may already be spent|spent secret/.test(msg);
+}
+
 function requirePotId(potId) {
   const id = String(potId || "").trim().toLowerCase();
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)) {
@@ -617,13 +637,20 @@ async function cashuSettleIfPaid(paymentHash) {
   }
 }
 
-/** Normalize incoming proofs (v4: amounts must be bigint) and receive via encoded token. */
-async function receiveProofsFromMint(mintUrl, rawProofs) {
-  const { getEncodedToken } = await import("@cashu/cashu-ts");
+/** Swap incoming proofs at the mint. Pass the proof array (not an encoded token)
+ *  so incomplete DLEQ from phone-wallet POSTs cannot fail token encoding after
+ *  the payer has already given up the sats. */
+async function receiveProofsFromMint(_mintUrl, rawProofs) {
   const wallet = await getWallet();
-  const proofs = rawProofs.map((p) => ({ ...p, amount: BigInt(p.amount) }));
-  const token = getEncodedToken({ mint: canonicalizeMint(mintUrl) || mintUrl, proofs });
-  return wallet.receive(token);
+  await wallet.loadMint();
+  const proofs = rawProofs.map((p) => {
+    const next = { ...p, amount: BigInt(p.amount ?? 0) };
+    // DLEQ without `r` cannot be verified and trips cashu-ts before the swap.
+    if (!next.dleq || next.dleq.r == null) delete next.dleq;
+    return next;
+  });
+  if (!proofs.length) throw new Error("no proofs in payment");
+  return wallet.receive(proofs, { requireDleq: false });
 }
 
 function payloadMint(payload) {
@@ -645,6 +672,10 @@ function payloadProofs(payload) {
  * mismatch/shortfall — callers must treat that as unpaid.
  */
 async function cashuReceivePayload({ paymentHash, amountSats, payload: raw, potId }) {
+  return withReceiveLock(paymentHash, () => cashuReceivePayloadLocked({ paymentHash, amountSats, payload: raw, potId }));
+}
+
+async function cashuReceivePayloadLocked({ paymentHash, amountSats, payload: raw, potId }) {
   const payload = raw?.payload && typeof raw.payload === "object" ? raw.payload : raw;
   const payId = String(payload.id || payload.paymentId || raw.id || "");
   if (payId && payId !== paymentHash) {
@@ -655,19 +686,31 @@ async function cashuReceivePayload({ paymentHash, amountSats, payload: raw, potI
     return [];
   }
   const tokenStr = typeof payload.token === "string" ? payload.token.trim() : "";
-  const fresh = tokenStr
-    ? await cashuReceiveToken({ amountSats, token: tokenStr })
-    : await (async () => {
-        const mint = canonicalizeMint(payloadMint(payload));
-        if (!sameMint(mint, CASHU_MINT_URL)) {
-          throw new Error(`wrong mint (${mint || "none"} — this event uses ${CASHU_MINT_URL})`);
-        }
-        if (String(payload.unit || "sat").toLowerCase() !== "sat") throw new Error("wrong unit");
-        const proofs = payloadProofs(payload);
-        const gross = proofs.reduce((a, p) => a + BigInt(p.amount), 0n);
-        if (gross < BigInt(amountSats)) throw new Error(`underpaid (${gross} < ${amountSats} sats)`);
-        return receiveProofsFromMint(mint, proofs);
-      })();
+  let fresh;
+  try {
+    fresh = tokenStr
+      ? await cashuReceiveToken({ amountSats, token: tokenStr })
+      : await (async () => {
+          const mint = canonicalizeMint(payloadMint(payload)) || CASHU_MINT_URL;
+          if (!sameMint(mint, CASHU_MINT_URL)) {
+            throw new Error(`wrong mint (${mint || "none"} — this event uses ${CASHU_MINT_URL})`);
+          }
+          if (String(payload.unit || "sat").toLowerCase() !== "sat") throw new Error("wrong unit");
+          const proofs = payloadProofs(payload);
+          const gross = proofs.reduce((a, p) => a + BigInt(p.amount ?? 0), 0n);
+          if (gross < BigInt(amountSats)) throw new Error(`underpaid (${gross} < ${amountSats} sats)`);
+          return receiveProofsFromMint(mint, proofs);
+        })();
+  } catch (err) {
+    if (alreadyReceived(paymentHash, potId)) {
+      console.log(`[cashu] buy-in ${paymentHash} landed while receive errored — treating as paid`);
+      return [];
+    }
+    if (isSpentError(err)) {
+      throw new Error("proofs already spent at the mint — if the lobby did not mark you paid, rejoin and paste a new token");
+    }
+    throw err;
+  }
   try {
     await persistPotProofs(fresh, paymentHash, potId);
   } catch (err) {
@@ -676,7 +719,8 @@ async function cashuReceivePayload({ paymentHash, amountSats, payload: raw, potI
       "[cashu] EMERGENCY buy-in token — disk persist failed, redeem this once:",
       getEncodedToken({ mint: CASHU_MINT_URL, proofs: fresh }),
     );
-    throw err;
+    // Still return proofs so the lobby marks paid; money is in `fresh` even if disk failed.
+    console.error("[cashu] marking buy-in paid despite persist failure:", err?.message || err);
   }
   console.log(`[cashu] buy-in received — ${proofsSum(fresh)} sats into pot (${paymentHash})`);
   return fresh;
@@ -807,6 +851,7 @@ export const payments = {
   /** Poll Lightning mint quotes (real) or the mock auto-pay timer. Returns {netSats} or null. */
   settleIfPaid: PAYMENTS_MOCK ? mockSettleIfPaid : cashuSettleIfPaid,
   receivePayload: PAYMENTS_MOCK ? null : cashuReceivePayload,
+  alreadyReceived,
   receiveToken: PAYMENTS_MOCK ? async () => [] : cashuReceiveToken,
   sendToken: PAYMENTS_MOCK ? mockSendToken : cashuSendToken,
   /** Split from the pot and immediately swap into the tip wallet. */
