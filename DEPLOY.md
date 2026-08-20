@@ -53,17 +53,17 @@ per swap.
 
 | Step | Who | Amount | Where it lands |
 | --- | --- | --- | --- |
-| 1. Buy-in | Each racer | 100 + 1 = **101 sats** | Cashu (Minibits) or Lightning → pot tokens |
-| 2. Mint receive | Mint | **~1 sat** each | Mint fee for swapping the buy-in in |
-| 3. Pot | Event wallet | 4 × 100 = **400 sats** | `server/cashu-proofs.json` until claimed |
-| 4. Tip (2%) | Dev tip wallet | floor(400 × 2%) = **8 sats** | Auto-swapped into `server/cashu-tips.json` (mint burns the old secrets) |
-| 5. Winner | Winner | 400 − 8 − ~2 fees ≈ **390 sats** | `cashuA` token they paste into cashu.me |
+| 1. Buy-in | Each racer | **100 sats** | Cashu (Minibits) or Lightning → pot tokens |
+| 2. Mint receive | Mint | **~1 sat** each | Taken from the pot when swapping the buy-in in |
+| 3. Pot | Event wallet | ≈ 4 × 99 = **~396 sats** | that event's `server/cashu-pots/<id>.json` until claimed |
+| 4. Tip (2%) | Dev tip wallet | floor(pot × 2%) ≈ **7–8 sats** | Auto-swapped into `server/cashu-tips.json` (mint burns the old secrets) |
+| 5. Winner | Winner | pot − tip − ~2 payout fees | `cashuA` token they paste into cashu.me |
 | 6. Mint send | Mint | **~2 sats** | Payout swap fees, taken from the pot (never from the tip) |
 
 Formula for any race:
 
-- Each racer pays `buyIn + mintFee` (usually +1 sat)
-- Pot = `buyIn × racers` (fees covered so the pot lands whole)
+- Each racer pays `buyIn` (the QR is 10 sats when the buy-in is 10, not 11)
+- Pot = what actually landed after mint receive fees
 - Tip = `floor(pot × tipPercent / 100)` → **tip wallet**, automatically
 - Winner = `pot − tip − payout mint fees` → Cashu token
 - You look at the tip wallet in the in-game **DEV** dashboard; **WITHDRAW TO CASHU.ME** when you want the sats on your phone

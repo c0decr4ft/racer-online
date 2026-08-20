@@ -25,7 +25,7 @@ export type LobbyPhase = "lobby" | "racing" | "finished" | "starting";
 /** Event Mode room state — buy-in gate + pot. Present only in event rooms. */
 export type EventRoomInfo = {
   buyInSats: number;
-  /** Mint fee added on top of each buy-in (payers cover it, pot lands whole). */
+  /** Mint receive fee comes out of the pot (0 — not added to the invoice). */
   feeSats?: number;
   paidIds: string[];
   potSats: number;
@@ -151,10 +151,10 @@ export type ServerMsg =
       paymentRequest: string;
       /** Minibits mint quote (bolt11) — pay with any Lightning wallet. */
       bolt11?: string;
-      /** Total to pay (buyInSats + feeSats). */
+      /** Amount to pay — the advertised buy-in, not buy-in plus mint fee. */
       amountSats: number;
       buyInSats?: number;
-      /** Mint fee included in the request on top of the buy-in. */
+      /** Always 0: mint receive fees come out of the pot, not the invoice. */
       feeSats?: number;
       mock?: boolean;
     }

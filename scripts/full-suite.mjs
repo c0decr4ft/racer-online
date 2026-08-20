@@ -351,11 +351,12 @@ async function main() {
     const startErr = await startErrP;
     assert("event:start-blocked-unpaid", /buy-ins/.test(startErr?.message || ""), startErr?.message);
     const hostInvoice = await hostInvoiceP;
-    // Invoice = buy-in + mint fee on top (fee is 0 in mock mode, ≥0 with a real mint)
+    // Invoice is the advertised buy-in (mint fees come out of the pot, not the QR).
     assert(
       "event:host-invoice",
       hostInvoice?.buyInSats === 100 &&
-        hostInvoice?.amountSats === 100 + (hostInvoice?.feeSats ?? 0) &&
+        hostInvoice?.amountSats === 100 &&
+        (hostInvoice?.feeSats ?? 0) === 0 &&
         !!hostInvoice?.paymentRequest,
       JSON.stringify(hostInvoice ?? {}).slice(0, 100),
     );
