@@ -2050,13 +2050,16 @@ export class Game {
     const list = document.getElementById("dev-tips-list");
     if (list) {
       list.innerHTML = "";
-      if (summary.tips.length === 0) {
+      const visibleTips = summary.tips.filter((tip) => !tip.claimed);
+      if (visibleTips.length === 0) {
         const li = document.createElement("li");
         li.className = "dev-tip-empty";
-        li.textContent = "No tips yet — they land in this wallet when winners share the pot.";
+        li.textContent = summary.tips.some((t) => t.claimed)
+          ? "Claimed tips have left this wallet."
+          : "No tips yet — they land in this wallet when winners share the pot.";
         list.appendChild(li);
       }
-      for (const tip of summary.tips) {
+      for (const tip of visibleTips) {
         const li = document.createElement("li");
         li.className = "dev-tip";
         const when = new Date(tip.at).toLocaleString(undefined, {
@@ -2076,11 +2079,15 @@ export class Game {
         const side = document.createElement("span");
         side.className = "dev-tip-side";
         const failed = !tip.mock && !tip.collected && tip.tipSats > 0;
+        const claimed = tip.claimed === true;
         const badge = document.createElement("span");
-        badge.className = `dev-tip-badge ${tip.mock ? "is-mock" : tip.collected ? "is-collected" : failed ? "is-failed" : "is-pending"}`;
-        badge.textContent = tip.mock ? "TEST" : tip.collected ? "IN WALLET" : failed ? "FAILED" : "PENDING";
+        badge.className = `dev-tip-badge ${
+          tip.mock ? "is-mock" : claimed ? "is-claimed" : tip.collected ? "is-collected" : failed ? "is-failed" : "is-pending"
+        }`;
+        badge.textContent = tip.mock ? "TEST" : claimed ? "CLAIMED" : tip.collected ? "IN WALLET" : failed ? "FAILED" : "PENDING";
         if (failed) badge.title = "Tip never reached the tip wallet — retry to collect it";
-        else if (tip.collected) badge.title = "Already swapped into the tip wallet";
+        else if (claimed) badge.title = "Withdrawn — this tip has left the server wallet";
+        else if (tip.collected) badge.title = "Still in the tip wallet — withdraw to cashu.me";
         side.appendChild(badge);
         if (failed) {
           const retryBtn = document.createElement("button");

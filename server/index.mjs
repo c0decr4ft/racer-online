@@ -283,9 +283,6 @@ function clampMaxPlayers(raw) {
 
 const MIN_BUYIN_SATS = 1;
 const MAX_BUYIN_SATS = 1_000_000;
-/** Fee allowance added on top of each buy-in request so the mint's input fee
- *  doesn't eat into the pot — players pay buyIn + 1, the pot lands buyIn. */
-const EVENT_FEE_SATS = Math.max(0, Math.min(10, Number(process.env.EVENT_FEE_SATS ?? 1) || 0));
 
 function clampBuyIn(raw) {
   const n = Math.round(Number(raw));
@@ -371,31 +368,52 @@ async function sweepPendingTipTokens() {
   return swept;
 }
 
+/** After the withdraw token is copied, those tips have left the server wallet. */
+function markCollectedTipsClaimed() {
+  const list = loadPayouts();
+  const now = Date.now();
+  let changed = false;
+  for (const r of list) {
+    if (!r || r.mock || r.claimedAt) continue;
+    if (r.collected === true || Number.isFinite(Number(r.collectedAt))) {
+      r.claimedAt = now;
+      changed = true;
+    }
+  }
+  if (changed) savePayouts(list);
+}
+
 /** Tip stats + history for the dev dashboard (live tips only; mock = test money). */
 async function devTipsSummary() {
   await sweepPendingTipTokens().catch((err) =>
     console.warn("[dev] tip sweep skipped:", err?.message || err),
   );
+  const walletSats = Math.max(0, Math.round(Number(await payments.tipBalanceSats()) || 0));
+  const withdrawnSats = Math.max(0, Math.round(Number(payments.withdrawnSats()) || 0));
+  const pendingWithdraw = payments.pendingWithdraw();
+  const walletEmpty = walletSats === 0 && !pendingWithdraw;
   const list = loadPayouts()
     .filter((r) => r && Number.isFinite(Number(r.tipSats)))
-    .map((r) => ({
-      at: Number(r.at) || 0,
-      room: String(r.room || ""),
-      potSats: Number(r.potSats) || 0,
-      tipSats: Math.max(0, Math.round(Number(r.tipSats))),
-      tipPercent: Number(r.tipPercent) || 0,
-      mock: r.mock === true,
-      collected: r.collected === true || Number.isFinite(Number(r.collectedAt)) || Number.isFinite(Number(r.claimedAt)),
-      claimed: Number.isFinite(Number(r.claimedAt)),
-    }))
+    .map((r) => {
+      const collected =
+        r.collected === true || Number.isFinite(Number(r.collectedAt)) || Number.isFinite(Number(r.claimedAt));
+      const claimed = Number.isFinite(Number(r.claimedAt)) || (walletEmpty && collected && r.mock !== true);
+      return {
+        at: Number(r.at) || 0,
+        room: String(r.room || ""),
+        potSats: Number(r.potSats) || 0,
+        tipSats: Math.max(0, Math.round(Number(r.tipSats))),
+        tipPercent: Number(r.tipPercent) || 0,
+        mock: r.mock === true,
+        collected,
+        claimed,
+      };
+    })
     .sort((a, b) => b.at - a.at)
     .slice(0, 50);
   const live = list.filter((t) => !t.mock);
   const sum = (rows) => rows.reduce((a, t) => a + t.tipSats, 0);
   const failed = live.filter((t) => !t.collected && t.tipSats > 0);
-  const walletSats = Math.max(0, Math.round(Number(await payments.tipBalanceSats()) || 0));
-  const withdrawnSats = Math.max(0, Math.round(Number(payments.withdrawnSats()) || 0));
-  const pendingWithdraw = payments.pendingWithdraw();
   let custody = { mock: payments.mock, mintUrl: payments.mintUrl, pot: null, tip: null, error: null };
   try {
     custody = await payments.auditCustody();
@@ -410,6 +428,10 @@ async function devTipsSummary() {
     if (!room.isEvent) continue;
     const audit = auditByPot.get(room.potId) || null;
     if (room.potId) seenPots.add(room.potId);
+    const remaining =
+      (audit?.unspentSats || 0) > 0 || (audit?.localSats || 0) > 0 || (audit?.proofs || 0) > 0;
+    // Claimed empty pots drop off the table — leftover money still shows.
+    if (room.potClaimed && !remaining) continue;
     events.push({
       potId: room.potId || "",
       name: room.name,
@@ -437,8 +459,8 @@ async function devTipsSummary() {
     const id = String(audit.potId || audit.label || "");
     if (!id || seenPots.has(id)) continue;
     const hasMoney = (audit.localSats || 0) > 0 || (audit.unspentSats || 0) > 0 || (audit.proofs || 0) > 0;
-    const hasLogs = (audit.logs || []).length > 0;
-    if (!hasMoney && !hasLogs) continue;
+    if (!hasMoney) continue;
+    const claimed = (audit.logs || []).some((e) => /\bclaimed\b/i.test(String(e?.msg || "")));
     events.push({
       potId: id,
       name: audit.roomName || (id === "legacy" ? "legacy pot" : "offline event"),
@@ -449,7 +471,7 @@ async function devTipsSummary() {
       paid: 0,
       buyInSats: 0,
       potSats: 0,
-      potClaimed: false,
+      potClaimed: claimed,
       localSats: audit.localSats || 0,
       unspentSats: audit.unspentSats || 0,
       spentSats: audit.spentSats || 0,
@@ -1196,16 +1218,12 @@ function eventInfo(room) {
 /** Create a buy-in payment request (NUT-18 creq) for a freshly joined event-room racer. */
 async function createBuyInInvoice(room, client) {
   try {
-    // The mint charges an input fee when we swap the payment in — request it on
-    // top of the buy-in so the pot lands whole and payers never hand-add sats.
-    const feeSats = EVENT_FEE_SATS;
-    room.buyInFeeSats = feeSats;
-    const totalSats = room.buyInSats + feeSats;
+    // Invoice the advertised buy-in only. Mint receive fees come out of the pot
+    // after the swap — payers should see 10 sats, not 11.
+    room.buyInFeeSats = 0;
     const inv = await payments.createPaymentRequest({
-      amountSats: totalSats,
-      memo:
-        `Sats Racer event ${room.name} — buy-in ${room.buyInSats} sats` +
-        (feeSats ? ` + ${feeSats} mint fee` : ""),
+      amountSats: room.buyInSats,
+      memo: `Sats Racer event ${room.name} — buy-in ${room.buyInSats} sats`,
       baseUrl: PUBLIC_BASE_URL,
       potId: room.potId,
     });
@@ -1221,12 +1239,12 @@ async function createBuyInInvoice(room, client) {
       t: "eventInvoice",
       paymentRequest: inv.paymentRequest,
       bolt11: inv.bolt11 || "",
-      amountSats: totalSats,
+      amountSats: room.buyInSats,
       buyInSats: room.buyInSats,
-      feeSats,
+      feeSats: 0,
       mock: payments.mock,
     });
-    potLog(room, "info", `buy-in request for ${client.name} · ${totalSats} sats`);
+    potLog(room, "info", `buy-in request for ${client.name} · ${room.buyInSats} sats`);
   } catch (err) {
     console.warn(`[event] payment request failed for ${client.name}:`, err?.message || err);
     potLog(room, "error", `buy-in request failed for ${client.name}: ${String(err?.message || err).slice(0, 160)}`);
@@ -1630,6 +1648,7 @@ const httpServer = createServer(async (req, res) => {
       }
       // Mark the pending withdraw as copied (token already left the tip wallet).
       const marked = payments.markWithdrawCopied();
+      if (marked > 0) markCollectedTipsClaimed();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ...(await devTipsSummary()), marked }));
     } catch (err) {

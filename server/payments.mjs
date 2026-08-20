@@ -400,7 +400,8 @@ let feePpkPromise = null;
 /**
  * Max `input_fee_ppk` across the mint's active sat keysets. The mint charges
  * fee = ceil(proofs × ppk / 1000) per swap — both when we receive a buy-in and
- * when we send a payout, so invoices/pots must account for it explicitly.
+ * when we send a payout. Buy-in invoices stay at the advertised amount; receive
+ * fees come out of the pot after the swap.
  */
 function getMintFeePpk() {
   if (!feePpkPromise) {
@@ -426,10 +427,7 @@ function getMintFeePpk() {
 }
 
 /**
- * Sats to add ON TOP of a buy-in so the pot keeps the full amount after the
- * mint's receive-side input fee. A wallet paying A sats uses at most
- * log2(A)+1 proofs (powers of two), so the fee is ceil(proofs × ppk / 1000) —
- * usually 1 sat. Iterate to a fixpoint: the fee itself can bump the proof count.
+ * Sats the mint takes when receiving a buy-in (not added to the invoice).
  */
 async function cashuReceiveFeeSats(amountSats) {
   const ppk = await getMintFeePpk();
@@ -820,7 +818,7 @@ export const payments = {
   markWithdrawCopied: PAYMENTS_MOCK ? mockMarkWithdrawCopied : cashuMarkWithdrawCopied,
   pendingWithdraw: PAYMENTS_MOCK ? () => mockPendingWithdraw : cashuPendingWithdraw,
   withdrawnSats: PAYMENTS_MOCK ? () => mockWithdrawnSats : cashuWithdrawnSats,
-  /** Mint fee added on top of each buy-in so the pot lands whole (0 in mock). */
+  /** Mint receive-side fee estimate (not added to invoices). */
   receiveFeeSats: PAYMENTS_MOCK ? async () => 0 : cashuReceiveFeeSats,
   /** Reserve deducted from the pot before the winner/tip split (0 in mock). */
   sendFeeSats: PAYMENTS_MOCK ? async () => 0 : cashuSendFeeSats,
