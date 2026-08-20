@@ -1,7 +1,7 @@
 /**
  * Cashu (eCash) payments for Event Mode — real Bitcoin sats.
  *
- * The server runs a cashu-ts Wallet against CASHU_MINT_URL (defaults to Coinos,
+ * The server runs a cashu-ts Wallet against CASHU_MINT_URL (defaults to Minibits,
  * a live mint: Lightning in → sat Cashu tokens). Mock mode (fake sats auto-pay
  * in ~3s) exists ONLY for dev/tests and must be forced via RACER_PAYMENTS_MOCK=1.
  *
@@ -22,11 +22,11 @@ import { randomUUID } from "node:crypto";
 /** Mock is opt-in (tests/dev): RACER_PAYMENTS_MOCK=1. Everyone else gets real sats. */
 export const PAYMENTS_MOCK = process.env.RACER_PAYMENTS_MOCK === "1";
 /**
- * Default mint: Coinos (`https://mint.coinos.io`) — real sat Cashu tokens minted
- * against Lightning invoices. Override with CASHU_MINT_URL (e.g. Testnut
- * `https://testnut.cashu.space` for free fake sats while iterating).
+ * Default mint: Minibits (`https://mint.minibits.cash/Bitcoin`) — real sat Cashu
+ * tokens minted against Lightning invoices. Override with CASHU_MINT_URL (e.g.
+ * Testnut `https://testnut.cashu.space` for free fake sats while iterating).
  */
-const CASHU_MINT_URL = (process.env.CASHU_MINT_URL || "https://mint.coinos.io").trim().replace(/\/+$/, "");
+const CASHU_MINT_URL = (process.env.CASHU_MINT_URL || "https://mint.minibits.cash/Bitcoin").trim().replace(/\/+$/, "");
 
 const DIR = dirname(fileURLToPath(import.meta.url));
 const PROOFS_PATH = join(DIR, "cashu-proofs.json");
