@@ -1401,7 +1401,7 @@ const httpServer = createServer(async (req, res) => {
         amountSats: found.room.buyInSats,
         payload,
       });
-      depositProofs(fresh);
+      await depositProofs(fresh);
       markBuyInPaid(found.room, found.clientId, fresh.reduce((a, p) => a + Number(p.amount), 0));
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
@@ -1493,7 +1493,7 @@ const httpServer = createServer(async (req, res) => {
         return;
       }
       // Mark the pending withdraw as copied (token already left the tip wallet).
-      const marked = payments.markWithdrawCopied();
+      const marked = await payments.markWithdrawCopied();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ...(await devTipsSummary()), marked }));
     } catch (err) {
@@ -1894,7 +1894,7 @@ wss.on("connection", (ws) => {
             amountSats: room.buyInSats,
             token: String(msg.token || ""),
           });
-          depositProofs(fresh);
+          await depositProofs(fresh);
           markBuyInPaid(room, client.id, fresh.reduce((a, p) => a + Number(p.amount), 0));
         } catch (err) {
           send(ws, { t: "error", message: `token rejected — ${String(err?.message || err).slice(0, 100)}` });
