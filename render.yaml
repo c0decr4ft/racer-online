@@ -22,7 +22,7 @@ services:
       # Event Mode: real sat Cashu mint (Lightning → sats). Tips auto-collect
       # into a separate server wallet. Testnut is fake sats — do not use live.
       - key: CASHU_MINT_URL
-        value: https://mint.coinos.io
+        value: https://mint.minibits.cash/Bitcoin
       # Dev dashboard (/api/dev/*) — only this Nostr account (DEV_c0decr4ft,
       # npub1nratkqj…aud4) may read tip stats/claim tip tokens. Public key, safe
       # to commit; the in-game DEV button appears only when signed in with it.
