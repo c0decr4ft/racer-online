@@ -27,9 +27,10 @@ server/feedback.json
 *.sln
 *.sw?
 
-# Event Mode payout audit log
+# Event Mode payout audit log + Cashu wallets (the files ARE the money)
 server/payouts.json
 server/cashu-proofs.json
+server/cashu-tips.json
 
 # stray nested clone, not part of the game
 elliptic-apparel-real/

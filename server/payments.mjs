@@ -1,18 +1,18 @@
 /**
- * Cashu (eCash) payments for Event Mode.
+ * Cashu (eCash) payments for Event Mode — real Bitcoin sats.
  *
- * The server runs a cashu-ts Wallet against CASHU_MINT_URL (defaults to the
- * Testnut test mint — FREE test sats out of the box, no real money). Mock mode
- * (fake sats auto-pay in ~3s) exists ONLY for dev/tests and must be forced via
- * RACER_PAYMENTS_MOCK=1 — players never see it otherwise.
+ * The server runs a cashu-ts Wallet against CASHU_MINT_URL (defaults to Coinos,
+ * a live mint: Lightning in → sat Cashu tokens). Mock mode (fake sats auto-pay
+ * in ~3s) exists ONLY for dev/tests and must be forced via RACER_PAYMENTS_MOCK=1.
  *
- * Buy-ins arrive as NUT-18 payment-request payloads (POST /api/ecash/pay) or
- * pasted cashuA tokens; the pot pays out as a cashuA token string the winner
- * claims in cashu.me.
+ * Two wallets, two files (both gitignored — the files ARE the money):
+ *   server/cashu-proofs.json  — event pot (buy-ins until the winner claims)
+ *   server/cashu-tips.json    — developer tip wallet (auto-collected at payout)
  *
- * Money custody note: buy-in value lives as proofs in server/cashu-proofs.json
- * until claimed — that file IS the money. It's gitignored; back it up for
- * real-money events, and use amounts you don't mind losing (Cashu is young).
+ * Buy-ins arrive as NUT-18 payloads (POST /api/ecash/pay) or pasted cashuA
+ * tokens. The winner is paid a cashuA token. The tip is swapped at the mint
+ * straight into the tip wallet so a bearer token never sits around to be
+ * double-spent.
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -22,49 +22,76 @@ import { randomUUID } from "node:crypto";
 /** Mock is opt-in (tests/dev): RACER_PAYMENTS_MOCK=1. Everyone else gets real sats. */
 export const PAYMENTS_MOCK = process.env.RACER_PAYMENTS_MOCK === "1";
 /**
- * Default mint: Testnut (`https://testnut.cashu.space`) — a test mint whose
- * Lightning invoices auto-pay, so the whole money flow (buy-in → pot → payout)
- * works with FREE test sats and zero real funds while we test. For real sats
- * later, set CASHU_MINT_URL to a real mint (e.g. Coinos `https://mint.coinos.io`
- * — Minibits' mint is dead (404s); Coinos serves NUT-04/05 with sat keysets at
- * input_fee_ppk 100, ≈1 sat per ≤10 proofs per swap — the same fee shape the
- * buy-in/payout fee logic is built around).
+ * Default mint: Coinos (`https://mint.coinos.io`) — real sat Cashu tokens minted
+ * against Lightning invoices. Override with CASHU_MINT_URL (e.g. Testnut
+ * `https://testnut.cashu.space` for free fake sats while iterating).
  */
-const CASHU_MINT_URL = (process.env.CASHU_MINT_URL || "https://testnut.cashu.space").trim().replace(/\/+$/, "");
+const CASHU_MINT_URL = (process.env.CASHU_MINT_URL || "https://mint.coinos.io").trim().replace(/\/+$/, "");
 
 const DIR = dirname(fileURLToPath(import.meta.url));
 const PROOFS_PATH = join(DIR, "cashu-proofs.json");
+const TIPS_PATH = join(DIR, "cashu-tips.json");
 const PAYOUTS_PATH = join(DIR, "payouts.json");
 
-/* ---------------- proof store (the pot wallet's money) ---------------- */
+/* ---------------- proof stores (pot + tip wallets) ---------------- */
 
-function loadProofStore() {
+function emptyStore() {
+  return { mintUrl: CASHU_MINT_URL, proofs: [], withdrawnSats: 0, pendingWithdraw: null };
+}
+
+function loadStore(path) {
   try {
-    if (!existsSync(PROOFS_PATH)) return { mintUrl: CASHU_MINT_URL, proofs: [] };
-    const data = JSON.parse(readFileSync(PROOFS_PATH, "utf8"));
+    if (!existsSync(path)) return emptyStore();
+    const data = JSON.parse(readFileSync(path, "utf8"));
     if (data?.mintUrl !== CASHU_MINT_URL || !Array.isArray(data?.proofs)) {
-      return { mintUrl: CASHU_MINT_URL, proofs: [] };
+      return emptyStore();
     }
     // JSON round-trip stringifies amounts — v4 wallets need real bigints
     return {
       mintUrl: CASHU_MINT_URL,
       proofs: data.proofs.map((p) => ({ ...p, amount: BigInt(p.amount ?? 0) })),
+      withdrawnSats: Math.max(0, Math.round(Number(data.withdrawnSats) || 0)),
+      pendingWithdraw:
+        data.pendingWithdraw && typeof data.pendingWithdraw.token === "string"
+          ? {
+              token: data.pendingWithdraw.token,
+              amountSats: Math.max(0, Math.round(Number(data.pendingWithdraw.amountSats) || 0)),
+              at: Number(data.pendingWithdraw.at) || Date.now(),
+            }
+          : null,
     };
   } catch {
-    return { mintUrl: CASHU_MINT_URL, proofs: [] };
+    return emptyStore();
   }
 }
 
-function saveProofStore(store) {
+function saveStore(path, store) {
   try {
     // v4 proofs use bigint amounts — JSON can't serialize them without a replacer
     writeFileSync(
-      PROOFS_PATH,
+      path,
       JSON.stringify(store, (key, v) => (typeof v === "bigint" ? v.toString() : v), 2),
     );
   } catch (err) {
     console.error("[cashu] failed to persist proofs — money at risk!", err?.message || err);
   }
+}
+
+function proofsSum(proofs) {
+  return (proofs || []).reduce((a, p) => a + Number(p.amount), 0);
+}
+
+function loadPotStore() {
+  return loadStore(PROOFS_PATH);
+}
+function savePotStore(store) {
+  saveStore(PROOFS_PATH, store);
+}
+function loadTipStore() {
+  return loadStore(TIPS_PATH);
+}
+function saveTipStore(store) {
+  saveStore(TIPS_PATH, store);
 }
 
 /* ---------------- wallet init (real mode) ---------------- */
@@ -139,20 +166,25 @@ async function cashuReceiveFeeSats(amountSats) {
  */
 async function cashuSendFeeSats() {
   const wallet = await getWallet();
-  const store = loadProofStore();
+  const store = loadPotStore();
   if (!store.proofs.length) return 0;
   return wallet.getFeesForProofs(store.proofs).toNumber();
 }
 
-/** Current pot wallet balance in sats (what's actually spendable right now). */
 async function cashuPotBalanceSats() {
-  const store = loadProofStore();
-  return store.proofs.reduce((a, p) => a + Number(p.amount), 0);
+  return proofsSum(loadPotStore().proofs);
+}
+
+async function cashuTipBalanceSats() {
+  return proofsSum(loadTipStore().proofs);
 }
 
 /* ---------------- mock adapter ---------------- */
 
 const mockInvoices = new Map(); // id → { amountSats, createdAt, paidAt }
+let mockTipBalance = 0;
+let mockWithdrawnSats = 0;
+let mockPendingWithdraw = null;
 
 async function mockCreatePaymentRequest({ amountSats, memo }) {
   const paymentHash = randomUUID().replaceAll("-", "");
@@ -169,6 +201,38 @@ async function mockIsPaid(paymentHash) {
 
 async function mockSendToken(amountSats) {
   return { token: `cashu-mock-${amountSats}sats-${randomUUID().replaceAll("-", "")}` };
+}
+
+async function mockCollectTip(amountSats) {
+  mockTipBalance += amountSats;
+  return { sats: amountSats, collected: true };
+}
+
+async function mockReceiveTipToken(_token, amountSats) {
+  mockTipBalance += Math.max(0, Math.round(Number(amountSats) || 0));
+  return Math.max(0, Math.round(Number(amountSats) || 0));
+}
+
+async function mockWithdrawTip(amountSats) {
+  if (mockPendingWithdraw) return mockPendingWithdraw;
+  const amt = Math.max(0, Math.round(Number(amountSats) || 0));
+  if (amt <= 0) throw new Error("nothing to withdraw");
+  if (mockTipBalance < amt) throw new Error(`tip wallet short (${mockTipBalance} < ${amt} sats)`);
+  mockTipBalance -= amt;
+  mockPendingWithdraw = {
+    token: `cashu-mock-${amt}sats-${randomUUID().replaceAll("-", "")}`,
+    amountSats: amt,
+    at: Date.now(),
+  };
+  return mockPendingWithdraw;
+}
+
+function mockMarkWithdrawCopied() {
+  if (!mockPendingWithdraw) return 0;
+  mockWithdrawnSats += mockPendingWithdraw.amountSats;
+  const n = mockPendingWithdraw.amountSats;
+  mockPendingWithdraw = null;
+  return n;
 }
 
 /* ---------------- real adapter (cashu-ts) ---------------- */
@@ -203,7 +267,6 @@ async function receiveProofsFromMint(mintUrl, rawProofs) {
  * mismatch/shortfall — callers must treat that as unpaid.
  */
 async function cashuReceivePayload({ paymentHash, amountSats, payload }) {
-  const wallet = await getWallet();
   if (String(payload.id || "") !== paymentHash) throw new Error("payment id mismatch");
   const mint = String(payload.mint || "").replace(/\/+$/, "");
   if (mint !== CASHU_MINT_URL) throw new Error("wrong mint");
@@ -232,17 +295,15 @@ async function cashuReceiveToken({ amountSats, token }) {
 }
 
 /**
- * Pay out sats as a fresh cashuA token string from the pot wallet.
+ * Pay out sats as a fresh cashuA token string from a proof store.
  * With `includeFees`, the token carries the mint's input fee on top, so the
- * receiver redeems the EXACT amount (fee paid by the pot wallet, i.e. the
- * house/tip side — never shaved off the winner's prize). Falls back to a plain
- * token when the wallet can't cover the fee (empty house float).
+ * receiver redeems the EXACT amount (fee paid by the sending wallet).
  */
-async function cashuSendToken(amountSats, { includeFees = false } = {}) {
+async function sendTokenFromStore(path, amountSats, { includeFees = false } = {}) {
   const wallet = await getWallet();
-  const store = loadProofStore();
-  const total = store.proofs.reduce((a, p) => a + Number(p.amount), 0);
-  if (total < amountSats) throw new Error(`pot wallet short (${total} < ${amountSats} sats)`);
+  const store = loadStore(path);
+  const total = proofsSum(store.proofs);
+  if (total < amountSats) throw new Error(`wallet short (${total} < ${amountSats} sats)`);
   let keep, send;
   try {
     ({ keep, send } = await wallet.send(amountSats, store.proofs, { includeFees }));
@@ -251,12 +312,85 @@ async function cashuSendToken(amountSats, { includeFees = false } = {}) {
     console.warn("[cashu] fee-inclusive send failed — sending plain token:", err?.message || err);
     ({ keep, send } = await wallet.send(amountSats, store.proofs));
   }
-  saveProofStore({ mintUrl: CASHU_MINT_URL, proofs: keep });
+  store.proofs = keep;
+  saveStore(path, store);
   const { getEncodedToken } = await import("@cashu/cashu-ts");
   return { token: getEncodedToken({ mint: CASHU_MINT_URL, proofs: send }) };
 }
 
+async function cashuSendToken(amountSats, { includeFees = false } = {}) {
+  return sendTokenFromStore(PROOFS_PATH, amountSats, { includeFees });
+}
+
+/**
+ * Move `amountSats` from the pot wallet into the tip wallet.
+ * The mint swap burns the old secrets — the intermediate token is never stored
+ * unless the receive fails, in which case it is returned so the caller can
+ * retry the collect without sending a second time (double-spend).
+ */
+async function cashuCollectTip(amountSats) {
+  const { token } = await sendTokenFromStore(PROOFS_PATH, amountSats, { includeFees: true });
+  try {
+    const fresh = await cashuReceiveToken({ amountSats: 1, token });
+    const store = loadTipStore();
+    store.proofs.push(...fresh);
+    saveTipStore(store);
+    const sats = proofsSum(fresh);
+    console.log(`[cashu] tip collected — ${sats} sats into tip wallet`);
+    return { sats, collected: true };
+  } catch (err) {
+    console.warn("[cashu] tip collect receive failed — holding token for retry:", err?.message || err);
+    return { sats: amountSats, collected: false, token };
+  }
+}
+
+/** Redeem a leftover tip bearer token into the tip wallet (burns it at the mint). */
+async function cashuReceiveTipToken(token) {
+  const fresh = await cashuReceiveToken({ amountSats: 1, token: String(token || "").trim() });
+  const store = loadTipStore();
+  store.proofs.push(...fresh);
+  saveTipStore(store);
+  return proofsSum(fresh);
+}
+
+/** Export sats from the tip wallet as a cashuA token (for cashu.me). Reuses a pending withdraw. */
+async function cashuWithdrawTip(amountSats) {
+  const store = loadTipStore();
+  if (store.pendingWithdraw?.token) return store.pendingWithdraw;
+  const amt = Math.max(0, Math.round(Number(amountSats) || 0));
+  if (amt <= 0) throw new Error("nothing to withdraw");
+  const { token } = await sendTokenFromStore(TIPS_PATH, amt, { includeFees: true });
+  const next = loadTipStore();
+  next.pendingWithdraw = { token, amountSats: amt, at: Date.now() };
+  saveTipStore(next);
+  return next.pendingWithdraw;
+}
+
+function cashuMarkWithdrawCopied() {
+  const store = loadTipStore();
+  if (!store.pendingWithdraw) return 0;
+  const n = store.pendingWithdraw.amountSats;
+  store.withdrawnSats += n;
+  store.pendingWithdraw = null;
+  saveTipStore(store);
+  return n;
+}
+
+function cashuPendingWithdraw() {
+  return loadTipStore().pendingWithdraw;
+}
+
+function cashuWithdrawnSats() {
+  return loadTipStore().withdrawnSats;
+}
+
 /* ---------------- unified surface ---------------- */
+
+if (!PAYMENTS_MOCK) {
+  console.log(`[cashu] live mint ${CASHU_MINT_URL} (real sats) · pot + tip wallets`);
+} else {
+  console.log("[cashu] mock mode — fake sats, RACER_PAYMENTS_MOCK=1");
+}
 
 export const payments = {
   mock: PAYMENTS_MOCK,
@@ -268,23 +402,34 @@ export const payments = {
   receivePayload: PAYMENTS_MOCK ? null : cashuReceivePayload,
   receiveToken: PAYMENTS_MOCK ? async () => [] : cashuReceiveToken,
   sendToken: PAYMENTS_MOCK ? mockSendToken : cashuSendToken,
+  /** Split from the pot and immediately swap into the tip wallet. */
+  collectTip: PAYMENTS_MOCK ? mockCollectTip : cashuCollectTip,
+  /** Redeem a leftover bearer tip token into the tip wallet. */
+  receiveTipToken: PAYMENTS_MOCK ? mockReceiveTipToken : cashuReceiveTipToken,
+  /** Export from the tip wallet as a cashuA token (cashu.me). */
+  withdrawTip: PAYMENTS_MOCK ? mockWithdrawTip : cashuWithdrawTip,
+  markWithdrawCopied: PAYMENTS_MOCK ? mockMarkWithdrawCopied : cashuMarkWithdrawCopied,
+  pendingWithdraw: PAYMENTS_MOCK ? () => mockPendingWithdraw : cashuPendingWithdraw,
+  withdrawnSats: PAYMENTS_MOCK ? () => mockWithdrawnSats : cashuWithdrawnSats,
   /** Mint fee added on top of each buy-in so the pot lands whole (0 in mock). */
   receiveFeeSats: PAYMENTS_MOCK ? async () => 0 : cashuReceiveFeeSats,
   /** Reserve deducted from the pot before the winner/tip split (0 in mock). */
   sendFeeSats: PAYMENTS_MOCK ? async () => 0 : cashuSendFeeSats,
   /** Current pot wallet balance (mock: unlimited — mock sends never fail). */
   potBalanceSats: PAYMENTS_MOCK ? async () => Number.MAX_SAFE_INTEGER : cashuPotBalanceSats,
+  /** Current tip wallet balance (mock: in-memory). */
+  tipBalanceSats: PAYMENTS_MOCK ? async () => mockTipBalance : cashuTipBalanceSats,
 };
 
 /** Record fresh buy-in proofs into the pot wallet store (real mode). */
 export function depositProofs(freshProofs) {
   if (PAYMENTS_MOCK || !Array.isArray(freshProofs) || !freshProofs.length) return;
-  const store = loadProofStore();
+  const store = loadPotStore();
   store.proofs.push(...freshProofs);
-  saveProofStore(store);
+  savePotStore(store);
 }
 
-/** Append a payout attempt to the audit log (gitignored; may contain bearer tokens). */
+/** Append a payout attempt to the audit log (gitignored). */
 export function recordPayout(record) {
   let list = [];
   try {
@@ -312,7 +457,7 @@ export function loadPayouts() {
   }
 }
 
-/** Persist the payout audit log (e.g. after marking tips claimed). */
+/** Persist the payout audit log (e.g. after marking tips collected). */
 export function savePayouts(list) {
   try {
     writeFileSync(PAYOUTS_PATH, JSON.stringify((Array.isArray(list) ? list : []).slice(-200), null, 2));

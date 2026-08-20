@@ -1255,6 +1255,26 @@ html.touch-mode [contenteditable="true"] {
   font-size: 0.8rem;
 }
 
+.event-schedule {
+  margin: 0;
+  padding: 0.55rem 0.15rem 0.15rem 1.15rem;
+  color: var(--muted);
+  font-family: "Rajdhani", sans-serif;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  line-height: 1.45;
+  text-align: left;
+}
+
+.event-schedule li + li {
+  margin-top: 0.2rem;
+}
+
+.event-schedule strong {
+  color: var(--text);
+  font-weight: 700;
+}
+
 #event-claim-btn {
   border-color: #ffe1a1;
   background: linear-gradient(180deg, #ffd479, #f0a818);
@@ -1497,7 +1517,8 @@ html.touch-mode [contenteditable="true"] {
   color: #ffc857;
 }
 
-.dev-tip-badge.is-claimed {
+.dev-tip-badge.is-claimed,
+.dev-tip-badge.is-collected {
   color: #9ad4a8;
 }
 
@@ -1550,7 +1571,8 @@ html.touch-mode [contenteditable="true"] {
   flex: 1;
 }
 
-.dev-actions #dev-claim-all.hidden {
+.dev-actions #dev-claim-all.hidden,
+.dev-actions #dev-withdraw-btn.hidden {
   display: none !important;
 }
 

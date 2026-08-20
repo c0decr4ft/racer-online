@@ -1,9 +1,10 @@
 /**
- * Web Audio — countdown beeps / explode boom + looping menu/drive music.
+ * Web Audio — countdown beeps / explode boom + looping menu/drive music + bike engine.
  * Unlocks on first user gesture (Start / BOARD / overlay click).
  * Speaker toggle mutes everything via a top-level gain (persisted in localStorage).
  *
  * Explode SFX: public/audio/explode.mp3 — Freesound “explosion-42132” (freesound_community).
+ * Bike engine: public/audio/bike-engine.mp3 — kimsa motorcycle sample (looped, pitched by speed).
  */
 
 type MusicMode = "off" | "menu" | "drive";
@@ -13,6 +14,8 @@ const DRIVE_VOL = 0.34;
 const SFX_MASTER_VOL = 0.55;
 /** Sampled wall-explode crash (separate from synthesized animal-hit boom). */
 const EXPLODE_VOL = 0.72;
+/** Bike engine loop — sits under drive music, rises with speed. */
+const BIKE_ENGINE_VOL = 0.42;
 const USER_MUTE_KEY = "racer-online-muted";
 
 export class GameAudio {
@@ -32,8 +35,11 @@ export class GameAudio {
   private menuBuffer: AudioBuffer | null = null;
   private driveBuffer: AudioBuffer | null = null;
   private explodeBuffer: AudioBuffer | null = null;
+  private bikeBuffer: AudioBuffer | null = null;
   private menuSource: AudioBufferSourceNode | null = null;
   private driveSource: AudioBufferSourceNode | null = null;
+  private bikeSource: AudioBufferSourceNode | null = null;
+  private bikeGain: GainNode | null = null;
   private musicMode: MusicMode = "off";
   private wantedMusic: MusicMode = "off";
   private loadPromise: Promise<void> | null = null;
@@ -86,6 +92,7 @@ export class GameAudio {
   mute(): void {
     this.muted = true;
     this.setMasterGain(0, 0.08);
+    this.stopBikeEngine();
   }
 
   /** Unmute SFX while driving / countdown (after unlock). */
@@ -118,11 +125,77 @@ export class GameAudio {
     if (this.wantedMusic === "drive" || this.musicMode === "drive") {
       void this.setMusic("off");
     }
+    this.stopBikeEngine();
   }
 
   /** Stop whichever track is playing. */
   stopMusic(): void {
     void this.setMusic("off");
+    this.stopBikeEngine();
+  }
+
+  /**
+   * Start / keep the motorcycle engine loop while racing on a bike.
+   * Call every frame with current speed (m/s) and throttle 0–1.
+   */
+  updateBikeEngine(speedMs: number, throttle: number): void {
+    if (!this.ready || !this.bikeBuffer || !this.ctx || !this.master) {
+      this.stopBikeEngine();
+      return;
+    }
+    if (!this.bikeSource || !this.bikeGain) {
+      this.startBikeEngine();
+      if (!this.bikeSource || !this.bikeGain) return;
+    }
+    const kmh = Math.max(0, speedMs) * 3.6;
+    // Idle ~0.75×, cruise ~1.0×, top end ~1.45× — sample stays recognizable
+    const rate = 0.72 + Math.min(1, kmh / 180) * 0.55 + Math.max(0, throttle) * 0.12;
+    const vol =
+      BIKE_ENGINE_VOL *
+      (0.22 + Math.min(1, kmh / 140) * 0.58 + Math.max(0, throttle) * 0.2);
+    const now = this.ctx.currentTime;
+    this.bikeSource.playbackRate.setTargetAtTime(rate, now, 0.08);
+    this.bikeGain.gain.setTargetAtTime(Math.max(0.0001, vol), now, 0.06);
+  }
+
+  stopBikeEngine(): void {
+    if (this.bikeSource) {
+      try {
+        this.bikeSource.stop();
+      } catch {
+        /* already stopped */
+      }
+      try {
+        this.bikeSource.disconnect();
+      } catch {
+        /* already disconnected */
+      }
+      this.bikeSource = null;
+    }
+    if (this.bikeGain) {
+      try {
+        this.bikeGain.disconnect();
+      } catch {
+        /* already disconnected */
+      }
+      this.bikeGain = null;
+    }
+  }
+
+  private startBikeEngine(): void {
+    if (!this.ready || !this.bikeBuffer || !this.ctx || !this.master) return;
+    if (this.bikeSource) return;
+    const gain = this.ctx.createGain();
+    gain.gain.value = 0.0001;
+    gain.connect(this.master);
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.bikeBuffer;
+    src.loop = true;
+    src.playbackRate.value = 0.75;
+    src.connect(gain);
+    src.start(0);
+    this.bikeGain = gain;
+    this.bikeSource = src;
   }
 
   /**
@@ -315,17 +388,22 @@ export class GameAudio {
 
   private async loadTracks(): Promise<void> {
     const base = import.meta.env.BASE_URL;
-    const [menu, drive, explode] = await Promise.all([
+    const [menu, drive, explode, bike] = await Promise.all([
       this.fetchBuffer(`${base}audio/menu.mp3`),
       this.fetchBuffer(`${base}audio/drive.mp3`),
       this.fetchBuffer(`${base}audio/explode.mp3`).catch((err) => {
         console.warn("Failed to load explode SFX", err);
         return null;
       }),
+      this.fetchBuffer(`${base}audio/bike-engine.mp3`).catch((err) => {
+        console.warn("Failed to load bike engine SFX", err);
+        return null;
+      }),
     ]);
     this.menuBuffer = menu;
     this.driveBuffer = drive;
     this.explodeBuffer = explode;
+    this.bikeBuffer = bike;
   }
 
   private async fetchBuffer(url: string): Promise<AudioBuffer> {

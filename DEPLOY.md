@@ -38,24 +38,45 @@ fly deploy
 
 Then set the same GitHub Actions secrets to your `https://APP.fly.dev` / `wss://APP.fly.dev` URLs.
 
-## Event Mode payments (Cashu eCash — TEST sats)
+## Event Mode payments (Cashu eCash — real Bitcoin sats)
 
-Event Mode buy-ins/payouts run through a Cashu mint — players pay with cashu.me or any
-NUT-18 Cashu wallet; winners claim the pot as a `cashuA` token.
+Event Mode buy-ins/payouts run through a Cashu mint — players pay with cashu.me
+(or any NUT-18 Cashu wallet) using **real sat** tokens minted against Lightning.
+Winners claim the pot as a `cashuA` token. Developer tips are **automatically
+swapped into a separate tip wallet** on the server so a bearer token never sits
+around to be double-spent.
 
-- **Default mint: Testnut** (`https://testnut.cashu.space`) — a test mint whose
-  Lightning invoices auto-pay, so everyone can mint **free test sats** and play the
-  whole money flow (buy-in → pot → payout) with zero real funds. In cashu.me: add the
-  Testnut mint in settings, then mint any amount (quotes are instantly paid).
-- **Real sats later:** set `CASHU_MINT_URL` to a real mint (e.g. Coinos,
-  `https://mint.coinos.io` — Minibits' mint is dead). Then it's **real money**: keep
-  buy-ins small enough that losing them is a shrug, and note the pot wallet
-  (`server/cashu-proofs.json`, gitignored) **lives on Render's ephemeral disk**: a
-  redeploy/restart wipes unclaimed pots and tip tokens (`server/payouts.json`). Claim
-  pots/tips promptly; for anything beyond pocket change, attach a persistent disk
-  (paid plan) or move to a VPS (Oracle free tier / Hetzner).
-- **Mock mode is opt-in for dev/tests only** — start the server with `RACER_PAYMENTS_MOCK=1`
-  for fake sats that auto-pay in ~3s (the e2e suite runs against this).
+### Where the money goes (schedule)
+
+Example: **4 racers**, **100 sat** buy-in, winner tips **2%**, mint fee **~1 sat**
+per swap.
+
+| Step | Who | Amount | Where it lands |
+| --- | --- | --- | --- |
+| 1. Buy-in | Each racer | 100 + 1 = **101 sats** | Paid from their Cashu wallet (Coinos mint) |
+| 2. Mint receive | Mint | **~1 sat** each | Mint fee for swapping the buy-in in |
+| 3. Pot | Event wallet | 4 × 100 = **400 sats** | `server/cashu-proofs.json` until claimed |
+| 4. Tip (2%) | Dev tip wallet | floor(400 × 2%) = **8 sats** | Auto-swapped into `server/cashu-tips.json` (mint burns the old secrets) |
+| 5. Winner | Winner | 400 − 8 − ~2 fees ≈ **390 sats** | `cashuA` token they paste into cashu.me |
+| 6. Mint send | Mint | **~2 sats** | Payout swap fees, taken from the pot (never from the tip) |
+
+Formula for any race:
+
+- Each racer pays `buyIn + mintFee` (usually +1 sat)
+- Pot = `buyIn × racers` (fees covered so the pot lands whole)
+- Tip = `floor(pot × tipPercent / 100)` → **tip wallet**, automatically
+- Winner = `pot − tip − payout mint fees` → Cashu token
+- You look at the tip wallet in the in-game **DEV** dashboard; **WITHDRAW TO CASHU.ME** when you want the sats on your phone
+
+### Mint + custody
+
+- **Default mint: Coinos** (`https://mint.coinos.io`) — real Lightning-backed
+  sats. In cashu.me: add that mint, mint sats by paying a Lightning invoice, then
+  scan the event buy-in QR.
+- **Test/fake sats:** only for local tests. `RACER_PAYMENTS_MOCK=1` (auto-pay fake
+  sats) or `CASHU_MINT_URL=https://testnut.cashu.space` (Testnut). Do not use
+  Testnut in production — those invoices auto-pay and are not real Bitcoin.
+- **Mock mode is opt-in for dev/tests only** — the e2e suite runs against mock.
 - `PUBLIC_BASE_URL` — public URL of this server (needed for the payment-request callback;
   auto-detected on Render via `RENDER_EXTERNAL_URL`)
 - **Leaderboard survives redeploys.** Scores are signed Nostr events (kind 30078) that
@@ -64,12 +85,15 @@ NUT-18 Cashu wallet; winners claim the pot as a `cashuA` token.
   `server/leaderboard.json` (ephemeral on Render) is only a cache — updates never wipe
   the board anymore.
 - **Mint fees are automatic.** Buy-in requests add ~1 sat on top (payer covers it, pot
-  lands whole). At payout, the **dev tip is paid whole** at the winner's chosen percent,
-  and the mint's send fees come **out of the pot** (the winner's share) — both tokens
-  carry their own receive fee (`includeFees`), so each redeems to the exact amount shown.
+  lands whole). At payout, the **dev tip is paid whole** at the winner's chosen percent
+  and swapped into the tip wallet; the mint's send fees come **out of the pot** (the
+  winner's share).
 - `GET /api/status` reports `payments: "live" | "mock"` and the active `mint`.
-- The pot wallet lives in `server/cashu-proofs.json` (gitignored) — it's the money while a
-  pot is unclaimed; back it up for real-money events.
+- **Two wallets, both gitignored:** pot `server/cashu-proofs.json`, tips
+  `server/cashu-tips.json`. They **live on Render's ephemeral disk**: a
+  redeploy/restart wipes unclaimed pots and the tip wallet. Withdraw tips promptly;
+  for anything beyond pocket change, attach a persistent disk (paid plan) or move
+  to a VPS (Oracle free tier / Hetzner).
 
 ## Player feedback → your email
 
@@ -88,16 +112,17 @@ and is forwarded to your inbox. **Use Resend** — reliable, server-side, free t
 Fallback without the key: FormSubmit (`FEEDBACK_EMAIL`) — requires clicking the
 "Activate Form" link it emails you once, or nothing is ever delivered.
 
-## Dev dashboard (tips wallet)
+## Dev dashboard (tip wallet)
 
 The dashboard is locked to the **DEV_c0decr4ft** Nostr account (pubkey baked into
 `server/index.mjs` + `render.yaml`; override with the `DEV_PUBKEY` env var). When signed
-in with that account in-game, a **DEV** button appears on the home screen: it shows how
-many tips you've received, each tip's amount, a wallet card with your pending/earned/
-claimed sats, and COPY buttons for the pending tip tokens (redeem them in cashu.me, then
-mark them claimed). Auth is a signed Nostr event verified server-side — only that pubkey
-gets in. Tip records live in `server/payouts.json` (gitignored; contains bearer tokens —
-keep it private and back it up).
+in with that account in-game, a **DEV** button appears on the home screen: it shows the
+**tip wallet** balance (sats already collected for you), each tip's amount, and
+**WITHDRAW TO CASHU.ME** when you want to move the balance to your phone. Tips are
+swapped into `server/cashu-tips.json` the moment a winner claims — you do not copy
+tokens per tip (that was the double-spend hole). Auth is a signed Nostr event verified
+server-side — only that pubkey gets in. Withdraw tokens are created only when you ask;
+redeem each one once in cashu.me.
 
 ## Local (your PC must stay on)
 

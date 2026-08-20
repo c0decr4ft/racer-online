@@ -591,7 +591,7 @@ export function createBike(
   return bike;
 }
 
-/** Dev garage extra — jacked-up monster truck: huge tires, exposed frame, wing. */
+/** Dev garage extra — jacked-up stadium monster truck (clearance + cage + flares). */
 export function createMonsterTruck(
   bodyColor = 0xd0d7e0,
   raceNumber = 7,
@@ -599,104 +599,151 @@ export function createMonsterTruck(
   opts?: CreateVehicleOpts,
 ): THREE.Group {
   const truck = new THREE.Group();
-  const body = paintMat(bodyColor, { metal: 0.3, rough: 0.42, emit: 0.12 });
-  const dark = mat(0x12161c, { metal: 0.5, rough: 0.45 });
-  const carbon = mat(0x161b22, { metal: 0.4, rough: 0.6 });
-  const chrome = mat(0xc0c8d2, { metal: 1, rough: 0.16 });
-  const glass = mat(0x0a1520, { metal: 0.2, rough: 0.06 });
-  const head = mat(0xf7fafc, { metal: 0.15, rough: 0.25, emissive: 0xf7fafc, emit: 0.9 });
-  const tail = mat(0xff2418, { metal: 0.25, rough: 0.35, emissive: 0xff2418, emit: 0.7 });
-  const accent = paintMat(accentColor, { metal: 0.32, rough: 0.4, emit: 0.16 });
+  const body = paintMat(bodyColor, { metal: 0.26, rough: 0.4, emit: 0.12 });
+  const dark = mat(0x10141a, { metal: 0.55, rough: 0.42 });
+  const carbon = mat(0x181e26, { metal: 0.4, rough: 0.58 });
+  const chrome = mat(0xc8d0da, { metal: 1, rough: 0.14 });
+  const rubber = mat(0x0a0a0c, { metal: 0.05, rough: 0.95 });
+  const glass = mat(0x08121c, { metal: 0.15, rough: 0.05 });
+  const head = mat(0xf7fafc, { metal: 0.15, rough: 0.25, emissive: 0xf7fafc, emit: 0.95 });
+  const tail = mat(0xff2418, { metal: 0.25, rough: 0.35, emissive: 0xff2418, emit: 0.75 });
+  const accent = paintMat(accentColor, { metal: 0.3, rough: 0.38, emit: 0.18 });
 
-  // Exposed ladder frame, axles + diffs, and splayed long-travel coilovers —
-  // the daylight under the body is what makes it a monster truck.
-  box(truck, 0.18, 0.2, 3.5, dark, -0.5, 1.06, 0);
-  box(truck, 0.18, 0.2, 3.5, dark, 0.5, 1.06, 0);
-  box(truck, 1.06, 0.1, 0.14, dark, 0, 1.06, 0.9);
-  box(truck, 1.06, 0.1, 0.14, dark, 0, 1.06, -0.9);
-  box(truck, 2.14, 0.14, 0.14, chrome, 0, 0.66, 1.35);
-  box(truck, 2.14, 0.14, 0.14, chrome, 0, 0.66, -1.35);
-  box(truck, 0.3, 0.26, 0.24, dark, 0, 0.66, 1.35);
-  box(truck, 0.3, 0.26, 0.24, dark, 0, 0.66, -1.35);
-  for (const s of [-1, 1] as const) {
-    box(truck, 0.11, 0.62, 0.11, chrome, s * 0.78, 0.92, 1.35, 0, 0, s * -0.32);
-    box(truck, 0.11, 0.62, 0.11, chrome, s * 0.78, 0.92, -1.35, 0, 0, s * -0.32);
-    box(truck, 0.07, 0.5, 0.07, dark, s * 0.45, 0.88, 1.35, 0, 0, s * 0.45);
-    box(truck, 0.07, 0.5, 0.07, dark, s * 0.45, 0.88, -1.35, 0, 0, s * 0.45);
+  // Ladder chassis + crossmembers — daylight under the tub is the silhouette.
+  box(truck, 0.16, 0.22, 3.7, dark, -0.52, 1.02, 0);
+  box(truck, 0.16, 0.22, 3.7, dark, 0.52, 1.02, 0);
+  for (const z of [-1.45, -0.55, 0.35, 1.25]) {
+    box(truck, 1.2, 0.1, 0.14, dark, 0, 1.02, z);
+  }
+  // Axles, diffs, long-travel coilovers (splayed)
+  for (const z of [1.38, -1.38] as const) {
+    box(truck, 2.35, 0.16, 0.16, chrome, 0, 0.62, z);
+    box(truck, 0.36, 0.3, 0.28, dark, 0, 0.62, z);
+    for (const s of [-1, 1] as const) {
+      box(truck, 0.1, 0.72, 0.1, chrome, s * 0.82, 0.95, z, 0, 0, s * -0.38);
+      box(truck, 0.06, 0.58, 0.06, dark, s * 0.48, 0.9, z, 0, 0, s * 0.42);
+      cyl(truck, 0.09, 0.09, 0.22, rubber, s * 0.82, 0.58, z, 0, 0, Math.PI / 2, 10);
+    }
   }
 
-  // High-riding pickup tub — floor clears the tire tops (r 0.66 → ~1.32)
-  box(truck, 2.0, 0.46, 4.15, body, 0, 1.6, 0);
-  box(truck, 1.72, 0.16, 1.05, body, 0, 1.9, 1.4).name = "panel-hood";
-  box(truck, 0.6, 0.1, 0.42, carbon, 0, 2.0, 1.42); // hood scoop
-  box(truck, 0.14, 0.05, 1.0, accent, -0.5, 1.99, 1.4);
-  box(truck, 0.14, 0.05, 1.0, accent, 0.5, 1.99, 1.4);
+  // Main tub — high floor clears the tire crowns
+  box(truck, 2.05, 0.5, 4.05, body, 0, 1.62, 0.05);
+  box(truck, 1.9, 0.08, 3.9, carbon, 0, 1.34, 0.05);
+  // Nose / grille face
+  box(truck, 1.95, 0.55, 0.28, body, 0, 1.68, 2.12);
+  box(truck, 1.55, 0.42, 0.08, dark, 0, 1.66, 2.28);
+  for (const y of [1.52, 1.64, 1.76]) {
+    box(truck, 1.35, 0.035, 0.04, chrome, 0, y, 2.32);
+  }
+  // Hood with scoop (damage panel)
+  box(truck, 1.78, 0.14, 1.15, body, 0, 1.95, 1.35).name = "panel-hood";
+  box(truck, 0.72, 0.14, 0.55, carbon, 0, 2.08, 1.38);
+  box(truck, 0.55, 0.04, 0.4, dark, 0, 2.16, 1.38);
+  box(truck, 0.12, 0.05, 1.05, accent, -0.55, 2.04, 1.35);
+  box(truck, 0.12, 0.05, 1.05, accent, 0.55, 2.04, 1.35);
 
-  // Chopped cab + glasshouse
-  box(truck, 1.7, 0.52, 1.6, body, 0, 2.1, -0.35);
-  box(truck, 1.76, 0.09, 1.55, body, 0, 2.4, -0.4);
-  box(truck, 1.46, 0.05, 0.66, glass, 0, 2.14, 0.5, 0.45).name = "glass-front";
-  box(truck, 1.4, 0.04, 0.5, glass, 0, 2.14, -1.2, -0.35);
-  box(truck, 0.05, 0.3, 1.2, glass, -0.84, 2.12, -0.38);
-  box(truck, 0.05, 0.3, 1.2, glass, 0.84, 2.12, -0.38);
+  // Cab — short roof, thick pillars, readable glasshouse
+  box(truck, 1.78, 0.62, 1.45, body, 0, 2.18, -0.2);
+  box(truck, 1.82, 0.1, 1.5, body, 0, 2.52, -0.22);
+  box(truck, 0.14, 0.55, 0.14, dark, -0.82, 2.2, 0.42);
+  box(truck, 0.14, 0.55, 0.14, dark, 0.82, 2.2, 0.42);
+  box(truck, 0.12, 0.5, 0.12, dark, -0.82, 2.18, -0.88);
+  box(truck, 0.12, 0.5, 0.12, dark, 0.82, 2.18, -0.88);
+  box(truck, 1.52, 0.06, 0.72, glass, 0, 2.22, 0.55, 0.48).name = "glass-front";
+  box(truck, 1.48, 0.05, 0.55, glass, 0, 2.22, -0.95, -0.32);
+  box(truck, 0.05, 0.38, 1.15, glass, -0.9, 2.2, -0.2);
+  box(truck, 0.05, 0.38, 1.15, glass, 0.9, 2.2, -0.2);
+
+  // Roll cage over cab + bed
+  for (const s of [-1, 1] as const) {
+    box(truck, 0.07, 0.55, 0.07, chrome, s * 0.72, 2.75, 0.35);
+    box(truck, 0.07, 0.7, 0.07, chrome, s * 0.72, 2.7, -0.95);
+    box(truck, 0.07, 0.07, 1.4, chrome, s * 0.72, 3.0, -0.3);
+  }
+  box(truck, 1.5, 0.07, 0.07, chrome, 0, 3.0, 0.35);
+  box(truck, 1.5, 0.07, 0.07, chrome, 0, 3.0, -0.95);
 
   // Roof light bar
-  box(truck, 1.3, 0.07, 0.1, dark, 0, 2.5, 0.32);
-  for (const x of [-0.48, -0.16, 0.16, 0.48]) {
-    box(truck, 0.17, 0.09, 0.07, head, x, 2.5, 0.38);
+  box(truck, 1.35, 0.08, 0.12, dark, 0, 2.62, 0.45);
+  for (const x of [-0.5, -0.17, 0.17, 0.5]) {
+    box(truck, 0.18, 0.1, 0.08, head, x, 2.62, 0.52);
   }
 
-  // Bed + tailgate + big rear wing
-  box(truck, 0.12, 0.34, 1.55, body, -0.95, 1.98, -1.3);
-  box(truck, 0.12, 0.34, 1.55, body, 0.95, 1.98, -1.3);
-  box(truck, 1.9, 0.34, 0.1, body, 0, 1.98, -2.05).name = "panel-tail";
-  box(truck, 0.08, 0.4, 0.08, dark, -0.8, 2.3, -1.95);
-  box(truck, 0.08, 0.4, 0.08, dark, 0.8, 2.3, -1.95);
-  box(truck, 2.0, 0.06, 0.5, accent, 0, 2.52, -2.0, -0.12);
+  // Bed walls + floor + tailgate
+  box(truck, 1.7, 0.06, 1.55, carbon, 0, 1.88, -1.35);
+  box(truck, 0.1, 0.42, 1.55, body, -0.95, 2.08, -1.35);
+  box(truck, 0.1, 0.42, 1.55, body, 0.95, 2.08, -1.35);
+  box(truck, 1.95, 0.42, 0.12, body, 0, 2.08, -2.12).name = "panel-tail";
+  box(truck, 1.7, 0.05, 0.08, accent, 0, 2.28, -2.18);
+  // Bed rail stakes + wing
+  for (const s of [-1, 1] as const) {
+    box(truck, 0.07, 0.48, 0.07, dark, s * 0.85, 2.4, -2.05);
+  }
+  box(truck, 2.15, 0.07, 0.55, accent, 0, 2.68, -2.08, -0.18);
+  box(truck, 0.08, 0.2, 0.4, dark, -1.02, 2.55, -2.0);
+  box(truck, 0.08, 0.2, 0.4, dark, 1.02, 2.55, -2.0);
 
-  // Grille, bull bar + bumpers
-  box(truck, 1.7, 0.4, 0.08, dark, 0, 1.62, 2.06);
-  box(truck, 0.3, 0.14, 0.06, head, -0.62, 1.7, 2.1);
-  box(truck, 0.3, 0.14, 0.06, head, 0.62, 1.7, 2.1);
-  box(truck, 2.2, 0.2, 0.22, chrome, 0, 1.22, 2.1);
-  box(truck, 2.2, 0.2, 0.22, chrome, 0, 1.22, -2.1);
-  box(truck, 0.09, 0.55, 0.09, chrome, -0.5, 1.55, 2.24);
-  box(truck, 0.09, 0.55, 0.09, chrome, 0.5, 1.55, 2.24);
-  box(truck, 1.1, 0.09, 0.09, chrome, 0, 1.8, 2.24);
+  // Wheel-arch flares (reads as stadium truck from chase cam)
+  for (const z of [1.38, -1.38] as const) {
+    for (const s of [-1, 1] as const) {
+      box(truck, 0.28, 0.55, 1.05, body, s * 1.12, 1.55, z);
+      box(truck, 0.08, 0.2, 0.9, accent, s * 1.24, 1.72, z);
+    }
+  }
 
-  // Tail lights, side stripes, steps, stacks + whip flag
-  box(truck, 0.26, 0.1, 0.05, tail, -0.7, 1.98, -2.11);
-  box(truck, 0.26, 0.1, 0.05, tail, 0.7, 1.98, -2.11);
-  box(truck, 0.05, 0.16, 3.6, accent, -1.02, 1.66, 0);
-  box(truck, 0.05, 0.16, 3.6, accent, 1.02, 1.66, 0);
-  box(truck, 0.3, 0.06, 1.1, carbon, -1.1, 1.34, -0.2);
-  box(truck, 0.3, 0.06, 1.1, carbon, 1.1, 1.34, -0.2);
-  cyl(truck, 0.055, 0.055, 1.0, chrome, -0.6, 2.2, -1.3, 0, 0, 0, 10);
-  cyl(truck, 0.055, 0.055, 1.0, chrome, 0.6, 2.2, -1.3, 0, 0, 0, 10);
-  cyl(truck, 0.02, 0.02, 1.2, dark, 0.88, 2.6, -1.95, 0, 0, 0, 6);
-  box(truck, 0.44, 0.26, 0.03, accent, 0.66, 3.06, -1.95);
+  // Front bumper / brush guard + headlights
+  box(truck, 2.25, 0.22, 0.24, chrome, 0, 1.18, 2.2);
+  box(truck, 0.1, 0.65, 0.1, chrome, -0.55, 1.55, 2.32);
+  box(truck, 0.1, 0.65, 0.1, chrome, 0.55, 1.55, 2.32);
+  box(truck, 1.2, 0.1, 0.1, chrome, 0, 1.88, 2.32);
+  for (const y of [1.45, 1.62, 1.78]) {
+    box(truck, 1.05, 0.04, 0.05, chrome, 0, y, 2.36);
+  }
+  box(truck, 0.36, 0.18, 0.08, head, -0.68, 1.78, 2.22);
+  box(truck, 0.36, 0.18, 0.08, head, 0.68, 1.78, 2.22);
+  box(truck, 0.16, 0.1, 0.05, head, -0.68, 1.78, 2.28);
+  box(truck, 0.16, 0.1, 0.05, head, 0.68, 1.78, 2.28);
+  // Rear bumper + lights
+  box(truck, 2.15, 0.2, 0.2, chrome, 0, 1.2, -2.18);
+  box(truck, 0.32, 0.14, 0.06, tail, -0.72, 2.08, -2.2);
+  box(truck, 0.32, 0.14, 0.06, tail, 0.72, 2.08, -2.2);
 
-  // Number plate on the tailgate
+  // Side rockers / steps + accent belt
+  box(truck, 0.05, 0.2, 3.7, accent, -1.05, 1.7, 0);
+  box(truck, 0.05, 0.2, 3.7, accent, 1.05, 1.7, 0);
+  box(truck, 0.32, 0.07, 1.2, carbon, -1.15, 1.28, -0.15);
+  box(truck, 0.32, 0.07, 1.2, carbon, 1.15, 1.28, -0.15);
+
+  // Dual exhaust stacks behind cab
+  for (const s of [-1, 1] as const) {
+    cyl(truck, 0.07, 0.07, 1.15, chrome, s * 0.55, 2.35, -0.95, 0, 0, 0, 12);
+    cyl(truck, 0.09, 0.09, 0.12, dark, s * 0.55, 2.95, -0.95, 0, 0, 0, 10);
+  }
+  // Whip + flag
+  cyl(truck, 0.018, 0.018, 1.35, dark, 0.92, 2.75, -2.0, 0, 0, 0, 6);
+  box(truck, 0.48, 0.28, 0.03, accent, 0.72, 3.35, -2.0);
+
+  // Race number on tailgate
   const numMat = mat(0xffffff, { metal: 0.1, rough: 0.55 });
-  box(truck, 0.5, 0.28, 0.02, numMat, 0, 1.98, -2.12);
+  box(truck, 0.52, 0.3, 0.02, numMat, 0, 2.08, -2.2);
   const n = Math.max(1, Math.min(99, raceNumber));
-  if (Math.floor(n / 10) > 0) box(truck, 0.06, 0.18, 0.03, dark, -0.1, 1.98, -2.13);
+  if (Math.floor(n / 10) > 0) box(truck, 0.06, 0.18, 0.03, dark, -0.1, 2.08, -2.21);
   for (let i = 0; i < Math.min(n % 10, 5); i++) {
-    box(truck, 0.05, 0.032, 0.03, dark, 0.1, 1.89 + i * 0.04, -2.13);
+    box(truck, 0.05, 0.032, 0.03, dark, 0.1, 1.99 + i * 0.04, -2.21);
   }
 
-  const r = 0.66;
+  const r = 0.72;
   attachWheels(
     truck,
     [
-      [-1.16, r, 1.35],
-      [1.16, r, 1.35],
-      [-1.16, r, -1.35],
-      [1.16, r, -1.35],
+      [-1.22, r, 1.38],
+      [1.22, r, 1.38],
+      [-1.22, r, -1.38],
+      [1.22, r, -1.38],
     ],
     r,
-    0.58,
-    6,
+    0.62,
+    5,
   );
   paintable(truck, body, accent);
   truck.userData.kind = "truck";
@@ -704,14 +751,14 @@ export function createMonsterTruck(
   truck.userData.tailLightMaterials = [tail];
   if (opts?.headlights) {
     attachHeadBeams(truck, [
-      { x: -0.62, y: 1.7, z: 2.1 },
-      { x: 0.62, y: 1.7, z: 2.1 },
+      { x: -0.68, y: 1.78, z: 2.22 },
+      { x: 0.68, y: 1.78, z: 2.22 },
     ]);
   }
   return truck;
 }
 
-/** Dev garage extra — tracked battle tank; steerCount 0 (treads don't yaw). */
+/** Dev garage extra — modern MBT silhouette; steerCount 0 (treads don't yaw). */
 export function createTank(
   bodyColor = 0xd0d7e0,
   raceNumber = 7,
@@ -719,133 +766,135 @@ export function createTank(
   opts?: CreateVehicleOpts,
 ): THREE.Group {
   const tank = new THREE.Group();
-  const body = paintMat(bodyColor, { metal: 0.38, rough: 0.55, emit: 0.08 });
-  const dark = mat(0x12161c, { metal: 0.5, rough: 0.5 });
-  const tread = mat(0x14161a, { metal: 0.3, rough: 0.85 });
-  const steel = mat(0x3a4148, { metal: 0.7, rough: 0.4 });
-  const glass = mat(0x0a1520, { metal: 0.2, rough: 0.06 });
-  const head = mat(0xf7fafc, { metal: 0.15, rough: 0.25, emissive: 0xf7fafc, emit: 0.9 });
-  const tail = mat(0xff2418, { metal: 0.25, rough: 0.35, emissive: 0xff2418, emit: 0.7 });
-  const accent = paintMat(accentColor, { metal: 0.3, rough: 0.45, emit: 0.14 });
+  const body = paintMat(bodyColor, { metal: 0.35, rough: 0.52, emit: 0.09 });
+  const dark = mat(0x101418, { metal: 0.55, rough: 0.48 });
+  const carbon = mat(0x181e26, { metal: 0.4, rough: 0.58 });
+  const tread = mat(0x0e1014, { metal: 0.25, rough: 0.9 });
+  const steel = mat(0x3e464e, { metal: 0.75, rough: 0.36 });
+  const rubber = mat(0x12141a, { metal: 0.15, rough: 0.88 });
+  const glass = mat(0x08121c, { metal: 0.15, rough: 0.05 });
+  const head = mat(0xf7fafc, { metal: 0.15, rough: 0.25, emissive: 0xf7fafc, emit: 0.95 });
+  const tail = mat(0xff2418, { metal: 0.25, rough: 0.35, emissive: 0xff2418, emit: 0.75 });
+  const accent = paintMat(accentColor, { metal: 0.28, rough: 0.42, emit: 0.15 });
 
-  // Tracks: dark tread loop + visible road wheels / sprockets / return rollers.
-  // The track face sits at the wheel line so the treads look planted — before,
-  // the treads buried into the floor and the hull floated above a void.
-  const wheelLine: [number, number][] = [
-    [-1.5, 0.32],
-    [-0.98, 0.36],
-    [-0.42, 0.36],
-    [0.14, 0.36],
-    [0.7, 0.36],
-    [1.22, 0.36],
-  ];
+  // Continuous tracks + road wheels / sprockets — planted on the ground plane.
+  const roadWheels = [-1.55, -0.95, -0.35, 0.25, 0.85, 1.4];
   for (const s of [-1, 1] as const) {
-    // Tread loop — grounded (bottom at y≈0)
-    box(tank, 0.46, 0.72, 4.1, tread, s * 1.0, 0.38, 0);
-    // Road wheels (visible through the track face) + front/rear sprockets
-    for (const [z, r] of wheelLine) {
-      cyl(tank, r, r, 0.5, steel, s * 1.0, 0.38, z, 0, 0, Math.PI / 2, 16);
+    // Outer tread band + inner face
+    box(tank, 0.52, 0.78, 4.25, tread, s * 1.05, 0.4, 0.02);
+    box(tank, 0.38, 0.62, 4.0, rubber, s * 1.05, 0.4, 0.02);
+    // Road wheels
+    for (const z of roadWheels) {
+      cyl(tank, 0.34, 0.34, 0.48, steel, s * 1.05, 0.38, z, 0, 0, Math.PI / 2, 16);
+      cyl(tank, 0.14, 0.14, 0.5, dark, s * 1.05, 0.38, z, 0, 0, Math.PI / 2, 10);
     }
-    cyl(tank, 0.34, 0.34, 0.5, dark, s * 1.0, 0.42, 1.72, 0, 0, Math.PI / 2, 14);
-    cyl(tank, 0.34, 0.34, 0.5, dark, s * 1.0, 0.42, -1.72, 0, 0, Math.PI / 2, 14);
-    // Return rollers up top
-    for (const z of [-0.7, 0, 0.7]) {
-      cyl(tank, 0.13, 0.13, 0.5, dark, s * 1.0, 0.68, z, 0, 0, Math.PI / 2, 10);
+    // Drive sprocket (rear) + idler (front)
+    cyl(tank, 0.38, 0.38, 0.5, dark, s * 1.05, 0.44, -1.95, 0, 0, Math.PI / 2, 14);
+    cyl(tank, 0.36, 0.36, 0.5, dark, s * 1.05, 0.42, 1.95, 0, 0, Math.PI / 2, 14);
+    // Return rollers
+    for (const z of [-0.8, 0.1, 1.0]) {
+      cyl(tank, 0.12, 0.12, 0.48, dark, s * 1.05, 0.74, z, 0, 0, Math.PI / 2, 10);
     }
-    // Grouser bars across the top run of the track
-    for (const z of [-1.7, -1.3, -0.9, -0.5, -0.1, 0.3, 0.7, 1.1, 1.5, 1.9]) {
-      box(tank, 0.47, 0.045, 0.22, steel, s * 1.0, 0.77, z);
+    // Grouser pads on the top run
+    for (let i = -8; i <= 8; i++) {
+      box(tank, 0.5, 0.05, 0.18, steel, s * 1.05, 0.82, i * 0.24);
     }
-    // Side skirt — flush angled armor over the track, not a floating wing
-    box(tank, 0.12, 0.46, 3.9, body, s * 1.24, 0.68, 0, 0, 0, s * 0.12);
+    // Side skirt armor
+    box(tank, 0.1, 0.55, 4.0, body, s * 1.32, 0.72, 0.02, 0, 0, s * 0.1);
+    box(tank, 0.04, 0.12, 3.6, accent, s * 1.38, 0.85, 0.02);
   }
 
-  // Hull — wedge glacis + floor, sits down ON the tracks (no floating gap)
-  box(tank, 1.62, 0.42, 3.9, body, 0, 0.68, 0);
-  // Glacis plate (named panel — wall damage skews it loose)
-  box(tank, 1.6, 0.09, 1.35, body, 0, 0.82, 1.7, 0.42).name = "panel-hood";
-  // Rear hull plate
-  box(tank, 1.6, 0.36, 0.1, body, 0, 0.78, -1.96).name = "panel-tail";
-  // Upper deck ring the turret sits in
-  box(tank, 1.5, 0.14, 2.2, body, 0, 0.94, -0.4);
-  // Driver hatch + periscope glass
-  box(tank, 0.34, 0.1, 0.5, dark, 0.42, 1.0, 1.15);
-  box(tank, 0.28, 0.05, 0.04, glass, 0.42, 1.06, 1.24).name = "glass-front";
-  // Side accent strips
-  box(tank, 0.03, 0.1, 2.7, accent, -0.82, 0.78, 0);
-  box(tank, 0.03, 0.1, 2.7, accent, 0.82, 0.78, 0);
-  // Tow eyes on the nose
-  cyl(tank, 0.05, 0.05, 0.12, steel, -0.55, 0.62, 2.0, Math.PI / 2, 0, 0, 8);
-  cyl(tank, 0.05, 0.05, 0.12, steel, 0.55, 0.62, 2.0, Math.PI / 2, 0, 0, 8);
+  // Lower hull + wedge glacis (damage panel) + rear plate
+  box(tank, 1.7, 0.48, 3.95, body, 0, 0.72, 0.02);
+  box(tank, 1.68, 0.12, 1.55, body, 0, 0.92, 1.55, 0.38).name = "panel-hood";
+  box(tank, 1.55, 0.08, 0.9, dark, 0, 0.98, 1.7, 0.38);
+  box(tank, 1.68, 0.42, 0.14, body, 0, 0.82, -1.98).name = "panel-tail";
+  // Upper deck / turret ring
+  box(tank, 1.55, 0.16, 2.35, body, 0, 1.0, -0.25);
+  box(tank, 1.4, 0.08, 1.8, carbon, 0, 1.1, -0.3);
+  // Driver hatch + vision block
+  box(tank, 0.38, 0.1, 0.48, dark, 0.4, 1.08, 1.05);
+  box(tank, 0.3, 0.05, 0.05, glass, 0.4, 1.14, 1.18).name = "glass-front";
+  box(tank, 0.28, 0.08, 0.35, dark, -0.35, 1.08, 1.0);
+  // Tow hooks
+  cyl(tank, 0.055, 0.055, 0.14, steel, -0.55, 0.65, 2.15, Math.PI / 2, 0, 0, 8);
+  cyl(tank, 0.055, 0.055, 0.14, steel, 0.55, 0.65, 2.15, Math.PI / 2, 0, 0, 8);
 
-  // Turret — angular wedge cheeks, bustle tail, roof plate, gun mantlet
-  box(tank, 1.3, 0.38, 1.1, body, 0, 1.2, -0.3);
-  box(tank, 1.08, 0.32, 0.72, body, 0, 1.18, 0.5, -0.12);
-  box(tank, 0.9, 0.06, 1.55, dark, 0, 1.4, -0.28);
-  box(tank, 0.5, 0.3, 0.32, dark, 0, 1.22, 0.88);
-  box(tank, 0.06, 0.09, 1.2, accent, 0, 1.44, -0.18);
+  // Turret — low wedge profile with bustle
+  box(tank, 1.35, 0.42, 1.25, body, 0, 1.3, -0.2);
+  box(tank, 1.15, 0.36, 0.85, body, 0, 1.28, 0.55, -0.1);
+  box(tank, 1.0, 0.32, 0.55, body, 0, 1.26, -0.95);
+  box(tank, 0.95, 0.07, 1.7, dark, 0, 1.52, -0.15);
+  box(tank, 0.08, 0.1, 1.35, accent, 0, 1.56, -0.1);
+  // Gun mantlet
+  box(tank, 0.58, 0.36, 0.42, dark, 0, 1.3, 0.95);
+  box(tank, 0.42, 0.28, 0.2, steel, 0, 1.3, 1.15);
 
-  // Stepped barrel: root sleeve, main tube, thermal rings, muzzle brake
-  cyl(tank, 0.085, 0.1, 0.6, dark, 0, 1.23, 1.18, Math.PI / 2, 0, 0, 12);
-  cyl(tank, 0.07, 0.085, 1.7, steel, 0, 1.23, 2.25, Math.PI / 2, 0, 0, 12);
-  for (const z of [1.6, 2.0, 2.4]) {
-    cyl(tank, 0.09, 0.09, 0.1, dark, 0, 1.23, z, Math.PI / 2, 0, 0, 12);
+  // Main gun — stepped tube + thermal jacket rings + muzzle brake
+  cyl(tank, 0.11, 0.13, 0.55, dark, 0, 1.3, 1.35, Math.PI / 2, 0, 0, 14);
+  cyl(tank, 0.075, 0.09, 2.05, steel, 0, 1.3, 2.55, Math.PI / 2, 0, 0, 14);
+  for (const z of [1.75, 2.15, 2.55, 2.95]) {
+    cyl(tank, 0.1, 0.1, 0.1, dark, 0, 1.3, z, Math.PI / 2, 0, 0, 12);
   }
-  cyl(tank, 0.12, 0.12, 0.34, dark, 0, 1.23, 3.05, Math.PI / 2, 0, 0, 12);
-  // Accent ring at the muzzle
-  cyl(tank, 0.11, 0.11, 0.1, accent, 0, 1.23, 2.9, Math.PI / 2, 0, 0, 12);
+  cyl(tank, 0.13, 0.13, 0.38, dark, 0, 1.3, 3.45, Math.PI / 2, 0, 0, 12);
+  cyl(tank, 0.12, 0.12, 0.1, accent, 0, 1.3, 3.3, Math.PI / 2, 0, 0, 12);
 
-  // Roof kit: commander cupola w/ glass, loader hatch, MG, twin antennas
-  cyl(tank, 0.26, 0.3, 0.12, dark, 0.33, 1.46, -0.48, 0, 0, 0, 14);
-  box(tank, 0.18, 0.03, 0.2, glass, 0.33, 1.52, -0.48);
-  cyl(tank, 0.2, 0.2, 0.08, dark, -0.35, 1.46, -0.53, 0, 0, 0, 12);
-  box(tank, 0.045, 0.05, 0.5, dark, 0.33, 1.6, -0.64, -0.2);
-  box(tank, 0.06, 0.06, 0.12, dark, 0.33, 1.56, -0.88);
-  cyl(tank, 0.014, 0.014, 1.3, dark, -0.55, 2.0, -0.72, 0.1, 0, 0, 5);
-  cyl(tank, 0.014, 0.014, 1.1, dark, -0.4, 1.86, -0.72, -0.12, 0, 0, 5);
+  // Roof kit: commander cupola, loader hatch, coax MG, antennas
+  cyl(tank, 0.28, 0.32, 0.14, dark, 0.35, 1.58, -0.35, 0, 0, 0, 14);
+  box(tank, 0.2, 0.035, 0.22, glass, 0.35, 1.66, -0.35);
+  cyl(tank, 0.2, 0.2, 0.1, dark, -0.38, 1.58, -0.4, 0, 0, 0, 12);
+  box(tank, 0.05, 0.05, 0.55, dark, 0.35, 1.72, -0.55, -0.15);
+  box(tank, 0.07, 0.07, 0.14, dark, 0.35, 1.68, -0.82);
+  cyl(tank, 0.012, 0.012, 1.4, dark, -0.55, 2.2, -0.65, 0.08, 0, 0, 5);
+  cyl(tank, 0.012, 0.012, 1.15, dark, -0.4, 2.05, -0.65, -0.1, 0, 0, 5);
 
-  // Bustle rack frame behind the turret + rear-hull stowage (bins + tarp roll)
+  // Bustle rack + rear stowage
   for (const s of [-1, 1] as const) {
-    box(tank, 0.05, 0.2, 0.85, dark, s * 0.6, 1.36, -0.95);
+    box(tank, 0.05, 0.22, 0.9, dark, s * 0.62, 1.48, -0.95);
   }
-  box(tank, 1.24, 0.05, 0.05, dark, 0, 1.46, -1.36);
-  box(tank, 1.24, 0.05, 0.05, dark, 0, 1.26, -1.36);
-  box(tank, 0.5, 0.2, 0.38, dark, -0.5, 1.0, -1.65);
-  box(tank, 0.5, 0.2, 0.38, dark, 0.5, 1.0, -1.65);
-  cyl(tank, 0.1, 0.1, 1.35, tread, 0, 1.02, -1.7, 0, 0, Math.PI / 2, 10);
+  box(tank, 1.28, 0.05, 0.05, dark, 0, 1.58, -1.4);
+  box(tank, 1.28, 0.05, 0.05, dark, 0, 1.38, -1.4);
+  box(tank, 0.55, 0.22, 0.4, dark, -0.48, 1.05, -1.7);
+  box(tank, 0.55, 0.22, 0.4, dark, 0.48, 1.05, -1.7);
+  cyl(tank, 0.11, 0.11, 1.4, tread, 0, 1.05, -1.75, 0, 0, Math.PI / 2, 10);
 
-  // Fender headlights + tail lights + rear exhausts (inboard of the skirts)
-  box(tank, 0.2, 0.09, 0.07, head, -0.45, 0.85, 1.97);
-  box(tank, 0.2, 0.09, 0.07, head, 0.45, 0.85, 1.97);
-  box(tank, 0.16, 0.07, 0.05, tail, -0.58, 0.8, -2.0);
-  box(tank, 0.16, 0.07, 0.05, tail, 0.58, 0.8, -2.0);
-  cyl(tank, 0.07, 0.07, 0.5, steel, -0.45, 0.82, -1.85, Math.PI / 2.4, 0, 0, 10);
-  cyl(tank, 0.07, 0.07, 0.5, steel, 0.45, 0.82, -1.85, Math.PI / 2.4, 0, 0, 10);
+  // Engine deck vents + exhausts
+  for (const x of [-0.35, 0, 0.35]) {
+    box(tank, 0.28, 0.04, 0.55, dark, x, 1.12, -1.35);
+  }
+  cyl(tank, 0.08, 0.08, 0.55, steel, -0.5, 0.88, -1.85, Math.PI / 2.5, 0, 0, 10);
+  cyl(tank, 0.08, 0.08, 0.55, steel, 0.5, 0.88, -1.85, Math.PI / 2.5, 0, 0, 10);
 
-  // Turret-side number plate
+  // Fender lights
+  box(tank, 0.22, 0.1, 0.08, head, -0.48, 0.92, 2.05);
+  box(tank, 0.22, 0.1, 0.08, head, 0.48, 0.92, 2.05);
+  box(tank, 0.18, 0.08, 0.06, tail, -0.6, 0.85, -2.05);
+  box(tank, 0.18, 0.08, 0.06, tail, 0.6, 0.85, -2.05);
+
+  // Turret number plate
   const numMat = mat(0xffffff, { metal: 0.1, rough: 0.55 });
-  box(tank, 0.4, 0.24, 0.02, numMat, 0, 1.22, -0.94);
+  box(tank, 0.42, 0.26, 0.02, numMat, 0, 1.32, -0.95);
   const n = Math.max(1, Math.min(99, raceNumber));
-  if (Math.floor(n / 10) > 0) box(tank, 0.05, 0.15, 0.03, dark, -0.08, 1.22, -0.95);
+  if (Math.floor(n / 10) > 0) box(tank, 0.05, 0.16, 0.03, dark, -0.08, 1.32, -0.96);
   for (let i = 0; i < Math.min(n % 10, 4); i++) {
-    box(tank, 0.04, 0.028, 0.03, dark, 0.08, 1.16 + i * 0.035, -0.95);
+    box(tank, 0.04, 0.028, 0.03, dark, 0.08, 1.25 + i * 0.035, -0.96);
   }
 
   const r = 0.34;
   attachWheels(
     tank,
     [
-      [-1.0, r, 1.5],
-      [1.0, r, 1.5],
-      [-1.0, r, 0.5],
-      [1.0, r, 0.5],
-      [-1.0, r, -0.5],
-      [1.0, r, -0.5],
-      [-1.0, r, -1.5],
-      [1.0, r, -1.5],
+      [-1.05, r, 1.55],
+      [1.05, r, 1.55],
+      [-1.05, r, 0.55],
+      [1.05, r, 0.55],
+      [-1.05, r, -0.45],
+      [1.05, r, -0.45],
+      [-1.05, r, -1.45],
+      [1.05, r, -1.45],
     ],
     r,
-    0.34,
+    0.36,
     5,
   );
   // Treads never yaw — suppress steering animation on all wheels.
@@ -856,8 +905,8 @@ export function createTank(
   tank.userData.tailLightMaterials = [tail];
   if (opts?.headlights) {
     attachHeadBeams(tank, [
-      { x: -0.45, y: 0.85, z: 1.97 },
-      { x: 0.45, y: 0.85, z: 1.97 },
+      { x: -0.48, y: 0.92, z: 2.05 },
+      { x: 0.48, y: 0.92, z: 2.05 },
     ]);
   }
   return tank;

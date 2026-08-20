@@ -165,6 +165,8 @@ export type ServerMsg =
       tipSats?: number;
       /** Mint fee reserved from the pot for this payout. */
       feeSats?: number;
+      /** True when the tip was swapped into the server tip wallet (not a bearer token). */
+      tipCollected?: boolean;
       mock?: boolean;
       error?: string;
     }

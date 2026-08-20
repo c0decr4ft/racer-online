@@ -431,6 +431,7 @@ export type NetHandlers = {
     winnerSats?: number;
     tipSats?: number;
     feeSats?: number;
+    tipCollected?: boolean;
     mock?: boolean;
     error?: string;
   }) => void;
@@ -785,6 +786,7 @@ export class NetClient {
           winnerSats: msg.winnerSats,
           tipSats: msg.tipSats,
           feeSats: msg.feeSats,
+          tipCollected: msg.tipCollected,
           mock: msg.mock,
           error: msg.error,
         });

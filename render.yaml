@@ -19,12 +19,10 @@ services:
         value: 0.0.0.0
       - key: PORT
         value: 10000
-      # Event Mode pot wallet: Testnut for now (FREE test sats while we test the
-      # money flow — invoices auto-pay, no real funds). For real sats, swap to a
-      # real mint (e.g. Coinos https://mint.coinos.io; Minibits is dead).
-      # Unset CASHU_MINT_URL + RACER_PAYMENTS_MOCK=1 = mock mode for tests.
+      # Event Mode: real sat Cashu mint (Lightning → sats). Tips auto-collect
+      # into a separate server wallet. Testnut is fake sats — do not use live.
       - key: CASHU_MINT_URL
-        value: https://testnut.cashu.space
+        value: https://mint.coinos.io
       # Dev dashboard (/api/dev/*) — only this Nostr account (DEV_c0decr4ft,
       # npub1nratkqj…aud4) may read tip stats/claim tip tokens. Public key, safe
       # to commit; the in-game DEV button appears only when signed in with it.

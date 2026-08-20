@@ -53,9 +53,9 @@ const FEEDBACK_PATH = join(DIR, "feedback.json");
 /** Where player feedback is emailed (FormSubmit relay — free, no SMTP creds needed). */
 const FEEDBACK_EMAIL = (process.env.FEEDBACK_EMAIL || "c0decr4ft.fr@gmail.com").trim();
 /**
- * Dev dashboard access — only this Nostr pubkey may read tip stats / claim tip
- * tokens. Default: the DEV_c0decr4ft account (npub1nratkqj…aud4). Override with
- * the DEV_PUBKEY env var.
+ * Dev dashboard access — only this Nostr pubkey may read tip stats / withdraw
+ * the tip wallet. Default: the DEV_c0decr4ft account (npub1nratkqj…aud4).
+ * Override with the DEV_PUBKEY env var.
  */
 const DEV_PUBKEY = (
   process.env.DEV_PUBKEY || "98fabb025fc826ca032733ddd18a08f323061ea9c2ff8f9af41c50a07e3d905b"
@@ -272,7 +272,8 @@ function normalizePubkey(raw) {
 
 const SCORE_EVENT_KIND = 30078;
 const SCORE_D_PREFIX = "racer-online:";
-const SCORE_MIN_TIME_MS = 5_000;
+/** Reject sub-15s totals — real 3-lap runs are slower; blocks e2e spam (~6.8s). */
+const SCORE_MIN_TIME_MS = 15_000;
 const SCORE_MAX_TIME_MS = 3_600_000;
 const SCORE_FUTURE_SKEW_S = 900;
 const SCORE_MAX_AGE_S = 365 * 24 * 3600;
@@ -310,8 +311,36 @@ function verifyDevEvent(event) {
   return true;
 }
 
+/**
+ * Sweep leftover bearer tip tokens into the tip wallet. The mint swap burns
+ * those secrets so they can't be double-spent. Tokens never leave the server.
+ */
+async function sweepPendingTipTokens() {
+  if (payments.mock) return 0;
+  const list = loadPayouts();
+  let swept = 0;
+  for (const r of list) {
+    if (!r || r.mock || r.collected || r.claimedAt || !r.tipToken || !(Number(r.tipSats) > 0)) continue;
+    try {
+      const net = await payments.receiveTipToken(r.tipToken, Number(r.tipSats));
+      r.collected = true;
+      r.collectedAt = Date.now();
+      r.tipSats = Number.isFinite(net) && net > 0 ? net : r.tipSats;
+      delete r.tipToken;
+      swept += 1;
+    } catch (err) {
+      console.warn(`[dev] tip sweep failed (${r.room}):`, err?.message || err);
+    }
+  }
+  if (swept > 0) savePayouts(list);
+  return swept;
+}
+
 /** Tip stats + history for the dev dashboard (live tips only; mock = test money). */
-function devTipsSummary() {
+async function devTipsSummary() {
+  await sweepPendingTipTokens().catch((err) =>
+    console.warn("[dev] tip sweep skipped:", err?.message || err),
+  );
   const list = loadPayouts()
     .filter((r) => r && Number.isFinite(Number(r.tipSats)))
     .map((r) => ({
@@ -321,39 +350,32 @@ function devTipsSummary() {
       tipSats: Math.max(0, Math.round(Number(r.tipSats))),
       tipPercent: Number(r.tipPercent) || 0,
       mock: r.mock === true,
+      collected: r.collected === true || Number.isFinite(Number(r.collectedAt)) || Number.isFinite(Number(r.claimedAt)),
       claimed: Number.isFinite(Number(r.claimedAt)),
-      // Bearer token — only included while pending so the dev can copy+redeem it.
-      tipToken: !Number.isFinite(Number(r.claimedAt)) && typeof r.tipToken === "string" ? r.tipToken : undefined,
     }))
     .sort((a, b) => b.at - a.at)
     .slice(0, 50);
   const live = list.filter((t) => !t.mock);
   const sum = (rows) => rows.reduce((a, t) => a + t.tipSats, 0);
-  const pending = live.filter((t) => !t.claimed);
+  const failed = live.filter((t) => !t.collected && t.tipSats > 0);
+  const walletSats = Math.max(0, Math.round(Number(await payments.tipBalanceSats()) || 0));
+  const withdrawnSats = Math.max(0, Math.round(Number(payments.withdrawnSats()) || 0));
+  const pendingWithdraw = payments.pendingWithdraw();
   return {
     ok: true,
     mint: payments.mintUrl,
     count: live.length,
-    earnedSats: sum(live),
-    pendingSats: sum(pending),
-    pendingCount: pending.length,
-    claimedSats: sum(live.filter((t) => t.claimed)),
+    earnedSats: sum(live.filter((t) => t.collected)),
+    pendingSats: walletSats,
+    walletSats,
+    pendingCount: failed.length,
+    claimedSats: withdrawnSats,
+    withdrawnSats,
+    pendingWithdraw: pendingWithdraw
+      ? { amountSats: pendingWithdraw.amountSats, at: pendingWithdraw.at, token: pendingWithdraw.token }
+      : null,
     tips: list,
   };
-}
-
-/** Mark tip records claimed. `claimAt` (ms epoch) marks one record; omit to mark all. */
-function markTipsClaimed(claimAt) {
-  const list = loadPayouts();
-  let marked = 0;
-  for (const r of list) {
-    if (!r || r.claimedAt || !r.tipToken) continue;
-    if (claimAt != null && Number(r.at) !== Number(claimAt)) continue;
-    r.claimedAt = Date.now();
-    marked += 1;
-  }
-  if (marked > 0) savePayouts(list);
-  return marked;
 }
 
 /** Dev feedback inbox: newest first, with read state (read = dismissed from view). */
@@ -1171,6 +1193,9 @@ function admitClient(ws, msg, mode) {
       buyIns: new Map(),
       potSats: 0,
       potClaimed: false,
+      payoutTipSats: 0,
+      payoutTipCollected: false,
+      payoutTipToken: "",
     };
     rooms.set(roomName, room);
   } else {
@@ -1400,7 +1425,7 @@ const httpServer = createServer(async (req, res) => {
       const data = JSON.parse(body || "{}");
       verifyDevEvent(data.event);
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(devTipsSummary()));
+      res.end(JSON.stringify(await devTipsSummary()));
     } catch (err) {
       const status = Number(err?.status) || 400;
       res.writeHead(status, { "Content-Type": "application/json" });
@@ -1409,7 +1434,7 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
-  // Dev dashboard: mark tip(s) claimed (after redeeming the tokens in a wallet).
+  // Dev dashboard: retry a failed tip collect, or mark a withdraw as copied.
   if (url.pathname === "/api/dev/claim" && req.method === "POST") {
     if (tooMany(res, req, "dev", 30, 60_000)) return;
     const body = await readBody(req, 64 * 1024);
@@ -1421,23 +1446,38 @@ const httpServer = createServer(async (req, res) => {
     try {
       const data = JSON.parse(body || "{}");
       verifyDevEvent(data.event);
-      // Retry a failed tip payout (token never formed — money still in the pot wallet).
+      // Retry a failed tip collect (never landed in the tip wallet).
       if (data.retryAt != null) {
         const retryAt = Math.round(Number(data.retryAt));
         const list = loadPayouts();
         const rec = list.find(
-          (r) => r && Number(r.at) === retryAt && !r.claimedAt && Number(r.tipSats) > 0 && !r.mock && !r.tipToken,
+          (r) => r && Number(r.at) === retryAt && !r.collected && Number(r.tipSats) > 0 && !r.mock,
         );
         if (!rec) {
           res.writeHead(404, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ ok: false, error: "tip not found (or already claimed)" }));
+          res.end(JSON.stringify({ ok: false, error: "tip not found (or already collected)" }));
           return;
         }
         try {
-          const sent = await payments.sendToken(Math.round(Number(rec.tipSats)), { includeFees: true });
-          rec.tipToken = sent.token;
+          if (rec.tipToken) {
+            // Leftover bearer token — swap it into the tip wallet (burns the token).
+            const net = await payments.receiveTipToken(rec.tipToken, Math.round(Number(rec.tipSats)));
+            rec.tipSats = Number.isFinite(net) && net > 0 ? net : rec.tipSats;
+          } else {
+            // Never left the pot — collect now.
+            const result = await payments.collectTip(Math.round(Number(rec.tipSats)));
+            rec.tipSats = result.sats;
+            if (!result.collected) {
+              rec.tipToken = result.token || rec.tipToken;
+              savePayouts(list);
+              throw new Error("tip swapped from pot but receive into tip wallet failed — retry again");
+            }
+          }
+          rec.collected = true;
+          rec.collectedAt = Date.now();
+          delete rec.tipToken;
           savePayouts(list);
-          console.log(`[dev] tip payout retried — ${rec.tipSats} sats (room ${rec.room})`);
+          console.log(`[dev] tip collected — ${rec.tipSats} sats (room ${rec.room})`);
         } catch (err) {
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(
@@ -1449,13 +1489,46 @@ const httpServer = createServer(async (req, res) => {
           return;
         }
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(devTipsSummary()));
+        res.end(JSON.stringify(await devTipsSummary()));
         return;
       }
-      const claimAt = data.claimAt != null ? Math.round(Number(data.claimAt)) : null;
-      const marked = markTipsClaimed(Number.isFinite(claimAt) ? claimAt : null);
+      // Mark the pending withdraw as copied (token already left the tip wallet).
+      const marked = payments.markWithdrawCopied();
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ...devTipsSummary(), marked }));
+      res.end(JSON.stringify({ ...(await devTipsSummary()), marked }));
+    } catch (err) {
+      const status = Number(err?.status) || 400;
+      res.writeHead(status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: String(err?.message || err).slice(0, 120) }));
+    }
+    return;
+  }
+
+  // Dev dashboard: export the tip wallet as a cashuA token (paste into cashu.me).
+  if (url.pathname === "/api/dev/withdraw" && req.method === "POST") {
+    if (tooMany(res, req, "dev", 10, 60_000)) return;
+    const body = await readBody(req, 64 * 1024);
+    if (body === null) {
+      res.writeHead(413, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "payload too large" }));
+      return;
+    }
+    try {
+      const data = JSON.parse(body || "{}");
+      verifyDevEvent(data.event);
+      const walletSats = Math.max(0, Math.round(Number(await payments.tipBalanceSats()) || 0));
+      const existing = payments.pendingWithdraw();
+      const amountSats = existing
+        ? existing.amountSats
+        : Math.max(0, Math.round(Number(data.amountSats) || walletSats));
+      if (!existing && amountSats <= 0) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "tip wallet is empty" }));
+        return;
+      }
+      await payments.withdrawTip(amountSats);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(await devTipsSummary()));
     } catch (err) {
       const status = Number(err?.status) || 400;
       res.writeHead(status, { "Content-Type": "application/json" });
@@ -1842,9 +1915,9 @@ wss.on("connection", (ws) => {
       void (async () => {
         try {
           // Fee comes OUT OF THE POT, never out of the dev tip. The tip is paid
-          // FIRST and whole at the chosen percent; the winner then gets what's
-          // left of the pot minus the winner's own send fee — the winner's share
-          // carries the mint fees. Both tokens includeFees so each redeems exact.
+          // FIRST and whole at the chosen percent, then swapped into the tip
+          // wallet at the mint so the bearer token never sits around to be
+          // double-spent. The winner then gets what's left minus their send fee.
           const perSendFee = Math.max(0, await payments.sendFeeSats().catch(() => 0));
           const balanceNow = async () =>
             Promise.resolve()
@@ -1852,17 +1925,35 @@ wss.on("connection", (ws) => {
               .then((v) => (Number.isFinite(v) ? v : room.potSats))
               .catch(() => room.potSats);
 
-          // 1) Dev tip first — whole at the chosen percent, capped only by what
-          //    the pot wallet can cover (100% edge: its own fee must fit too).
-          const tipWanted = Math.floor((room.potSats * tipPercent) / 100);
-          const tipSats = Math.min(tipWanted, Math.max(0, (await balanceNow()) - perSendFee));
-          let tipToken = "";
-          if (tipSats > 0) {
+          // 1) Dev tip first — collect into the tip wallet. Skip if a previous
+          //    attempt already moved it (winner send may have failed after).
+          let tipSats = room.payoutTipSats || 0;
+          let tipCollected = room.payoutTipCollected === true;
+          if (!tipCollected && room.payoutTipToken) {
             try {
-              const sent = await payments.sendToken(tipSats, { includeFees: true });
-              tipToken = sent.token;
+              const net = await payments.receiveTipToken(room.payoutTipToken, tipSats);
+              tipSats = Number.isFinite(net) && net > 0 ? net : tipSats;
+              tipCollected = true;
+              room.payoutTipCollected = true;
+              room.payoutTipSats = tipSats;
+              room.payoutTipToken = "";
             } catch (err) {
-              console.warn(`[event] dev tip token failed:`, err?.message || err);
+              console.warn(`[event] leftover tip token collect failed:`, err?.message || err);
+            }
+          }
+          if (!tipCollected && !room.payoutTipToken) {
+            const tipWanted = Math.floor((room.potSats * tipPercent) / 100);
+            const tipCap = Math.min(tipWanted, Math.max(0, (await balanceNow()) - perSendFee));
+            if (tipCap > 0) {
+              const result = await payments.collectTip(tipCap);
+              tipSats = result.sats;
+              tipCollected = result.collected === true;
+              room.payoutTipSats = tipSats;
+              room.payoutTipCollected = tipCollected;
+              room.payoutTipToken = result.token || "";
+            } else {
+              room.payoutTipSats = 0;
+              room.payoutTipCollected = true;
             }
           }
 
@@ -1886,7 +1977,10 @@ wss.on("connection", (ws) => {
             tipSats,
             tipPercent,
             feeSats,
-            tipToken: tipToken || null, // bearer token — dev claims it from this file
+            collected: tipCollected,
+            collectedAt: tipCollected ? Date.now() : null,
+            // Leftover bearer token stays on disk for a server-side retry only.
+            tipToken: tipCollected ? null : room.payoutTipToken || null,
             mock: payments.mock,
           });
           send(ws, {
@@ -1895,15 +1989,16 @@ wss.on("connection", (ws) => {
             token: winnerToken,
             winnerSats,
             tipSats,
+            tipCollected,
             feeSats,
             mock: payments.mock,
           });
           broadcast(room, { t: "notice", text: `${client.name} claimed the pot — ${winnerSats} sats` });
           console.log(
-            `[event] ${room.name} pot ${room.potSats} sats → ${client.name} ${winnerSats} · tip ${tipSats} · fee ${feeSats}`,
+            `[event] ${room.name} pot ${room.potSats} sats → ${client.name} ${winnerSats} · tip ${tipSats}${tipCollected ? " collected" : " pending"} · fee ${feeSats}`,
           );
         } catch (err) {
-          room.potClaimed = false; // payment failed — allow retry
+          room.potClaimed = false; // payment failed — allow retry (tip already collected is skipped)
           send(ws, { t: "payoutResult", ok: false, error: String(err?.message || err).slice(0, 140) });
         }
       })();

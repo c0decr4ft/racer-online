@@ -49,14 +49,14 @@ export type BoardSource = "online" | "server" | "local";
  * Keys and the shared JSONBlob URL stay game-version-agnostic so all releases share one board.
  * Bump only to wipe/migrate local score shape — never scope by release.
  */
-const BOARD_STORAGE_VERSION = 4;
+const BOARD_STORAGE_VERSION = 5;
 
 function storageKey(trackId: string) {
   return `racer-leaderboard-v${BOARD_STORAGE_VERSION}-${trackId}`;
 }
 
-const LEGACY_STORAGE_KEYS = ["racer-leaderboard-v1", "racer-leaderboard-v2", "racer-leaderboard-v3"];
-const LEGACY_TRACK_PREFIXES = ["racer-leaderboard-v2-", "racer-leaderboard-v3-"];
+const LEGACY_STORAGE_KEYS = ["racer-leaderboard-v1", "racer-leaderboard-v2", "racer-leaderboard-v3", "racer-leaderboard-v4"];
+const LEGACY_TRACK_PREFIXES = ["racer-leaderboard-v2-", "racer-leaderboard-v3-", "racer-leaderboard-v4-"];
 const DRIVER_NAME_KEY = "racer-driver-name";
 const MAX = 10;
 export const NAME_MAX = 15;
