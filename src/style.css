@@ -106,8 +106,14 @@ html.touch-mode [contenteditable="true"] {
 .hud-top {
   /* Left cluster + fixed-width stats + pause — stats never reflow from digit changes */
   gap: 1rem;
-  /* Clear fixed mute button (top-left) */
+  /* Clear fixed mute button (top-left) on home / pause */
   padding-left: 4.2rem;
+}
+
+/* Mute hides while racing — pull SATS RACER into the top-left corner */
+body:has(#mute-btn.hidden) .hud-top {
+  padding-top: 0.65rem;
+  padding-left: 0.85rem;
 }
 
 .hud-top-left {

@@ -82,7 +82,7 @@ const GAME_VERSION_LABEL = (() => {
 
 /** Forward one feedback message to the inbox. Throws on relay failure (caller logs). */
 async function sendFeedbackEmailOnce(msg) {
-  const subject = `Racer Online feedback${msg.name ? ` — ${msg.name}` : ""}`;
+  const subject = `Sats Racer feedback${msg.name ? ` — ${msg.name}` : ""}`;
   // Preferred path: Resend (real email API — reliable, server-side, free tier).
   if (RESEND_API_KEY) {
     const res = await fetch("https://api.resend.com/emails", {
@@ -92,7 +92,7 @@ async function sendFeedbackEmailOnce(msg) {
         Authorization: `Bearer ${RESEND_API_KEY}`,
       },
       body: JSON.stringify({
-        from: "Racer Online <onboarding@resend.dev>",
+        from: "Sats Racer <onboarding@resend.dev>",
         to: [FEEDBACK_EMAIL],
         subject,
         text:
@@ -119,7 +119,7 @@ async function sendFeedbackEmailOnce(msg) {
       Referer: `${PUBLIC_BASE_URL}/`,
     },
     body: JSON.stringify({
-      _subject: `Racer Online feedback${msg.name ? ` — ${msg.name}` : ""}`,
+      _subject: `Sats Racer feedback${msg.name ? ` — ${msg.name}` : ""}`,
       _template: "box",
       _captcha: "false",
       name: msg.name || "anonymous",
@@ -1099,7 +1099,7 @@ async function createBuyInInvoice(room, client) {
     const inv = await payments.createPaymentRequest({
       amountSats: totalSats,
       memo:
-        `Racer Online event ${room.name} — buy-in ${room.buyInSats} sats` +
+        `Sats Racer event ${room.name} — buy-in ${room.buyInSats} sats` +
         (feeSats ? ` + ${feeSats} mint fee` : ""),
       baseUrl: PUBLIC_BASE_URL,
     });
@@ -2077,7 +2077,7 @@ setInterval(() => {
 
 httpServer.listen(PORT, HOST, () => {
   console.log(
-    `Racer Online http://${HOST}:${PORT} (WS + /api/*${DIST_DIR ? ` + static ${STATIC_BASE || "/"}` : ""})`,
+    `Sats Racer http://${HOST}:${PORT} (WS + /api/*${DIST_DIR ? ` + static ${STATIC_BASE || "/"}` : ""})`,
   );
   // Rebuild the board from the relays on boot (redeploys wipe the disk cache),
   // then keep merging every 15 min so instances converge.

@@ -600,7 +600,7 @@ export function getLocalBest(trackId: string): { timeMs: number | null; bestLapM
 
 export function boardSourceLabel(source: BoardSource, saved = false): string {
   if (source === "server") {
-    return saved ? "Saved to online board" : "Live online board";
+    return saved ? "Saved to Sats Racer board" : "Live Sats Racer board";
   }
   if (source === "online") {
     return saved ? "Saved to worldwide board" : "Live worldwide board";

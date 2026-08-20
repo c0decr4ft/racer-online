@@ -520,7 +520,7 @@ export class Game {
       if (!this.net.connected || !this.online) return;
       if (this.el.netStatus.classList.contains("bad")) return;
       if (this.inLobby) this.setNetStatus(`Lobby · ${this.net.room}`, "ok");
-      else if (this.running) this.setNetStatus(`Online · ${this.net.room}`, "ok");
+      else if (this.running) this.setNetStatus(`Sats Racer · ${this.net.room}`, "ok");
     }, 2000);
     window.visualViewport?.addEventListener("resize", () => this.onResize());
     window.matchMedia("(pointer: coarse)").addEventListener("change", () => this.refreshTouchMode());
@@ -571,7 +571,7 @@ export class Game {
     document.getElementById("multiplayer-btn")!.onclick = () => {
       // Multiplayer needs a Nostr identity — prompt sign-in first, then continue.
       void this.unlockAndMaybeMenuMusic()
-        .then(() => ensureNostrLogin("Sign in with Nostr to race online"))
+        .then(() => ensureNostrLogin("Sign in with Nostr to race on Sats Racer"))
         .then((session) => {
           if (session) this.openMultiplayer();
         });
@@ -587,7 +587,7 @@ export class Game {
     document.getElementById("map-select-back")!.onclick = () => this.closeMapSelect();
     document.getElementById("restart-btn")!.onclick = () => {
       void this.audio.unlock().then(() => {
-        this.audio.stopMusic();
+        this.audio.stopRaceAudio();
         // AI race again → new random map; solo/online keep chosen course
         const trackId =
           this.online || this.solo || this.practice ? this.trackId : randomTrackId();
@@ -601,7 +601,7 @@ export class Game {
     document.getElementById("resume-btn")!.onclick = () => this.resume();
     document.getElementById("pause-restart-btn")!.onclick = () => {
       void this.audio.unlock().then(() => {
-        this.audio.stopMusic();
+        this.audio.stopRaceAudio();
         this.startRace({
           practice: this.practice,
           solo: this.solo,
@@ -1690,7 +1690,7 @@ export class Game {
     this.resetWallHits();
     this.resetMapVote();
     this.audio.mute();
-    this.audio.stopDriveMusic();
+    this.audio.stopRaceAudio();
     this.input.clearDriveKeys();
     this.el.pause.classList.add("hidden");
     this.el.finish.classList.add("hidden");
@@ -2550,7 +2550,7 @@ export class Game {
     canvas.tabIndex = 0;
     canvas.focus({ preventScroll: true });
 
-    this.audio.stopMusic();
+    this.audio.stopRaceAudio();
     this.audio.unmute();
     this.syncMuteBtn();
     this.beginCountdown();
@@ -2605,11 +2605,20 @@ export class Game {
     this.sectorIdx = 0;
     // First lap: arm the S1 timer exactly at GO so S1 gets a clean reference
     this.sectorStartMs = this.raceStart;
-    this.audio.playDriveMusic();
+    this.startRaceDriveAudio();
     if (!this.online && !this.solo) {
       for (const r of this.rivals) {
         r.vehicle.state.speed = 5; // modest roll — soft launch still ramps throttle
       }
+    }
+  }
+
+  /** Cars get the drive track; bikes only get the motorcycle engine sample. */
+  private startRaceDriveAudio() {
+    if (this.player?.mesh.userData.kind === "bike") {
+      this.audio.stopDriveMusic();
+    } else {
+      this.audio.playDriveMusic();
     }
   }
 
@@ -2628,7 +2637,7 @@ export class Game {
     this.pauseBegan = performance.now();
     this.input.clearDriveKeys();
     this.audio.mute();
-    this.audio.stopDriveMusic();
+    this.audio.stopRaceAudio();
     this.el.pause.classList.remove("hidden");
     this.el.pauseBtn.classList.add("hidden");
     this.syncTouchControls();
@@ -2642,8 +2651,8 @@ export class Game {
     if (this.countingDown) this.countdownStepAt += pausedFor;
     this.paused = false;
     this.audio.unmute();
-    // Drive music only after GO (gridHeld covers 3-2-1)
-    if (!this.gridHeld) this.audio.playDriveMusic();
+    // Drive audio only after GO (gridHeld covers 3-2-1)
+    if (!this.gridHeld) this.startRaceDriveAudio();
     this.el.pause.classList.add("hidden");
     this.el.pauseBtn.classList.remove("hidden");
     this.syncTouchControls();
@@ -2839,7 +2848,7 @@ export class Game {
               this.pingTimer = 0;
               this.net.ping();
               if (this.net.connected) {
-                this.setNetStatus(`Online · ${this.net.room}`, "ok");
+                this.setNetStatus(`Sats Racer · ${this.net.room}`, "ok");
               }
             }
           }
@@ -3158,7 +3167,7 @@ export class Game {
     this.el.wrongWay.classList.add("hidden");
     this.el.explodeFlash.classList.remove("hidden");
     this.syncTouchControls();
-    this.audio.stopDriveMusic();
+    this.audio.stopRaceAudio();
     this.audio.playExplode();
     this.spawnExplodeFx();
     // Multiplayer: tell the room so every driver resets to the start line
@@ -3839,7 +3848,7 @@ export class Game {
     this.clearCountdown();
     this.clearExplode(true);
     this.audio.mute();
-    this.audio.stopDriveMusic();
+    this.audio.stopRaceAudio();
     this.el.wrongWay.classList.add("hidden");
     this.el.explodeFlash.classList.add("hidden");
     this.hideAnimalHit();

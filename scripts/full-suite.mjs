@@ -208,7 +208,7 @@ function waitForWsEvent(ws, type, timeoutMs = 2500) {
 }
 
 async function main() {
-  console.log("\n=== RACER ONLINE FULL SUITE ===\n");
+  console.log("\n=== SATS RACER FULL SUITE ===\n");
 
   // --- API smoke ---
   for (const path of ["/api/leaderboard", "/api/presence", "/api/feedback"]) {

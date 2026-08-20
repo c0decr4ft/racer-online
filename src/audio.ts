@@ -116,8 +116,9 @@ export class GameAudio {
     }
   }
 
-  /** Looping race / Test Drive music (after GO). */
+  /** Looping race / Test Drive music (after GO). Cars only — bikes use the engine sample. */
   playDriveMusic(): void {
+    this.stopBikeEngine();
     void this.setMusic("drive");
   }
 
@@ -125,23 +126,32 @@ export class GameAudio {
     if (this.wantedMusic === "drive" || this.musicMode === "drive") {
       void this.setMusic("off");
     }
-    this.stopBikeEngine();
   }
 
-  /** Stop whichever track is playing. */
+  /** Stop whichever music track is playing (menu or drive). Does not stop the bike engine. */
   stopMusic(): void {
     void this.setMusic("off");
+  }
+
+  /** Kill drive music + bike engine (pause / finish / explode / home). */
+  stopRaceAudio(): void {
+    this.stopDriveMusic();
     this.stopBikeEngine();
   }
 
   /**
    * Start / keep the motorcycle engine loop while racing on a bike.
    * Call every frame with current speed (m/s) and throttle 0–1.
+   * Stops the car drive track so only the bike sample is audible.
    */
   updateBikeEngine(speedMs: number, throttle: number): void {
     if (!this.ready || !this.bikeBuffer || !this.ctx || !this.master) {
       this.stopBikeEngine();
       return;
+    }
+    // Bikes never share the car drive loop
+    if (this.wantedMusic === "drive" || this.musicMode === "drive") {
+      this.stopDriveMusic();
     }
     if (!this.bikeSource || !this.bikeGain) {
       this.startBikeEngine();
