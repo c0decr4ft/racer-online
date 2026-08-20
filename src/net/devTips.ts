@@ -25,8 +25,16 @@ export type DevPendingWithdraw = {
   token: string;
 };
 
+export type DevEventLog = {
+  at: number;
+  level: "info" | "warn" | "error";
+  msg: string;
+};
+
 export type DevWalletAudit = {
   label: string;
+  potId?: string;
+  roomName?: string;
   file: boolean;
   mintUrl: string;
   localSats: number;
@@ -39,6 +47,7 @@ export type DevWalletAudit = {
   events?: number;
   error?: string | null;
   rescueToken?: string | null;
+  logs?: DevEventLog[];
 };
 
 export type DevCustody = {
@@ -46,16 +55,31 @@ export type DevCustody = {
   mintUrl: string;
   pot: DevWalletAudit | null;
   tip: DevWalletAudit | null;
+  pots?: DevWalletAudit[];
   error?: string | null;
 };
 
-export type DevLiveEvent = {
+export type DevEventRow = {
+  potId: string;
   name: string;
+  live: boolean;
+  leftover: boolean;
+  phase: string;
   players: number;
   paid: number;
+  buyInSats: number;
   potSats: number;
   potClaimed: boolean;
-  phase: string;
+  localSats: number;
+  unspentSats: number;
+  spentSats: number;
+  pendingSats: number;
+  proofs: number;
+  mintUrl: string;
+  orphaned: boolean;
+  error?: string | null;
+  rescueToken?: string | null;
+  logs: DevEventLog[];
 };
 
 export type DevTipsSummary = {
@@ -73,7 +97,7 @@ export type DevTipsSummary = {
   tips: DevTip[];
   marked?: number;
   custody?: DevCustody;
-  liveEvents?: DevLiveEvent[];
+  events?: DevEventRow[];
 };
 
 type DevSigner = {

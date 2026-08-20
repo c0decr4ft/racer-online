@@ -93,8 +93,27 @@ function potFile(potId) {
 
 /* ---------------- proof stores (pot + tip wallets) ---------------- */
 
+const MAX_POT_LOGS = 80;
+
+function normalizeLogs(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(-MAX_POT_LOGS).map((e) => ({
+    at: Number(e?.at) || 0,
+    level: e?.level === "warn" || e?.level === "error" ? e.level : "info",
+    msg: String(e?.msg || "").slice(0, 240),
+  })).filter((e) => e.msg);
+}
+
 function emptyStore() {
-  return { mintUrl: CASHU_MINT_URL, proofs: [], withdrawnSats: 0, pendingWithdraw: null, receivedIds: [] };
+  return {
+    mintUrl: CASHU_MINT_URL,
+    proofs: [],
+    withdrawnSats: 0,
+    pendingWithdraw: null,
+    receivedIds: [],
+    logs: [],
+    roomName: "",
+  };
 }
 
 function peekStore(path) {
@@ -117,6 +136,8 @@ function peekStore(path) {
       receivedIds: Array.isArray(data.receivedIds)
         ? data.receivedIds.map((id) => String(id)).filter(Boolean).slice(-500)
         : [],
+      logs: normalizeLogs(data.logs),
+      roomName: String(data.roomName || "").slice(0, 80),
     };
   } catch {
     return null;
@@ -138,6 +159,8 @@ function loadStore(path) {
     withdrawnSats: peeked.withdrawnSats,
     pendingWithdraw: peeked.pendingWithdraw,
     receivedIds: peeked.receivedIds,
+    logs: peeked.logs,
+    roomName: peeked.roomName,
   };
 }
 
@@ -201,6 +224,8 @@ function saveTipStore(store) {
 function emptyAudit(label) {
   return {
     label,
+    potId: label,
+    roomName: "",
     file: false,
     mintUrl: "",
     localSats: 0,
@@ -213,6 +238,7 @@ function emptyAudit(label) {
     events: 0,
     error: null,
     rescueToken: null,
+    logs: [],
   };
 }
 
@@ -234,6 +260,8 @@ async function auditOne(label, path) {
     proofs: peeked.proofs.length,
     orphaned,
     receivedIds: (peeked.receivedIds || []).length,
+    roomName: peeked.roomName || "",
+    logs: (peeked.logs || []).slice(-24),
   };
   if (!peeked.proofs.length) return out;
   try {
@@ -293,7 +321,7 @@ function mergePotAudits(parts) {
 
 async function cashuAuditCustody() {
   if (PAYMENTS_MOCK) {
-    return { mock: true, mintUrl: CASHU_MINT_URL, pot: emptyAudit("pot"), tip: emptyAudit("tip") };
+    return { mock: true, mintUrl: CASHU_MINT_URL, pot: emptyAudit("pot"), tip: emptyAudit("tip"), pots: [] };
   }
   const files = listEventPotFiles();
   const [tip, legacy, ...pots] = await Promise.all([
@@ -302,8 +330,52 @@ async function cashuAuditCustody() {
     ...files.map((f) => auditOne(f.id, f.path)),
   ]);
   const parts = [...pots];
-  if (legacy.file && (legacy.localSats > 0 || legacy.proofs > 0)) parts.push(legacy);
-  return { mock: false, mintUrl: CASHU_MINT_URL, pot: mergePotAudits(parts), tip };
+  if (legacy.file && (legacy.localSats > 0 || legacy.proofs > 0 || (legacy.logs || []).length)) {
+    parts.push(legacy);
+  }
+  return { mock: false, mintUrl: CASHU_MINT_URL, pot: mergePotAudits(parts), tip, pots: parts };
+}
+
+/**
+ * Append a short debug line onto an event pot file (and create the file if needed).
+ * Safe to call in mock mode — no-ops. Never throws to callers.
+ */
+async function appendPotLog(potId, entry, meta = {}) {
+  if (PAYMENTS_MOCK) return;
+  let id;
+  try {
+    id = requirePotId(potId);
+  } catch {
+    return;
+  }
+  const path = potFile(id);
+  await withStoreLock(path, async () => {
+    const peeked = peekStore(path);
+    const store = peeked
+      ? {
+          mintUrl: peeked.mintUrl || CASHU_MINT_URL,
+          proofs: peeked.proofs,
+          withdrawnSats: peeked.withdrawnSats,
+          pendingWithdraw: peeked.pendingWithdraw,
+          receivedIds: peeked.receivedIds,
+          logs: peeked.logs || [],
+          roomName: peeked.roomName || "",
+        }
+      : emptyStore();
+    const name = String(meta.roomName || "").trim().slice(0, 80);
+    if (name) store.roomName = name;
+    store.logs = [
+      ...(store.logs || []),
+      {
+        at: Date.now(),
+        level: entry?.level === "warn" || entry?.level === "error" ? entry.level : "info",
+        msg: String(entry?.msg || "").slice(0, 240),
+      },
+    ]
+      .filter((e) => e.msg)
+      .slice(-MAX_POT_LOGS);
+    saveStore(path, store);
+  });
 }
 
 /* ---------------- wallet init (real mode) ---------------- */
@@ -758,6 +830,8 @@ export const payments = {
   tipBalanceSats: PAYMENTS_MOCK ? async () => mockTipBalance : cashuTipBalanceSats,
   /** NUT-07 audit of pot + tip files against their mint(s). */
   auditCustody: cashuAuditCustody,
+  /** Persist a debug line on one event pot (no-op in mock). */
+  appendPotLog,
 };
 
 /** Record fresh buy-in proofs into the pot wallet store (real mode). */

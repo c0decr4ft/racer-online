@@ -1422,7 +1422,108 @@ body:has(#mute-btn.hidden) .hud-top {
 
 /* ── Dev dashboard (tips wallet) ───────────────────────────────── */
 .dev-panel {
-  max-width: 30rem;
+  max-width: min(46rem, 96vw);
+}
+
+.overlay-inner.dev-panel {
+  max-width: min(46rem, 96vw);
+}
+
+.dev-events-box {
+  width: 100%;
+  margin: 0.15rem 0 0.7rem;
+}
+
+.dev-event-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid rgba(80, 200, 140, 0.4);
+  background: rgba(8, 10, 16, 0.55);
+}
+
+.dev-event-table-wrap.hidden {
+  display: none !important;
+}
+
+.dev-event-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: "Rajdhani", sans-serif;
+  font-size: 0.82rem;
+  letter-spacing: 0.03em;
+}
+
+.dev-event-table th {
+  padding: 0.45rem 0.5rem;
+  color: #8dffc0;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  text-align: left;
+  border-bottom: 1px solid rgba(80, 200, 140, 0.28);
+}
+
+.dev-event-table td {
+  padding: 0.4rem 0.5rem;
+  color: var(--text);
+  vertical-align: top;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.dev-event-row.is-leftover td {
+  color: var(--muted);
+}
+
+.dev-event-row.is-error td {
+  color: #ffb4a8;
+}
+
+.dev-event-name {
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+  min-width: 7rem;
+}
+
+.dev-event-id {
+  color: var(--muted);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+}
+
+.dev-event-log-row td {
+  padding: 0 0.5rem 0.55rem;
+  border-bottom: 1px solid rgba(80, 200, 140, 0.18);
+}
+
+.dev-event-logs {
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
+.dev-event-logs summary {
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dev-event-logs ol {
+  margin: 0.35rem 0 0;
+  padding: 0 0 0 1rem;
+  max-height: 8.5rem;
+  overflow-y: auto;
+}
+
+.dev-event-log.is-warn {
+  color: #ffd479;
+}
+
+.dev-event-log.is-error {
+  color: #ffb4a8;
 }
 
 .dev-wallet {
@@ -1458,17 +1559,6 @@ body:has(#mute-btn.hidden) .hud-top {
 
 .dev-wallet-pot .dev-wallet-label {
   color: #8dffc0;
-}
-
-.dev-live-events {
-  margin: 0 0 0.55rem;
-  width: 100%;
-  color: var(--muted);
-  font-family: "Rajdhani", sans-serif;
-  font-size: 0.8rem;
-  letter-spacing: 0.04em;
-  text-align: center;
-  line-height: 1.35;
 }
 
 .dev-wallet-label {
@@ -1630,6 +1720,10 @@ body:has(#mute-btn.hidden) .hud-top {
 .dev-section-title {
   margin: 0.9rem 0 0.15rem;
   color: var(--accent-soft);
+}
+
+#dev-status + .dev-section-title {
+  margin-top: 0.35rem;
 }
 
 .dev-feedback-list {

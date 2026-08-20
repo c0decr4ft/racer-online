@@ -213,7 +213,41 @@ function normalizeSessionId(raw) {
 /** @typedef {{ id: string, name: string, color: number, room: string, ws: import('ws').WebSocket, pose: Pose, lastPoseAt: number }} Client */
 /** @typedef {{ trackId: string, order: number }} TrackVote */
 /** @typedef {{ paymentHash: string, paymentRequest: string, bolt11?: string, paidAt: number, netSats?: number }} BuyIn */
-/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, lastCrashAt: number, clients: Map<string, Client>, isEvent: boolean, buyInSats: number, buyInFeeSats: number, buyIns: Map<string, BuyIn>, potSats: number, potId: string, potClaimed: boolean }} Room */
+/** @typedef {{ at: number, level: 'info' | 'warn' | 'error', msg: string }} PotLogEntry */
+/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, lastCrashAt: number, clients: Map<string, Client>, isEvent: boolean, buyInSats: number, buyInFeeSats: number, buyIns: Map<string, BuyIn>, potSats: number, potId: string, potClaimed: boolean, potLogs: PotLogEntry[] }} Room */
+
+/** Persist a debug line on the event pot (disk + in-memory) so the DEV table can show it. */
+function potLog(room, level, msg) {
+  if (!room?.isEvent || !room.potId) return;
+  const entry = {
+    at: Date.now(),
+    level: level === "warn" || level === "error" ? level : "info",
+    msg: String(msg || "").slice(0, 240),
+  };
+  if (!entry.msg) return;
+  room.potLogs = [...(room.potLogs || []), entry].slice(-80);
+  void payments.appendPotLog?.(room.potId, entry, { roomName: room.name }).catch((err) => {
+    console.warn("[event] pot log failed:", err?.message || err);
+  });
+}
+
+function mergePotLogs(a, b) {
+  const seen = new Set();
+  const out = [];
+  for (const e of [...(a || []), ...(b || [])]) {
+    if (!e?.msg) continue;
+    const key = `${e.at}|${e.msg}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      at: Number(e.at) || 0,
+      level: e.level === "warn" || e.level === "error" ? e.level : "info",
+      msg: String(e.msg).slice(0, 240),
+    });
+  }
+  return out.sort((x, y) => x.at - y.at).slice(-24);
+}
+
 /** @typedef {{ name: string, timeMs: number, bestLapMs?: number, at: number, trackId?: string, pubkey: string, eventId?: string }} BoardEntry */
 /** @typedef {Record<string, BoardEntry[]>} BoardStore */
 /** @typedef {{ at: number, count: number }} PresenceSample */
@@ -368,16 +402,67 @@ async function devTipsSummary() {
   } catch (err) {
     custody.error = String(err?.message || err).slice(0, 160);
   }
-  const liveEvents = [...rooms.values()]
-    .filter((room) => room.isEvent)
-    .map((room) => ({
+  const potAudits = Array.isArray(custody.pots) ? custody.pots : [];
+  const auditByPot = new Map(potAudits.map((p) => [String(p.potId || p.label || ""), p]));
+  const seenPots = new Set();
+  const events = [];
+  for (const room of rooms.values()) {
+    if (!room.isEvent) continue;
+    const audit = auditByPot.get(room.potId) || null;
+    if (room.potId) seenPots.add(room.potId);
+    events.push({
+      potId: room.potId || "",
       name: room.name,
+      live: true,
+      leftover: false,
+      phase: room.phase,
       players: room.clients.size,
       paid: [...room.buyIns.values()].filter((b) => b.paidAt > 0).length,
+      buyInSats: room.buyInSats || 0,
       potSats: room.potSats || 0,
       potClaimed: room.potClaimed === true,
-      phase: room.phase,
-    }));
+      localSats: audit?.localSats ?? 0,
+      unspentSats: audit?.unspentSats ?? 0,
+      spentSats: audit?.spentSats ?? 0,
+      pendingSats: audit?.pendingSats ?? 0,
+      proofs: audit?.proofs ?? 0,
+      mintUrl: audit?.mintUrl || payments.mintUrl,
+      orphaned: audit?.orphaned === true,
+      error: audit?.error || null,
+      rescueToken: audit?.rescueToken || null,
+      logs: mergePotLogs(room.potLogs, audit?.logs),
+    });
+  }
+  for (const audit of potAudits) {
+    const id = String(audit.potId || audit.label || "");
+    if (!id || seenPots.has(id)) continue;
+    const hasMoney = (audit.localSats || 0) > 0 || (audit.unspentSats || 0) > 0 || (audit.proofs || 0) > 0;
+    const hasLogs = (audit.logs || []).length > 0;
+    if (!hasMoney && !hasLogs) continue;
+    events.push({
+      potId: id,
+      name: audit.roomName || (id === "legacy" ? "legacy pot" : "offline event"),
+      live: false,
+      leftover: true,
+      phase: "offline",
+      players: 0,
+      paid: 0,
+      buyInSats: 0,
+      potSats: 0,
+      potClaimed: false,
+      localSats: audit.localSats || 0,
+      unspentSats: audit.unspentSats || 0,
+      spentSats: audit.spentSats || 0,
+      pendingSats: audit.pendingSats || 0,
+      proofs: audit.proofs || 0,
+      mintUrl: audit.mintUrl || payments.mintUrl,
+      orphaned: audit.orphaned === true,
+      error: audit.error || null,
+      rescueToken: audit.rescueToken || null,
+      logs: mergePotLogs([], audit.logs),
+    });
+  }
+  events.sort((a, b) => Number(b.live) - Number(a.live) || String(a.name).localeCompare(String(b.name)));
   return {
     ok: true,
     mint: payments.mintUrl,
@@ -393,7 +478,7 @@ async function devTipsSummary() {
       : null,
     tips: list,
     custody,
-    liveEvents,
+    events,
   };
 }
 
@@ -1141,8 +1226,10 @@ async function createBuyInInvoice(room, client) {
       feeSats,
       mock: payments.mock,
     });
+    potLog(room, "info", `buy-in request for ${client.name} · ${totalSats} sats`);
   } catch (err) {
     console.warn(`[event] payment request failed for ${client.name}:`, err?.message || err);
+    potLog(room, "error", `buy-in request failed for ${client.name}: ${String(err?.message || err).slice(0, 160)}`);
     send(client.ws, { t: "error", message: "could not create buy-in request — try rejoining" });
   }
 }
@@ -1156,6 +1243,7 @@ function markBuyInPaid(room, clientId, netSats) {
   buyIn.netSats = Number.isFinite(netSats) ? Math.max(0, Math.round(netSats)) : room.buyInSats;
   const client = room.clients.get(clientId);
   console.log(`[event] ${room.name} buy-in paid by ${client?.name || clientId} (net ${buyIn.netSats})`);
+  potLog(room, "info", `${client?.name || clientId} paid · net ${buyIn.netSats} sats`);
   if (client) broadcast(room, { t: "notice", text: `${client.name} paid the buy-in` });
   broadcast(room, lobbySnapshot(room));
   return true;
@@ -1221,11 +1309,15 @@ function admitClient(ws, msg, mode) {
       potSats: 0,
       potId: msg.event ? randomUUID() : "",
       potClaimed: false,
+      potLogs: [],
       payoutTipSats: 0,
       payoutTipCollected: false,
       payoutTipToken: "",
     };
     rooms.set(roomName, room);
+    if (room.isEvent) {
+      potLog(room, "info", `created · buy-in ${room.buyInSats} sats`);
+    }
   } else {
     if (!room || room.clients.size === 0) {
       send(ws, { t: "error", message: "room not found" });
@@ -1414,11 +1506,12 @@ const httpServer = createServer(async (req, res) => {
       res.end(JSON.stringify({ ok: false, error: "payload too large" }));
       return;
     }
+    let found = null;
     try {
       if (payments.mock) throw new Error("mock mode");
       const raw = JSON.parse(body || "{}");
       const payload = raw?.payload && typeof raw.payload === "object" ? raw.payload : raw;
-      const found = findBuyInByHash(String(payload.id || raw.id || payload.paymentId || ""));
+      found = findBuyInByHash(String(payload.id || raw.id || payload.paymentId || ""));
       if (!found) {
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: false, error: "unknown payment id" }));
@@ -1446,6 +1539,9 @@ const httpServer = createServer(async (req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
     } catch (err) {
+      if (found?.room) {
+        potLog(found.room, "error", `Cashu receive failed: ${String(err?.message || err).slice(0, 160)}`);
+      }
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: String(err?.message || err).slice(0, 140) }));
     }
@@ -1795,6 +1891,7 @@ wss.on("connection", (ws) => {
           (sum, c) => sum + (room.buyIns.get(c.id)?.netSats ?? room.buyInSats),
           0,
         );
+        potLog(room, "info", `race start · pot ${room.potSats} sats · ${room.clients.size} paid`);
       }
       if (msg.trackId != null) room.trackId = normalizeTrackId(msg.trackId);
       // Host may re-assert create-room weather on play (belt-and-suspenders).
@@ -1893,6 +1990,7 @@ wss.on("connection", (ws) => {
             event: info,
           });
         })();
+        potLog(room, "info", `finished · ${client.name} won · accounted ${room.potSats} sats`);
         console.log(`[event] ${room.name} won by ${client.name} — pot ${room.potSats} sats`);
         return;
       }
@@ -1937,6 +2035,7 @@ wss.on("connection", (ws) => {
           await depositProofs(fresh, room.potId);
           markBuyInPaid(room, client.id, fresh.reduce((a, p) => a + Number(p.amount), 0));
         } catch (err) {
+          potLog(room, "error", `pasted token rejected for ${client.name}: ${String(err?.message || err).slice(0, 160)}`);
           send(ws, { t: "error", message: `token rejected — ${String(err?.message || err).slice(0, 100)}` });
         }
       })();
@@ -1952,6 +2051,7 @@ wss.on("connection", (ws) => {
       }
       const tipPercent = Math.max(0, Math.min(100, Math.round(Number(msg.tipPercent) || 0)));
       room.potClaimed = true; // lock before paying — no double claims
+      potLog(room, "info", `claim started by ${client.name} · tip ${tipPercent}%`);
       void (async () => {
         try {
           // Fee comes OUT OF THE POT, never out of the dev tip. The tip is paid
@@ -1979,6 +2079,7 @@ wss.on("connection", (ws) => {
               room.payoutTipToken = "";
             } catch (err) {
               console.warn(`[event] leftover tip token collect failed:`, err?.message || err);
+              potLog(room, "warn", `leftover tip token collect failed: ${String(err?.message || err).slice(0, 160)}`);
             }
           }
           if (!tipCollected && !room.payoutTipToken) {
@@ -1991,6 +2092,9 @@ wss.on("connection", (ws) => {
               room.payoutTipSats = tipSats;
               room.payoutTipCollected = tipCollected;
               room.payoutTipToken = result.token || "";
+              if (!tipCollected) {
+                potLog(room, "warn", `tip ${tipSats} swapped from pot but tip-wallet receive failed`);
+              }
             } else {
               room.payoutTipSats = 0;
               room.payoutTipCollected = true;
@@ -2035,11 +2139,17 @@ wss.on("connection", (ws) => {
             mock: payments.mock,
           });
           broadcast(room, { t: "notice", text: `${client.name} claimed the pot — ${winnerSats} sats` });
+          potLog(
+            room,
+            tipCollected ? "info" : "warn",
+            `claimed · ${client.name} ${winnerSats} · tip ${tipSats}${tipCollected ? "" : " pending"} · fee ${feeSats}`,
+          );
           console.log(
             `[event] ${room.name} pot ${room.potSats} sats → ${client.name} ${winnerSats} · tip ${tipSats}${tipCollected ? " collected" : " pending"} · fee ${feeSats}`,
           );
         } catch (err) {
           room.potClaimed = false; // payment failed — allow retry (tip already collected is skipped)
+          potLog(room, "error", `claim failed: ${String(err?.message || err).slice(0, 160)}`);
           send(ws, { t: "payoutResult", ok: false, error: String(err?.message || err).slice(0, 140) });
         }
       })();
@@ -2059,6 +2169,7 @@ wss.on("connection", (ws) => {
     room.buyIns.delete(client.id); // event: drop their buy-in record (v1 — paid buy-ins are not refunded)
     console.log(`[leave] ${client.name}`);
     if (room.clients.size === 0) {
+      potLog(room, "info", "last player left — room closed (pot file kept)");
       rooms.delete(client.room);
     } else {
       if (room.hostId === client.id) {
@@ -2103,6 +2214,7 @@ setInterval(() => {
         markBuyInPaid(room, id, settled.netSats);
       }).catch((err) => {
         console.warn("[event] settleIfPaid failed:", err?.message || err);
+        potLog(room, "warn", `Lightning settle poll failed: ${String(err?.message || err).slice(0, 160)}`);
       });
     }
   }
