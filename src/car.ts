@@ -728,101 +728,124 @@ export function createTank(
   const tail = mat(0xff2418, { metal: 0.25, rough: 0.35, emissive: 0xff2418, emit: 0.7 });
   const accent = paintMat(accentColor, { metal: 0.3, rough: 0.45, emit: 0.14 });
 
-  // Tracks: tread body, proud grouser bars across every link, big sprocket /
-  // idler rings front+rear, and a sloped armor skirt over the whole run.
+  // Tracks: dark tread loop + visible road wheels / sprockets / return rollers.
+  // The track face sits at the wheel line so the treads look planted — before,
+  // the treads buried into the floor and the hull floated above a void.
+  const wheelLine: [number, number][] = [
+    [-1.5, 0.32],
+    [-0.98, 0.36],
+    [-0.42, 0.36],
+    [0.14, 0.36],
+    [0.7, 0.36],
+    [1.22, 0.36],
+  ];
   for (const s of [-1, 1] as const) {
-    box(tank, 0.44, 0.56, 4.1, tread, s * 0.95, 0.4, 0);
-    box(tank, 0.44, 0.1, 4.1, dark, s * 0.95, 0.72, 0);
-    for (const z of [-1.75, -1.35, -0.95, -0.55, -0.15, 0.25, 0.65, 1.05, 1.45, 1.85]) {
-      box(tank, 0.46, 0.045, 0.22, steel, s * 0.95, 0.78, z);
+    // Tread loop — grounded (bottom at y≈0)
+    box(tank, 0.46, 0.72, 4.1, tread, s * 1.0, 0.38, 0);
+    // Road wheels (visible through the track face) + front/rear sprockets
+    for (const [z, r] of wheelLine) {
+      cyl(tank, r, r, 0.5, steel, s * 1.0, 0.38, z, 0, 0, Math.PI / 2, 16);
     }
-    // Sloped side skirt — the angled armor every modern MBT wears
-    box(tank, 0.1, 0.34, 4.3, body, s * 1.18, 0.86, 0, 0, 0, s * 0.25);
-    // Drive sprocket (front) + idler (rear) — big toothed rings
-    cyl(tank, 0.3, 0.3, 0.3, steel, s * 0.95, 0.4, 1.75, 0, 0, Math.PI / 2, 14);
-    cyl(tank, 0.3, 0.3, 0.3, steel, s * 0.95, 0.4, -1.75, 0, 0, Math.PI / 2, 14);
+    cyl(tank, 0.34, 0.34, 0.5, dark, s * 1.0, 0.42, 1.72, 0, 0, Math.PI / 2, 14);
+    cyl(tank, 0.34, 0.34, 0.5, dark, s * 1.0, 0.42, -1.72, 0, 0, Math.PI / 2, 14);
+    // Return rollers up top
+    for (const z of [-0.7, 0, 0.7]) {
+      cyl(tank, 0.13, 0.13, 0.5, dark, s * 1.0, 0.68, z, 0, 0, Math.PI / 2, 10);
+    }
+    // Grouser bars across the top run of the track
+    for (const z of [-1.7, -1.3, -0.9, -0.5, -0.1, 0.3, 0.7, 1.1, 1.5, 1.9]) {
+      box(tank, 0.47, 0.045, 0.22, steel, s * 1.0, 0.77, z);
+    }
+    // Side skirt — flush angled armor over the track, not a floating wing
+    box(tank, 0.12, 0.46, 3.9, body, s * 1.24, 0.68, 0, 0, 0, s * 0.12);
   }
 
-  // Hull — sloped glacis (named panel — wall damage skews it loose)
-  box(tank, 1.72, 0.5, 3.9, body, 0, 0.87, 0);
-  box(tank, 1.7, 0.08, 1.2, body, 0, 1.02, 1.8, 0.45).name = "panel-hood";
-  box(tank, 1.7, 0.42, 0.08, body, 0, 0.87, -1.98).name = "panel-tail";
-  box(tank, 1.6, 0.1, 2.7, body, 0, 1.16, -0.35);
+  // Hull — wedge glacis + floor, sits down ON the tracks (no floating gap)
+  box(tank, 1.62, 0.42, 3.9, body, 0, 0.68, 0);
+  // Glacis plate (named panel — wall damage skews it loose)
+  box(tank, 1.6, 0.09, 1.35, body, 0, 0.82, 1.7, 0.42).name = "panel-hood";
+  // Rear hull plate
+  box(tank, 1.6, 0.36, 0.1, body, 0, 0.78, -1.96).name = "panel-tail";
+  // Upper deck ring the turret sits in
+  box(tank, 1.5, 0.14, 2.2, body, 0, 0.94, -0.4);
   // Driver hatch + periscope glass
-  box(tank, 0.34, 0.1, 0.5, dark, 0.42, 1.22, 1.2);
-  box(tank, 0.28, 0.05, 0.04, glass, 0.42, 1.28, 1.28).name = "glass-front";
-  box(tank, 0.03, 0.12, 2.8, accent, -0.87, 1.01, 0);
-  box(tank, 0.03, 0.12, 2.8, accent, 0.87, 1.01, 0);
+  box(tank, 0.34, 0.1, 0.5, dark, 0.42, 1.0, 1.15);
+  box(tank, 0.28, 0.05, 0.04, glass, 0.42, 1.06, 1.24).name = "glass-front";
+  // Side accent strips
+  box(tank, 0.03, 0.1, 2.7, accent, -0.82, 0.78, 0);
+  box(tank, 0.03, 0.1, 2.7, accent, 0.82, 0.78, 0);
   // Tow eyes on the nose
-  cyl(tank, 0.05, 0.05, 0.12, steel, -0.55, 0.75, 2.0, Math.PI / 2, 0, 0, 8);
-  cyl(tank, 0.05, 0.05, 0.12, steel, 0.55, 0.75, 2.0, Math.PI / 2, 0, 0, 8);
+  cyl(tank, 0.05, 0.05, 0.12, steel, -0.55, 0.62, 2.0, Math.PI / 2, 0, 0, 8);
+  cyl(tank, 0.05, 0.05, 0.12, steel, 0.55, 0.62, 2.0, Math.PI / 2, 0, 0, 8);
 
-  // Turret — angular cheeks, bustle tail, roof plate, gun mantlet
-  box(tank, 1.34, 0.42, 1.15, body, 0, 1.44, -0.35);
-  box(tank, 1.1, 0.34, 0.75, body, 0, 1.42, 0.45, -0.12);
-  box(tank, 0.9, 0.06, 1.6, dark, 0, 1.66, -0.3);
-  box(tank, 0.5, 0.34, 0.32, dark, 0, 1.46, 0.85);
-  box(tank, 0.06, 0.1, 1.3, accent, 0, 1.68, -0.2);
+  // Turret — angular wedge cheeks, bustle tail, roof plate, gun mantlet
+  box(tank, 1.3, 0.38, 1.1, body, 0, 1.2, -0.3);
+  box(tank, 1.08, 0.32, 0.72, body, 0, 1.18, 0.5, -0.12);
+  box(tank, 0.9, 0.06, 1.55, dark, 0, 1.4, -0.28);
+  box(tank, 0.5, 0.3, 0.32, dark, 0, 1.22, 0.88);
+  box(tank, 0.06, 0.09, 1.2, accent, 0, 1.44, -0.18);
 
   // Stepped barrel: root sleeve, main tube, thermal rings, muzzle brake
-  cyl(tank, 0.085, 0.1, 0.6, dark, 0, 1.47, 1.15, Math.PI / 2, 0, 0, 12);
-  cyl(tank, 0.07, 0.085, 1.7, steel, 0, 1.47, 2.25, Math.PI / 2, 0, 0, 12);
+  cyl(tank, 0.085, 0.1, 0.6, dark, 0, 1.23, 1.18, Math.PI / 2, 0, 0, 12);
+  cyl(tank, 0.07, 0.085, 1.7, steel, 0, 1.23, 2.25, Math.PI / 2, 0, 0, 12);
   for (const z of [1.6, 2.0, 2.4]) {
-    cyl(tank, 0.09, 0.09, 0.1, dark, 0, 1.47, z, Math.PI / 2, 0, 0, 12);
+    cyl(tank, 0.09, 0.09, 0.1, dark, 0, 1.23, z, Math.PI / 2, 0, 0, 12);
   }
-  cyl(tank, 0.12, 0.12, 0.34, dark, 0, 1.47, 3.05, Math.PI / 2, 0, 0, 12);
+  cyl(tank, 0.12, 0.12, 0.34, dark, 0, 1.23, 3.05, Math.PI / 2, 0, 0, 12);
   // Accent ring at the muzzle
-  cyl(tank, 0.11, 0.11, 0.1, accent, 0, 1.47, 2.9, Math.PI / 2, 0, 0, 12);
+  cyl(tank, 0.11, 0.11, 0.1, accent, 0, 1.23, 2.9, Math.PI / 2, 0, 0, 12);
 
   // Roof kit: commander cupola w/ glass, loader hatch, MG, twin antennas
-  cyl(tank, 0.26, 0.3, 0.12, dark, 0.33, 1.7, -0.5, 0, 0, 0, 14);
-  box(tank, 0.18, 0.03, 0.2, glass, 0.33, 1.76, -0.5);
-  cyl(tank, 0.2, 0.2, 0.08, dark, -0.35, 1.7, -0.55, 0, 0, 0, 12);
-  box(tank, 0.045, 0.05, 0.5, dark, 0.33, 1.84, -0.66, -0.2);
-  box(tank, 0.06, 0.06, 0.12, dark, 0.33, 1.8, -0.9);
-  cyl(tank, 0.014, 0.014, 1.3, dark, -0.55, 2.25, -0.75, 0.1, 0, 0, 5);
-  cyl(tank, 0.014, 0.014, 1.1, dark, -0.4, 2.1, -0.75, -0.12, 0, 0, 5);
+  cyl(tank, 0.26, 0.3, 0.12, dark, 0.33, 1.46, -0.48, 0, 0, 0, 14);
+  box(tank, 0.18, 0.03, 0.2, glass, 0.33, 1.52, -0.48);
+  cyl(tank, 0.2, 0.2, 0.08, dark, -0.35, 1.46, -0.53, 0, 0, 0, 12);
+  box(tank, 0.045, 0.05, 0.5, dark, 0.33, 1.6, -0.64, -0.2);
+  box(tank, 0.06, 0.06, 0.12, dark, 0.33, 1.56, -0.88);
+  cyl(tank, 0.014, 0.014, 1.3, dark, -0.55, 2.0, -0.72, 0.1, 0, 0, 5);
+  cyl(tank, 0.014, 0.014, 1.1, dark, -0.4, 1.86, -0.72, -0.12, 0, 0, 5);
 
   // Bustle rack frame behind the turret + rear-hull stowage (bins + tarp roll)
   for (const s of [-1, 1] as const) {
-    box(tank, 0.05, 0.22, 0.9, dark, s * 0.62, 1.6, -0.98);
+    box(tank, 0.05, 0.2, 0.85, dark, s * 0.6, 1.36, -0.95);
   }
-  box(tank, 1.29, 0.05, 0.05, dark, 0, 1.71, -1.4);
-  box(tank, 1.29, 0.05, 0.05, dark, 0, 1.49, -1.4);
-  box(tank, 0.5, 0.22, 0.4, dark, -0.5, 1.22, -1.7);
-  box(tank, 0.5, 0.22, 0.4, dark, 0.5, 1.22, -1.7);
-  cyl(tank, 0.1, 0.1, 1.4, tread, 0, 1.24, -1.75, 0, 0, Math.PI / 2, 10);
+  box(tank, 1.24, 0.05, 0.05, dark, 0, 1.46, -1.36);
+  box(tank, 1.24, 0.05, 0.05, dark, 0, 1.26, -1.36);
+  box(tank, 0.5, 0.2, 0.38, dark, -0.5, 1.0, -1.65);
+  box(tank, 0.5, 0.2, 0.38, dark, 0.5, 1.0, -1.65);
+  cyl(tank, 0.1, 0.1, 1.35, tread, 0, 1.02, -1.7, 0, 0, Math.PI / 2, 10);
 
-  // Fender headlights + tail lights + rear exhausts
-  box(tank, 0.2, 0.09, 0.07, head, -0.58, 1.0, 1.98);
-  box(tank, 0.2, 0.09, 0.07, head, 0.58, 1.0, 1.98);
-  box(tank, 0.16, 0.07, 0.05, tail, -0.58, 0.95, -2.02);
-  box(tank, 0.16, 0.07, 0.05, tail, 0.58, 0.95, -2.02);
-  cyl(tank, 0.07, 0.07, 0.5, steel, -0.45, 0.95, -1.9, Math.PI / 2.4, 0, 0, 10);
-  cyl(tank, 0.07, 0.07, 0.5, steel, 0.45, 0.95, -1.9, Math.PI / 2.4, 0, 0, 10);
+  // Fender headlights + tail lights + rear exhausts (inboard of the skirts)
+  box(tank, 0.2, 0.09, 0.07, head, -0.45, 0.85, 1.97);
+  box(tank, 0.2, 0.09, 0.07, head, 0.45, 0.85, 1.97);
+  box(tank, 0.16, 0.07, 0.05, tail, -0.58, 0.8, -2.0);
+  box(tank, 0.16, 0.07, 0.05, tail, 0.58, 0.8, -2.0);
+  cyl(tank, 0.07, 0.07, 0.5, steel, -0.45, 0.82, -1.85, Math.PI / 2.4, 0, 0, 10);
+  cyl(tank, 0.07, 0.07, 0.5, steel, 0.45, 0.82, -1.85, Math.PI / 2.4, 0, 0, 10);
 
   // Turret-side number plate
   const numMat = mat(0xffffff, { metal: 0.1, rough: 0.55 });
-  box(tank, 0.4, 0.24, 0.02, numMat, 0, 1.45, -0.97);
+  box(tank, 0.4, 0.24, 0.02, numMat, 0, 1.22, -0.94);
   const n = Math.max(1, Math.min(99, raceNumber));
-  if (Math.floor(n / 10) > 0) box(tank, 0.05, 0.15, 0.03, dark, -0.08, 1.45, -0.98);
+  if (Math.floor(n / 10) > 0) box(tank, 0.05, 0.15, 0.03, dark, -0.08, 1.22, -0.95);
   for (let i = 0; i < Math.min(n % 10, 4); i++) {
-    box(tank, 0.04, 0.028, 0.03, dark, 0.08, 1.385 + i * 0.035, -0.98);
+    box(tank, 0.04, 0.028, 0.03, dark, 0.08, 1.16 + i * 0.035, -0.95);
   }
 
-  const r = 0.36;
+  const r = 0.34;
   attachWheels(
     tank,
     [
-      [-0.95, r, 1.35],
-      [0.95, r, 1.35],
-      [-0.95, r, 0],
-      [0.95, r, 0],
-      [-0.95, r, -1.35],
-      [0.95, r, -1.35],
+      [-1.0, r, 1.5],
+      [1.0, r, 1.5],
+      [-1.0, r, 0.5],
+      [1.0, r, 0.5],
+      [-1.0, r, -0.5],
+      [1.0, r, -0.5],
+      [-1.0, r, -1.5],
+      [1.0, r, -1.5],
     ],
     r,
-    0.3,
+    0.34,
     5,
   );
   // Treads never yaw — suppress steering animation on all wheels.
@@ -833,8 +856,8 @@ export function createTank(
   tank.userData.tailLightMaterials = [tail];
   if (opts?.headlights) {
     attachHeadBeams(tank, [
-      { x: -0.58, y: 1.0, z: 1.98 },
-      { x: 0.58, y: 1.0, z: 1.98 },
+      { x: -0.45, y: 0.85, z: 1.97 },
+      { x: 0.45, y: 0.85, z: 1.97 },
     ]);
   }
   return tank;
