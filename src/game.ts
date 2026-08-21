@@ -1414,16 +1414,16 @@ export class Game {
       status.textContent = inv.mock
         ? "Dev mode — auto-pays in a few seconds"
         : lightning
-          ? `Pay ${inv.amountSats} sats over Lightning — minted as Cashu on Minibits`
+          ? `Pay ${inv.amountSats} sats over Lightning — minted as Cashu on Cubabitcoin`
           : inv.feeSats
-            ? `Pay ${inv.amountSats} sats (${inv.buyInSats} buy-in + ${inv.feeSats} mint fee) — Minibits or cashu.me`
-            : "Scan with Minibits or cashu.me — real Bitcoin sats";
+            ? `Pay ${inv.amountSats} sats (${inv.buyInSats} buy-in + ${inv.feeSats} mint fee) — cashu.me`
+            : "Scan with cashu.me — real Bitcoin sats";
       status.classList.remove("is-paid");
     }
     const tokenInput = document.getElementById("mp-token-input") as HTMLInputElement | null;
     if (tokenInput) {
       tokenInput.value = "";
-      tokenInput.placeholder = inv.mock ? "cashuA…" : `cashuA token of ${inv.amountSats} sats from Minibits…`;
+      tokenInput.placeholder = inv.mock ? "cashuA…" : `cashuA token of ${inv.amountSats} sats from Cubabitcoin…`;
     }
     const qr = document.getElementById("mp-invoice-qr") as HTMLImageElement | null;
     if (qr) {
@@ -1608,7 +1608,7 @@ export class Game {
       return;
     }
 
-    // Minibits / cashu.me deeplinks expect cashu:<token>; paste still uses raw.
+    // cashu.me deeplinks expect cashu:<token>; paste still uses raw.
     const payload = raw.startsWith("cashu:") ? raw : `cashu:${raw}`;
 
     const setNote = (text: string, show: boolean) => {
@@ -1654,7 +1654,7 @@ export class Game {
       qr.alt = "Cashu payout token QR code";
       wrap?.classList.remove("hidden");
       setNote("", false);
-      setHint("Scan with Minibits / cashu.me, or Receive → paste the token");
+      setHint("Scan with cashu.me, or Receive → paste the token");
     } catch {
       // Token too large for a single QR (NUT-16 would need animated UR) — copy still works.
       const current = (document.getElementById("event-payout-token") as HTMLInputElement | null)
@@ -1662,7 +1662,7 @@ export class Game {
       if (current !== raw) return;
       this.clearPayoutTokenQr();
       setNote("Token is too long for a QR — use COPY TOKEN instead", true);
-      setHint("Receive → paste the token into Minibits or cashu.me");
+      setHint("Receive → paste the token into cashu.me");
       const status = document.getElementById("event-payout-status");
       if (status && !status.classList.contains("nostr-error")) {
         status.textContent = status.textContent?.replace(
@@ -1688,7 +1688,7 @@ export class Game {
       note.classList.add("hidden");
     }
     if (hint) {
-      hint.textContent = "Scan with Minibits / cashu.me, or Receive → paste the token";
+      hint.textContent = "Scan with cashu.me, or Receive → paste the token";
     }
   }
 

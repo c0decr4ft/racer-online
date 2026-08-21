@@ -1,7 +1,7 @@
 /**
  * Cashu (eCash) payments for Event Mode — real Bitcoin sats.
  *
- * The server runs a cashu-ts Wallet against CASHU_MINT_URL (defaults to Minibits,
+ * The server runs a cashu-ts Wallet against CASHU_MINT_URL (defaults to Cubabitcoin,
  * a live mint: Lightning in → sat Cashu tokens). Mock mode (fake sats auto-pay
  * in ~3s) exists ONLY for dev/tests and must be forced via RACER_PAYMENTS_MOCK=1.
  *
@@ -11,7 +11,7 @@
  *   server/cashu-proofs.json       — legacy shared pot (pre-partition; still audited)
  *
  * Buy-ins arrive as NUT-18 creqA payloads (POST /api/ecash/pay), Lightning
- * mint quotes (bolt11 → tokens minted at Minibits), or pasted cashuA tokens.
+ * mint quotes (bolt11 → tokens minted at Cubabitcoin), or pasted cashuA tokens.
  * The winner is paid a cashuA token. The tip is swapped at the mint
  * straight into the tip wallet so a bearer token never sits around to be
  * double-spent.
@@ -46,12 +46,12 @@ function sameMint(a, b) {
 }
 
 /**
- * Default mint: Minibits (`https://mint.minibits.cash/Bitcoin`) — real sat Cashu
+ * Default mint: Cubabitcoin (`https://mint.cubabitcoin.org`) — real sat Cashu
  * tokens minted against Lightning invoices. Override with CASHU_MINT_URL (e.g.
  * Testnut `https://testnut.cashu.space` for free fake sats while iterating).
  */
 const CASHU_MINT_URL = canonicalizeMint(
-  process.env.CASHU_MINT_URL || "https://mint.minibits.cash/Bitcoin",
+  process.env.CASHU_MINT_URL || "https://mint.cubabitcoin.org",
 );
 
 const DIR = dirname(fileURLToPath(import.meta.url));
@@ -265,7 +265,7 @@ function emptyAudit(label) {
 /**
  * Ask a mint whether proofs we have on disk are still spendable (NUT-07).
  * Also peeks files whose mint URL no longer matches (e.g. leftover CoinOS
- * proofs after the Minibits switch) so they can be rescued if still unspent.
+ * proofs after a mint switch) so they can be rescued if still unspent.
  */
 async function auditOne(label, path) {
   const peeked = peekStore(path);
@@ -554,9 +554,9 @@ async function cashuCreatePaymentRequest({ amountSats, memo, baseUrl, potId }) {
   const { PaymentRequest, PaymentRequestTransportType } = await import("@cashu/cashu-ts");
   const paymentHash = randomUUID().replaceAll("-", "").slice(0, 24);
   const payUrl = `${String(baseUrl || "").replace(/\/+$/, "")}/api/ecash/pay`;
-  // NUT-18 creqA (CBOR+base64) — Minibits and cashu.me both support this.
-  // creqB (NUT-26 / experimental) is NOT implemented by Minibits; wallets that
-  // fail to parse it fall back to cashu.me's default mint (CoinOS).
+  // NUT-18 creqA (CBOR+base64) — Cubabitcoin and cashu.me both support this.
+  // creqB (NUT-26 / experimental) is not assumed; wallets that fail to parse
+  // it fall back to cashu.me's default mint (CoinOS).
   const request = new PaymentRequest(
     [{ type: PaymentRequestTransportType.POST, target: payUrl }],
     paymentHash,
@@ -578,7 +578,7 @@ async function cashuCreatePaymentRequest({ amountSats, memo, baseUrl, potId }) {
   }
 
   // Parallel Lightning invoice: paying it mints tokens straight into the pot
-  // at Minibits (NUT-04). Any LN wallet can pay this — no Cashu app required.
+  // at Cubabitcoin (NUT-04). Any LN wallet can pay this — no Cashu app required.
   let bolt11 = "";
   try {
     const wallet = await getWallet();

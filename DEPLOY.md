@@ -53,7 +53,7 @@ per swap.
 
 | Step | Who | Amount | Where it lands |
 | --- | --- | --- | --- |
-| 1. Buy-in | Each racer | **100 sats** | Cashu (Minibits) or Lightning → pot tokens |
+| 1. Buy-in | Each racer | **100 sats** | Cashu (Cubabitcoin) or Lightning → pot tokens |
 | 2. Mint receive | Mint | **~1 sat** each | Taken from the pot when swapping the buy-in in |
 | 3. Pot | Event wallet | ≈ 4 × 99 = **~396 sats** | that event's `server/cashu-pots/<id>.json` until claimed |
 | 4. Tip (2%) | Dev tip wallet | floor(pot × 2%) ≈ **7–8 sats** | Auto-swapped into `server/cashu-tips.json` (mint burns the old secrets) |
@@ -70,11 +70,11 @@ Formula for any race:
 
 ### Mint + custody
 
-- **Default mint: Minibits** (`https://mint.minibits.cash/Bitcoin`) — real
+- **Default mint: Cubabitcoin** (`https://mint.cubabitcoin.org`) — real
   Lightning-backed sats. Buy-in QRs are NUT-18 `creqA` payment requests that
   name this mint (so Cashu wallets do **not** fall back to CoinOS). Each request
   also includes a Lightning invoice from the same mint: paying it mints tokens
-  straight into the event pot. In Minibits or cashu.me: scan the Cashu QR (or
+  straight into the event pot. In cashu.me: scan the Cashu QR (or
   paste a `cashuA` token from this mint). Any Lightning wallet can pay the
   Lightning tab instead.
 - **Test/fake sats:** only for local tests. `RACER_PAYMENTS_MOCK=1` (auto-pay fake
