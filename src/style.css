@@ -1998,10 +1998,10 @@ input:focus-visible,
 }
 
 .home-top-actions {
-  position: absolute;
+  position: fixed;
   top: 1.35rem;
   right: 1.35rem;
-  z-index: 12;
+  z-index: 22;
   display: flex;
   align-items: center;
   gap: 0.55rem;
@@ -3011,6 +3011,12 @@ input:focus-visible,
   margin: 0 auto;
 }
 
+#test-drift-btn {
+  width: min(100%, 16rem);
+  margin: 0 auto 0.85rem;
+  display: block;
+}
+
 @media (max-width: 480px) {
   .map-grid:not(.mp-track-grid) {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3406,3 +3412,4 @@ html.touch-mode .wall-block {
     height: 96px;
   }
 }
+

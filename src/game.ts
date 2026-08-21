@@ -17,6 +17,7 @@ import {
   randomTrackId,
   DEFAULT_TRACK_ID,
   getTrackDef,
+  DRIFT_TRACK_ID,
 } from "./track";
 import { drawTrackPreview } from "./mapPreview";
 import { Input } from "./input";
@@ -606,6 +607,9 @@ export class Game {
         });
     };
     document.getElementById("map-select-back")!.onclick = () => this.closeMapSelect();
+    document.getElementById("test-drift-btn")!.onclick = () => {
+      void this.bootFromMenu({ practice: true, solo: true, trackId: DRIFT_TRACK_ID });
+    };
     document.getElementById("restart-btn")!.onclick = () => {
       void this.audio.unlock().then(() => {
         this.audio.stopRaceAudio();
@@ -2721,7 +2725,7 @@ export class Game {
     const raceWeather = this.online
       ? normalizeWeatherMode(opts.weather ?? this.net.weather)
       : // Dev extras (monster truck / tank) always race in daylight
-        this.garage.kind === "truck" || this.garage.kind === "tank"
+        this.garage.kind === "truck" || this.garage.kind === "tank" || this.trackId === DRIFT_TRACK_ID
         ? "dry"
         : pickWeather();
     if (this.online) this.net.weather = raceWeather;
@@ -3211,12 +3215,12 @@ export class Game {
     const hz = Math.cos(s.heading);
     this.rearCamera.position.set(
       s.position.x - hx * 0.35,
-      1.95,
+      1.95 + s.position.y,
       s.position.z - hz * 0.35,
     );
     this.rearCamera.lookAt(
       s.position.x - hx * 28,
-      1.1,
+      1.1 + s.position.y,
       s.position.z - hz * 28,
     );
   }
@@ -3231,27 +3235,43 @@ export class Game {
     const margin = v.mesh.userData.kind === "bike" ? 0.35 : 0.55;
     const wall = this.track.width / 2 - margin;
     const d = proj.distanceFromCenter;
-    if (Math.abs(d) <= wall) return false;
+    let touching = false;
+    if (Math.abs(d) > wall) {
+      touching = true;
+      const side = Math.sign(d);
+      this._wallN.set(-proj.tangent.z, 0, proj.tangent.x);
+      // Remove only the lateral excess — tangential motion is untouched
+      v.state.position.addScaledVector(this._wallN, side * wall - d);
 
-    const side = Math.sign(d);
-    this._wallN.set(-proj.tangent.z, 0, proj.tangent.x);
-    // Remove only the lateral excess — tangential motion is untouched
-    v.state.position.addScaledVector(this._wallN, side * wall - d);
+      const s = v.state;
+      // Player only: remember which CAR side the wall is on — wall damage
+      // scuffs land on that side (track-space side alone flips with heading).
+      if (v === this.player) {
+        const carSide =
+          (Math.cos(s.heading) * this._wallN.x - Math.sin(s.heading) * this._wallN.z) * side;
+        this.lastWallSideCar = Math.sign(carSide) || 1;
+      }
+      const intoWall = (Math.sin(s.heading) * this._wallN.x + Math.cos(s.heading) * this._wallN.z) * side;
+      if (s.speed * intoWall > 0) {
+        s.speed *= 1 - intoWall * intoWall;
+      }
+    }
+    this.applyTrackGrade(v, proj.t);
+    if (touching || this.track.heightAt) v.syncCollision();
+    return touching;
+  }
 
-    const s = v.state;
-    // Player only: remember which CAR side the wall is on — wall damage
-    // scuffs land on that side (track-space side alone flips with heading).
-    if (v === this.player) {
-      const carSide =
-        (Math.cos(s.heading) * this._wallN.x - Math.sin(s.heading) * this._wallN.z) * side;
-      this.lastWallSideCar = Math.sign(carSide) || 1;
+  /** Sample yard-drift centerline height after planar physics. Other tracks stay at y=0. */
+  private applyTrackGrade(v: Vehicle, t: number) {
+    const heightAt = this.track.heightAt;
+    if (!heightAt) {
+      v.state.position.y = 0;
+      v.state.groundPitch = 0;
+      return;
     }
-    const intoWall = (Math.sin(s.heading) * this._wallN.x + Math.cos(s.heading) * this._wallN.z) * side;
-    if (s.speed * intoWall > 0) {
-      s.speed *= 1 - intoWall * intoWall;
-    }
-    v.syncCollision();
-    return true;
+    v.state.position.y = heightAt(t);
+    const grade = this.track.gradeAt?.(t) ?? 0;
+    v.state.groundPitch = -Math.atan(grade);
   }
 
   /** Edge-trigger + cooldown: count a hit when contact starts, not every scrape frame. */
@@ -4521,14 +4541,15 @@ export class Game {
 
   private snapCamera() {
     const s = this.player.state;
+    const gy = s.position.y;
     this.camPos.set(
       s.position.x - Math.sin(s.heading) * 12,
-      4.5,
+      4.5 + gy,
       s.position.z - Math.cos(s.heading) * 12,
     );
     this.camLook.set(
       s.position.x + Math.sin(s.heading) * 8,
-      1.2,
+      1.2 + gy,
       s.position.z + Math.cos(s.heading) * 8,
     );
     this.camera.position.copy(this.camPos);
@@ -4537,8 +4558,9 @@ export class Game {
 
   private updateCamera(dt: number) {
     const s = this.player.state;
+    const gy = s.position.y;
     const back = 12 + Math.min(Math.abs(s.speed) * 0.07, 6);
-    const height = 4.4 + Math.min(Math.abs(s.speed) * 0.028, 1.8);
+    const height = 4.4 + Math.min(Math.abs(s.speed) * 0.028, 1.8) + gy;
     this._camIdeal.set(
       s.position.x - Math.sin(s.heading) * back,
       height,
@@ -4550,7 +4572,7 @@ export class Game {
 
     this._camLookTarget.set(
       s.position.x + Math.sin(s.heading) * 10,
-      1.4,
+      1.4 + gy,
       s.position.z + Math.cos(s.heading) * 10,
     );
     this.camLook.lerp(this._camLookTarget, dt <= 0 ? 1 : 1 - Math.exp(-8 * dt));

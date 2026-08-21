@@ -2,12 +2,13 @@ import * as THREE from "three";
 import { biomeForTrack, type BiomeStyle } from "./biomes";
 import {
   DEFAULT_TRACK_ID,
+  DRIFT_TRACK_ID,
   getTrackDef,
   type TrackDef,
 } from "./trackDefs";
 
 export type { TrackDef };
-export { TRACKS, DEFAULT_TRACK_ID, getTrackDef, randomTrackId, isTrackId } from "./trackDefs";
+export { TRACKS, DEFAULT_TRACK_ID, DRIFT_TRACK_ID, getTrackDef, randomTrackId, isTrackId } from "./trackDefs";
 
 export type TrackData = {
   id: string;
@@ -17,6 +18,10 @@ export type TrackData = {
   startPosition: THREE.Vector3;
   startHeading: number;
   width: number;
+  /** Centerline height along t — set on yard-drift for the underpass grade. */
+  heightAt?: (t: number) => number;
+  /** dy/ds along the centerline (for visual pitch). */
+  gradeAt?: (t: number) => number;
 };
 
 /** Shared with car headlights — asphalt receives beams; forest stays on layer 0 only. */
@@ -1659,6 +1664,857 @@ function plantBiomeProps(
   if (biome.props === "city") {
     plantCity(group, path, clearance, dummy, bounds);
   }
+}
+
+/** Construction yard — doughnut tire walls, steel-frame buildings, crane, site clutter. */
+function plantYardSite(
+  group: THREE.Group,
+  path: THREE.CatmullRomCurve3,
+  roadHalf: number,
+  clearance: PathClearance,
+  bounds: ReturnType<typeof pathBounds>,
+  sceneryScale: number,
+  inCut?: (x: number, z: number) => boolean,
+  heightAt?: (t: number) => number,
+  skipTireAt?: (t: number) => boolean,
+) {
+  const dummy = new THREE.Object3D();
+  const p = new THREE.Vector3();
+  const tan = new THREE.Vector3();
+  const n = new THREE.Vector3();
+  const zAxis = new THREE.Vector3(0, 0, 1);
+  const scale = Math.max(0.35, Math.min(1, sceneryScale));
+  const pathLen = path.getLength();
+  const boxGeo = new THREE.BoxGeometry(1, 1, 1);
+
+  const rubber = new THREE.MeshStandardMaterial({
+    color: 0x1c1e22,
+    roughness: 0.88,
+    metalness: 0.06,
+  });
+  const sidewall = new THREE.MeshStandardMaterial({
+    color: 0x3a3e44,
+    roughness: 0.82,
+    metalness: 0.08,
+  });
+  // Torus lies in XY, hole along Z — rotate so the hole faces the road.
+  const tireGeo = new THREE.TorusGeometry(0.46, 0.16, 8, 18);
+  const tireN = Math.min(900, Math.max(120, Math.floor((pathLen / 1.45) * 2 * 1.2 * scale)));
+  const tires = new THREE.InstancedMesh(tireGeo, rubber, tireN);
+  tires.count = 0;
+  tires.castShadow = true;
+  tires.receiveShadow = true;
+  const wallGeo = new THREE.TorusGeometry(0.32, 0.055, 6, 14);
+  const walls = new THREE.InstancedMesh(wallGeo, sidewall, tireN);
+  walls.count = 0;
+
+  const placedX: number[] = [];
+  const placedZ: number[] = [];
+  const minSep = 1.35;
+  const minSep2 = minSep * minSep;
+  const onShoulder = (x: number, z: number) => {
+    const d = Math.sqrt(clearance.minDist2(x, z));
+    return d >= roadHalf + 0.82 && d <= roadHalf + 2.15;
+  };
+  const farFromPlaced = (x: number, z: number) => {
+    for (let p = 0; p < placedX.length; p++) {
+      const dx = x - placedX[p]!;
+      const dz = z - placedZ[p]!;
+      if (dx * dx + dz * dz < minSep2) return false;
+    }
+    return true;
+  };
+  const cutBlocked = (x: number, z: number) => !!inCut?.(x, z);
+
+  const step = 1.4;
+  const samples = Math.max(80, Math.floor(pathLen / step));
+  for (let i = 0; i < samples; i++) {
+    const u = (i / samples) % 1;
+    if (skipTireAt?.(u)) continue;
+    path.getPointAt(u, p);
+    path.getTangentAt(u, tan).normalize();
+    n.set(-tan.z, 0, tan.x);
+    const lat = roadHalf + 1.28;
+    const yTire = (heightAt?.(u) ?? 0) + 0.46;
+    // Don't plant tires in/near the ditch or on the bridge gap.
+    if (yTire < 0.2 || Math.abs((heightAt?.(u) ?? 0)) > 0.12) continue;
+    for (const side of [-1, 1] as const) {
+      const x = p.x + n.x * side * lat;
+      const z = p.z + n.z * side * lat;
+      if (cutBlocked(x, z) || !onShoulder(x, z) || !farFromPlaced(x, z) || tires.count >= tireN) continue;
+      dummy.quaternion.setFromUnitVectors(zAxis, n);
+      dummy.position.set(x, yTire, z);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      tires.setMatrixAt(tires.count++, dummy.matrix);
+      walls.setMatrixAt(walls.count++, dummy.matrix);
+      placedX.push(x);
+      placedZ.push(z);
+    }
+  }
+  tires.instanceMatrix.needsUpdate = true;
+  walls.instanceMatrix.needsUpdate = true;
+  tires.computeBoundingSphere();
+  walls.computeBoundingSphere();
+  group.add(tires);
+  group.add(walls);
+
+  // Loose tires lying on the gravel (hole facing up)
+  const looseN = Math.floor(40 * scale);
+  const loose = new THREE.InstancedMesh(tireGeo, rubber, looseN);
+  loose.count = 0;
+  dummy.quaternion.identity();
+  for (let i = 0; i < samples && loose.count < looseN; i++) {
+    if (hash2(i, 23) > 0.08) continue;
+    const u = (i / samples) % 1;
+    path.getPointAt(u, p);
+    path.getTangentAt(u, tan).normalize();
+    n.set(-tan.z, 0, tan.x);
+    const side = hash2(i, 29) < 0.5 ? -1 : 1;
+    const lat = roadHalf + 3.2 + hash2(i, 31) * 1.6;
+    const x = p.x + n.x * side * lat;
+    const z = p.z + n.z * side * lat;
+    const d = Math.sqrt(clearance.minDist2(x, z));
+    if (cutBlocked(x, z) || d < roadHalf + 2.4 || d > roadHalf + 6) continue;
+    dummy.position.set(x, 0.16, z);
+    dummy.rotation.set(Math.PI / 2, hash2(i, 37) * 6, 0);
+    dummy.scale.set(1, 1, 1);
+    dummy.updateMatrix();
+    loose.setMatrixAt(loose.count++, dummy.matrix);
+  }
+  loose.instanceMatrix.needsUpdate = true;
+  loose.computeBoundingSphere();
+  group.add(loose);
+
+  const coneMat = new THREE.MeshStandardMaterial({
+    color: 0xf26a12,
+    roughness: 0.55,
+    metalness: 0.08,
+  });
+  const coneGeo = new THREE.ConeGeometry(0.16, 0.48, 8);
+  const startP = path.getPointAt(0);
+  const startTan = path.getTangentAt(0).normalize();
+  const startN = new THREE.Vector3(-startTan.z, 0, startTan.x);
+  for (const side of [-1, 1] as const) {
+    for (let k = 0; k < 6; k++) {
+      const cone = new THREE.Mesh(coneGeo, coneMat);
+      cone.position
+        .copy(startP)
+        .addScaledVector(startN, side * (roadHalf + 0.4))
+        .addScaledVector(startTan, -4 + k * 1.15);
+      cone.position.y = 0.24;
+      group.add(cone);
+    }
+  }
+
+  const dirtMat = new THREE.MeshStandardMaterial({
+    color: 0x9a7a48,
+    roughness: 1,
+    metalness: 0.02,
+    flatShading: true,
+  });
+  const dirtGeo = new THREE.SphereGeometry(1.2, 6, 5);
+  const dirtN = Math.floor(22 * scale);
+  const dirt = new THREE.InstancedMesh(dirtGeo, dirtMat, dirtN);
+  dirt.count = 0;
+  if (!inCut) {
+    const infield = collectSpacedInfieldPoints(path, clearance, bounds, {
+      count: dirtN,
+      minSep: 11,
+      clearFoot: 2.8,
+    });
+    for (const { x, z, i } of infield) {
+      if (dirt.count >= dirtN) break;
+      const s = 1.5 + hash2(i, 41) * 2.4;
+      dummy.position.set(x, s * 0.38, z);
+      dummy.quaternion.identity();
+      dummy.scale.set(s, s * 0.55, s * 0.9);
+      dummy.rotation.set(0, hash2(i, 43) * 6, 0);
+      dummy.updateMatrix();
+      dirt.setMatrixAt(dirt.count++, dummy.matrix);
+    }
+  }
+  dirt.instanceMatrix.needsUpdate = true;
+  dirt.computeBoundingSphere();
+  group.add(dirt);
+
+  const crateMats = [
+    new THREE.MeshStandardMaterial({ color: 0xc45a1c, roughness: 0.55, metalness: 0.25 }),
+    new THREE.MeshStandardMaterial({ color: 0x2e6a9a, roughness: 0.55, metalness: 0.25 }),
+    new THREE.MeshStandardMaterial({ color: 0x2f7a4a, roughness: 0.55, metalness: 0.22 }),
+  ];
+  const crateN = Math.floor(16 * scale);
+  const crates = crateMats.map((mat) => {
+    const mesh = new THREE.InstancedMesh(boxGeo, mat, crateN);
+    mesh.count = 0;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    return mesh;
+  });
+  const placeCrate = (x: number, z: number, i: number) => {
+    const mesh = crates[i % crates.length]!;
+    if (mesh.count >= crateN) return;
+    dummy.quaternion.identity();
+    dummy.position.set(x, 1.3, z);
+    dummy.rotation.set(0, hash2(i, 47) * Math.PI, 0);
+    dummy.scale.set(6.1, 2.55, 2.45);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(mesh.count++, dummy.matrix);
+  };
+  collectSpacedInfieldPoints(path, clearance, bounds, {
+    count: inCut ? 0 : Math.floor(8 * scale),
+    minSep: 16,
+    clearFoot: 4.4,
+  }).forEach(({ x, z, i }) => placeCrate(x, z, i));
+  for (let i = 0; i < Math.floor(12 * scale); i++) {
+    const u = hash2(i, 53);
+    path.getPointAt(u, p);
+    path.getTangentAt(u, tan).normalize();
+    n.set(-tan.z, 0, tan.x);
+    const side = hash2(i, 59) < 0.5 ? -1 : 1;
+    const x = p.x + n.x * side * (roadHalf + 14 + hash2(i, 61) * 8);
+    const z = p.z + n.z * side * (roadHalf + 14 + hash2(i, 61) * 8);
+    if (cutBlocked(x, z) || !clearance.sceneryOk(x, z, 4.5)) continue;
+    placeCrate(x, z, i + 40);
+  }
+  for (const mesh of crates) {
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.computeBoundingSphere();
+    group.add(mesh);
+  }
+
+  const pickOutfield = (seed: number, dist: number, foot: number) => {
+    for (let t = 0; t < 14; t++) {
+      const u = (hash2(seed, t + 3) + t * 0.07) % 1;
+      path.getPointAt(u, p);
+      path.getTangentAt(u, tan).normalize();
+      n.set(-tan.z, 0, tan.x);
+      const side = hash2(seed, t + 11) < 0.5 ? -1 : 1;
+      const x = p.x + n.x * side * dist;
+      const z = p.z + n.z * side * dist;
+      if (cutBlocked(x, z) || !clearance.sceneryOk(x, z, foot)) continue;
+      return { x, z, yaw: Math.atan2(tan.x, tan.z) };
+    }
+    return null;
+  };
+
+  const greenDump = new THREE.MeshStandardMaterial({
+    color: 0x2d6b38,
+    roughness: 0.55,
+    metalness: 0.18,
+  });
+  const dumpLid = new THREE.MeshStandardMaterial({
+    color: 0x1e4a26,
+    roughness: 0.5,
+    metalness: 0.2,
+  });
+  const addDumpster = (x: number, z: number, yaw: number) => {
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.BoxGeometry(2.6, 1.15, 1.45), greenDump);
+    body.position.y = 0.62;
+    g.add(body);
+    const lip = new THREE.Mesh(new THREE.BoxGeometry(2.72, 0.12, 1.55), dumpLid);
+    lip.position.y = 1.22;
+    g.add(lip);
+    const lid = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.08, 1.5), dumpLid);
+    lid.position.set(-0.55, 1.42, 0);
+    lid.rotation.z = -0.45;
+    g.add(lid);
+    g.position.set(x, 0, z);
+    g.rotation.y = yaw;
+    group.add(g);
+  };
+  for (let i = 0; i < Math.floor(5 * scale); i++) {
+    const spot = pickOutfield(200 + i, roadHalf + 12 + i * 0.8, 2.2);
+    if (spot) addDumpster(spot.x, spot.z, spot.yaw);
+  }
+
+  const pottyBlue = new THREE.MeshStandardMaterial({
+    color: 0x3a7ec4,
+    roughness: 0.48,
+    metalness: 0.12,
+  });
+  const pottyWhite = new THREE.MeshStandardMaterial({
+    color: 0xe8eef4,
+    roughness: 0.55,
+    metalness: 0.08,
+  });
+  for (let i = 0; i < Math.floor(4 * scale); i++) {
+    const spot = pickOutfield(310 + i, roadHalf + 11, 1.2);
+    if (!spot) continue;
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.BoxGeometry(1.05, 2.25, 1.05), pottyBlue);
+    body.position.y = 1.15;
+    g.add(body);
+    const door = new THREE.Mesh(new THREE.BoxGeometry(0.72, 1.7, 0.06), pottyWhite);
+    door.position.set(0, 1.05, 0.54);
+    g.add(door);
+    const vent = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.12, 0.35), pottyWhite);
+    vent.position.y = 2.32;
+    g.add(vent);
+    g.position.set(spot.x, 0, spot.z);
+    g.rotation.y = spot.yaw;
+    group.add(g);
+  }
+
+  const wood = new THREE.MeshStandardMaterial({
+    color: 0xb08948,
+    roughness: 0.82,
+    metalness: 0.04,
+  });
+  for (let i = 0; i < Math.floor(5 * scale); i++) {
+    const spot = pickOutfield(410 + i, roadHalf + 13, 1.8);
+    if (!spot) continue;
+    const g = new THREE.Group();
+    for (let k = 0; k < 6; k++) {
+      const plank = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.1, 0.18), wood);
+      plank.position.set(0, 0.08 + k * 0.12, (k % 2) * 0.04);
+      g.add(plank);
+    }
+    g.position.set(spot.x, 0, spot.z);
+    g.rotation.y = spot.yaw;
+    group.add(g);
+  }
+
+  const pipeMat = new THREE.MeshStandardMaterial({
+    color: 0x8a9098,
+    roughness: 0.35,
+    metalness: 0.7,
+  });
+  const pipeGeo = new THREE.CylinderGeometry(0.12, 0.12, 2.8, 8);
+  for (let i = 0; i < Math.floor(4 * scale); i++) {
+    const spot = pickOutfield(510 + i, roadHalf + 12.5, 1.6);
+    if (!spot) continue;
+    const g = new THREE.Group();
+    for (let k = 0; k < 5; k++) {
+      const pipe = new THREE.Mesh(pipeGeo, pipeMat);
+      pipe.rotation.z = Math.PI / 2;
+      pipe.position.set(0, 0.14 + (k % 2) * 0.22, -0.35 + k * 0.18);
+      g.add(pipe);
+    }
+    g.position.set(spot.x, 0, spot.z);
+    g.rotation.y = spot.yaw;
+    group.add(g);
+  }
+
+  const palletMat = new THREE.MeshStandardMaterial({
+    color: 0x9a7a4a,
+    roughness: 0.85,
+    metalness: 0.05,
+  });
+  for (let i = 0; i < Math.floor(4 * scale); i++) {
+    const spot = pickOutfield(610 + i, roadHalf + 11.5, 1.4);
+    if (!spot) continue;
+    const g = new THREE.Group();
+    const deck = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.08, 1.1), palletMat);
+    deck.position.y = 0.14;
+    g.add(deck);
+    for (const sx of [-0.5, 0, 0.5]) {
+      const slat = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.1, 1.1), palletMat);
+      slat.position.set(sx, 0.06, 0);
+      g.add(slat);
+    }
+    g.position.set(spot.x, 0, spot.z);
+    g.rotation.y = spot.yaw;
+    group.add(g);
+  }
+
+  // Cement mixer
+  const mixerSpot = pickOutfield(700, roadHalf + 16, 3.2);
+  if (mixerSpot) {
+    const g = new THREE.Group();
+    const chassis = new THREE.Mesh(new THREE.BoxGeometry(3.4, 1.1, 1.6), new THREE.MeshStandardMaterial({
+      color: 0xc8c4b0,
+      roughness: 0.55,
+      metalness: 0.2,
+    }));
+    chassis.position.y = 0.85;
+    g.add(chassis);
+    const drum = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.72, 0.85, 2.1, 10),
+      new THREE.MeshStandardMaterial({ color: 0xf0c020, roughness: 0.4, metalness: 0.35 }),
+    );
+    drum.rotation.z = 0.55;
+    drum.position.set(0.35, 1.85, 0);
+    g.add(drum);
+    g.position.set(mixerSpot.x, 0, mixerSpot.z);
+    g.rotation.y = mixerSpot.yaw;
+    group.add(g);
+  }
+
+  // Mini excavator
+  const digSpot = pickOutfield(740, roadHalf + 17, 3.5);
+  if (digSpot) {
+    const g = new THREE.Group();
+    const cabMat = new THREE.MeshStandardMaterial({ color: 0xf0a020, roughness: 0.45, metalness: 0.22 });
+    const steel = new THREE.MeshStandardMaterial({ color: 0x3a4048, roughness: 0.4, metalness: 0.55 });
+    const body = new THREE.Mesh(new THREE.BoxGeometry(2.2, 1.4, 1.6), cabMat);
+    body.position.y = 1.15;
+    g.add(body);
+    const cab = new THREE.Mesh(new THREE.BoxGeometry(1.1, 1.0, 1.4), new THREE.MeshStandardMaterial({
+      color: 0x1a2430,
+      roughness: 0.35,
+      metalness: 0.15,
+    }));
+    cab.position.set(-0.35, 2.05, 0);
+    g.add(cab);
+    const boom = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.28, 0.28), steel);
+    boom.position.set(1.6, 1.7, 0);
+    boom.rotation.z = -0.45;
+    g.add(boom);
+    const stick = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.22, 0.22), steel);
+    stick.position.set(2.85, 1.15, 0);
+    stick.rotation.z = 0.7;
+    g.add(stick);
+    const bucket = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.45, 0.8), steel);
+    bucket.position.set(3.45, 0.45, 0);
+    g.add(bucket);
+    g.position.set(digSpot.x, 0, digSpot.z);
+    g.rotation.y = digSpot.yaw;
+    group.add(g);
+  }
+
+  // Floodlight tower
+  const lightSpot = pickOutfield(780, roadHalf + 15, 1.5);
+  if (lightSpot) {
+    const g = new THREE.Group();
+    const pole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.08, 0.12, 8.5, 6),
+      new THREE.MeshStandardMaterial({ color: 0x8a9098, roughness: 0.4, metalness: 0.6 }),
+    );
+    pole.position.y = 4.25;
+    g.add(pole);
+    const lamp = new THREE.Mesh(
+      new THREE.BoxGeometry(0.9, 0.35, 0.55),
+      new THREE.MeshStandardMaterial({
+        color: 0xf4f0d8,
+        roughness: 0.3,
+        emissive: 0xfff2c4,
+        emissiveIntensity: 0.35,
+      }),
+    );
+    lamp.position.set(0.4, 8.3, 0);
+    g.add(lamp);
+    g.position.set(lightSpot.x, 0, lightSpot.z);
+    g.rotation.y = lightSpot.yaw;
+    group.add(g);
+  }
+
+  const jerseyMat = new THREE.MeshStandardMaterial({
+    color: 0xc8c4b8,
+    roughness: 0.7,
+    metalness: 0.05,
+  });
+  const jerseyN = Math.floor(36 * scale);
+  const jersey = new THREE.InstancedMesh(boxGeo, jerseyMat, jerseyN);
+  jersey.count = 0;
+  for (let i = 0; i < samples && jersey.count < jerseyN; i++) {
+    if (hash2(i, 71) > 0.08) continue;
+    const u = (i / samples) % 1;
+    path.getPointAt(u, p);
+    path.getTangentAt(u, tan).normalize();
+    n.set(-tan.z, 0, tan.x);
+    const side = hash2(i, 73) < 0.5 ? -1 : 1;
+    dummy.quaternion.identity();
+    dummy.position.set(p.x + n.x * side * (roadHalf + 3.1), 0.45, p.z + n.z * side * (roadHalf + 3.1));
+    if (cutBlocked(dummy.position.x, dummy.position.z)) continue;
+    dummy.rotation.set(0, Math.atan2(tan.x, tan.z), 0);
+    dummy.scale.set(1.8, 0.9, 0.42);
+    dummy.updateMatrix();
+    jersey.setMatrixAt(jersey.count++, dummy.matrix);
+  }
+  jersey.instanceMatrix.needsUpdate = true;
+  jersey.computeBoundingSphere();
+  group.add(jersey);
+
+  const steel = new THREE.MeshStandardMaterial({
+    color: 0xf0c020,
+    roughness: 0.4,
+    metalness: 0.55,
+  });
+  const darkSteel = new THREE.MeshStandardMaterial({
+    color: 0x3a4048,
+    roughness: 0.45,
+    metalness: 0.5,
+  });
+  const craneSpot = pickOutfield(90, roadHalf + 24, 8) ?? {
+    x: bounds.cx + 28,
+    z: bounds.cz + 22,
+    yaw: 0.4,
+  };
+  const crane = new THREE.Group();
+  const mast = new THREE.Mesh(new THREE.BoxGeometry(1.1, 32, 1.1), steel);
+  mast.position.y = 16;
+  crane.add(mast);
+  const jib = new THREE.Mesh(new THREE.BoxGeometry(36, 0.7, 0.7), steel);
+  jib.position.set(11, 31.2, 0);
+  crane.add(jib);
+  const counter = new THREE.Mesh(new THREE.BoxGeometry(8, 0.7, 0.7), steel);
+  counter.position.set(-6, 31.2, 0);
+  crane.add(counter);
+  const cab = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.7, 2.4), darkSteel);
+  cab.position.set(0, 30.2, 0);
+  crane.add(cab);
+  const hook = new THREE.Mesh(new THREE.BoxGeometry(0.35, 5.2, 0.35), darkSteel);
+  hook.position.set(24, 28.2, 0);
+  crane.add(hook);
+  crane.position.set(craneSpot.x, 0, craneSpot.z);
+  crane.rotation.y = craneSpot.yaw;
+  group.add(crane);
+
+  const scaffoldMat = new THREE.MeshStandardMaterial({
+    color: 0xb8bcc2,
+    roughness: 0.4,
+    metalness: 0.65,
+  });
+  const addScaffold = (x: number, z: number, yaw: number) => {
+    const frame = new THREE.Group();
+    for (const hx of [-1.1, 1.1]) {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.12, 6.2, 0.12), scaffoldMat);
+      post.position.set(hx, 3.1, 0);
+      frame.add(post);
+    }
+    for (const hy of [1.9, 3.8, 5.6]) {
+      const bar = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.1, 0.1), scaffoldMat);
+      bar.position.set(0, hy, 0);
+      frame.add(bar);
+    }
+    frame.position.set(x, 0, z);
+    frame.rotation.y = yaw;
+    group.add(frame);
+  };
+  for (let i = 0; i < Math.floor(5 * scale); i++) {
+    const spot = pickOutfield(820 + i, roadHalf + 14, 2.4);
+    if (spot) addScaffold(spot.x, spot.z, spot.yaw);
+  }
+
+  // Large steel-frame buildings + extra yard clutter stay in the outfield
+  // (sceneryOk + occupied spacing) so they never sit on the 16m asphalt.
+  const frameSteel = new THREE.MeshStandardMaterial({
+    color: 0x6e767e,
+    roughness: 0.42,
+    metalness: 0.58,
+  });
+  const slabMat = new THREE.MeshStandardMaterial({
+    color: 0xc2beb4,
+    roughness: 0.9,
+    metalness: 0.06,
+  });
+  const plySheet = new THREE.MeshStandardMaterial({
+    color: 0xc4a05a,
+    roughness: 0.78,
+    metalness: 0.04,
+  });
+  const safetyNet = new THREE.MeshStandardMaterial({
+    color: 0xe85a12,
+    roughness: 0.7,
+    metalness: 0.05,
+    transparent: true,
+    opacity: 0.42,
+    side: THREE.DoubleSide,
+  });
+  const floodPoleMat = new THREE.MeshStandardMaterial({
+    color: 0x8a9098,
+    roughness: 0.4,
+    metalness: 0.6,
+  });
+  const floodLampMat = new THREE.MeshStandardMaterial({
+    color: 0xf4f0d8,
+    roughness: 0.3,
+    emissive: 0xfff2c4,
+    emissiveIntensity: 0.35,
+  });
+  const colGeo = new THREE.BoxGeometry(0.28, 1, 0.28);
+  const beamGeo = new THREE.BoxGeometry(1, 0.2, 0.2);
+  const slabThinGeo = new THREE.BoxGeometry(1, 1, 1);
+
+  const occupied: { x: number; z: number; r: number }[] = [
+    { x: craneSpot.x, z: craneSpot.z, r: 10 },
+  ];
+  const siteClear = (x: number, z: number, r: number) => {
+    for (const o of occupied) {
+      const dx = x - o.x;
+      const dz = z - o.z;
+      if (dx * dx + dz * dz < (r + o.r) * (r + o.r)) return false;
+    }
+    return true;
+  };
+  const claimSite = (u0: number, dist: number, foot: number) => {
+    for (let k = 0; k < 10; k++) {
+      const u = (u0 + k * 0.04) % 1;
+      path.getPointAt(u, p);
+      path.getTangentAt(u, tan).normalize();
+      n.set(-tan.z, 0, tan.x);
+      for (const side of [-1, 1] as const) {
+        for (const extra of [0, 5, 10, 16]) {
+          const x = p.x + n.x * side * (dist + extra);
+          const z = p.z + n.z * side * (dist + extra);
+          if (cutBlocked(x, z) || !clearance.sceneryOk(x, z, foot) || !siteClear(x, z, foot)) continue;
+          occupied.push({ x, z, r: foot });
+          return { x, z, yaw: Math.atan2(tan.x, tan.z) };
+        }
+      }
+    }
+    return null;
+  };
+  const pickAround = (seed: number, dist: number, foot: number) => {
+    for (let t = 0; t < 22; t++) {
+      const u = (hash2(seed, t + 3) + t * 0.047) % 1;
+      path.getPointAt(u, p);
+      path.getTangentAt(u, tan).normalize();
+      n.set(-tan.z, 0, tan.x);
+      const side = hash2(seed, t + 11) < 0.5 ? -1 : 1;
+      const spread = dist + hash2(seed, t + 19) * 6;
+      const x = p.x + n.x * side * spread;
+      const z = p.z + n.z * side * spread;
+      if (cutBlocked(x, z) || !clearance.sceneryOk(x, z, foot) || !siteClear(x, z, foot)) continue;
+      occupied.push({ x, z, r: foot });
+      return { x, z, yaw: Math.atan2(tan.x, tan.z) };
+    }
+    return null;
+  };
+
+  const addFrameBuilding = (
+    x: number,
+    z: number,
+    yaw: number,
+    baysX: number,
+    baysZ: number,
+    floors: number,
+    slabUntil: number,
+    clad: boolean,
+  ) => {
+    const g = new THREE.Group();
+    const bay = 4.4;
+    const floorH = 3.35;
+    const w = baysX * bay;
+    const d = baysZ * bay;
+    const h = floors * floorH;
+
+    const pad = new THREE.Mesh(slabThinGeo, slabMat);
+    pad.position.y = 0.12;
+    pad.scale.set(w + 1.4, 0.24, d + 1.4);
+    g.add(pad);
+
+    for (let ix = 0; ix <= baysX; ix++) {
+      for (let iz = 0; iz <= baysZ; iz++) {
+        const col = new THREE.Mesh(colGeo, frameSteel);
+        col.position.set(-w * 0.5 + ix * bay, h * 0.5, -d * 0.5 + iz * bay);
+        col.scale.set(1, h, 1);
+        g.add(col);
+      }
+    }
+
+    for (let f = 1; f <= floors; f++) {
+      const y = f * floorH;
+      for (let iz = 0; iz <= baysZ; iz++) {
+        const beam = new THREE.Mesh(beamGeo, frameSteel);
+        beam.position.set(0, y, -d * 0.5 + iz * bay);
+        beam.scale.set(w + 0.2, 1, 1);
+        g.add(beam);
+      }
+      for (let ix = 0; ix <= baysX; ix++) {
+        const beam = new THREE.Mesh(beamGeo, frameSteel);
+        beam.position.set(-w * 0.5 + ix * bay, y, 0);
+        beam.rotation.y = Math.PI / 2;
+        beam.scale.set(d + 0.2, 1, 1);
+        g.add(beam);
+      }
+      if (f <= slabUntil) {
+        const slab = new THREE.Mesh(slabThinGeo, slabMat);
+        slab.position.y = y - 0.1;
+        const shrink = f === slabUntil ? 0.82 : 0.96;
+        slab.scale.set(w * shrink, 0.16, d * shrink);
+        g.add(slab);
+      }
+    }
+
+    if (clad) {
+      const wallH = floorH * 0.92;
+      const front = new THREE.Mesh(slabThinGeo, plySheet);
+      front.position.set(0, wallH * 0.5, d * 0.5 + 0.08);
+      front.scale.set(w * 0.92, wallH, 0.08);
+      g.add(front);
+      const sideW = new THREE.Mesh(slabThinGeo, plySheet);
+      sideW.position.set(-w * 0.5 - 0.08, wallH * 0.5, 0);
+      sideW.scale.set(0.08, wallH, d * 0.7);
+      g.add(sideW);
+      const net = new THREE.Mesh(slabThinGeo, safetyNet);
+      net.position.set(w * 0.5 + 0.06, h * 0.42, 0);
+      net.scale.set(0.05, h * 0.78, d * 0.9);
+      g.add(net);
+    } else {
+      for (let f = 0; f < Math.min(floors, 3); f++) {
+        const brace = new THREE.Mesh(beamGeo, frameSteel);
+        brace.position.set(0, f * floorH + floorH * 0.5, -d * 0.5);
+        brace.rotation.z = f % 2 === 0 ? 0.55 : -0.55;
+        brace.scale.set(bay * 1.15, 0.7, 0.7);
+        g.add(brace);
+      }
+    }
+
+    if (floors >= 4) {
+      const core = new THREE.Mesh(slabThinGeo, slabMat);
+      core.position.set(-w * 0.5 + bay * 0.5, h * 0.55, -d * 0.5 + bay * 0.5);
+      core.scale.set(bay * 0.7, h * 1.1, bay * 0.7);
+      g.add(core);
+    }
+
+    g.position.set(x, 0, z);
+    g.rotation.y = yaw;
+    group.add(g);
+    return { w, d };
+  };
+
+  const buildingSpecs = [
+    { u: 0.14, dist: roadHalf + 30, foot: 11, baysX: 3, baysZ: 2, floors: 5, slabUntil: 2, clad: false },
+    { u: 0.47, dist: roadHalf + 28, foot: 10, baysX: 3, baysZ: 2, floors: 3, slabUntil: 2, clad: true },
+    { u: 0.78, dist: roadHalf + 32, foot: 12, baysX: 4, baysZ: 2, floors: 2, slabUntil: 1, clad: false },
+  ];
+  const buildingFallbacks = [
+    { x: bounds.maxX + 8, z: bounds.cz - 16, yaw: 0.15 },
+    { x: bounds.minX - 8, z: bounds.cz + 8, yaw: Math.PI * 0.92 },
+    { x: bounds.cx + 12, z: bounds.maxZ + 8, yaw: 1.2 },
+  ];
+  for (let si = 0; si < buildingSpecs.length; si++) {
+    const spec = buildingSpecs[si]!;
+    let spot = claimSite(spec.u, spec.dist, spec.foot);
+    if (!spot) {
+      const fb = buildingFallbacks[si]!;
+      if (!cutBlocked(fb.x, fb.z) && clearance.sceneryOk(fb.x, fb.z, spec.foot) && siteClear(fb.x, fb.z, spec.foot)) {
+        occupied.push({ x: fb.x, z: fb.z, r: spec.foot });
+        spot = fb;
+      }
+    }
+    if (!spot) continue;
+    const built = addFrameBuilding(
+      spot.x,
+      spot.z,
+      spot.yaw,
+      spec.baysX,
+      spec.baysZ,
+      spec.floors,
+      spec.slabUntil,
+      spec.clad,
+    );
+    const sx = spot.x + Math.sin(spot.yaw) * (built.d * 0.5 + 1.9);
+    const sz = spot.z + Math.cos(spot.yaw) * (built.d * 0.5 + 1.9);
+    if (!cutBlocked(sx, sz) && clearance.sceneryOk(sx, sz, 2.2) && siteClear(sx, sz, 2.2)) {
+      occupied.push({ x: sx, z: sz, r: 2.2 });
+      addScaffold(sx, sz, spot.yaw);
+    }
+  }
+
+  const addFloodTower = (x: number, z: number, yaw: number) => {
+    const g = new THREE.Group();
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.12, 8.5, 6), floodPoleMat);
+    pole.position.y = 4.25;
+    g.add(pole);
+    const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.35, 0.55), floodLampMat);
+    lamp.position.set(0.4, 8.3, 0);
+    g.add(lamp);
+    g.position.set(x, 0, z);
+    g.rotation.y = yaw;
+    group.add(g);
+  };
+  for (let i = 0; i < Math.floor(3 * scale); i++) {
+    const spot = pickAround(860 + i, roadHalf + 17 + i * 2, 1.5);
+    if (spot) addFloodTower(spot.x, spot.z, spot.yaw);
+  }
+
+  for (let i = 0; i < Math.floor(3 * scale); i++) {
+    const spot = pickAround(880 + i, roadHalf + 18, 2.2);
+    if (spot) addDumpster(spot.x, spot.z, spot.yaw);
+  }
+
+  for (let i = 0; i < Math.floor(2 * scale); i++) {
+    const spot = pickAround(900 + i, roadHalf + 16, 1.2);
+    if (!spot) continue;
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.BoxGeometry(1.05, 2.25, 1.05), pottyBlue);
+    body.position.y = 1.15;
+    g.add(body);
+    const door = new THREE.Mesh(new THREE.BoxGeometry(0.72, 1.7, 0.06), pottyWhite);
+    door.position.set(0, 1.05, 0.54);
+    g.add(door);
+    const vent = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.12, 0.35), pottyWhite);
+    vent.position.y = 2.32;
+    g.add(vent);
+    g.position.set(spot.x, 0, spot.z);
+    g.rotation.y = spot.yaw;
+    group.add(g);
+  }
+
+  for (let i = 0; i < Math.floor(2 * scale); i++) {
+    const spot = pickAround(920 + i, roadHalf + 17, 1.8);
+    if (!spot) continue;
+    const g = new THREE.Group();
+    for (let k = 0; k < 6; k++) {
+      const plank = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.1, 0.18), wood);
+      plank.position.set(0, 0.08 + k * 0.12, (k % 2) * 0.04);
+      g.add(plank);
+    }
+    g.position.set(spot.x, 0, spot.z);
+    g.rotation.y = spot.yaw;
+    group.add(g);
+  }
+
+  for (let i = 0; i < Math.floor(2 * scale); i++) {
+    const spot = pickAround(940 + i, roadHalf + 16.5, 1.6);
+    if (!spot) continue;
+    const g = new THREE.Group();
+    for (let k = 0; k < 5; k++) {
+      const pipe = new THREE.Mesh(pipeGeo, pipeMat);
+      pipe.rotation.z = Math.PI / 2;
+      pipe.position.set(0, 0.14 + (k % 2) * 0.22, -0.35 + k * 0.18);
+      g.add(pipe);
+    }
+    g.position.set(spot.x, 0, spot.z);
+    g.rotation.y = spot.yaw;
+    group.add(g);
+  }
+
+  for (let i = 0; i < Math.floor(2 * scale); i++) {
+    const spot = pickAround(960 + i, roadHalf + 16, 1.4);
+    if (!spot) continue;
+    const g = new THREE.Group();
+    const deck = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.08, 1.1), palletMat);
+    deck.position.y = 0.14;
+    g.add(deck);
+    for (const sx of [-0.5, 0, 0.5]) {
+      const slat = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.1, 1.1), palletMat);
+      slat.position.set(sx, 0.06, 0);
+      g.add(slat);
+    }
+    g.position.set(spot.x, 0, spot.z);
+    g.rotation.y = spot.yaw;
+    group.add(g);
+  }
+
+  for (let i = 0; i < Math.floor(3 * scale); i++) {
+    const spot = pickAround(980 + i, roadHalf + 19, 2.4);
+    if (spot) addScaffold(spot.x, spot.z, spot.yaw);
+  }
+
+  const dirtOutN = Math.floor(6 * scale);
+  const dirtOut = new THREE.InstancedMesh(dirtGeo, dirtMat, dirtOutN);
+  dirtOut.count = 0;
+  dirtOut.castShadow = true;
+  dirtOut.receiveShadow = true;
+  for (let i = 0; i < 16 && dirtOut.count < dirtOutN; i++) {
+    const spot = pickAround(1000 + i, roadHalf + 18 + (i % 3) * 2, 2.6);
+    if (!spot) continue;
+    const s = 1.6 + hash2(i, 81) * 2.2;
+    dummy.position.set(spot.x, s * 0.38, spot.z);
+    dummy.quaternion.identity();
+    dummy.scale.set(s, s * 0.55, s * 0.9);
+    dummy.rotation.set(0, hash2(i, 83) * 6, 0);
+    dummy.updateMatrix();
+    dirtOut.setMatrixAt(dirtOut.count++, dummy.matrix);
+  }
+  dirtOut.instanceMatrix.needsUpdate = true;
+  dirtOut.computeBoundingSphere();
+  group.add(dirtOut);
 }
 
 /** Red-rock canyon corridor — cliff walls on both sides of the track. */
@@ -3477,7 +4333,7 @@ function plantInfieldGrove(
   sceneryScale = 1,
 ) {
   // City + Summit already plant dedicated infield scenery
-  if (biome.props === "city" || biome.props === "mountains") return;
+  if (biome.props === "city" || biome.props === "mountains" || biome.props === "yard") return;
   if (biome.vegetation === "none") return;
 
   // Forest Loop — dense simple deciduous grove in the infield
@@ -3577,9 +4433,16 @@ function plantBiomeScenery(
   roadHalf: number,
   biome: BiomeStyle,
   sceneryScale = 1,
+  inCut?: (x: number, z: number) => boolean,
+  heightAt?: (t: number) => number,
+  skipTireAt?: (t: number) => boolean,
 ) {
   const scale = Math.max(0.15, Math.min(1, sceneryScale));
   const clearance = makePathClearance(path, roadHalf);
+  if (biome.props === "yard") {
+    plantYardSite(group, path, roadHalf, clearance, pathBounds(path), scale, inCut, heightAt, skipTireAt);
+    return;
+  }
   const density =
     biome.props === "city" ? 0 : Math.max(0.2, biome.density * 0.7 * scale);
   const { poses, bounds } = collectPlantPoses(path, roadHalf, density, clearance);
@@ -3621,6 +4484,527 @@ function pathBounds(path: THREE.CatmullRomCurve3) {
   };
 }
 
+const DRIFT_UNDERPASS_DEPTH = 4.0;
+const DRIFT_UNDERPASS_FLAT = 7;
+const DRIFT_UNDERPASS_RAMP = 22;
+/** Bridge deck sits this far above grade so the overpass reads clearly. */
+const DRIFT_BRIDGE_DECK_Y = 0.4;
+
+type DriftGrade = {
+  heightAt: (t: number) => number;
+  gradeAt: (t: number) => number;
+  inCut: (x: number, z: number) => boolean;
+  nearBridge: (t: number) => boolean;
+  underT: number;
+  bridgeT: number;
+  crossX: number;
+  crossZ: number;
+  underHeading: number;
+  bridgeHeading: number;
+  depth: number;
+  bridgeDeckY: number;
+  /** Half-length of the upper-deck gap along the path (meters). */
+  bridgeGapHalf: number;
+  /** Overpass length along the upper path (spans the ditch). */
+  deckAlong: number;
+  /** Overpass width across the upper path (driving surface + fascia). */
+  deckAcross: number;
+  /** Ditch half-width from lower centerline to the top of the dirt bank. */
+  cutHalf: number;
+  /** Half-length of the excavated cut along the underpass (meters). */
+  trenchAlong: number;
+  /** Outer rim of the cut in world XZ — used to punch the ground hole. */
+  holePoly: { x: number; z: number }[];
+};
+
+function wrap01(t: number) {
+  return ((t % 1) + 1) % 1;
+}
+
+function circularDeltaT(a: number, b: number) {
+  let d = Math.abs(wrap01(a) - wrap01(b));
+  if (d > 0.5) d = 1 - d;
+  return d;
+}
+
+function xzSegIntersect(
+  ax: number, az: number, bx: number, bz: number,
+  cx: number, cz: number, dx: number, dz: number,
+): { x: number; z: number; t: number; u: number } | null {
+  const d1x = bx - ax;
+  const d1z = bz - az;
+  const d2x = dx - cx;
+  const d2z = dz - cz;
+  const den = d1x * d2z - d1z * d2x;
+  if (Math.abs(den) < 1e-9) return null;
+  const t = ((cx - ax) * d2z - (cz - az) * d2x) / den;
+  const u = ((cx - ax) * d1z - (cz - az) * d1x) / den;
+  if (t <= 0.002 || t >= 0.998 || u <= 0.002 || u >= 0.998) return null;
+  return { x: ax + t * d1x, z: az + t * d1z, t, u };
+}
+
+function findPathCrossing(path: THREE.CatmullRomCurve3): { tA: number; tB: number; x: number; z: number } | null {
+  const N = 640;
+  const samples: { t: number; x: number; z: number }[] = [];
+  for (let i = 0; i < N; i++) {
+    const t = i / N;
+    const p = path.getPointAt(t);
+    samples.push({ t, x: p.x, z: p.z });
+  }
+  const minGap = Math.floor(N * 0.12);
+  let best: { tA: number; tB: number; x: number; z: number; score: number } | null = null;
+  for (let i = 0; i < N; i++) {
+    const a = samples[i]!;
+    const b = samples[(i + 1) % N]!;
+    for (let j = i + minGap; j < N - minGap; j++) {
+      if (Math.min(Math.abs(i - j), N - Math.abs(i - j)) < minGap) continue;
+      const c = samples[j]!;
+      const d = samples[(j + 1) % N]!;
+      const hit = xzSegIntersect(a.x, a.z, b.x, b.z, c.x, c.z, d.x, d.z);
+      if (!hit) continue;
+      const dt = circularDeltaT(a.t, c.t);
+      const score = dt;
+      if (!best || score > best.score) {
+        best = { tA: a.t, tB: c.t, x: hit.x, z: hit.z, score };
+      }
+    }
+  }
+  return best;
+}
+
+function makeDriftGrade(path: THREE.CatmullRomCurve3, roadHalf: number): DriftGrade | null {
+  const cross = findPathCrossing(path);
+  if (!cross) return null;
+  const underT = Math.min(cross.tA, cross.tB);
+  const bridgeT = Math.max(cross.tA, cross.tB);
+  const pathLen = path.getLength();
+  const depth = DRIFT_UNDERPASS_DEPTH;
+  const halfFlat = DRIFT_UNDERPASS_FLAT;
+  const ramp = DRIFT_UNDERPASS_RAMP;
+  const bridgeDeckY = DRIFT_BRIDGE_DECK_Y;
+
+  const heightAt = (t: number) => {
+    const dBridge = circularDeltaT(t, bridgeT) * pathLen;
+    const bridgeRise = halfFlat + 6;
+    if (dBridge < bridgeRise) {
+      if (dBridge <= halfFlat * 0.65) return bridgeDeckY;
+      const u = (dBridge - halfFlat * 0.65) / (bridgeRise - halfFlat * 0.65);
+      const s = u * u * (3 - 2 * u);
+      return bridgeDeckY * (1 - s);
+    }
+    const d = circularDeltaT(t, underT) * pathLen;
+    if (d <= halfFlat) return -depth;
+    if (d >= halfFlat + ramp) return 0;
+    const u = (d - halfFlat) / ramp;
+    const s = u * u * (3 - 2 * u);
+    return -depth * (1 - s);
+  };
+
+  const gradeAt = (t: number) => {
+    const dt = 0.0025;
+    return (heightAt(wrap01(t + dt)) - heightAt(t)) / (pathLen * dt);
+  };
+
+  const underTan = path.getTangentAt(underT).normalize();
+  const bridgeTan = path.getTangentAt(bridgeT).normalize();
+  const crossSin = Math.abs(underTan.x * bridgeTan.z - underTan.z * bridgeTan.x);
+  const cutHalf = roadHalf + 3.6;
+  const deckAcross = roadHalf * 2 + 2.2;
+  const deckAlong = (roadHalf * 2 + 6) / Math.max(0.75, crossSin);
+  const bridgeGapHalf = deckAlong * 0.5 + 0.8;
+  const trenchAlong = halfFlat + ramp;
+
+  const underAx = underTan.x;
+  const underAz = underTan.z;
+  const underNx = -underTan.z;
+  const underNz = underTan.x;
+
+  // Path-following outer rim of the cut (for ground hole + prop exclusion).
+  const holeLeft: { x: number; z: number }[] = [];
+  const holeRight: { x: number; z: number }[] = [];
+  const holeN = 48;
+  const cutSpanT = (trenchAlong + 1.5) / pathLen;
+  const p = new THREE.Vector3();
+  const tan = new THREE.Vector3();
+  for (let i = 0; i <= holeN; i++) {
+    const t = wrap01(underT - cutSpanT + (i / holeN) * cutSpanT * 2);
+    if (heightAt(t) > -0.04) continue;
+    path.getPointAt(t, p);
+    path.getTangentAt(t, tan).normalize();
+    const nx = -tan.z;
+    const nz = tan.x;
+    holeLeft.push({ x: p.x + nx * cutHalf, z: p.z + nz * cutHalf });
+    holeRight.push({ x: p.x - nx * cutHalf, z: p.z - nz * cutHalf });
+  }
+  const holePoly: { x: number; z: number }[] = [];
+  for (let i = 0; i < holeLeft.length; i++) holePoly.push(holeLeft[i]!);
+  for (let i = holeRight.length - 1; i >= 0; i--) holePoly.push(holeRight[i]!);
+
+  const inCut = (x: number, z: number) => {
+    const dx = x - cross.x;
+    const dz = z - cross.z;
+    const along = dx * underAx + dz * underAz;
+    const lat = dx * underNx + dz * underNz;
+    if (Math.abs(along) < trenchAlong + 3 && Math.abs(lat) < cutHalf + 2.5) return true;
+    // Also block anything over the path-following hole (handles curve).
+    for (let i = 0; i < holeLeft.length; i++) {
+      const L = holeLeft[i]!;
+      const R = holeRight[i]!;
+      const mx = (L.x + R.x) * 0.5;
+      const mz = (L.z + R.z) * 0.5;
+      const hx = L.x - R.x;
+      const hz = L.z - R.z;
+      const halfW = Math.hypot(hx, hz) * 0.5 + 1.2;
+      const ddx = x - mx;
+      const ddz = z - mz;
+      if (ddx * ddx + ddz * ddz < halfW * halfW) return true;
+    }
+    return false;
+  };
+
+  const nearBridge = (t: number) => circularDeltaT(t, bridgeT) * pathLen < bridgeGapHalf + 3;
+
+  return {
+    heightAt,
+    gradeAt,
+    inCut,
+    nearBridge,
+    underT,
+    bridgeT,
+    crossX: cross.x,
+    crossZ: cross.z,
+    underHeading: Math.atan2(underTan.x, underTan.z),
+    bridgeHeading: Math.atan2(bridgeTan.x, bridgeTan.z),
+    depth,
+    bridgeDeckY,
+    bridgeGapHalf,
+    deckAlong,
+    deckAcross,
+    cutHalf,
+    trenchAlong,
+    holePoly,
+  };
+}
+
+function buildYardGround(
+  bounds: ReturnType<typeof pathBounds>,
+  color: number,
+  grade: DriftGrade | null,
+  groundPad: number,
+): THREE.Mesh {
+  const minX = bounds.minX - groundPad;
+  const maxX = bounds.maxX + groundPad;
+  const minZ = bounds.minZ - groundPad;
+  const maxZ = bounds.maxZ + groundPad;
+
+  if (!grade || grade.holePoly.length < 6) {
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(bounds.spanX + groundPad * 2, bounds.spanZ + groundPad * 2),
+      new THREE.MeshStandardMaterial({ color, roughness: 1 }),
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.set(bounds.cx, -0.12, bounds.cz);
+    return ground;
+  }
+
+  const shape = new THREE.Shape();
+  // Shape XY → world XZ via rotateX(-π/2): (sx, sy) → (sx, 0, -sy).
+  shape.moveTo(minX, -minZ);
+  shape.lineTo(minX, -maxZ);
+  shape.lineTo(maxX, -maxZ);
+  shape.lineTo(maxX, -minZ);
+  shape.closePath();
+
+  const hole = new THREE.Path();
+  const poly = grade.holePoly;
+  // Reverse so the hole winds opposite the outer path.
+  const last = poly[poly.length - 1]!;
+  hole.moveTo(last.x, -last.z);
+  for (let i = poly.length - 2; i >= 0; i--) {
+    const q = poly[i]!;
+    hole.lineTo(q.x, -q.z);
+  }
+  hole.closePath();
+  shape.holes.push(hole);
+
+  const geo = new THREE.ShapeGeometry(shape, 2);
+  geo.rotateX(-Math.PI / 2);
+  geo.computeVertexNormals();
+  const ground = new THREE.Mesh(
+    geo,
+    new THREE.MeshStandardMaterial({ color, roughness: 1, side: THREE.DoubleSide }),
+  );
+  ground.position.y = -0.12;
+  return ground;
+}
+
+function plantDriftUnderpass(
+  group: THREE.Group,
+  path: THREE.CatmullRomCurve3,
+  roadHalf: number,
+  grade: DriftGrade,
+  asphaltColor: number,
+  edgeColor: number,
+) {
+  const dirt = new THREE.MeshStandardMaterial({
+    color: 0x8a6238,
+    roughness: 0.95,
+    metalness: 0.02,
+    flatShading: true,
+  });
+  const mud = new THREE.MeshStandardMaterial({
+    color: 0x5a4028,
+    roughness: 1,
+    metalness: 0.02,
+  });
+  const concrete = new THREE.MeshStandardMaterial({
+    color: 0xb8b3a6,
+    roughness: 0.78,
+    metalness: 0.08,
+  });
+  const soffit = new THREE.MeshStandardMaterial({
+    color: 0x6e685c,
+    roughness: 0.9,
+    metalness: 0.05,
+  });
+  const rust = new THREE.MeshStandardMaterial({
+    color: 0x6a4e32,
+    roughness: 0.62,
+    metalness: 0.28,
+  });
+  const asphalt = new THREE.MeshStandardMaterial({
+    color: asphaltColor,
+    roughness: 0.92,
+    metalness: 0.04,
+  });
+  const edge = new THREE.MeshStandardMaterial({
+    color: edgeColor,
+    roughness: 0.65,
+    metalness: 0.04,
+  });
+
+  const underAx = Math.sin(grade.underHeading);
+  const underAz = Math.cos(grade.underHeading);
+  const underNx = -Math.cos(grade.underHeading);
+  const underNz = Math.sin(grade.underHeading);
+  const brNx = -Math.cos(grade.bridgeHeading);
+  const brNz = Math.sin(grade.bridgeHeading);
+  const brAx = Math.sin(grade.bridgeHeading);
+  const brAz = Math.cos(grade.bridgeHeading);
+
+  const placeBridge = (mesh: THREE.Mesh, lat: number, y: number, along: number) => {
+    mesh.position.set(
+      grade.crossX + brNx * lat + brAx * along,
+      y,
+      grade.crossZ + brNz * lat + brAz * along,
+    );
+    mesh.rotation.y = grade.bridgeHeading;
+    group.add(mesh);
+  };
+
+  // ── Path-following cut: sloped banks from road height up to grade ──
+  const pathLen = path.getLength();
+  const spanT = (grade.trenchAlong + 0.8) / pathLen;
+  const samples = 56;
+  const innerLat = roadHalf + 0.9;
+  const outerLat = grade.cutHalf;
+  const p = new THREE.Vector3();
+  const tan = new THREE.Vector3();
+
+  type Slice = {
+    ixL: number; iyL: number; izL: number;
+    oxL: number; oyL: number; ozL: number;
+    ixR: number; iyR: number; izR: number;
+    oxR: number; oyR: number; ozR: number;
+    fxL: number; fy: number; fzL: number;
+    fxR: number; fzR: number;
+  };
+  const slices: Slice[] = [];
+  for (let i = 0; i <= samples; i++) {
+    const t = wrap01(grade.underT - spanT + (i / samples) * spanT * 2);
+    const y = grade.heightAt(t);
+    if (y > -0.03) continue;
+    path.getPointAt(t, p);
+    path.getTangentAt(t, tan).normalize();
+    const nx = -tan.z;
+    const nz = tan.x;
+    const lipY = 0.02;
+    slices.push({
+      ixL: p.x + nx * innerLat, iyL: y - 0.05, izL: p.z + nz * innerLat,
+      oxL: p.x + nx * outerLat, oyL: lipY, ozL: p.z + nz * outerLat,
+      ixR: p.x - nx * innerLat, iyR: y - 0.05, izR: p.z - nz * innerLat,
+      oxR: p.x - nx * outerLat, oyR: lipY, ozR: p.z - nz * outerLat,
+      fxL: p.x + nx * (innerLat - 0.15), fy: y - 0.18, fzL: p.z + nz * (innerLat - 0.15),
+      fxR: p.x - nx * (innerLat - 0.15), fzR: p.z - nz * (innerLat - 0.15),
+    });
+  }
+
+  if (slices.length >= 2) {
+    const bankPos: number[] = [];
+    const bankIdx: number[] = [];
+    const floorPos: number[] = [];
+    const floorIdx: number[] = [];
+    const pushBankQuad = (
+      ax: number, ay: number, az: number,
+      bx: number, by: number, bz: number,
+      cx: number, cy: number, cz: number,
+      dx: number, dy: number, dz: number,
+    ) => {
+      const base = bankPos.length / 3;
+      bankPos.push(ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz);
+      bankIdx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    };
+
+    for (let i = 0; i < slices.length - 1; i++) {
+      const a = slices[i]!;
+      const b = slices[i + 1]!;
+      // Left bank (inner→outer), right bank, and mud floor between inners.
+      pushBankQuad(
+        a.ixL, a.iyL, a.izL, a.oxL, a.oyL, a.ozL,
+        b.oxL, b.oyL, b.ozL, b.ixL, b.iyL, b.izL,
+      );
+      pushBankQuad(
+        a.oxR, a.oyR, a.ozR, a.ixR, a.iyR, a.izR,
+        b.ixR, b.iyR, b.izR, b.oxR, b.oyR, b.ozR,
+      );
+      // Top lip strip so the hole edge meets sand (not a cliff lip).
+      pushBankQuad(
+        a.oxL, a.oyL, a.ozL,
+        a.oxL + (a.oxL - a.ixL) * 0.15, a.oyL + 0.01, a.ozL + (a.ozL - a.izL) * 0.15,
+        b.oxL + (b.oxL - b.ixL) * 0.15, b.oyL + 0.01, b.ozL + (b.ozL - b.izL) * 0.15,
+        b.oxL, b.oyL, b.ozL,
+      );
+      pushBankQuad(
+        a.oxR, a.oyR, a.ozR,
+        b.oxR, b.oyR, b.ozR,
+        b.oxR + (b.oxR - b.ixR) * 0.15, b.oyR + 0.01, b.ozR + (b.ozR - b.izR) * 0.15,
+        a.oxR + (a.oxR - a.ixR) * 0.15, a.oyR + 0.01, a.ozR + (a.ozR - a.izR) * 0.15,
+      );
+
+      const fb = floorPos.length / 3;
+      floorPos.push(
+        a.fxL, a.fy, a.fzL,
+        a.fxR, a.fy, a.fzR,
+        b.fxR, b.fy, b.fzR,
+        b.fxL, b.fy, b.fzL,
+      );
+      floorIdx.push(fb, fb + 1, fb + 2, fb, fb + 2, fb + 3);
+    }
+
+    const bankGeo = new THREE.BufferGeometry();
+    bankGeo.setAttribute("position", new THREE.Float32BufferAttribute(bankPos, 3));
+    bankGeo.setIndex(bankIdx);
+    bankGeo.computeVertexNormals();
+    const banks = new THREE.Mesh(bankGeo, dirt);
+    banks.receiveShadow = true;
+    banks.castShadow = true;
+    group.add(banks);
+
+    const floorGeo = new THREE.BufferGeometry();
+    floorGeo.setAttribute("position", new THREE.Float32BufferAttribute(floorPos, 3));
+    floorGeo.setIndex(floorIdx);
+    floorGeo.computeVertexNormals();
+    const floor = new THREE.Mesh(floorGeo, mud);
+    floor.receiveShadow = true;
+    group.add(floor);
+  }
+
+  // ── Bridge deck over the deepest part of the cut ──
+  const deckH = 0.5;
+  const deckTop = grade.bridgeDeckY;
+  const deckBot = deckTop - deckH;
+
+  const deck = new THREE.Mesh(
+    new THREE.BoxGeometry(grade.deckAcross, deckH, grade.deckAlong),
+    concrete,
+  );
+  placeBridge(deck, 0, (deckTop + deckBot) * 0.5, 0);
+  deck.castShadow = true;
+  deck.receiveShadow = true;
+
+  const under = new THREE.Mesh(
+    new THREE.BoxGeometry(grade.deckAcross - 0.15, 0.08, grade.deckAlong - 0.2),
+    soffit,
+  );
+  placeBridge(under, 0, deckBot - 0.04, 0);
+  under.castShadow = true;
+
+  const roadPad = new THREE.Mesh(
+    new THREE.BoxGeometry(roadHalf * 2, 0.1, grade.deckAlong + 0.4),
+    asphalt,
+  );
+  placeBridge(roadPad, 0, deckTop + 0.06, 0);
+  roadPad.receiveShadow = true;
+  roadPad.layers.enable(HEADLIGHT_LAYER);
+
+  for (const end of [-1, 1] as const) {
+    const approach = new THREE.Mesh(
+      new THREE.BoxGeometry(roadHalf * 2 + 0.3, 0.1, 3.2),
+      asphalt,
+    );
+    placeBridge(approach, 0, deckTop * 0.5 + 0.03, end * (grade.deckAlong * 0.5 + 1.4));
+    approach.receiveShadow = true;
+    approach.layers.enable(HEADLIGHT_LAYER);
+  }
+
+  for (const side of [-1, 1] as const) {
+    const stripe = new THREE.Mesh(
+      new THREE.BoxGeometry(0.22, 0.04, grade.deckAlong + 0.3),
+      edge,
+    );
+    placeBridge(stripe, side * (roadHalf - 0.12), deckTop + 0.12, 0);
+    const fascia = new THREE.Mesh(
+      new THREE.BoxGeometry(0.36, 0.75, grade.deckAlong + 0.4),
+      rust,
+    );
+    placeBridge(fascia, side * (grade.deckAcross * 0.5 - 0.12), deckBot - 0.15, 0);
+    fascia.castShadow = true;
+    const rail = new THREE.Mesh(
+      new THREE.BoxGeometry(0.14, 0.55, grade.deckAlong + 0.15),
+      rust,
+    );
+    placeBridge(rail, side * (roadHalf + 0.35), deckTop + 0.38, 0);
+  }
+
+  for (let i = 0; i < 3; i++) {
+    const u = (i + 0.5) / 3 - 0.5;
+    const girder = new THREE.Mesh(
+      new THREE.BoxGeometry(0.34, 0.42, grade.deckAlong - 0.6),
+      rust,
+    );
+    placeBridge(girder, u * (roadHalf * 2 - 1.5), deckBot - 0.28, 0);
+    girder.castShadow = true;
+  }
+  for (let i = 0; i < 4; i++) {
+    const u = (i + 0.5) / 4 - 0.5;
+    const brace = new THREE.Mesh(
+      new THREE.BoxGeometry(grade.deckAcross - 0.5, 0.2, 0.28),
+      rust,
+    );
+    placeBridge(brace, 0, deckBot - 0.18, u * (grade.deckAlong - 1.2));
+  }
+
+  // Piers beside the underpass road, standing on the cut floor.
+  const pierH = grade.depth + deckBot + 0.15;
+  const pierY = -grade.depth + pierH * 0.5;
+  const pierAlong = Math.max(1.1, grade.deckAcross * 0.18);
+  const pierLat = roadHalf + 1.9;
+  for (const sAlong of [-1, 1] as const) {
+    for (const sLat of [-1, 1] as const) {
+      const pier = new THREE.Mesh(new THREE.BoxGeometry(1.1, pierH, 1.2), concrete);
+      pier.position.set(
+        grade.crossX + underNx * sLat * pierLat + underAx * sAlong * pierAlong,
+        pierY,
+        grade.crossZ + underNz * sLat * pierLat + underAz * sAlong * pierAlong,
+      );
+      pier.rotation.y = grade.underHeading;
+      pier.castShadow = true;
+      pier.receiveShadow = true;
+      group.add(pier);
+    }
+  }
+}
+
 function buildRibbon(
   path: THREE.CatmullRomCurve3,
   halfW: number,
@@ -3628,6 +5012,8 @@ function buildRibbon(
   segments: number,
   /** Lateral offset of ribbon center from path (road-half − stripeHalf for edge lines). */
   lateral = 0,
+  yAt?: (u: number) => number,
+  skip?: (u: number) => boolean,
 ) {
   const positions: number[] = [];
   const normals: number[] = [];
@@ -3635,21 +5021,42 @@ function buildRibbon(
   const p = new THREE.Vector3();
   const tan = new THREE.Vector3();
   const n = new THREE.Vector3();
+  const up = new THREE.Vector3();
+  const tan3 = new THREE.Vector3();
+  const pathLen = yAt ? path.getLength() : 0;
+  const du = 1 / Math.max(1, segments);
 
   for (let i = 0; i <= segments; i++) {
     const u = (i / segments) % 1;
     path.getPointAt(u, p);
     path.getTangentAt(u, tan).normalize();
     n.set(-tan.z, 0, tan.x);
+    const nLen = Math.hypot(n.x, n.z) || 1;
+    n.x /= nLen;
+    n.z /= nLen;
+    const yHere = (yAt ? yAt(u) : 0) + y;
     const cx = p.x + n.x * lateral;
     const cz = p.z + n.z * lateral;
     positions.push(
-      cx - n.x * halfW, y, cz - n.z * halfW,
-      cx + n.x * halfW, y, cz + n.z * halfW,
+      cx - n.x * halfW, yHere, cz - n.z * halfW,
+      cx + n.x * halfW, yHere, cz + n.z * halfW,
     );
-    normals.push(0, 1, 0, 0, 1, 0);
+    if (yAt) {
+      const dy = yAt(wrap01(u + du)) - yAt(u);
+      tan3.set(tan.x, dy / (pathLen * du + 1e-6), tan.z).normalize();
+      up.copy(n).cross(tan3);
+      if (up.y < 0) up.negate();
+      const uLen = up.length() || 1;
+      up.multiplyScalar(1 / uLen);
+      normals.push(up.x, up.y, up.z, up.x, up.y, up.z);
+    } else {
+      normals.push(0, 1, 0, 0, 1, 0);
+    }
   }
   for (let i = 0; i < segments; i++) {
+    const u0 = i / segments;
+    const u1 = (i + 1) / segments;
+    if (skip && (skip(u0) || skip(u1 % 1))) continue;
     const a = i * 2;
     // CCW when viewed from +Y so FrontSide shows asphalt/runoff (not grass through culls)
     indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
@@ -3676,12 +5083,14 @@ export function createTrack(
   const biome = biomeForTrack(def.biome ?? def.id);
   const sceneryScale = opts?.sceneryScale ?? 1;
   const group = new THREE.Group();
-  const width = 14;
+  const width = def.id === DRIFT_TRACK_ID ? 16 : 14;
   const half = width / 2;
 
   const pts = pointsFromDef(def);
   const path = new THREE.CatmullRomCurve3(pts, true, "catmullrom", 0.5);
   const bounds = pathBounds(path);
+  const grade = def.id === DRIFT_TRACK_ID ? makeDriftGrade(path, half) : null;
+  const yAt = grade ? grade.heightAt : undefined;
 
   // Biome ground — baseColor preserved so weather tint doesn't flatten the palette.
   // Mountains biome: the horizon rings sit well past the path bounding box — pad
@@ -3691,25 +5100,30 @@ export function createTrack(
     biome.props === "mountains"
       ? Math.min(290, Math.max(bounds.spanX, bounds.spanZ) * 0.55 + 180) + 60
       : 0;
-  const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(bounds.spanX + groundPad * 2, bounds.spanZ + groundPad * 2),
-    new THREE.MeshStandardMaterial({ color: biome.ground, roughness: 1 }),
-  );
+  const ground = buildYardGround(bounds, biome.ground, grade, groundPad);
   ground.userData.surface = "grass";
   ground.userData.baseColor = biome.ground;
-  ground.rotation.x = -Math.PI / 2;
-  ground.position.set(bounds.cx, -0.12, bounds.cz);
   ground.receiveShadow = true;
   group.add(ground);
 
   // Segment density scales with circuit length so long maps stay smooth
   const pathLen = path.getLength();
-  const ribbonSegs = Math.max(480, Math.min(1400, Math.ceil(pathLen / 1.35)));
+  const ribbonSegs = Math.max(
+    480,
+    Math.min(1400, Math.ceil(pathLen / (grade ? 0.95 : 1.35))),
+  );
+  const skipBridge = grade
+    ? (u: number) => circularDeltaT(u, grade.bridgeT) * pathLen < grade.bridgeGapHalf
+    : undefined;
 
   // Shoulder / runoff ribbon
   const runoff = new THREE.Mesh(
-    buildRibbon(path, half + RUNOFF_EXTRA, -0.02, ribbonSegs),
-    new THREE.MeshStandardMaterial({ color: biome.runoff, roughness: 1, metalness: 0 }),
+    buildRibbon(path, half + RUNOFF_EXTRA, -0.02, ribbonSegs, 0, yAt, skipBridge),
+    new THREE.MeshStandardMaterial({
+      color: biome.runoff,
+      roughness: 1,
+      metalness: 0,
+    }),
   );
   runoff.userData.surface = "runoff";
   runoff.userData.baseColor = biome.runoff;
@@ -3719,8 +5133,12 @@ export function createTrack(
 
   // Asphalt — wet roughness applied later by WeatherController
   const road = new THREE.Mesh(
-    buildRibbon(path, half, 0.035, ribbonSegs),
-    new THREE.MeshStandardMaterial({ color: biome.asphalt, roughness: 0.92, metalness: 0.04 }),
+    buildRibbon(path, half, 0.035, ribbonSegs, 0, yAt, skipBridge),
+    new THREE.MeshStandardMaterial({
+      color: biome.asphalt,
+      roughness: 0.92,
+      metalness: 0.04,
+    }),
   );
   road.userData.surface = "asphalt";
   road.userData.baseColor = biome.asphalt;
@@ -3738,7 +5156,7 @@ export function createTrack(
   const edgeSegs = Math.max(ribbonSegs, Math.ceil(pathLen / 1.1));
   for (const side of [-1, 1] as const) {
     const edges = new THREE.Mesh(
-      buildRibbon(path, stripeHalf, 0.048, edgeSegs, side * (half - stripeHalf)),
+      buildRibbon(path, stripeHalf, 0.048, edgeSegs, side * (half - stripeHalf), yAt, skipBridge),
       edgeMat,
     );
     edges.castShadow = false;
@@ -3746,6 +5164,8 @@ export function createTrack(
     edges.layers.enable(HEADLIGHT_LAYER);
     group.add(edges);
   }
+
+  if (grade) plantDriftUnderpass(group, path, half, grade, biome.asphalt, biome.edge);
 
   // Start/finish checkered + gantry
   const startP = path.getPointAt(0);
@@ -3783,14 +5203,27 @@ export function createTrack(
   }
   const beam = new THREE.Mesh(
     new THREE.BoxGeometry(width + 4, 0.45, 1.2),
-    new THREE.MeshStandardMaterial({ color: 0xff3b2e, metalness: 0.25, roughness: 0.5 }),
+    new THREE.MeshStandardMaterial({
+      color: biome.id === "yard" ? 0xf0c020 : 0xff3b2e,
+      metalness: 0.25,
+      roughness: 0.5,
+    }),
   );
   beam.position.set(0, 5.4, 0);
   gantry.add(beam);
   group.add(gantry);
 
   // Biome vegetation + props — clear of asphalt / runoff / walls
-  plantBiomeScenery(group, path, half, biome, sceneryScale);
+  plantBiomeScenery(
+    group,
+    path,
+    half,
+    biome,
+    sceneryScale,
+    grade?.inCut,
+    grade?.heightAt,
+    grade ? (t) => grade.nearBridge(t) : undefined,
+  );
 
   // Static scenery — skip per-frame matrix walks (vehicles stay auto-updating).
   group.updateMatrixWorld(true);
@@ -3808,6 +5241,8 @@ export function createTrack(
     startPosition: startP.clone().addScaledVector(startN, -2.8),
     startHeading: heading,
     width,
+    heightAt: grade?.heightAt,
+    gradeAt: grade?.gradeAt,
   };
 }
 
@@ -3899,7 +5334,9 @@ function finishProjection(
   for (let k = -6; k <= 6; k++) {
     const t = (bestT + k * refineStep * 0.2 + 1) % 1;
     path.getPointAt(t, _projScratch);
-    const d = _projScratch.distanceToSquared(position);
+    const dx = _projScratch.x - position.x;
+    const dz = _projScratch.z - position.z;
+    const d = dx * dx + dz * dz;
     if (d < bestDist) {
       bestDist = d;
       bestT = t;
@@ -3931,7 +5368,9 @@ export function projectOnTrack(
   for (let i = 0; i < samples; i++) {
     const t = i / samples;
     path.getPointAt(t, _projScratch);
-    const d = _projScratch.distanceToSquared(position);
+    const dx = _projScratch.x - position.x;
+    const dz = _projScratch.z - position.z;
+    const d = dx * dx + dz * dz;
     if (d < bestDist) {
       bestDist = d;
       bestT = t;
@@ -3958,7 +5397,9 @@ export function projectOnTrackNear(
   for (let i = 0; i <= samples; i++) {
     const t = (tHint - window + i * step + 1) % 1;
     path.getPointAt(t, _projScratch);
-    const d = _projScratch.distanceToSquared(position);
+    const dx = _projScratch.x - position.x;
+    const dz = _projScratch.z - position.z;
+    const d = dx * dx + dz * dz;
     if (d < bestDist) {
       bestDist = d;
       bestT = t;
