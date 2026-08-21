@@ -217,7 +217,7 @@ function stepWithTypeScript(
 }
 
 /**
- * Space + steer: grippy slide. The car rotates a little extra into the
+ * Shift + steer: grippy slide. The car rotates a little extra into the
  * corner (capped) so you can drift the line; a tiny outward slip keeps it
  * loose. No full-lock snap and no unbounded spin into the wall.
  */

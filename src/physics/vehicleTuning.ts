@@ -13,7 +13,7 @@ export const GEAR_STATS: Record<
 };
 
 export const BRAKE = 62;
-/** Light speed bleed while Space is held — keep throttle on to hold the slide. */
+/** Light speed bleed while Shift is held — keep throttle on to hold the slide. */
 export const HANDBRAKE = 6;
 /** Max visual/body slip while drifting (radians). */
 export const DRIFT_SLIP = 0.3;
