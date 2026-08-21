@@ -728,12 +728,16 @@
             </ol>
             <button id="event-claim-btn" type="button">CLAIM POT</button>
             <div id="event-token-box" class="event-token-box hidden">
+              <div id="event-payout-qr-wrap" class="event-payout-qr-wrap hidden">
+                <img id="event-payout-qr" class="event-payout-qr" alt="Cashu payout token QR code" width="280" height="280" />
+              </div>
+              <p id="event-payout-qr-note" class="event-payout-qr-note hidden" aria-live="polite"></p>
               <input id="event-payout-token" class="event-payout-token" type="text" readonly aria-label="Your payout token" />
               <div class="event-token-actions">
                 <button id="event-token-copy" class="btn-ghost" type="button">COPY TOKEN</button>
                 <a id="event-open-cashu" class="btn-ghost" href="https://wallet.cashu.me" target="_blank" rel="noopener noreferrer">OPEN CASHU.ME</a>
               </div>
-              <p class="event-token-hint">In your Cashu wallet: Receive → paste this token</p>
+              <p id="event-token-hint" class="event-token-hint">Scan with Minibits / cashu.me, or Receive → paste the token</p>
             </div>
             <p id="event-payout-status" class="event-payout-status hidden" aria-live="polite"></p>
           </section>
