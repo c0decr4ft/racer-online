@@ -4,8 +4,10 @@ import {
   ACCEL_BASE,
   BRAKE,
   DRAG,
+  DRIFT_YAW,
   ENGINE_BRAKE,
   GEAR_STATS,
+  HANDBRAKE,
   MAX_STEER,
   ROLL,
   STEER_SPEED,
@@ -90,6 +92,7 @@ function gripAdjustedInput(input: InputState, grip: number): {
   throttle: number;
   brake: number;
   steer: number;
+  handbrake: number;
   powerScale: number;
 } {
   const g = clamp(grip, 0.55, 1);
@@ -97,6 +100,7 @@ function gripAdjustedInput(input: InputState, grip: number): {
     throttle: input.throttle,
     brake: input.brake * (0.62 + 0.38 * g),
     steer: input.steer * (0.7 + 0.3 * g),
+    handbrake: input.handbrake || 0,
     powerScale: 0.82 + 0.18 * g,
   };
 }
@@ -209,6 +213,35 @@ function stepWithTypeScript(
   state.position.y = 0;
 }
 
+/** Spacebar slide: bleed a little speed and yaw harder while steering. */
+function applyHandbrakeDrift(
+  state: PhysicsVehicleState,
+  dt: number,
+  handbrake: number,
+  steer: number,
+) {
+  const hb = clamp(handbrake || 0, 0, 1);
+  if (hb <= 0) return;
+  const absSpeed = Math.abs(state.speed);
+  if (absSpeed > 0.4) {
+    state.speed -= Math.sign(state.speed) * HANDBRAKE * hb * dt;
+  }
+  const commit = clamp((Math.abs(steer) - 0.08) / 0.75, 0, 1);
+  if (commit <= 0 || absSpeed < 5) return;
+  const speedFactor = clamp(0.4 + absSpeed / 36, 0.4, 1.2);
+  const yaw =
+    Math.sign(steer) *
+    (state.speed >= 0 ? 1 : -1) *
+    commit *
+    hb *
+    speedFactor *
+    DRIFT_YAW *
+    clamp(absSpeed / 16, 0.45, 1.25);
+  state.heading += yaw * dt;
+  const lock = Math.sign(steer) * MAX_STEER * (0.72 + commit * 0.28);
+  state.steerAngle += (lock - state.steerAngle) * Math.min(1, 12 * dt);
+}
+
 export function stepVehiclePhysics(
   state: PhysicsVehicleState,
   dt: number,
@@ -218,4 +251,6 @@ export function stepVehiclePhysics(
   if (!stepWithWasm(state, dt, input, powerMultiplier)) {
     stepWithTypeScript(state, dt, input, powerMultiplier);
   }
+  const wet = gripAdjustedInput(input, getSurfaceGrip());
+  applyHandbrakeDrift(state, dt, wet.handbrake, wet.steer);
 }
