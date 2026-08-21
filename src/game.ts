@@ -429,7 +429,7 @@ export class Game {
     this.scene.fog = new THREE.Fog(0x87a0bc, 160, 520);
 
     this.input.onPadConnected = () =>
-      this.showToast("Controller connected — stick steers, RT gas, LT brake");
+      this.showToast("Controller connected — stick steers, RT gas, LT brake, B drifts");
 
     this.net = new NetClient({
       onWelcome: (info) => this.onNetWelcome(info),
@@ -2992,7 +2992,7 @@ export class Game {
           // car we see (instead of a frozen mid-corner ghost).
           const input =
             this.finished && this.online
-              ? { ...inputPeek, throttle: 0, brake: 0, steer: 0, gear: null, shiftDelta: 0 as const, reset: false }
+              ? { ...inputPeek, throttle: 0, brake: 0, handbrake: 0, steer: 0, gear: null, shiftDelta: 0 as const, reset: false }
               : inputPeek;
           if (input.reset) {
             this.player.reset(this.track.startPosition.clone(), this.track.startHeading);

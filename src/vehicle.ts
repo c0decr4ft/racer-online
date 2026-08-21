@@ -79,6 +79,8 @@ export class Vehicle {
     this.shiftTimer = 0;
     this.powerMul = 1;
     this.animalHitPenalty = 0;
+    this.driftYaw = 0;
+    this.leanSmooth = 0;
     this.syncMesh();
   }
 
@@ -119,10 +121,12 @@ export class Vehicle {
         ...input,
         throttle: input.throttle * 0.12,
         brake: Math.max(input.brake, 0.18),
+        handbrake: 0,
       };
     }
 
     stepVehiclePhysics(s, dt, physicsInput, this.powerMul);
+    this.updateDriftPose(dt, physicsInput);
 
     this.syncMesh(dt);
     this.animateWheels(dt);
@@ -174,20 +178,33 @@ export class Vehicle {
   }
 
   private leanSmooth = 0;
+  private driftYaw = 0;
+
+  private updateDriftPose(dt: number, input: InputState) {
+    const s = this.state;
+    const sliding =
+      input.handbrake > 0.35 && Math.abs(input.steer) > 0.12 && Math.abs(s.speed) > 6;
+    const target = sliding
+      ? Math.sign(input.steer) * Math.min(0.34, 0.1 + Math.abs(s.speed) / 70)
+      : 0;
+    const rate = sliding ? 11 : 6;
+    const k = 1 - Math.exp(-rate * dt);
+    this.driftYaw += (target - this.driftYaw) * k;
+  }
 
   private syncMesh(dt?: number) {
     const s = this.state;
     this.mesh.position.copy(s.position);
     this.mesh.position.y = VISUAL_RIDE_Y;
     this.mesh.rotation.order = "YXZ";
-    this.mesh.rotation.y = s.heading;
+    this.mesh.rotation.y = s.heading + this.driftYaw;
     const isBike = this.mesh.userData.kind === "bike";
     // Cars: subtle body roll only (0.07 ≈ 4° — the old 0.14 looked like a boat).
     // Bikes keep the deep lean — two-wheelers are supposed to dive into corners.
-    const leanLimit = isBike ? 0.42 : 0.07;
+    const leanLimit = isBike ? 0.48 : 0.1;
     const leanSpeed = isBike ? 34 : 50;
     const targetLean = THREE.MathUtils.clamp(
-      -s.steerAngle * (Math.abs(s.speed) / leanSpeed),
+      -s.steerAngle * (Math.abs(s.speed) / leanSpeed) - this.driftYaw * (isBike ? 1.15 : 0.4),
       -leanLimit,
       leanLimit,
     );
@@ -293,6 +310,7 @@ export class RivalAI {
   private readonly _driveInput: InputState = {
     throttle: 0,
     brake: 0,
+    handbrake: 0,
     steer: 0,
     reset: false,
     pause: false,

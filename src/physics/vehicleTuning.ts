@@ -13,6 +13,8 @@ export const GEAR_STATS: Record<
 };
 
 export const BRAKE = 62;
+export const HANDBRAKE = 18;
+export const DRIFT_YAW = 3.4;
 export const DRAG = 0.002;
 export const ROLL = 1.1;
 export const ENGINE_BRAKE = 0.4;

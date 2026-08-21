@@ -30,6 +30,8 @@ function isTypingTarget(target: EventTarget | null): boolean {
 export type InputState = {
   throttle: number;
   brake: number;
+  /** Space / pad B — hold with steer to drift. */
+  handbrake: number;
   steer: number;
   reset: boolean;
   pause: boolean;
@@ -60,6 +62,7 @@ export class Input {
   private readonly state: InputState = {
     throttle: 0,
     brake: 0,
+    handbrake: 0,
     steer: 0,
     reset: false,
     pause: false,
@@ -131,8 +134,8 @@ export class Input {
    * Analog stick/triggers merge with keyboard/touch (highest input wins);
    * shoulder buttons shift, Start pauses, Y resets — all edge-triggered.
    */
-  private readPad(): { throttle: number; brake: number; steer: number } {
-    const none = { throttle: 0, brake: 0, steer: 0 };
+  private readPad(): { throttle: number; brake: number; handbrake: number; steer: number } {
+    const none = { throttle: 0, brake: 0, handbrake: 0, steer: 0 };
     if (typeof navigator === "undefined" || !navigator.getGamepads) return none;
     const pads = navigator.getGamepads();
     let pad: Gamepad | null = null;
@@ -179,8 +182,9 @@ export class Input {
     steer += (pressedNow(14) ? 1 : 0) - (pressedNow(15) ? 1 : 0); // d-pad fallback
 
     const throttle = Math.max(value(7), pressedNow(0) ? 1 : 0); // RT, A fallback
-    const brake = Math.max(value(6), pressedNow(1) ? 1 : 0); // LT, B fallback
-    return { throttle, brake, steer };
+    const brake = value(6); // LT
+    const handbrake = pressedNow(1) ? 1 : 0; // B / Circle — drift
+    return { throttle, brake, steer, handbrake };
   }
 
   getState(): InputState {
@@ -205,7 +209,8 @@ export class Input {
 
     const s = this.state;
     s.throttle = Math.max(up ? 1 : 0, this.touchThrottle, pad.throttle);
-    s.brake = Math.max(down || space ? 1 : 0, this.touchBrake, pad.brake);
+    s.brake = Math.max(down ? 1 : 0, this.touchBrake, pad.brake);
+    s.handbrake = Math.max(space ? 1 : 0, pad.handbrake);
     // Positive steer increases heading, which turns the car LEFT
     // (heading: x += sin(h), z += cos(h); +h rotates forward toward +x,
     // and +x is screen-left with the chase cam). So A = +1, D = -1.
