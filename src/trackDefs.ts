@@ -525,9 +525,61 @@ export const TRACKS: TrackDef[] = [
   },
 ];
 
+/**
+ * Construction-yard drift park — Test Drive → Test Drift only.
+ * Big rounded rectangle: long SF straight, wide SE sweeper, wide north 180,
+ * west return. Hairpin radius stays ≳24m so a 16m road never self-overlaps.
+ */
+export const DRIFT_TRACK_ID = "yard-drift";
+
+const YARD_DRIFT: readonly (readonly [number, number])[] = [
+  [-52, -82],
+  [-36, -82],
+  [-18, -82],
+  [0, -82],
+  [18, -82],
+  [36, -82],
+  [52, -82],
+  [62, -80],
+  [72, -74],
+  [80, -64],
+  [86, -52],
+  [86, -40],
+  [80, -28],
+  [72, -18],
+  [62, -12],
+  [52, -8],
+  [48, 2],
+  [50, 16],
+  [46, 30],
+  [36, 40],
+  [22, 46],
+  [6, 48],
+  [-10, 46],
+  [-24, 40],
+  [-34, 30],
+  [-38, 16],
+  [-36, 4],
+  [-42, -6],
+  [-54, -14],
+  [-66, -24],
+  [-74, -38],
+  [-78, -52],
+  [-74, -66],
+  [-64, -76],
+];
+
+export const DRIFT_TRACK: TrackDef = {
+  id: DRIFT_TRACK_ID,
+  name: "Yard Drift",
+  biome: "yard",
+  points: YARD_DRIFT,
+};
+
 export const DEFAULT_TRACK_ID = TRACKS[0]!.id;
 
 export function getTrackDef(id: string): TrackDef {
+  if (id === DRIFT_TRACK_ID) return DRIFT_TRACK;
   const found = TRACKS.find((t) => t.id === id);
   return found ?? TRACKS[0]!;
 }
@@ -538,5 +590,5 @@ export function randomTrackId(): string {
 }
 
 export function isTrackId(id: string): boolean {
-  return TRACKS.some((t) => t.id === id);
+  return id === DRIFT_TRACK_ID || TRACKS.some((t) => t.id === id);
 }

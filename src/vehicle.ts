@@ -319,6 +319,7 @@ export class RivalAI {
     gear: null,
     shiftDelta: 0,
     fire: false,
+    jump: 0,
   };
 
   constructor(vehicle: Vehicle, laneOffset: number, skill: number, gridIndex = 0) {

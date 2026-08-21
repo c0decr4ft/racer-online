@@ -67,6 +67,41 @@ export function saveGarage(loadout: GarageLoadout): GarageLoadout {
   return next;
 }
 
+const SPORT_PAINT_KEY = "sats-sport-garage-v1";
+
+export type SportPaint = { primary: number; accent: number };
+
+export function loadSportPaint(sport: string): SportPaint {
+  try {
+    const raw = localStorage.getItem(SPORT_PAINT_KEY);
+    if (!raw) return { primary: DEFAULT_LOADOUT.primary, accent: DEFAULT_LOADOUT.accent };
+    const parsed = JSON.parse(raw) as Record<string, Partial<SportPaint>>;
+    const slot = parsed[sport];
+    return {
+      primary: clampColor(Number(slot?.primary ?? DEFAULT_LOADOUT.primary)),
+      accent: clampColor(Number(slot?.accent ?? DEFAULT_LOADOUT.accent)),
+    };
+  } catch {
+    return { primary: DEFAULT_LOADOUT.primary, accent: DEFAULT_LOADOUT.accent };
+  }
+}
+
+export function saveSportPaint(sport: string, paint: SportPaint): SportPaint {
+  const next: SportPaint = {
+    primary: clampColor(paint.primary),
+    accent: clampColor(paint.accent),
+  };
+  try {
+    const raw = localStorage.getItem(SPORT_PAINT_KEY);
+    const parsed = raw ? (JSON.parse(raw) as Record<string, SportPaint>) : {};
+    parsed[sport] = next;
+    localStorage.setItem(SPORT_PAINT_KEY, JSON.stringify(parsed));
+  } catch {
+    /* ignore */
+  }
+  return next;
+}
+
 export function hexColor(n: number): string {
   return `#${clampColor(n).toString(16).padStart(6, "0")}`;
 }

@@ -417,21 +417,21 @@ export function createCar(
 /** Visual-only scale — physics / collision stay identical to cars. */
 const BIKE_VISUAL_SCALE = 1.1;
 
-/** Tucked superbike rider — closed-face helmet reads at chase-cam distance. */
-function addRider(bike: THREE.Group, suitAccent: number) {
+/** Tucked superbike rider — light grey leathers, helmet matches the bike paint. */
+function addRider(bike: THREE.Group, bodyColor: number, suitAccent: number) {
   const rider = new THREE.Group();
   rider.name = "rider";
   rider.position.set(0, 0.84, -0.32);
   rider.rotation.x = 0.48;
 
-  const suit = mat(0x14181f, { metal: 0.18, rough: 0.72 });
+  const suit = mat(0xd4d8de, { metal: 0.12, rough: 0.76 });
   const trim = paintMat(suitAccent, { metal: 0.3, rough: 0.42, emit: 0.16 });
-  const lid = paintMat(suitAccent, { metal: 0.35, rough: 0.32, emit: 0.12 });
-  const lidDark = mat(0x10141a, { metal: 0.45, rough: 0.28 });
+  const lid = paintMat(bodyColor, { metal: 0.32, rough: 0.3, emit: 0.12 });
+  const lidShade = mat(0xb0b6be, { metal: 0.28, rough: 0.38 });
   const visor = mat(0x070d14, { metal: 0.85, rough: 0.04 });
   const visorTint = mat(0x1a3048, { metal: 0.7, rough: 0.08, emissive: 0x152030, emit: 0.15 });
-  const gloves = mat(0x1c1816, { metal: 0.12, rough: 0.8 });
-  const boots = mat(0x0c0c10, { metal: 0.28, rough: 0.62 });
+  const gloves = mat(0xa8aeb6, { metal: 0.1, rough: 0.82 });
+  const boots = mat(0x6a7078, { metal: 0.18, rough: 0.7 });
 
   box(rider, 0.32, 0.16, 0.28, suit, 0, 0.0, 0.0);
   box(rider, 0.34, 0.26, 0.44, suit, 0, 0.26, 0.18, 0.22);
@@ -445,10 +445,10 @@ function addRider(bike: THREE.Group, suitAccent: number) {
   helm.rotation.x = 0.12;
   add(helm, new THREE.SphereGeometry(0.175, 16, 12), lid, 0, 0.02, 0);
   box(helm, 0.22, 0.12, 0.16, lid, 0, -0.08, 0.08);
-  box(helm, 0.2, 0.1, 0.08, lidDark, 0, -0.1, 0.14);
+  box(helm, 0.2, 0.1, 0.08, lidShade, 0, -0.1, 0.14);
   box(helm, 0.24, 0.11, 0.06, visor, 0, 0.0, 0.15);
   box(helm, 0.22, 0.04, 0.04, visorTint, 0, 0.03, 0.175);
-  box(helm, 0.04, 0.16, 0.22, lidDark, 0, 0.08, -0.02);
+  box(helm, 0.04, 0.16, 0.22, lid, 0, 0.08, -0.02);
   box(helm, 0.18, 0.03, 0.16, trim, 0, 0.14, -0.02);
   rider.add(helm);
   box(rider, 0.16, 0.06, 0.12, suit, 0, 0.48, 0.32);
@@ -559,7 +559,7 @@ export function createBike(
   box(bike, 0.08, 0.05, 0.12, rubber, 0.28, 1.0, 0.88);
   box(bike, 0.08, 0.05, 0.12, rubber, -0.28, 1.0, 0.88);
 
-  addRider(bike, accentColor);
+  addRider(bike, bodyColor, accentColor);
 
   const numMat = mat(0xffffff, { metal: 0.1, rough: 0.55 });
   box(bike, 0.24, 0.18, 0.02, numMat, 0, 0.92, -1.52);

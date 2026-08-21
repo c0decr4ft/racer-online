@@ -1,6 +1,6 @@
 /** Visual environment themes — one per course. */
 
-export type BiomeId = "forest" | "coast" | "alpine" | "meadow" | "canyon" | "urban";
+export type BiomeId = "forest" | "coast" | "alpine" | "meadow" | "canyon" | "urban" | "yard";
 
 export type BiomeStyle = {
   id: BiomeId;
@@ -13,7 +13,7 @@ export type BiomeStyle = {
   /** How densely to plant props (0–1). */
   density: number;
   vegetation: "trees" | "pines" | "palms" | "cactus" | "sparse" | "none";
-  props: "none" | "rocks" | "mesas" | "water" | "lights" | "mountains" | "city" | "canyon";
+  props: "none" | "rocks" | "mesas" | "water" | "lights" | "mountains" | "city" | "canyon" | "yard";
 };
 
 export const BIOMES: Record<BiomeId, BiomeStyle> = {
@@ -77,6 +77,16 @@ export const BIOMES: Record<BiomeId, BiomeStyle> = {
     vegetation: "none",
     props: "city",
   },
+  yard: {
+    id: "yard",
+    ground: 0x8a7348,
+    runoff: 0xb89a6a,
+    asphalt: 0x4a4e54,
+    edge: 0xf5a012,
+    density: 0.35,
+    vegetation: "none",
+    props: "yard",
+  },
 };
 
 /** Map track id → biome. */
@@ -87,6 +97,7 @@ export const TRACK_BIOMES: Record<string, BiomeId> = {
   "meadow-sweep": "meadow",
   "canyon-cut": "canyon",
   "oval-circuit": "urban",
+  "yard-drift": "yard",
 };
 
 export function biomeForTrack(trackIdOrBiome: string): BiomeStyle {

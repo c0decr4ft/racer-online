@@ -3011,6 +3011,12 @@ input:focus-visible,
   margin: 0 auto;
 }
 
+#test-drift-btn {
+  width: min(100%, 16rem);
+  margin: 0 auto 0.85rem;
+  display: block;
+}
+
 @media (max-width: 480px) {
   .map-grid:not(.mp-track-grid) {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3406,3 +3412,101 @@ html.touch-mode .wall-block {
     height: 96px;
   }
 }
+
+/* ── Sports hub (saturated picker, private sports-platform branch) ── */
+.sports-hub {
+  background:
+    radial-gradient(ellipse at 12% 8%, rgba(255, 59, 46, 0.72), transparent 42%),
+    radial-gradient(ellipse at 88% 12%, rgba(90, 215, 255, 0.65), transparent 44%),
+    radial-gradient(ellipse at 18% 92%, rgba(61, 255, 138, 0.55), transparent 46%),
+    radial-gradient(ellipse at 82% 88%, rgba(255, 74, 216, 0.58), transparent 48%),
+    radial-gradient(ellipse at 50% 50%, rgba(255, 138, 26, 0.35), transparent 55%),
+    linear-gradient(165deg, #2a1048 0%, #0c1c38 42%, #121008 100%);
+}
+
+.sports-hub-inner {
+  max-width: 44rem;
+  width: min(100%, 44rem);
+}
+
+.sports-hub h1 span {
+  background: linear-gradient(90deg, #ff3b2e, #ff8a1a, #3dff8a, #5ad7ff, #ff4ad8);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.sport-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+  width: min(100%, 26rem);
+  margin: 0 auto;
+}
+
+.sport-card {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: linear-gradient(180deg, var(--sport-wash, rgba(255, 59, 46, 0.45)), rgba(8, 10, 16, 0.55));
+  color: #fff;
+  font-family: var(--font-display);
+  letter-spacing: 0.18em;
+  padding: 1.15rem 0.7rem 1rem;
+  cursor: pointer;
+  text-align: center;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--sport-color, #ff3b2e) 55%, transparent), 0 12px 28px rgba(0, 0, 0, 0.28);
+  min-height: 6.4rem;
+}
+
+.sport-card:hover,
+.sport-card:focus-visible {
+  transform: translateY(-2px);
+  filter: saturate(1.25) brightness(1.08);
+}
+
+.sport-card-label {
+  display: block;
+  font-weight: 900;
+  font-size: 0.95rem;
+  margin-bottom: 0.35rem;
+}
+
+.sport-card-blurb {
+  display: block;
+  font-family: var(--font-ui);
+  letter-spacing: 0.06em;
+  font-size: 0.85rem;
+  font-weight: 600;
+  opacity: 0.9;
+  text-transform: none;
+}
+
+.sport-card[data-sport="driving"] {
+  grid-column: 1 / -1;
+}
+
+#overlay.sport-theme-skiing {
+  background:
+    radial-gradient(ellipse at 30% 20%, rgba(90, 215, 255, 0.42), transparent 48%),
+    linear-gradient(160deg, rgba(8, 22, 40, 0.94), rgba(12, 28, 48, 0.92));
+}
+#overlay.sport-theme-motocross {
+  background:
+    radial-gradient(ellipse at 30% 20%, rgba(255, 138, 26, 0.45), transparent 48%),
+    linear-gradient(160deg, rgba(32, 14, 6, 0.95), rgba(28, 16, 8, 0.93));
+}
+#overlay.sport-theme-biking {
+  background:
+    radial-gradient(ellipse at 30% 20%, rgba(61, 255, 138, 0.4), transparent 48%),
+    linear-gradient(160deg, rgba(6, 28, 16, 0.95), rgba(10, 24, 16, 0.93));
+}
+#overlay.sport-theme-skate {
+  background:
+    radial-gradient(ellipse at 30% 20%, rgba(255, 74, 216, 0.42), transparent 48%),
+    linear-gradient(160deg, rgba(28, 6, 32, 0.95), rgba(18, 8, 28, 0.93));
+}
+
+#hud.hud-sport .wall-block {
+  display: none;
+}
+
