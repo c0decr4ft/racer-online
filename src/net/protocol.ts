@@ -149,7 +149,7 @@ export type ServerMsg =
   | {
       t: "eventInvoice";
       paymentRequest: string;
-      /** Minibits mint quote (bolt11) — pay with any Lightning wallet. */
+      /** Cubabitcoin mint quote (bolt11) — pay with any Lightning wallet. */
       bolt11?: string;
       /** Amount to pay — the advertised buy-in, not buy-in plus mint fee. */
       amountSats: number;
