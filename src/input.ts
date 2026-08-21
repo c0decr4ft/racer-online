@@ -16,8 +16,27 @@ const GEAR_BY_KEY: Readonly<Record<string, Gear>> = {
   Numpad5: 5,
   KeyR: "R",
 };
-const DRIVE_KEYS = ["KeyW", "KeyA", "KeyS", "KeyD", "ArrowLeft", "ArrowRight", "ShiftLeft", "ShiftRight"] as const;
-const BLOCKED_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space", "ShiftLeft", "ShiftRight"]);
+const DRIVE_KEYS = [
+  "KeyW",
+  "KeyA",
+  "KeyS",
+  "KeyD",
+  "ArrowLeft",
+  "ArrowRight",
+  "ShiftLeft",
+  "ShiftRight",
+  "CapsLock",
+] as const;
+const BLOCKED_KEYS = new Set([
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+  "Space",
+  "ShiftLeft",
+  "ShiftRight",
+  "CapsLock",
+]);
 
 /** True when focus is in a text field — don't steal keys for driving/gears. */
 function isTypingTarget(target: EventTarget | null): boolean {
@@ -30,7 +49,7 @@ function isTypingTarget(target: EventTarget | null): boolean {
 export type InputState = {
   throttle: number;
   brake: number;
-  /** Shift / pad B — hold with steer to drift. */
+  /** Shift / Caps Lock / pad B — hold with steer to drift. */
   handbrake: number;
   steer: number;
   reset: boolean;
@@ -194,7 +213,10 @@ export class Input {
     const down = this.keys.has("KeyS");
     const left = this.keys.has("KeyA") || this.keys.has("ArrowLeft");
     const right = this.keys.has("KeyD") || this.keys.has("ArrowRight");
-    const shift = this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
+    const shift =
+      this.keys.has("ShiftLeft") ||
+      this.keys.has("ShiftRight") ||
+      this.keys.has("CapsLock");
 
     const reset = this.resetPressed;
     this.resetPressed = false;
