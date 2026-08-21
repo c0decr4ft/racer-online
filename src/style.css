@@ -1378,6 +1378,45 @@ body:has(#mute-btn.hidden) .hud-top {
   display: none !important;
 }
 
+.event-payout-qr-wrap {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
+.event-payout-qr-wrap.hidden {
+  display: none !important;
+}
+
+.event-payout-qr {
+  width: auto;
+  height: auto;
+  max-width: min(100%, 640px);
+  margin: 0 auto;
+  padding: 0.45rem;
+  background: #fff;
+  border: 1px solid rgba(255, 200, 87, 0.35);
+  box-sizing: border-box;
+  image-rendering: pixelated;
+}
+
+.event-payout-qr:not([src]),
+.event-payout-qr[src=""] {
+  display: none;
+}
+
+.event-payout-qr-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+
+.event-payout-qr-note.hidden {
+  display: none !important;
+}
+
 .event-payout-token {
   width: 100%;
   box-sizing: border-box;

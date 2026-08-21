@@ -1482,6 +1482,9 @@ export class Game {
     const status = document.getElementById("event-payout-status");
     if (status) status.classList.add("hidden");
     document.getElementById("event-token-box")?.classList.add("hidden");
+    const out = document.getElementById("event-payout-token") as HTMLInputElement | null;
+    if (out) out.value = "";
+    this.clearPayoutTokenQr();
     const claim = document.getElementById("event-claim-btn") as HTMLButtonElement | null;
     if (claim) claim.disabled = pot <= 0;
     this.updateEventTipBreakdown();
@@ -1536,6 +1539,11 @@ export class Game {
     status.classList.remove("hidden", "nostr-error");
     status.textContent = "Sending your sats…";
     if (claim) claim.disabled = true;
+    // Clear any previous payout token/QR while the new claim is in flight.
+    const out = document.getElementById("event-payout-token") as HTMLInputElement | null;
+    if (out) out.value = "";
+    document.getElementById("event-token-box")?.classList.add("hidden");
+    this.clearPayoutTokenQr();
     this.net.claimPot(tipPercent);
   }
 
@@ -1561,15 +1569,126 @@ export class Game {
           : ` · ${result.tipSats} sats dev tip`
         : "";
       const feeNote = result.feeSats ? " · mint fee taken from the pot" : "";
-      status.textContent = `Paid! ${result.winnerSats} sats${tipNote}${feeNote} — paste the token into cashu.me to claim`;
+      const token = String(result.token || "").trim();
+      status.textContent = token
+        ? `Paid! ${result.winnerSats} sats${tipNote}${feeNote} — scan the QR or paste the token into cashu.me`
+        : `Paid! ${result.winnerSats} sats${tipNote}${feeNote}`;
       if (claim) claim.disabled = true;
       const out = document.getElementById("event-payout-token") as HTMLInputElement | null;
-      if (out) out.value = result.token || "";
-      document.getElementById("event-token-box")?.classList.remove("hidden");
+      if (out) out.value = token;
+      if (token) {
+        document.getElementById("event-token-box")?.classList.remove("hidden");
+        void this.renderPayoutTokenQr(token);
+      } else {
+        document.getElementById("event-token-box")?.classList.add("hidden");
+        this.clearPayoutTokenQr();
+      }
     } else {
       status.classList.add("nostr-error");
       status.textContent = `Payout failed — ${result.error || "unknown error"}`;
       if (claim) claim.disabled = false;
+      this.clearPayoutTokenQr();
+    }
+  }
+
+  /**
+   * Encode the cashuA/B payout for wallet scanning.
+   * Copy field stays the raw token; QR uses the `cashu:` URI wallets deeplink on.
+   */
+  private async renderPayoutTokenQr(token: string) {
+    const qr = document.getElementById("event-payout-qr") as HTMLImageElement | null;
+    const wrap = document.getElementById("event-payout-qr-wrap");
+    const note = document.getElementById("event-payout-qr-note");
+    const hint = document.getElementById("event-token-hint");
+    if (!qr) return;
+
+    const raw = token.trim();
+    if (!raw) {
+      this.clearPayoutTokenQr();
+      return;
+    }
+
+    // Minibits / cashu.me deeplinks expect cashu:<token>; paste still uses raw.
+    const payload = raw.startsWith("cashu:") ? raw : `cashu:${raw}`;
+
+    const setNote = (text: string, show: boolean) => {
+      if (!note) return;
+      note.textContent = text;
+      note.classList.toggle("hidden", !show);
+    };
+    const setHint = (text: string) => {
+      if (hint) hint.textContent = text;
+    };
+
+    try {
+      const QRCode = await qrCode();
+      // Use scale (not width) so modules stay crisp integer pixels — width-resampling
+      // made mid-size cashu tokens unscannable.
+      const created = QRCode.create(payload, { errorCorrectionLevel: "L" });
+      const modules = created.modules.size;
+      const margin = 2;
+      const maxPx = 640;
+      let scale = 4;
+      let px = (modules + margin * 2) * scale;
+      if (px > maxPx) {
+        scale = 3;
+        px = (modules + margin * 2) * scale;
+      }
+      if (px > maxPx) {
+        throw new Error("qr too dense for display");
+      }
+      const url = await QRCode.toDataURL(payload, {
+        scale,
+        margin,
+        errorCorrectionLevel: "L",
+      });
+
+      // Ignore stale results if checkout was reset / a newer claim finished.
+      const current = (document.getElementById("event-payout-token") as HTMLInputElement | null)
+        ?.value;
+      if (current !== raw) return;
+
+      qr.src = url;
+      qr.width = px;
+      qr.height = px;
+      qr.alt = "Cashu payout token QR code";
+      wrap?.classList.remove("hidden");
+      setNote("", false);
+      setHint("Scan with Minibits / cashu.me, or Receive → paste the token");
+    } catch {
+      // Token too large for a single QR (NUT-16 would need animated UR) — copy still works.
+      const current = (document.getElementById("event-payout-token") as HTMLInputElement | null)
+        ?.value;
+      if (current !== raw) return;
+      this.clearPayoutTokenQr();
+      setNote("Token is too long for a QR — use COPY TOKEN instead", true);
+      setHint("Receive → paste the token into Minibits or cashu.me");
+      const status = document.getElementById("event-payout-status");
+      if (status && !status.classList.contains("nostr-error")) {
+        status.textContent = status.textContent?.replace(
+          " — scan the QR or paste the token into cashu.me",
+          " — copy the token and paste it into cashu.me",
+        ) ?? status.textContent;
+      }
+    }
+  }
+
+  private clearPayoutTokenQr() {
+    const qr = document.getElementById("event-payout-qr") as HTMLImageElement | null;
+    const wrap = document.getElementById("event-payout-qr-wrap");
+    const note = document.getElementById("event-payout-qr-note");
+    const hint = document.getElementById("event-token-hint");
+    if (qr) {
+      qr.removeAttribute("src");
+      qr.alt = "Cashu payout token QR code";
+    }
+    wrap?.classList.add("hidden");
+    if (note) {
+      note.textContent = "";
+      note.classList.add("hidden");
+    }
+    if (hint) {
+      hint.textContent = "Scan with Minibits / cashu.me, or Receive → paste the token";
     }
   }
 
