@@ -16,8 +16,8 @@ const GEAR_BY_KEY: Readonly<Record<string, Gear>> = {
   Numpad5: 5,
   KeyR: "R",
 };
-const DRIVE_KEYS = ["KeyW", "KeyA", "KeyS", "KeyD", "ArrowLeft", "ArrowRight", "Space"] as const;
-const BLOCKED_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"]);
+const DRIVE_KEYS = ["KeyW", "KeyA", "KeyS", "KeyD", "ArrowLeft", "ArrowRight", "ShiftLeft", "ShiftRight"] as const;
+const BLOCKED_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space", "ShiftLeft", "ShiftRight"]);
 
 /** True when focus is in a text field — don't steal keys for driving/gears. */
 function isTypingTarget(target: EventTarget | null): boolean {
@@ -30,7 +30,7 @@ function isTypingTarget(target: EventTarget | null): boolean {
 export type InputState = {
   throttle: number;
   brake: number;
-  /** Space / pad B — hold with steer to drift. */
+  /** Shift / pad B — hold with steer to drift. */
   handbrake: number;
   steer: number;
   reset: boolean;
@@ -194,7 +194,7 @@ export class Input {
     const down = this.keys.has("KeyS");
     const left = this.keys.has("KeyA") || this.keys.has("ArrowLeft");
     const right = this.keys.has("KeyD") || this.keys.has("ArrowRight");
-    const space = this.keys.has("Space");
+    const shift = this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
 
     const reset = this.resetPressed;
     this.resetPressed = false;
@@ -210,7 +210,7 @@ export class Input {
     const s = this.state;
     s.throttle = Math.max(up ? 1 : 0, this.touchThrottle, pad.throttle);
     s.brake = Math.max(down ? 1 : 0, this.touchBrake, pad.brake);
-    s.handbrake = Math.max(space ? 1 : 0, pad.handbrake);
+    s.handbrake = Math.max(shift ? 1 : 0, pad.handbrake);
     // Positive steer increases heading, which turns the car LEFT
     // (heading: x += sin(h), z += cos(h); +h rotates forward toward +x,
     // and +x is screen-left with the chase cam). So A = +1, D = -1.

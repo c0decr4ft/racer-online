@@ -92,6 +92,9 @@ const MENU_SCENERY_SCALE = 0.4;
 const COUNTDOWN_STEP_MS = 1000;
 /** Distinct wall hits before the player car explodes and the race restarts. */
 const WALL_HIT_LIMIT = 10;
+/** Engine starts smoking on this hit — explode still fires at WALL_HIT_LIMIT. */
+const ENGINE_SMOKE_HITS = 9;
+const ENGINE_SMOKE_COUNT = 72;
 /** Min seconds between counted wall hits (sliding shouldn't rack them up). */
 const WALL_HIT_COOLDOWN = 0.4;
 /** Brief DESTROYED hold before auto-restart. */
@@ -334,6 +337,12 @@ export class Game {
   private damageGlass: { mat: THREE.MeshStandardMaterial; color: number; rough: number } | null = null;
   /** Body paint emissive before the first hit (restored on bodywork restore). */
   private damageBodyEmissive: { mat: THREE.MeshStandardMaterial; emission: number } | null = null;
+  /** Soft puffs leaking from the engine at ENGINE_SMOKE_HITS. */
+  private engineSmoke: THREE.Points | null = null;
+  private engineSmokeLife: Float32Array | null = null;
+  private engineSmokeVel: Float32Array | null = null;
+  private engineSmokeTex: THREE.CanvasTexture | null = null;
+  private readonly _smokeWorld = new THREE.Vector3();
   private readonly _scuffGeo = new THREE.BoxGeometry(0.02, 0.18, 0.34);
   private readonly _scuffMat = new THREE.MeshStandardMaterial({
     color: 0x0a0c10,
@@ -429,7 +438,7 @@ export class Game {
     this.scene.fog = new THREE.Fog(0x87a0bc, 160, 520);
 
     this.input.onPadConnected = () =>
-      this.showToast("Controller connected — stick steers, RT gas, LT brake, B drifts");
+      this.showToast("Controller connected — stick steers, RT gas, LT brake, B drifts (cars)");
 
     this.net = new NetClient({
       onWelcome: (info) => this.onNetWelcome(info),
@@ -2598,6 +2607,7 @@ export class Game {
 
   private disposeVehicleMesh(vehicle: Vehicle | undefined) {
     if (!vehicle) return;
+    if (vehicle === this.player) this.clearEngineSmoke();
     this.scene.remove(vehicle.mesh);
     disposeVehicleGroup(vehicle.mesh);
   }
@@ -3076,6 +3086,7 @@ export class Game {
         }
       }
       this.updateWildlife(dt);
+      if (!this.exploding) this.tickEngineSmoke(dt);
       // Crush/shot debris animates even when the player isn't mid-explosion
       if (!this.exploding && this.explodeParts.length > 0) this.updateExplode(dt);
     } else if (this.paused) {
@@ -3292,13 +3303,14 @@ export class Game {
       this.damageBodyEmissive.mat.emissiveIntensity = this.damageBodyEmissive.emission;
       this.damageBodyEmissive = null;
     }
+    this.clearEngineSmoke();
   }
 
   /**
    * Progressive body damage — every counted wall hit adds a scuff on the
    * wall side; at ≥4 hits the named panels (hood/tank + ducktail/tail) hang
    * loose; at ≥8 the windshield looks smashed; paint dulls slightly per hit.
-   * All purely visual — restored when the race restarts.
+   * At 9 the engine smokes; at 10 it explodes. All visual until explode.
    */
   private applyWallDamage(hitCount: number) {
     const root = this.player?.mesh;
@@ -3357,6 +3369,158 @@ export class Game {
     }
   }
 
+  /** Local point on the vehicle where engine smoke leaks (hood / motor / stacks). */
+  private engineSmokeOrigin(kind: string): { x: number; y: number; z: number } {
+    if (kind === "bike") return { x: 0, y: 0.72, z: 0.04 };
+    if (kind === "truck") return { x: 0, y: 2.12, z: 1.18 };
+    if (kind === "tank") return { x: 0, y: 1.28, z: -1.15 };
+    return { x: 0, y: 0.9, z: 1.12 };
+  }
+
+  private smokeTexture(): THREE.CanvasTexture {
+    if (this.engineSmokeTex) return this.engineSmokeTex;
+    const c = document.createElement("canvas");
+    c.width = 64;
+    c.height = 64;
+    const ctx = c.getContext("2d")!;
+    const g = ctx.createRadialGradient(32, 32, 3, 32, 32, 30);
+    g.addColorStop(0, "rgba(190,190,190,0.85)");
+    g.addColorStop(0.28, "rgba(120,120,120,0.5)");
+    g.addColorStop(1, "rgba(70,70,70,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 64, 64);
+    const tex = new THREE.CanvasTexture(c);
+    tex.needsUpdate = true;
+    this.engineSmokeTex = tex;
+    return tex;
+  }
+
+  private clearEngineSmoke() {
+    if (!this.engineSmoke) {
+      this.engineSmokeLife = null;
+      this.engineSmokeVel = null;
+      return;
+    }
+    this.engineSmoke.removeFromParent();
+    this.engineSmoke.geometry.dispose();
+    const mat = this.engineSmoke.material as THREE.PointsMaterial;
+    mat.map = null;
+    mat.dispose();
+    this.engineSmoke = null;
+    this.engineSmokeLife = null;
+    this.engineSmokeVel = null;
+  }
+
+  /** Spawn a puff at the engine in world space, with wind relative to vehicle speed. */
+  private emitEngineSmokePuff(
+    i: number,
+    positions: Float32Array,
+    vel: Float32Array,
+    life: Float32Array,
+  ) {
+    const root = this.player.mesh;
+    const local = this.engineSmokeOrigin(String(root.userData.kind ?? "car"));
+    this._smokeWorld.set(local.x, local.y, local.z);
+    root.updateMatrixWorld();
+    root.localToWorld(this._smokeWorld);
+    const i3 = i * 3;
+    positions[i3] = this._smokeWorld.x + (Math.random() - 0.5) * 0.28;
+    positions[i3 + 1] = this._smokeWorld.y + Math.random() * 0.1;
+    positions[i3 + 2] = this._smokeWorld.z + (Math.random() - 0.5) * 0.22;
+
+    const spd = this.player.state.speed;
+    const abs = Math.abs(spd);
+    const hx = Math.sin(this.player.state.heading);
+    const hz = Math.cos(this.player.state.heading);
+    // Relative wind washes the puff back over the body (~hood to tail in ~0.4s).
+    const wash = 2.6 + abs * 0.15;
+    const along = spd - Math.sign(spd || 1) * wash;
+    const jitter = 1.2 + abs * 0.03;
+    vel[i3] = hx * along + (Math.random() - 0.5) * jitter;
+    vel[i3 + 1] = 0.35 + Math.random() * 0.45;
+    vel[i3 + 2] = hz * along + (Math.random() - 0.5) * jitter;
+    life[i] = 1.2 + Math.random() * 0.9;
+  }
+
+  private ensureEngineSmoke() {
+    if (this.engineSmoke && this.engineSmoke.parent === this.scene) {
+      const n = this.engineSmoke.geometry.getAttribute("position")?.count ?? 0;
+      if (n === ENGINE_SMOKE_COUNT) {
+        this.engineSmoke.visible = true;
+        return;
+      }
+    }
+    this.clearEngineSmoke();
+    const count = ENGINE_SMOKE_COUNT;
+    const positions = new Float32Array(count * 3);
+    const life = new Float32Array(count);
+    const vel = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      this.emitEngineSmokePuff(i, positions, vel, life);
+      // Seed a wake so the trail is visible immediately.
+      const t = Math.random() * 0.7;
+      const i3 = i * 3;
+      positions[i3]! += vel[i3]! * t;
+      positions[i3 + 1]! += vel[i3 + 1]! * t;
+      positions[i3 + 2]! += vel[i3 + 2]! * t;
+      life[i]! = Math.max(0.15, life[i]! - t * 0.7);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    const mat = new THREE.PointsMaterial({
+      map: this.smokeTexture(),
+      color: 0x9a9a9a,
+      size: 0.82,
+      transparent: true,
+      opacity: 0.58,
+      depthWrite: false,
+      sizeAttenuation: true,
+    });
+    const pts = new THREE.Points(geo, mat);
+    pts.name = "engine-smoke";
+    pts.frustumCulled = false;
+    pts.renderOrder = 3;
+    this.scene.add(pts);
+    this.engineSmoke = pts;
+    this.engineSmokeLife = life;
+    this.engineSmokeVel = vel;
+  }
+
+  private tickEngineSmoke(dt: number) {
+    const smoking = this.wallHits === ENGINE_SMOKE_HITS && !this.practice && !this.exploding;
+    if (!smoking) {
+      if (this.engineSmoke) this.engineSmoke.visible = false;
+      return;
+    }
+    this.ensureEngineSmoke();
+    const pts = this.engineSmoke;
+    const life = this.engineSmokeLife;
+    const vel = this.engineSmokeVel;
+    if (!pts || !life || !vel || !this.player) return;
+    const pos = pts.geometry.getAttribute("position") as THREE.BufferAttribute;
+    const arr = pos.array as Float32Array;
+    const dtClamped = Math.min(dt, 0.05);
+    const drag = Math.exp(-0.55 * dtClamped);
+    for (let i = 0; i < life.length; i++) {
+      life[i]! -= dtClamped * (0.55 + Math.random() * 0.25);
+      const i3 = i * 3;
+      if (life[i]! <= 0) {
+        this.emitEngineSmokePuff(i, arr, vel, life);
+        continue;
+      }
+      vel[i3]! += (Math.random() - 0.5) * 3.2 * dtClamped;
+      vel[i3 + 1]! += 1.35 * dtClamped;
+      vel[i3 + 2]! += (Math.random() - 0.5) * 3.2 * dtClamped;
+      vel[i3]! *= drag;
+      vel[i3 + 1]! *= drag;
+      vel[i3 + 2]! *= drag;
+      arr[i3]! += vel[i3]! * dtClamped;
+      arr[i3 + 1]! += vel[i3 + 1]! * dtClamped;
+      arr[i3 + 2]! += vel[i3 + 2]! * dtClamped;
+    }
+    pos.needsUpdate = true;
+  }
+
   private updateWallHitsHud() {
     const el = this.el.wallHits;
     const block = el.parentElement;
@@ -3382,6 +3546,7 @@ export class Game {
     this.syncTouchControls();
     this.audio.stopRaceAudio();
     this.audio.playExplode();
+    this.clearEngineSmoke();
     this.spawnExplodeFx();
     // Multiplayer: tell the room so every driver resets to the start line
     if (this.online) this.net.reportCrash();

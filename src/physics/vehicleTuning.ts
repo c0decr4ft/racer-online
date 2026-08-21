@@ -13,8 +13,12 @@ export const GEAR_STATS: Record<
 };
 
 export const BRAKE = 62;
-export const HANDBRAKE = 18;
-export const DRIFT_YAW = 3.4;
+/** Light speed bleed while Shift is held — keep throttle on to hold the slide. */
+export const HANDBRAKE = 6;
+/** Max visual/body slip while drifting (radians). */
+export const DRIFT_SLIP = 0.3;
+/** Extra yaw while sliding (rad/s). Capped — enough to rotate through a corner, not spin into the wall. */
+export const DRIFT_YAW = 0.78;
 export const DRAG = 0.002;
 export const ROLL = 1.1;
 export const ENGINE_BRAKE = 0.4;
