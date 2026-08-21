@@ -1,0 +1,776 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/racer-online/favicon.png" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1, user-scalable=no"
+    />
+    <title>SATS RACER</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script type="module" crossorigin src="/racer-online/assets/index-CpChC2Tc.js"></script>
+    <link rel="modulepreload" crossorigin href="/racer-online/assets/rolldown-runtime-QTnfLwEv.js">
+    <link rel="modulepreload" crossorigin href="/racer-online/assets/index.browser-CUUv1YgN.js">
+    <link rel="stylesheet" crossorigin href="/racer-online/assets/index-Dh1suOZI.css">
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="game"></canvas>
+      <div id="player-tags"></div>
+      <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
+
+      <div id="hud">
+        <div class="hud-top">
+          <div class="hud-top-left">
+            <div class="brand">SATS<span>RACER</span></div>
+            <div id="net-status" class="net-status hidden">OFFLINE</div>
+          </div>
+          <div class="hud-stats">
+            <div class="pos-block">
+              <div class="label">POS</div>
+              <div id="position">1/6</div>
+            </div>
+            <div class="lap-block">
+              <div class="label">LAP</div>
+              <div id="lap">1<span>/3</span></div>
+            </div>
+            <div class="time-block">
+              <div class="label">TIME</div>
+              <div id="time">0:00.000</div>
+              <div id="delta" class="delta" aria-live="polite"></div>
+            </div>
+          </div>
+          <button id="pause-btn" class="pause-btn hidden" type="button" aria-label="Pause">❚❚</button>
+        </div>
+
+        <div class="hud-bottom">
+          <div class="speed-block">
+            <div id="speed">0</div>
+            <div class="unit">KM/H</div>
+          </div>
+          <div class="gear-block">
+            <div class="label">GEAR</div>
+            <div id="gear">N</div>
+          </div>
+          <div class="best-block">
+            <div class="label">BEST</div>
+            <div id="best">--:--.---</div>
+          </div>
+          <div class="wall-block">
+            <div class="label">WALL</div>
+            <div id="wall-hits">0/10</div>
+          </div>
+        </div>
+
+        <div id="wrong-way" class="wrong-way hidden" aria-live="assertive">WRONG WAY</div>
+        <div id="explode-flash" class="explode-flash hidden" aria-live="assertive">DESTROYED</div>
+        <div id="animal-hit" class="animal-hit hidden" aria-live="assertive">COW!</div>
+        <div id="final-lap-flash" class="final-lap-flash hidden" aria-live="polite">FINAL LAP</div>
+        <div id="countdown" class="countdown hidden" aria-live="assertive">3</div>
+        <canvas id="minimap" class="minimap hidden" width="160" height="160" aria-hidden="true"></canvas>
+        <div id="rearview-frame" class="rearview-frame hidden" aria-hidden="true">
+          <span class="rearview-label">REAR</span>
+        </div>
+
+        <!-- Shown only on touch-primary devices while racing -->
+        <div id="touch-controls" class="touch-controls hidden" aria-hidden="true">
+          <div class="touch-cluster touch-steer">
+            <button type="button" class="touch-btn" data-touch="left" aria-label="Steer left">◀</button>
+            <button type="button" class="touch-btn" data-touch="right" aria-label="Steer right">▶</button>
+          </div>
+          <div class="touch-cluster touch-gears">
+            <button type="button" class="touch-btn touch-shift" data-touch="shift-down" aria-label="Downshift">−</button>
+            <button type="button" class="touch-btn touch-shift" data-touch="shift-up" aria-label="Upshift">+</button>
+          </div>
+          <div class="touch-cluster touch-pedals">
+            <button type="button" class="touch-btn touch-brake" data-touch="brake" aria-label="Brake">BRAKE</button>
+            <button type="button" class="touch-btn touch-gas" data-touch="gas" aria-label="Accelerate">GAS</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="version-switcher" id="version-switcher">
+        <span id="version-badge" class="version-badge" aria-label="Version 3.3">v3.3</span>
+      </div>
+
+      <div id="home-corner-btns" class="home-corner-btns">
+        <button
+          id="feedback-btn"
+          class="feedback-btn"
+          type="button"
+          aria-haspopup="dialog"
+          aria-controls="feedback-compose"
+          aria-label="Send feedback"
+          title="Send feedback"
+        >
+          <svg class="feedback-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              fill="currentColor"
+              d="M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4v-4H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm0 2v9h3v2.2L9.8 15H20V6H4z"
+            />
+          </svg>
+        </button>
+        <button
+          id="controls-btn"
+          class="feedback-btn"
+          type="button"
+          aria-haspopup="dialog"
+          aria-controls="controls-help"
+          aria-label="Controls"
+          title="Controls"
+        >
+          <svg class="feedback-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.75" />
+            <circle cx="12" cy="12" r="2.25" fill="currentColor" />
+            <path
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              stroke-linecap="round"
+              d="M12 3.5v6.25M7.2 16.8l3.3-3.3M16.8 16.8l-3.3-3.3"
+            />
+          </svg>
+        </button>
+      </div>
+
+      <div id="feedback-compose" class="feedback-compose hidden" role="dialog" aria-modal="true" aria-labelledby="feedback-compose-title">
+        <div class="feedback-compose-panel">
+          <p class="eyebrow" id="feedback-compose-title">FEEDBACK</p>
+          <p class="feedback-compose-hint">Send a note to the developer</p>
+          <form id="feedback-compose-form" class="feedback-compose-form" autocomplete="off">
+            <textarea
+              id="feedback-text"
+              name="feedback-text"
+              rows="4"
+              maxlength="500"
+              placeholder="What should we know?"
+              required
+            ></textarea>
+            <input
+              id="feedback-name"
+              type="text"
+              name="feedback-name"
+              maxlength="24"
+              placeholder="Name (optional)"
+              autocomplete="nickname"
+              spellcheck="false"
+            />
+            <p id="feedback-compose-status" class="feedback-compose-status hidden" aria-live="polite"></p>
+            <div class="feedback-compose-actions">
+              <button id="feedback-compose-submit" type="submit">SEND</button>
+              <button id="feedback-compose-cancel" class="btn-ghost" type="button">CANCEL</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <div id="controls-help" class="feedback-compose hidden" role="dialog" aria-modal="true" aria-labelledby="controls-help-title">
+        <div class="feedback-compose-panel controls-help-panel">
+          <p class="eyebrow" id="controls-help-title">CONTROLS</p>
+          <p class="feedback-compose-hint">How to drive</p>
+          <div class="controls-help-groups">
+            <section class="controls-help-group" aria-labelledby="controls-help-driving">
+              <h3 class="controls-help-group-title" id="controls-help-driving">Driving</h3>
+              <dl class="controls-help-list">
+                <div class="controls-help-row"><dt>A / ←</dt><dd>Steer left</dd></div>
+                <div class="controls-help-row"><dt>D / →</dt><dd>Steer right</dd></div>
+                <div class="controls-help-row"><dt>W</dt><dd>Gas</dd></div>
+                <div class="controls-help-row"><dt>S</dt><dd>Brake</dd></div>
+                <div class="controls-help-row"><dt>Shift</dt><dd>Hold + steer to drift (cars)</dd></div>
+              </dl>
+            </section>
+            <section class="controls-help-group" aria-labelledby="controls-help-gears">
+              <h3 class="controls-help-group-title" id="controls-help-gears">Gears</h3>
+              <dl class="controls-help-list">
+                <div class="controls-help-row"><dt>↑ / ↓</dt><dd>Shift up / down</dd></div>
+                <div class="controls-help-row"><dt>1–5</dt><dd>Jump to gear</dd></div>
+                <div class="controls-help-row"><dt>0 / N</dt><dd>Neutral</dd></div>
+                <div class="controls-help-row"><dt>R</dt><dd>Reverse</dd></div>
+              </dl>
+            </section>
+            <section class="controls-help-group" aria-labelledby="controls-help-race">
+              <h3 class="controls-help-group-title" id="controls-help-race">Pause &amp; reset</h3>
+              <dl class="controls-help-list">
+                <div class="controls-help-row"><dt>Esc / P</dt><dd>Pause</dd></div>
+                <div class="controls-help-row"><dt>Backspace</dt><dd>Reset car</dd></div>
+              </dl>
+            </section>
+            <section class="controls-help-group" aria-labelledby="controls-help-pad">
+              <h3 class="controls-help-group-title" id="controls-help-pad">Controller</h3>
+              <dl class="controls-help-list">
+                <div class="controls-help-row"><dt>Stick / D-pad</dt><dd>Steer</dd></div>
+                <div class="controls-help-row"><dt>RT / LT</dt><dd>Gas / brake</dd></div>
+                <div class="controls-help-row"><dt>B / Circle</dt><dd>Hold + steer to drift (cars)</dd></div>
+                <div class="controls-help-row"><dt>RB / LB</dt><dd>Shift up / down</dd></div>
+                <div class="controls-help-row"><dt>Start</dt><dd>Pause</dd></div>
+                <div class="controls-help-row"><dt>Y / Triangle</dt><dd>Reset car</dd></div>
+              </dl>
+            </section>
+            <section class="controls-help-group" aria-labelledby="controls-help-touch">
+              <h3 class="controls-help-group-title" id="controls-help-touch">Touch</h3>
+              <dl class="controls-help-list">
+                <div class="controls-help-row"><dt>Pads</dt><dd>Gas, brake, steer &amp; shift</dd></div>
+              </dl>
+            </section>
+          </div>
+          <div class="feedback-compose-actions">
+            <button id="controls-help-close" class="btn-ghost" type="button">CLOSE</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="nostr-login" class="feedback-compose hidden" role="dialog" aria-modal="true" aria-labelledby="nostr-login-title">
+        <div class="feedback-compose-panel nostr-panel">
+          <p class="eyebrow" id="nostr-login-title">NOSTR IDENTITY</p>
+          <p id="nostr-reason" class="feedback-compose-hint hidden"></p>
+
+          <div id="nostr-out-view">
+            <p class="feedback-compose-hint">Sign in to race on Sats Racer and save verified scores</p>
+
+            <button id="nostr-ext-btn" class="nostr-option nostr-option-primary" type="button">
+              <svg class="nostr-option-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M13 2 4.5 13.5h5L8 22l8.5-11.5h-5L13 2z"/></svg>
+              <span class="nostr-option-text">
+                <span class="nostr-option-title">BROWSER EXTENSION</span>
+                <span class="nostr-option-sub">NIP-07 · Alby, nos2x…</span>
+              </span>
+            </button>
+
+            <div class="nostr-remote-group">
+              <button id="nostr-remote-toggle" class="nostr-option" type="button" aria-expanded="false" aria-controls="nostr-remote-box">
+                <svg class="nostr-option-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M14.5 2a6.5 6.5 0 0 0-6.4 7.7L2 15.8V22h6.2l1.5-1.5v-2h2l1.4-1.4v-2h2l1.9-1.9A6.5 6.5 0 1 0 14.5 2zm0 4a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z"/></svg>
+                <span class="nostr-option-text">
+                  <span class="nostr-option-title">REMOTE SIGNER</span>
+                  <span class="nostr-option-sub">NIP-46 · bunker:// or QR · Amber, nsec.app…</span>
+                </span>
+              </button>
+              <div id="nostr-remote-box" class="nostr-subbox hidden">
+                <div class="nostr-bunker-row">
+                  <input
+                    id="nostr-bunker-input"
+                    type="text"
+                    placeholder="bunker://…"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                  <button id="nostr-bunker-btn" type="button">CONNECT</button>
+                </div>
+                <button id="nostr-qr-toggle" class="btn-ghost" type="button">SHOW QR / LINK</button>
+                <div id="nostr-qr-box" class="nostr-qr-box hidden">
+                  <img id="nostr-qr-img" class="nostr-qr-img" alt="nostrconnect QR code" />
+                  <input id="nostr-connect-uri" class="nostr-connect-uri" type="text" readonly aria-label="nostrconnect URI" />
+                </div>
+              </div>
+            </div>
+
+            <button id="nostr-create-btn" class="nostr-option" type="button">
+              <svg class="nostr-option-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0-4.5-4.5A4.5 4.5 0 0 0 12 12zm0 2.25c-3 0-9 1.5-9 4.5V21h18v-2.25c0-3-6-4.5-9-4.5zM19.5 6H18V4.5h-1.5V6H15v1.5h1.5v2H18V7.5h1.5V6z"/></svg>
+              <span class="nostr-option-text">
+                <span class="nostr-option-title">CREATE ACCOUNT</span>
+                <span class="nostr-option-sub">New to Nostr? One tap — no app needed</span>
+              </span>
+            </button>
+
+            <p id="nostr-login-status" class="feedback-compose-status hidden" aria-live="polite"></p>
+            <div class="feedback-compose-actions">
+              <button id="nostr-login-cancel" class="btn-ghost" type="button">CANCEL</button>
+            </div>
+          </div>
+
+          <div id="nostr-create-view" class="hidden">
+            <p class="feedback-compose-hint">Pick a racer name — it becomes your public Nostr profile name</p>
+            <input
+              id="nostr-username"
+              type="text"
+              maxlength="24"
+              placeholder="Username"
+              autocomplete="nickname"
+              spellcheck="false"
+            />
+            <p id="nostr-create-status" class="feedback-compose-status hidden" aria-live="polite"></p>
+            <div class="feedback-compose-actions">
+              <button id="nostr-create-go" type="button">CREATE ACCOUNT</button>
+              <button id="nostr-create-back" class="btn-ghost" type="button">BACK</button>
+            </div>
+          </div>
+
+          <div id="nostr-backup-view" class="hidden">
+            <p class="feedback-compose-hint">Your account is ready — back up your secret key. It's the only way to recover this identity.</p>
+            <input id="nostr-nsec-out" class="nostr-connect-uri" type="text" readonly aria-label="Your nsec secret key" />
+            <button id="nostr-nsec-copy" type="button">COPY KEY</button>
+            <p class="nostr-warning">Anyone with this key can post as you — keep it secret. It's also stored in this browser.</p>
+            <div class="feedback-compose-actions">
+              <button id="nostr-new-done" type="button">DONE — I SAVED MY KEY</button>
+            </div>
+          </div>
+
+          <div id="nostr-in-view" class="hidden">
+            <div class="nostr-id-row">
+              <img id="nostr-avatar" class="nostr-avatar hidden" alt="" />
+              <div class="nostr-id-text">
+                <p id="nostr-display-name" class="nostr-display-name">RACER</p>
+                <p id="nostr-npub" class="nostr-npub">npub…</p>
+              </div>
+            </div>
+            <p class="feedback-compose-hint">Signed in — your race times are saved with your Nostr signature</p>
+            <div id="nostr-backup-box" class="nostr-backup-box hidden">
+              <button id="nostr-backup-toggle" class="btn-ghost" type="button">SHOW BACKUP KEY</button>
+              <div id="nostr-backup-secret" class="hidden">
+                <input id="nostr-backup-nsec" class="nostr-connect-uri" type="text" readonly aria-label="Your nsec secret key" />
+                <p class="nostr-warning">Never share this key — it controls your identity. Losing it means losing access.</p>
+              </div>
+            </div>
+            <div class="feedback-compose-actions">
+              <button id="nostr-logout-btn" class="btn-ghost" type="button">LOG OUT</button>
+              <button id="nostr-in-close" class="btn-ghost" type="button">CLOSE</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <button id="mute-btn" class="mute-btn" type="button" aria-label="Mute sound" aria-pressed="false"><svg class="mute-icon mute-icon-on" viewBox="0 0 24 24" aria-hidden="true">
+          <path
+            fill="currentColor"
+            d="M3 9v6h4l5 4V5L7 9H3zm13.5 3c0-1.77-1-3.29-2.5-4.03v8.05c1.5-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"
+          />
+        </svg>
+        <svg class="mute-icon mute-icon-off hidden" viewBox="0 0 24 24" aria-hidden="true">
+          <path
+            fill="currentColor"
+            d="M16.5 12c0-1.77-1-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 4v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"
+          />
+        </svg>
+      </button>
+
+      <div id="overlay" class="overlay">
+        <div class="home-top-actions">
+          <button id="home-garage-btn" class="board-icon-btn" type="button" aria-label="Garage">
+            <svg class="board-icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 11l7-6 7 6v8a1 1 0 0 1-1 1h-4v-5H10v5H6a1 1 0 0 1-1-1v-8z" fill="currentColor"/>
+            </svg>
+            <span class="board-icon-label">GARAGE</span>
+          </button>
+          <button id="home-board-btn" class="board-icon-btn" type="button" aria-label="Leaderboard">
+            <svg class="board-icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 20h14v-1.5H5V20zm2.5-4h2V10h-2v6zm3.5 0h2V7h-2v9zm3.5 0h2V12h-2v4z" fill="currentColor"/>
+            </svg>
+            <span class="board-icon-label">BOARD</span>
+          </button>
+          <button id="nostr-btn" class="board-icon-btn" type="button" aria-label="Nostr sign in" aria-haspopup="dialog" aria-controls="nostr-login">
+            <svg class="board-icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M14.5 2a6.5 6.5 0 0 0-6.4 7.7L2 15.8V22h6.2l1.5-1.5v-2h2l1.4-1.4v-2h2l1.9-1.9A6.5 6.5 0 1 0 14.5 2zm0 4a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z" fill="currentColor"/>
+            </svg>
+            <span class="board-icon-label" id="nostr-btn-label">SIGN IN</span>
+          </button>
+          <button id="dev-btn" class="board-icon-btn hidden" type="button" aria-label="Developer dashboard">
+            <svg class="board-icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 6a2 2 0 0 1 2-2h13a1 1 0 0 1 0 2H5v12h14V9a1 1 0 0 1 2 0v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6zm14 6h4v5h-4a2.5 2.5 0 0 1 0-5zm0 2a.5.5 0 0 0 0 1h2v-1h-2z" fill="currentColor"/>
+            </svg>
+            <span class="board-icon-label">DEV</span>
+          </button>
+        </div>
+        <div class="overlay-inner">
+          <p class="eyebrow">READY TO RACE</p>
+          <h1>SATS<br /><span>RACER</span></h1>
+          <p class="tagline">Cars &amp; bikes · AI rivals · sats racer rooms</p>
+
+          <div class="menu-actions">
+            <button id="start-btn" type="button">START RACE</button>
+            <button id="multiplayer-btn" class="btn-ghost" type="button">MULTIPLAYER</button>
+            <button id="event-btn" class="btn-ghost" type="button">EVENT MODE</button>
+            <button id="test-drive-btn" class="btn-ghost" type="button">TEST DRIVE</button>
+            <button id="solo-race-btn" class="btn-ghost" type="button">SOLO RACE</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="garage" class="overlay hidden">
+        <div class="overlay-inner garage-panel">
+          <p class="eyebrow">CUSTOMIZE</p>
+          <h1>GARAGE</h1>
+          <p class="tagline">Pick your ride — AI rivals match your class</p>
+
+          <div class="garage-kind" role="group" aria-label="Vehicle type">
+            <button id="garage-kind-car" class="garage-kind-btn is-active" type="button" data-kind="car">CAR</button>
+            <button id="garage-kind-bike" class="garage-kind-btn" type="button" data-kind="bike">BIKE</button>
+            <button id="garage-kind-truck" class="garage-kind-btn garage-kind-dev hidden" type="button" data-kind="truck">MONSTER TRUCK</button>
+            <button id="garage-kind-tank" class="garage-kind-btn garage-kind-dev hidden" type="button" data-kind="tank">TANK</button>
+          </div>
+
+          <div class="garage-colors">
+            <div class="garage-color-field" data-channel="primary">
+              <span>Body</span>
+              <button
+                type="button"
+                id="garage-primary-swatch"
+                class="garage-color-swatch"
+                aria-label="Body color"
+                aria-haspopup="listbox"
+                title="Click for palette · Right-click for custom color"
+              ></button>
+              <input id="garage-primary" class="garage-color-native" type="color" value="#e4eaf2" tabindex="-1" aria-hidden="true" />
+              <div id="garage-primary-palette" class="garage-swatch-palette hidden" role="listbox" aria-label="Body palette"></div>
+            </div>
+            <div class="garage-color-field" data-channel="accent">
+              <span>Line</span>
+              <button
+                type="button"
+                id="garage-accent-swatch"
+                class="garage-color-swatch"
+                aria-label="Line color"
+                aria-haspopup="listbox"
+                title="Click for palette · Right-click for custom color"
+              ></button>
+              <input id="garage-accent" class="garage-color-native" type="color" value="#ff3b2e" tabindex="-1" aria-hidden="true" />
+              <div id="garage-accent-palette" class="garage-swatch-palette hidden" role="listbox" aria-label="Line palette"></div>
+            </div>
+          </div>
+
+          <p id="garage-hint" class="tagline garage-hint">Cars race cars · bikes race bikes</p>
+          <button id="garage-save-btn" type="button">SAVE &amp; CLOSE</button>
+          <button id="garage-back-btn" class="btn-ghost" type="button">BACK</button>
+        </div>
+      </div>
+
+      <div id="multiplayer" class="overlay hidden">
+        <div class="overlay-inner multiplayer-panel">
+          <div id="mp-entry" class="mp-view">
+            <p class="eyebrow">SATS RACER</p>
+            <h1>MULTIPLAYER</h1>
+            <p class="tagline">Create a private room or join with a password</p>
+            <button id="mp-goto-create" type="button">CREATE ROOM</button>
+            <button id="mp-goto-join" class="btn-ghost" type="button">JOIN ROOM</button>
+            <button id="mp-back-btn" class="btn-ghost" type="button">BACK</button>
+          </div>
+
+          <div id="mp-create" class="mp-view hidden">
+            <p class="eyebrow">HOST</p>
+            <h1>CREATE ROOM</h1>
+            <p class="tagline">Lobby settings — race starts when you say go</p>
+            <form id="mp-create-form" class="multiplayer-form mp-create-form" autocomplete="off">
+              <div class="mp-fields-row">
+                <label class="mp-field">
+                  <span>Racer name</span>
+                  <input id="mp-create-name" type="text" maxlength="15" placeholder="Name (max 15)" autocomplete="nickname" spellcheck="false" required />
+                </label>
+                <label class="mp-field">
+                  <span>Room name</span>
+                  <input id="mp-create-room" type="text" maxlength="24" placeholder="circuit" value="circuit" autocomplete="off" spellcheck="false" required />
+                </label>
+              </div>
+              <div class="mp-fields-row">
+                <label class="mp-field">
+                  <span>Password</span>
+                  <input id="mp-create-pass" type="password" maxlength="32" placeholder="Optional" autocomplete="new-password" />
+                </label>
+                <label class="mp-field">
+                  <span>Max players</span>
+                  <input id="mp-create-max" type="number" min="2" max="6" value="4" />
+                </label>
+              </div>
+              <label class="mp-field hidden" id="mp-create-buyin-field">
+                <span>Buy-in per racer (real sats) · winner takes the pot</span>
+                <input id="mp-create-buyin" type="number" min="1" max="1000000" step="1" value="100" />
+              </label>
+              <div class="mp-fields-row mp-pickers-row">
+                <div class="mp-field">
+                  <span>Vehicle</span>
+                  <div class="garage-kind mp-kind" role="group" aria-label="Vehicle type">
+                    <button id="mp-create-kind-car" class="garage-kind-btn is-active" type="button" data-kind="car">CAR</button>
+                    <button id="mp-create-kind-bike" class="garage-kind-btn" type="button" data-kind="bike">BIKE</button>
+                  </div>
+                </div>
+                <div class="mp-field">
+                  <span>Weather</span>
+                  <div class="garage-kind mp-kind mp-weather" role="group" aria-label="Weather">
+                    <button id="mp-create-weather-dry" class="garage-kind-btn is-active" type="button" data-weather="dry">DRY</button>
+                    <button id="mp-create-weather-rain" class="garage-kind-btn" type="button" data-weather="rain">RAIN</button>
+                    <button id="mp-create-weather-night" class="garage-kind-btn" type="button" data-weather="night">NIGHT</button>
+                  </div>
+                </div>
+              </div>
+              <div class="mp-field mp-track-field">
+                <span>Track</span>
+                <div id="mp-create-track-grid" class="map-grid mp-track-grid" role="listbox" aria-label="Tracks"></div>
+              </div>
+              <p id="mp-create-status" class="tagline mp-status">Vehicle class and weather apply to everyone in the room</p>
+              <div class="mp-form-actions">
+                <button type="submit">CREATE &amp; ENTER LOBBY</button>
+                <button id="mp-create-back" class="btn-ghost" type="button">BACK</button>
+              </div>
+            </form>
+          </div>
+
+          <div id="mp-join" class="mp-view hidden">
+            <p class="eyebrow">RACER</p>
+            <h1>JOIN ROOM</h1>
+            <p class="tagline">Room name and password</p>
+            <form id="mp-join-form" class="multiplayer-form mp-join-form" autocomplete="off">
+              <label class="mp-field">
+                <span>Racer name</span>
+                <input id="mp-join-name" type="text" maxlength="15" placeholder="Name (max 15)" autocomplete="nickname" spellcheck="false" required />
+              </label>
+              <div class="mp-fields-row">
+                <label class="mp-field">
+                  <span>Room name</span>
+                  <input id="mp-join-room" type="text" maxlength="24" placeholder="circuit" autocomplete="off" spellcheck="false" required />
+                </label>
+                <label class="mp-field">
+                  <span>Password</span>
+                  <input id="mp-join-pass" type="password" maxlength="32" placeholder="Room password" autocomplete="current-password" />
+                </label>
+              </div>
+              <p id="mp-join-status" class="tagline mp-status">Vehicle class and weather are set by the host · garage paint still applies</p>
+              <div class="mp-form-actions">
+                <button type="submit">ENTER LOBBY</button>
+                <button id="mp-join-back" class="btn-ghost" type="button">BACK</button>
+              </div>
+            </form>
+          </div>
+
+          <div id="mp-lobby" class="mp-view hidden">
+            <p class="eyebrow">LOBBY</p>
+            <h1 id="mp-lobby-title">ROOM</h1>
+            <p id="mp-lobby-meta" class="tagline">Waiting for host…</p>
+            <ul id="mp-lobby-players" class="mp-lobby-players" aria-live="polite"></ul>
+            <div id="mp-lobby-feed" class="mp-lobby-feed" aria-live="polite"></div>
+            <div id="mp-buyin" class="mp-buyin hidden">
+              <p id="mp-buyin-banner" class="mp-buyin-banner">BUY-IN · 100 SATS</p>
+              <p class="mp-buyin-note">Race starts when everyone's paid · unpaid requests expire · pots are final once racing starts</p>
+              <div id="mp-invoice-box" class="mp-invoice-box">
+                <div id="mp-invoice-pay-tabs" class="mp-invoice-pay-tabs hidden">
+                  <button id="mp-pay-cashu" class="garage-kind-btn is-active" type="button">CASHU</button>
+                  <button id="mp-pay-ln" class="garage-kind-btn" type="button">LIGHTNING</button>
+                </div>
+                <img id="mp-invoice-qr" class="mp-invoice-qr" alt="Buy-in payment request QR code" />
+                <input id="mp-invoice-bolt11" class="mp-invoice-bolt11" type="text" readonly aria-label="Buy-in payment request" />
+                <div class="mp-invoice-actions">
+                  <button id="mp-invoice-copy" class="btn-ghost" type="button">COPY REQUEST</button>
+                </div>
+                <p class="event-or">— or paste a cashuA token from the Cubabitcoin mint —</p>
+                <div class="mp-invoice-actions">
+                  <input id="mp-token-input" class="mp-invoice-bolt11" type="text" placeholder="cashuA…" spellcheck="false" autocomplete="off" aria-label="Paste cashu token" />
+                  <button id="mp-token-submit" type="button">PAY</button>
+                </div>
+                <p id="mp-invoice-status" class="mp-invoice-status">Waiting for payment…</p>
+              </div>
+            </div>
+            <p id="mp-status" class="tagline mp-status">Waiting in lobby</p>
+            <button id="mp-start-btn" class="mp-start-btn hidden" type="button">START RACE</button>
+            <button id="mp-lobby-leave" class="btn-ghost" type="button">BACK</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="map-select" class="overlay hidden">
+        <div class="overlay-inner map-select-panel">
+          <p class="eyebrow">SELECT COURSE</p>
+          <h1 id="map-select-title">MAP</h1>
+          <p class="tagline" id="map-select-tagline">Pick a circuit</p>
+          <div id="map-grid" class="map-grid" role="listbox" aria-label="Courses"></div>
+          <button id="test-drift-btn" type="button">TEST DRIFT</button>
+          <button id="map-select-back" class="btn-ghost" type="button">BACK</button>
+        </div>
+      </div>
+
+      <div id="leaderboard" class="overlay hidden">
+        <div class="overlay-inner board-panel">
+          <p class="eyebrow" id="board-eyebrow">WORLDWIDE · 2026</p>
+          <h1>TOP 10</h1>
+          <p id="board-source" class="tagline board-source">Loading…</p>
+          <div class="board-body">
+            <div
+              id="board-track-grid"
+              class="board-map-rail"
+              role="tablist"
+              aria-label="Course boards"
+              aria-orientation="vertical"
+            ></div>
+            <div class="board-scores">
+              <ol id="board-list" class="board-list"></ol>
+            </div>
+          </div>
+          <button id="board-close-btn" type="button">BACK</button>
+        </div>
+      </div>
+
+      <div id="dev-dash" class="overlay hidden">
+        <div class="overlay-inner board-panel dev-panel">
+          <p class="eyebrow">DEV DASHBOARD</p>
+          <h1>TIPS</h1>
+          <p id="dev-status" class="tagline board-source">Loading…</p>
+          <p class="eyebrow dev-section-title">EVENTS</p>
+          <div id="dev-events-box" class="dev-events-box">
+            <p id="dev-events-empty" class="dev-tip-empty">No live or leftover event pots.</p>
+            <div id="dev-event-table-wrap" class="dev-event-table-wrap hidden">
+              <table class="dev-event-table">
+                <thead>
+                  <tr>
+                    <th>Event</th>
+                    <th>Status</th>
+                    <th>Paid</th>
+                    <th>Accounted</th>
+                    <th>Unspent</th>
+                  </tr>
+                </thead>
+                <tbody id="dev-event-rows"></tbody>
+              </table>
+            </div>
+          </div>
+          <div id="dev-wallet" class="dev-wallet hidden">
+            <p class="dev-wallet-label">TIP WALLET</p>
+            <p class="dev-wallet-amount"><span id="dev-pending-sats">0</span><span class="dev-wallet-unit">SATS</span></p>
+            <p class="dev-wallet-stats">
+              <span><span id="dev-earned-sats">0</span> earned</span>
+              <span><span id="dev-count">0</span> tips</span>
+              <span><span id="dev-claimed-sats">0</span> withdrawn</span>
+            </p>
+            <p id="dev-tip-audit" class="dev-wallet-stats">—</p>
+          </div>
+          <div id="dev-orphan-box" class="event-token-box hidden">
+            <p id="dev-orphan-hint" class="event-token-hint">Unspent proofs on disk from another mint — paste into a wallet that has that mint.</p>
+            <input id="dev-orphan-token" class="event-payout-token" type="text" readonly aria-label="Orphan mint token" />
+            <div class="event-token-actions">
+              <button id="dev-orphan-copy" class="btn-ghost" type="button">COPY RESCUE TOKEN</button>
+            </div>
+          </div>
+          <ol id="dev-tips-list" class="dev-tips-list"></ol>
+          <div id="dev-withdraw-box" class="event-token-box hidden">
+            <input id="dev-withdraw-token" class="event-payout-token" type="text" readonly aria-label="Withdraw token" />
+            <div class="event-token-actions">
+              <button id="dev-withdraw-copy" class="btn-ghost" type="button">COPY TOKEN</button>
+              <a id="dev-open-cashu" class="btn-ghost" href="https://wallet.cashu.me" target="_blank" rel="noopener noreferrer">OPEN CASHU.ME</a>
+            </div>
+            <p class="event-token-hint">Paste into cashu.me once — then mark copied. Don’t redeem it twice.</p>
+          </div>
+          <p class="eyebrow dev-section-title">FEEDBACK</p>
+          <ol id="dev-feedback-list" class="dev-tips-list dev-feedback-list"></ol>
+          <button id="dev-feedback-toggle" class="dev-feedback-toggle hidden" type="button"></button>
+          <div class="dev-actions">
+            <button id="dev-withdraw-btn" class="btn-ghost hidden" type="button">WITHDRAW TO CASHU.ME</button>
+            <button id="dev-claim-all" class="btn-ghost hidden" type="button">MARK WITHDRAW COPIED</button>
+            <button id="dev-god-btn" class="btn-ghost" type="button">GOD MODE: OFF</button>
+            <button id="dev-close-btn" type="button">BACK</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="pause" class="overlay hidden">
+        <div class="overlay-inner">
+          <p class="eyebrow">PAUSED</p>
+          <h1>HOLD</h1>
+          <p class="tagline">Race frozen · press Esc to resume</p>
+          <button id="resume-btn" type="button">RESUME</button>
+          <button id="pause-restart-btn" class="btn-ghost" type="button">RESTART</button>
+          <button id="pause-home-btn" class="btn-ghost" type="button">HOME</button>
+        </div>
+      </div>
+
+      <div id="finish" class="overlay hidden">
+        <div class="overlay-inner finish-panel">
+          <p class="eyebrow" id="finish-eyebrow">SESSION COMPLETE</p>
+          <h1 id="finish-title">FINISH</h1>
+          <div class="finish-stats">
+            <p class="tagline finish-stat">Place <span id="final-place">1/6</span></p>
+            <p class="tagline finish-stat">Total <span id="final-time">0:00.000</span></p>
+            <p class="tagline finish-stat">Best lap <span id="final-best">--:--.---</span></p>
+          </div>
+          <div id="finish-callouts" class="finish-callouts hidden"></div>
+          <div id="name-entry" class="name-entry hidden">
+            <p class="name-entry-label" id="name-entry-label">Top 10 time — up to 15 letters or numbers</p>
+            <input
+              id="driver-name"
+              type="text"
+              maxlength="15"
+              pattern="[A-Za-z0-9 _]+"
+              title="Up to 15 letters, numbers, spaces, or underscores"
+              placeholder="Name (max 15)"
+              autocomplete="nickname"
+              spellcheck="false"
+            />
+            <button id="submit-score-btn" type="button">SAVE TO BOARD</button>
+            <button id="nostr-save-login-btn" type="button" class="hidden">SIGN IN WITH NOSTR TO SAVE</button>
+          </div>
+          <section id="mp-map-vote" class="mp-map-vote hidden" aria-labelledby="mp-map-vote-title">
+            <p class="eyebrow" id="mp-map-vote-title">VOTE NEXT TRACK</p>
+            <div id="mp-map-vote-grid" class="mp-map-vote-grid" role="listbox" aria-label="Vote for the next track"></div>
+            <p id="mp-map-vote-status" class="tagline mp-map-vote-status">Press 1–6 or choose a map</p>
+          </section>
+          <section id="event-checkout" class="event-checkout hidden" aria-labelledby="event-checkout-title">
+            <p class="eyebrow" id="event-checkout-title">POT WON</p>
+            <p class="event-pot"><span id="event-pot-sats">0</span><span class="event-pot-unit">SATS</span></p>
+            <label class="event-tip-row" for="event-tip-range">
+              <span>DEVELOPER TIP · <span id="event-tip-label">2%</span></span>
+              <input id="event-tip-range" type="range" min="0" max="100" step="1" value="2" />
+            </label>
+            <p id="event-tip-guilt" class="event-tip-guilt hidden" aria-live="polite">seriously…</p>
+            <div class="event-rows">
+              <div class="event-row event-row-winner">
+                <span>You receive</span>
+                <strong><span id="event-winner-sats">0</span> sats</strong>
+              </div>
+              <div class="event-row">
+                <span>Dev tip (auto-collected)</span>
+                <strong><span id="event-tip-sats">0</span> sats</strong>
+              </div>
+              <div class="event-row event-row-fee hidden" id="event-fee-part">
+                <span>Mint fee</span>
+                <strong>~<span id="event-fee-sats">0</span> sats · comes out of the pot</strong>
+              </div>
+            </div>
+            <ol class="event-schedule" aria-label="Payment schedule">
+              <li><span id="event-sched-n">0</span> racers each pay <strong><span id="event-sched-pay">0</span> sats</strong> (<span id="event-sched-buyin">0</span> buy-in<span id="event-sched-infee-row"> + <span id="event-sched-infee">0</span> mint fee</span>)</li>
+              <li>Pot <strong><span id="event-sched-pot">0</span> sats</strong> sits in the event wallet</li>
+              <li>Tip <strong><span id="event-sched-tip">0</span> sats</strong> swaps into the developer Cashu wallet automatically</li>
+              <li>You get <strong><span id="event-sched-you">0</span> sats</strong> as a Cashu token</li>
+              <li>Mint keeps ~<strong><span id="event-sched-outfee">0</span> sats</strong> for the payout swaps</li>
+            </ol>
+            <button id="event-claim-btn" type="button">CLAIM POT</button>
+            <div id="event-token-box" class="event-token-box hidden">
+              <div id="event-payout-qr-wrap" class="event-payout-qr-wrap hidden">
+                <img id="event-payout-qr" class="event-payout-qr" alt="Cashu payout token QR code" width="280" height="280" />
+              </div>
+              <p id="event-payout-qr-note" class="event-payout-qr-note hidden" aria-live="polite"></p>
+              <input id="event-payout-token" class="event-payout-token" type="text" readonly aria-label="Your payout token" />
+              <div class="event-token-actions">
+                <button id="event-token-copy" class="btn-ghost" type="button">COPY TOKEN</button>
+                <a id="event-open-cashu" class="btn-ghost" href="https://wallet.cashu.me" target="_blank" rel="noopener noreferrer">OPEN CASHU.ME</a>
+              </div>
+              <p id="event-token-hint" class="event-token-hint">Scan with cashu.me, or Receive → paste the token</p>
+            </div>
+            <p id="event-payout-status" class="event-payout-status hidden" aria-live="polite"></p>
+          </section>
+          <p id="event-lost-note" class="event-lost-note hidden">Winner takes the pot</p>
+          <div class="finish-actions">
+            <button id="restart-btn" class="btn-ghost" type="button">RACE AGAIN</button>
+            <button id="finish-home-btn" class="btn-ghost" type="button">HOME</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div id="mobile-gate" class="mobile-gate">
+      <div class="mobile-gate-inner">
+        <p class="eyebrow">SATS RACER</p>
+        <h1>DESKTOP ONLY</h1>
+        <p class="tagline">Open this page on a computer to play</p>
+      </div>
+    </div>
+    <script>
+      // Mobile gate: phones/tablets get the desktop-only message, never the game.
+      // Runs before the module bundle so the 3D engine never boots on mobile.
+      (function () {
+        var coarse = window.matchMedia && matchMedia("(pointer: coarse)").matches;
+        var smallScreen = Math.min(screen.width, screen.height) < 820;
+        var mobileUA = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        if ((coarse && smallScreen) || mobileUA) {
+          document.documentElement.classList.add("mobile-blocked");
+        }
+      })();
+    </script>
+  </body>
+</html>
