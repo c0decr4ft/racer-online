@@ -17,6 +17,8 @@ export type VehicleState = {
   steerAngle: number;
   gear: Gear;
   driftSlip: number;
+  /** Nose pitch from a track grade (rad). Physics stays planar; this is visual. */
+  groundPitch: number;
 };
 
 /**
@@ -68,6 +70,7 @@ export class Vehicle {
       steerAngle: 0,
       gear: 1,
       driftSlip: 0,
+      groundPitch: 0,
     };
     this.syncMesh();
   }
@@ -79,6 +82,7 @@ export class Vehicle {
     this.state.steerAngle = 0;
     this.state.gear = 1;
     this.state.driftSlip = 0;
+    this.state.groundPitch = 0;
     this.shiftTimer = 0;
     this.powerMul = 1;
     this.animalHitPenalty = 0;
@@ -197,7 +201,7 @@ export class Vehicle {
   private syncMesh(dt?: number) {
     const s = this.state;
     this.mesh.position.copy(s.position);
-    this.mesh.position.y = VISUAL_RIDE_Y;
+    this.mesh.position.y = s.position.y + VISUAL_RIDE_Y;
     this.mesh.rotation.order = "YXZ";
     this.mesh.rotation.y = s.heading + this.driftYaw;
     const isBike = this.mesh.userData.kind === "bike";
@@ -220,7 +224,8 @@ export class Vehicle {
       this.leanSmooth = targetLean;
     }
     this.mesh.rotation.z = this.leanSmooth;
-    this.mesh.rotation.x = THREE.MathUtils.clamp(-s.speed * 0.00055, -0.045, 0.03);
+    this.mesh.rotation.x =
+      THREE.MathUtils.clamp(-s.speed * 0.00055, -0.045, 0.03) + (s.groundPitch || 0);
   }
 
   private animateWheels(dt: number) {
@@ -319,7 +324,6 @@ export class RivalAI {
     gear: null,
     shiftDelta: 0,
     fire: false,
-    jump: 0,
   };
 
   constructor(vehicle: Vehicle, laneOffset: number, skill: number, gridIndex = 0) {

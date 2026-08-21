@@ -16,7 +16,7 @@ const GEAR_BY_KEY: Readonly<Record<string, Gear>> = {
   Numpad5: 5,
   KeyR: "R",
 };
-const DRIVE_KEYS = ["KeyW", "KeyA", "KeyS", "KeyD", "ArrowLeft", "ArrowRight", "ShiftLeft", "ShiftRight", "Space"] as const;
+const DRIVE_KEYS = ["KeyW", "KeyA", "KeyS", "KeyD", "ArrowLeft", "ArrowRight", "ShiftLeft", "ShiftRight"] as const;
 const BLOCKED_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space", "ShiftLeft", "ShiftRight"]);
 
 /** True when focus is in a text field — don't steal keys for driving/gears. */
@@ -40,8 +40,6 @@ export type InputState = {
   shiftDelta: -1 | 0 | 1;
   /** One-shot fire (dev tank cannon). Consumed once per frame. */
   fire: boolean;
-  /** Space — jump / ollie in sports (unused while driving). */
-  jump: number;
 };
 
 export class Input {
@@ -71,7 +69,6 @@ export class Input {
     gear: null,
     shiftDelta: 0,
     fire: false,
-    jump: 0,
   };
 
   constructor() {
@@ -225,7 +222,6 @@ export class Input {
     s.gear = gear;
     s.shiftDelta = shiftDelta;
     s.fire = fire;
-    s.jump = this.keys.has("Space") ? 1 : 0;
     return s;
   }
 }

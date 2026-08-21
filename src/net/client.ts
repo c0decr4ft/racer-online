@@ -8,7 +8,6 @@ import {
   decodeStateBinary,
   type EventRoomInfo,
   type LobbyPhase,
-  type NetSport,
   type NetVehicleKind,
   type NetWeatherMode,
   type PlayerPose,
@@ -401,7 +400,6 @@ export type WelcomeInfo = {
   weather: NetWeatherMode;
   maxPlayers: number;
   phase: LobbyPhase;
-  sport?: NetSport;
 };
 
 export type NetHandlers = {
@@ -416,9 +414,8 @@ export type NetHandlers = {
     weather: NetWeatherMode;
     hostId: string;
     maxPlayers: number;
-    sport?: NetSport;
   }) => void;
-  onStart: (at: number, trackId: string, kind: NetVehicleKind, weather: NetWeatherMode, sport?: NetSport) => void;
+  onStart: (at: number, trackId: string, kind: NetVehicleKind, weather: NetWeatherMode) => void;
   /** Event Mode — your buy-in payment request (creqA) and optional Lightning invoice. */
   onEventInvoice: (
     paymentRequest: string,
@@ -464,8 +461,6 @@ export type RoomConnectOpts = {
   kind?: NetVehicleKind;
   /** Host-only on create — room weather for every racer. */
   weather?: NetWeatherMode;
-  /** Host-only on create — sports hub (driving = original racer). */
-  sport?: NetSport;
   color?: number;
   accent?: number;
   maxPlayers?: number;
@@ -501,7 +496,6 @@ export class NetClient {
   kind: NetVehicleKind = "car";
   /** Room weather — set by host at create, forced for everyone. */
   weather: NetWeatherMode = "dry";
-  sport: NetSport = "driving";
   maxPlayers = 8;
   phase: LobbyPhase | "" = "";
   /** Event Mode room state — null in normal rooms. */
@@ -656,7 +650,6 @@ export class NetClient {
               trackId: opts.trackId,
               kind: opts.kind === "bike" ? "bike" : "car",
               weather: normalizeWeatherMode(opts.weather),
-              sport: opts.sport || "driving",
               color: opts.color,
               accent: opts.accent,
               pubkey: opts.pubkey,
@@ -706,7 +699,6 @@ export class NetClient {
         this.trackId = msg.trackId;
         this.kind = msg.kind === "bike" ? "bike" : "car";
         this.weather = applyWireWeather(msg.weather, this.weather);
-        this.sport = msg.sport || "driving";
         this.maxPlayers = msg.maxPlayers;
         this.phase = msg.phase;
         this.event = msg.event ?? null;
@@ -728,7 +720,6 @@ export class NetClient {
           weather: this.weather,
           maxPlayers: msg.maxPlayers,
           phase: msg.phase,
-          sport: this.sport,
         });
       } else if (msg.t === "join") {
         this.rememberPlayer(msg.player);
@@ -744,7 +735,6 @@ export class NetClient {
         this.trackId = msg.trackId;
         this.kind = msg.kind === "bike" ? "bike" : "car";
         this.weather = applyWireWeather(msg.weather, this.weather);
-        this.sport = msg.sport || this.sport;
         this.maxPlayers = msg.maxPlayers;
         this.event = msg.event ?? null;
         this.roster.clear();
@@ -756,8 +746,7 @@ export class NetClient {
         this.trackId = msg.trackId;
         this.kind = msg.kind === "bike" ? "bike" : "car";
         this.weather = applyWireWeather(msg.weather, this.weather);
-        if (msg.sport) this.sport = msg.sport;
-        this.handlers.onStart(msg.at, msg.trackId, this.kind, this.weather, this.sport);
+        this.handlers.onStart(msg.at, msg.trackId, this.kind, this.weather);
       } else if (msg.t === "crashReset") {
         this.finishSent = false;
         this.handlers.onCrashReset(msg.byId, msg.byName);
@@ -872,7 +861,6 @@ export class NetClient {
     this.hostId = "";
     this.trackId = "";
     this.kind = "car";
-    this.sport = "driving";
     this.maxPlayers = 8;
     this.phase = "";
     this.event = null;

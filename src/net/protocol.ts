@@ -21,7 +21,6 @@ export type NetVehicleKind = "car" | "bike";
 /** Host-chosen at room create — same modes as WeatherController. */
 export type NetWeatherMode = "dry" | "night" | "rain";
 export type LobbyPhase = "lobby" | "racing" | "finished" | "starting";
-export type NetSport = "driving" | "skiing" | "motocross" | "biking" | "skate";
 
 /** Event Mode room state — buy-in gate + pot. Present only in event rooms. */
 export type EventRoomInfo = {
@@ -78,8 +77,6 @@ export type ClientMsg =
       accent?: number;
       /** Nostr identity (64-hex pubkey) of the host. */
       pubkey?: string;
-      /** Sports hub — driving is the original racer. */
-      sport?: NetSport;
       /** Event Mode — buy-in per racer in sats; host cannot start until all paid. */
       event?: { buyInSats: number };
     }
@@ -131,7 +128,6 @@ export type ServerMsg =
       weather: NetWeatherMode;
       maxPlayers: number;
       phase: LobbyPhase;
-      sport?: NetSport;
       event?: EventRoomInfo | null;
     }
   | { t: "join"; player: PlayerPose }
@@ -145,11 +141,10 @@ export type ServerMsg =
       weather: NetWeatherMode;
       hostId: string;
       maxPlayers: number;
-      sport?: NetSport;
       event?: EventRoomInfo | null;
     }
   | { t: "state"; players: PlayerPose[]; at?: number }
-  | { t: "start"; at: number; trackId: string; kind: NetVehicleKind; weather: NetWeatherMode; sport?: NetSport }
+  | { t: "start"; at: number; trackId: string; kind: NetVehicleKind; weather: NetWeatherMode }
   /** Event Mode — your personal buy-in (NUT-18 creqA + optional Lightning invoice). */
   | {
       t: "eventInvoice";

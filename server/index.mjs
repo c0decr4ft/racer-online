@@ -174,10 +174,7 @@ const TRACK_IDS = [
   "canyon-cut",
   "oval-circuit",
 ];
-const SPORT_BOARD_IDS = ["sport-ski", "sport-mx", "sport-bike", "sport-skate"];
-const BOARD_IDS = [...TRACK_IDS, ...SPORT_BOARD_IDS];
 const DEFAULT_TRACK_ID = TRACK_IDS[0];
-const SPORT_IDS = ["driving", "skiing", "motocross", "biking", "skate"];
 
 /** Letters, digits, space, underscore — trim, strip control/weird chars, cap length. */
 function sanitizeDriverName(raw) {
@@ -193,12 +190,7 @@ function sanitizeDriverName(raw) {
 
 function normalizeTrackId(raw) {
   const id = String(raw ?? "").trim();
-  return BOARD_IDS.includes(id) ? id : DEFAULT_TRACK_ID;
-}
-
-function normalizeSport(raw) {
-  const id = String(raw ?? "").toLowerCase();
-  return SPORT_IDS.includes(id) ? id : "driving";
+  return TRACK_IDS.includes(id) ? id : DEFAULT_TRACK_ID;
 }
 
 function normalizeKind(raw) {
@@ -561,7 +553,7 @@ function verifyScoreEvent(event) {
   const d = dTag && typeof dTag[1] === "string" ? dTag[1] : "";
   if (!d.startsWith(SCORE_D_PREFIX)) return null;
   const trackId = d.slice(SCORE_D_PREFIX.length);
-  if (!BOARD_IDS.includes(trackId)) return null;
+  if (!TRACK_IDS.includes(trackId)) return null;
 
   let content;
   try {
@@ -598,7 +590,7 @@ function verifyScoreEvent(event) {
 function emptyStore() {
   /** @type {BoardStore} */
   const store = {};
-  for (const id of BOARD_IDS) store[id] = [];
+  for (const id of TRACK_IDS) store[id] = [];
   return store;
 }
 
@@ -636,7 +628,7 @@ function loadStore() {
 function saveStore(store) {
   /** @type {BoardStore} */
   const byTrack = {};
-  for (const id of BOARD_IDS) byTrack[id] = sortBoard(store[id] || [], id);
+  for (const id of TRACK_IDS) byTrack[id] = sortBoard(store[id] || [], id);
   writeFileSync(LEADERBOARD_PATH, JSON.stringify({ byTrack }, null, 2));
 }
 
@@ -698,24 +690,13 @@ function sortBoard(entries, trackId) {
   const byPubkey = new Map();
   for (const e of cleaned) {
     const prev = byPubkey.get(e.pubkey);
-    if (
-      !prev ||
-      (SPORT_BOARD_IDS.includes(tid) &&
-        ((e.bestLapMs ?? 0) > (prev.bestLapMs ?? 0) ||
-          ((e.bestLapMs ?? 0) === (prev.bestLapMs ?? 0) && e.timeMs < prev.timeMs))) ||
-      (!SPORT_BOARD_IDS.includes(tid) &&
-        (e.timeMs < prev.timeMs || (e.timeMs === prev.timeMs && (e.at || 0) < (prev.at || 0))))
-    ) {
+    if (!prev || e.timeMs < prev.timeMs || (e.timeMs === prev.timeMs && (e.at || 0) < (prev.at || 0))) {
       byPubkey.set(e.pubkey, e);
     }
   }
 
   return [...byPubkey.values()]
-    .sort((a, b) =>
-      SPORT_BOARD_IDS.includes(tid)
-        ? (b.bestLapMs ?? 0) - (a.bestLapMs ?? 0) || a.timeMs - b.timeMs || (a.at || 0) - (b.at || 0)
-        : a.timeMs - b.timeMs || (a.at || 0) - (b.at || 0),
-    )
+    .sort((a, b) => a.timeMs - b.timeMs || (a.at || 0) - (b.at || 0))
     .slice(0, MAX_BOARD);
 }
 
@@ -1216,7 +1197,6 @@ function lobbySnapshot(room) {
     weather: room.weather || "dry",
     hostId: room.hostId,
     maxPlayers: room.maxPlayers,
-    sport: room.sport || "driving",
     event: eventInfo(room),
   };
 }
@@ -1330,7 +1310,6 @@ function admitClient(ws, msg, mode) {
       trackId: normalizeTrackId(msg.trackId),
       kind: normalizeKind(msg.kind),
       weather: normalizeWeather(msg.weather),
-      sport: normalizeSport(msg.sport),
       hostId: "",
       phase: "lobby",
       winnerId: "",
@@ -1451,7 +1430,6 @@ function admitClient(ws, msg, mode) {
     weather: room.weather || "dry",
     maxPlayers: room.maxPlayers,
     phase: room.phase,
-    sport: room.sport || "driving",
     event: eventInfo(room),
   });
   broadcast(room, { t: "join", player: pose }, id);
@@ -1961,7 +1939,6 @@ wss.on("connection", (ws) => {
         trackId: room.trackId,
         kind: room.kind,
         weather: room.weather || "dry",
-        sport: room.sport || "driving",
       });
       console.log(`[start] ${room.name} by ${client.name} → ${room.trackId} ${room.kind} ${room.weather || "dry"} (${room.clients.size}p)`);
       return;
@@ -1995,7 +1972,6 @@ wss.on("connection", (ws) => {
     }
 
     if (msg.t === "crash") {
-      if (room.sport && room.sport !== "driving") return;
       if (room.phase !== "racing" || room.winnerId) return;
       const now = Date.now();
       // Debounce so multiple near-simultaneous explodes don't spam resets
@@ -2021,8 +1997,8 @@ wss.on("connection", (ws) => {
       const timeMs = Math.max(1_000, Math.min(3_600_000, Math.round(Number(msg.timeMs) || 0)));
       room.winnerId = client.id;
       room.phase = "finished";
-      // Event Mode and non-driving sports: one run, winner takes it — no map vote
-      if (room.isEvent || (room.sport && room.sport !== "driving")) {
+      // Event Mode: one race, winner takes the pot — no map vote / next round
+      if (room.isEvent) {
         void (async () => {
           // Attach the payout fee budget (both sends: winner + tip) so the
           // winner's checkout shows the real split.

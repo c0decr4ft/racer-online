@@ -62,10 +62,8 @@ import {
   GARAGE_SWATCHES,
   hexColor,
   loadGarage,
-  loadSportPaint,
   parseHexColor,
   saveGarage,
-  saveSportPaint,
   type GarageLoadout,
   type VehicleKind,
 } from "./garage";
@@ -78,15 +76,6 @@ import {
   type WeatherMode,
 } from "./weather";
 import { WildlifeHerd } from "./wildlife";
-import { SportSession } from "./sportPlay";
-import {
-  boardIdForSport,
-  isSportId,
-  saveActiveSport,
-  sportById,
-  SPORTS,
-  type SportId,
-} from "./sports";
 
 function formatTime(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "--:--.---";
@@ -206,10 +195,6 @@ export class Game {
   private labelRoot = document.getElementById("player-tags")!;
   /** Player garage loadout — bots match `kind` (dev extras race cars). */
   private garage: GarageLoadout = loadGarage();
-  private activeSport: SportId | null = null;
-  private sportSession: SportSession | null = null;
-  private pendingSportScore = 0;
-  private hubEl = document.getElementById("sports-hub")!;
   /** Waiting in multiplayer lobby (connected, race not started). */
   private inLobby = false;
   /** True after create/join until welcome, leave, or cancel — blocks late welcomes. */
@@ -489,14 +474,7 @@ export class Game {
         this.applyMenuWeatherPreview(this.net.weather);
         this.renderLobby();
       },
-      onStart: (_at, trackId, kind, weather, sport) => {
-        if (sport && sport !== "driving") {
-          this.activeSport = sport;
-          this.beginOnlineSport(trackId);
-          return;
-        }
-        this.beginOnlineRace(trackId, kind, weather);
-      },
+      onStart: (_at, trackId, kind, weather) => this.beginOnlineRace(trackId, kind, weather),
       onCrashReset: (_byId, byName) => this.applyOnlineCrashReset(byName),
       onRaceResult: (winnerId, winnerName, timeMs, trackOptions, voteEndsAt) =>
         this.finishRace({
@@ -546,8 +524,6 @@ export class Game {
     this.setAiVisible(false);
     this.snapCamera();
     this.bindUi();
-    this.buildSportGrid();
-    this.goHub();
     this.refreshTouchMode();
     void this.refreshDevAccess();
 
@@ -603,24 +579,15 @@ export class Game {
     // Bind menu actions first — syncMuteBtn/onHomeOrBoard must not abort handler wiring
     // if a removed overlay ref throws (that previously left every homepage button dead).
     document.getElementById("start-btn")!.onclick = () => {
-      if (this.activeSport && this.activeSport !== "driving") {
-        void this.bootSportFromMenu({});
-        return;
-      }
+      // Start Race with AI — random course, no picker
       void this.bootFromMenu({ trackId: randomTrackId() });
     };
     document.getElementById("test-drive-btn")!.onclick = () => {
-      if (this.activeSport && this.activeSport !== "driving") {
-        void this.bootSportFromMenu({ practice: true });
-        return;
-      }
+      // Practice: keep map picker so you can choose a circuit to learn
       void this.unlockAndMaybeMenuMusic().then(() => this.openMapSelect());
     };
     document.getElementById("solo-race-btn")!.onclick = () => {
-      if (this.activeSport && this.activeSport !== "driving") {
-        void this.bootSportFromMenu({ solo: true });
-        return;
-      }
+      // Solo Race — random course on Play (same as Start Race)
       void this.bootFromMenu({ solo: true, trackId: randomTrackId() });
     };
     document.getElementById("multiplayer-btn")!.onclick = () => {
@@ -643,20 +610,12 @@ export class Game {
     document.getElementById("test-drift-btn")!.onclick = () => {
       void this.bootFromMenu({ practice: true, solo: true, trackId: DRIFT_TRACK_ID });
     };
-    document.getElementById("sport-back-btn")!.onclick = () => this.goHub();
     document.getElementById("restart-btn")!.onclick = () => {
       void this.audio.unlock().then(() => {
         this.audio.stopRaceAudio();
         // AI race again → new random map; solo/online keep chosen course
         const trackId =
           this.online || this.solo || this.practice ? this.trackId : randomTrackId();
-        if (this.activeSport && this.activeSport !== "driving") {
-          this.startSport({
-            solo: this.solo,
-            practice: this.practice,
-          });
-          return;
-        }
         this.startRace({
           solo: this.solo,
           practice: this.practice,
@@ -668,13 +627,6 @@ export class Game {
     document.getElementById("pause-restart-btn")!.onclick = () => {
       void this.audio.unlock().then(() => {
         this.audio.stopRaceAudio();
-        if (this.activeSport && this.activeSport !== "driving") {
-          this.startSport({
-            practice: this.practice,
-            solo: this.solo,
-          });
-          return;
-        }
         this.startRace({
           practice: this.practice,
           solo: this.solo,
@@ -857,18 +809,11 @@ export class Game {
     const garageOpen = !this.el.garage.classList.contains("hidden");
     const mpOpen = !this.el.multiplayer.classList.contains("hidden");
     const devOpen = !document.getElementById("dev-dash")?.classList.contains("hidden");
-    const hubOpen = !this.hubEl.classList.contains("hidden");
     return (
       !this.running &&
       !this.finished &&
       !this.paused &&
-      (hubOpen ||
-        !this.el.overlay.classList.contains("hidden") ||
-        mapOpen ||
-        boardOpen ||
-        garageOpen ||
-        mpOpen ||
-        devOpen)
+      (!this.el.overlay.classList.contains("hidden") || mapOpen || boardOpen || garageOpen || mpOpen || devOpen)
     );
   }
 
@@ -878,10 +823,6 @@ export class Game {
     this.el.multiplayer.classList.add("hidden");
     document.getElementById("dev-dash")?.classList.add("hidden");
     this.garage = loadGarage();
-    if (this.activeSport && this.activeSport !== "driving") {
-      const paint = loadSportPaint(this.activeSport);
-      this.garage = { ...this.garage, primary: paint.primary, accent: paint.accent };
-    }
     this.closeGarageSwatchPalettes();
     this.syncGarageUi();
     this.el.garage.classList.remove("hidden");
@@ -893,22 +834,12 @@ export class Game {
   private closeGarage(save: boolean) {
     this.closeGarageSwatchPalettes();
     if (save) {
-      const primary = parseHexColor(this.el.garagePrimary.value, this.garage.primary);
-      const accent = parseHexColor(this.el.garageAccent.value, this.garage.accent);
-      if (this.activeSport && this.activeSport !== "driving") {
-        saveSportPaint(this.activeSport, { primary, accent });
-        this.garage = { ...this.garage, primary, accent };
-      } else {
-        this.garage = saveGarage({
-          kind: this.garage.kind,
-          primary,
-          accent,
-        });
-        this.applyGarageToWorld(true);
-      }
-    } else if (this.activeSport && this.activeSport !== "driving") {
-      const paint = loadSportPaint(this.activeSport);
-      this.garage = { ...this.garage, primary: paint.primary, accent: paint.accent };
+      this.garage = saveGarage({
+        kind: this.garage.kind,
+        primary: parseHexColor(this.el.garagePrimary.value, this.garage.primary),
+        accent: parseHexColor(this.el.garageAccent.value, this.garage.accent),
+      });
+      this.applyGarageToWorld(true);
     } else {
       this.garage = loadGarage();
     }
@@ -923,39 +854,22 @@ export class Game {
   }
 
   private syncGarageUi() {
-    const sportMode = !!(this.activeSport && this.activeSport !== "driving");
-    document.getElementById("garage-kind-car")?.classList.toggle("hidden", sportMode);
-    document.getElementById("garage-kind-bike")?.classList.toggle("hidden", sportMode);
-    const sportBtn = document.getElementById("garage-kind-sport");
-    if (sportBtn) {
-      sportBtn.classList.toggle("hidden", !sportMode);
-      sportBtn.classList.toggle("is-active", sportMode);
-      sportBtn.textContent = sportMode ? sportById(this.activeSport!).garageKindLabel : "";
-    }
-    if (!sportMode) {
-      document.getElementById("garage-kind-car")?.classList.toggle("is-active", this.garage.kind === "car");
-      document.getElementById("garage-kind-bike")?.classList.toggle("is-active", this.garage.kind === "bike");
-      document.getElementById("garage-kind-truck")?.classList.toggle("is-active", this.garage.kind === "truck");
-      document.getElementById("garage-kind-tank")?.classList.toggle("is-active", this.garage.kind === "tank");
-    }
+    document.getElementById("garage-kind-car")?.classList.toggle("is-active", this.garage.kind === "car");
+    document.getElementById("garage-kind-bike")?.classList.toggle("is-active", this.garage.kind === "bike");
+    document.getElementById("garage-kind-truck")?.classList.toggle("is-active", this.garage.kind === "truck");
+    document.getElementById("garage-kind-tank")?.classList.toggle("is-active", this.garage.kind === "tank");
     this.el.garagePrimary.value = hexColor(this.garage.primary);
     this.el.garageAccent.value = hexColor(this.garage.accent);
     this.syncGarageSwatches();
     const hint = document.getElementById("garage-hint");
-    const tag = document.getElementById("garage-tagline");
-    if (sportMode) {
-      const def = sportById(this.activeSport!);
-      if (hint) hint.textContent = def.garageHint;
-      if (tag) tag.textContent = def.garageHint;
-    } else {
+    if (hint) {
       const hints: Record<VehicleKind, string> = {
         car: "Car selected — all AI rivals become cars",
         bike: "Bike selected — all AI rivals become bikes",
         truck: "Monster truck selected — AI rivals stay in cars",
         tank: "Tank selected — AI rivals stay in cars",
       };
-      if (hint) hint.textContent = hints[this.garage.kind];
-      if (tag) tag.textContent = "Pick your ride — AI rivals match your class";
+      hint.textContent = hints[this.garage.kind];
     }
     this.syncGarageSwatchPaletteActive();
   }
@@ -1094,24 +1008,15 @@ export class Game {
     // Rooms are car/bike only — dev garage extras (truck/tank) fall back to car.
     this.mpCreateKind = this.garage.kind === "bike" ? "bike" : "car";
     this.mpCreateWeather = "dry";
-    this.mpCreateTrackId =
-      this.activeSport && this.activeSport !== "driving"
-        ? boardIdForSport(this.activeSport)
-        : DEFAULT_TRACK_ID;
-    const sportMode = !!(this.activeSport && this.activeSport !== "driving");
-    document.getElementById("mp-create-kind-field")?.classList.toggle("hidden", sportMode);
-    document.getElementById("mp-create-track-field")?.classList.toggle("hidden", sportMode);
+    this.mpCreateTrackId = DEFAULT_TRACK_ID;
     // Event Mode: show the buy-in field; plain multiplayer hides it.
     document.getElementById("mp-create-buyin-field")?.classList.toggle("hidden", !eventMode);
     const entryTitle = document.querySelector("#mp-entry h1");
     if (entryTitle) entryTitle.textContent = eventMode ? "EVENT MODE" : "MULTIPLAYER";
     const entryTagline = document.querySelector("#mp-entry .tagline");
     if (entryTagline) {
-      const sportName = this.activeSport ? sportById(this.activeSport).label : "RACING";
       entryTagline.textContent = eventMode
-        ? sportMode
-          ? `Buy-in ${sportName.toLowerCase()} — winner takes the pot`
-          : "Buy-in races — everyone pays, winner takes the pot"
+        ? "Buy-in races — everyone pays, winner takes the pot"
         : "Create a private room or join with a password";
     }
     // Signed in → prefill the racer name from the Nostr profile (username, never
@@ -1295,10 +1200,6 @@ export class Game {
     await this.audio.unlock();
     this.audio.stopMenuMusic();
     this.garage = { ...loadGarage(), kind: this.mpCreateKind };
-    if (this.activeSport && this.activeSport !== "driving") {
-      const paint = loadSportPaint(this.activeSport);
-      this.garage = { ...this.garage, primary: paint.primary, accent: paint.accent };
-    }
     this.solo = false;
     this.practice = false;
     this.clearRemotes();
@@ -1313,7 +1214,6 @@ export class Game {
       trackId: this.mpCreateTrackId,
       kind: this.mpCreateKind,
       weather: this.mpCreateWeather,
-      sport: this.activeSport || "driving",
       color: this.garage.primary,
       accent: this.garage.accent,
       pubkey: getSession()?.pubkey,
@@ -1685,7 +1585,7 @@ export class Game {
     this.el.multiplayer.classList.add("hidden");
     document.getElementById("dev-dash")?.classList.add("hidden");
     this.el.mapSelectTitle.textContent = "TEST DRIVE";
-    this.el.mapSelectTagline.textContent = "Choose a circuit, or Test Drift";
+    this.el.mapSelectTagline.textContent = "Choose a circuit";
     this.renderMapGrid(this.el.mapGrid, null, (trackId) => {
       void this.bootFromMenu({ practice: true, trackId });
     });
@@ -1838,206 +1738,6 @@ export class Game {
     this.startRace(opts);
   }
 
-  private buildSportGrid() {
-    const grid = document.getElementById("sport-grid");
-    if (!grid) return;
-    grid.innerHTML = "";
-    for (const sport of SPORTS) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "sport-card";
-      btn.dataset.sport = sport.id;
-      btn.style.setProperty("--sport-color", sport.color);
-      btn.style.setProperty("--sport-wash", sport.wash);
-      btn.setAttribute("role", "listitem");
-      btn.innerHTML = `<span class="sport-card-label">${sport.label}</span><span class="sport-card-blurb">${sport.blurb}</span>`;
-      btn.onclick = () => this.openSport(sport.id);
-      grid.appendChild(btn);
-    }
-  }
-
-  private goHub() {
-    this.disposeSportSession();
-    this.activeSport = null;
-    saveActiveSport(null);
-    this.running = false;
-    this.finished = false;
-    this.paused = false;
-    this.practice = false;
-    this.solo = false;
-    this.online = false;
-    this.inLobby = false;
-    this.expectingLobby = false;
-    this.lobbyPlayers = [];
-    this.net.disconnect();
-    this.clearRemotes();
-    this.el.netStatus.classList.add("hidden");
-    this.clearCountdown();
-    this.el.pause.classList.add("hidden");
-    this.el.finish.classList.add("hidden");
-    this.el.pauseBtn.classList.add("hidden");
-    this.el.leaderboard.classList.add("hidden");
-    this.el.garage.classList.add("hidden");
-    this.el.multiplayer.classList.add("hidden");
-    this.el.mapSelect.classList.add("hidden");
-    this.el.overlay.classList.add("hidden");
-    this.hubEl.classList.remove("hidden");
-    this.el.overlay.classList.remove("sport-theme-skiing", "sport-theme-motocross", "sport-theme-biking", "sport-theme-skate");
-    document.getElementById("hud")?.classList.remove("hud-sport");
-    if (this.player) this.player.mesh.visible = true;
-    this.track.group.visible = true;
-    this.setAiVisible(false);
-    this.audio.playMenuMusic();
-    this.syncMuteBtn();
-    this.syncHudLabels();
-  }
-
-  private openSport(id: SportId) {
-    this.activeSport = id;
-    saveActiveSport(id);
-    this.hubEl.classList.add("hidden");
-    this.applySportHomeCopy();
-    this.el.overlay.classList.remove("hidden");
-    if (id !== "driving") {
-      const paint = loadSportPaint(id);
-      this.garage = { ...this.garage, primary: paint.primary, accent: paint.accent };
-    } else {
-      this.garage = loadGarage();
-    }
-    this.syncMuteBtn();
-  }
-
-  private applySportHomeCopy() {
-    const sport = this.activeSport ? sportById(this.activeSport) : sportById("driving");
-    const eyebrow = document.getElementById("home-eyebrow");
-    const titleAccent = document.getElementById("home-title-accent");
-    const tagline = document.getElementById("home-tagline");
-    const brandAccent = document.getElementById("brand-accent");
-    if (eyebrow) eyebrow.textContent = sport.eyebrow;
-    if (titleAccent) titleAccent.textContent = sport.titleAccent;
-    if (tagline) tagline.textContent = sport.tagline;
-    if (brandAccent) brandAccent.textContent = sport.titleAccent;
-    const start = document.getElementById("start-btn");
-    const test = document.getElementById("test-drive-btn");
-    const solo = document.getElementById("solo-race-btn");
-    if (start) start.textContent = sport.startLabel;
-    if (test) test.textContent = sport.testLabel;
-    if (solo) solo.textContent = sport.soloLabel;
-    this.el.overlay.classList.remove("sport-theme-skiing", "sport-theme-motocross", "sport-theme-biking", "sport-theme-skate");
-    if (sport.id !== "driving") this.el.overlay.classList.add(`sport-theme-${sport.id}`);
-    document.title = sport.id === "driving" ? "SATS RACER" : `SATS ${sport.titleAccent}`;
-  }
-
-  private syncHudLabels() {
-    const sport = this.activeSport && this.activeSport !== "driving";
-    document.getElementById("hud")?.classList.toggle("hud-sport", !!sport);
-    const pos = document.getElementById("hud-pos-label");
-    const lap = document.getElementById("hud-lap-label");
-    const gear = document.getElementById("hud-gear-label");
-    const best = document.getElementById("hud-best-label");
-    if (pos) pos.textContent = sport ? "PTS" : "POS";
-    if (lap) lap.textContent = sport ? "AIR" : "LAP";
-    if (gear) gear.textContent = sport ? "TRICK" : "GEAR";
-    if (best) best.textContent = sport ? "BEST" : "BEST";
-  }
-
-  private disposeSportSession() {
-    if (!this.sportSession) return;
-    this.sportSession.dispose(this.scene);
-    this.sportSession = null;
-    if (this.player) this.player.mesh.visible = true;
-    this.track.group.visible = true;
-    this.renderer.setClearColor(0x87a0bc, 1);
-    this.scene.background = new THREE.Color(0x87a0bc);
-    this.scene.fog = new THREE.Fog(0x87a0bc, 160, 520);
-  }
-
-  private async bootSportFromMenu(opts: { practice?: boolean; solo?: boolean } = {}) {
-    await this.audio.unlock();
-    this.audio.stopMenuMusic();
-    this.online = false;
-    this.net.disconnect();
-    this.clearRemotes();
-    this.el.netStatus.classList.add("hidden");
-    this.el.leaderboard.classList.add("hidden");
-    this.el.mapSelect.classList.add("hidden");
-    this.el.garage.classList.add("hidden");
-    this.el.multiplayer.classList.add("hidden");
-    this.startSport(opts);
-  }
-
-  private startSport(opts: { practice?: boolean; solo?: boolean } = {}) {
-    const sport = this.activeSport;
-    if (!sport || sport === "driving") {
-      this.startRace(opts);
-      return;
-    }
-    this.disposeSportSession();
-    this.practice = !!opts.practice;
-    this.solo = !!opts.solo && !this.online;
-    this.el.overlay.classList.add("hidden");
-    this.hubEl.classList.add("hidden");
-    this.el.mapSelect.classList.add("hidden");
-    this.el.multiplayer.classList.add("hidden");
-    this.el.garage.classList.add("hidden");
-    this.el.finish.classList.add("hidden");
-    this.el.pause.classList.add("hidden");
-    this.el.leaderboard.classList.add("hidden");
-    this.el.nameEntry.classList.add("hidden");
-    this.el.pauseBtn.classList.remove("hidden");
-    this.finished = false;
-    this.paused = false;
-    this.running = true;
-    this.syncTouchControls();
-    this.hideAnimalHit();
-    this.resetMapVote();
-    this.clearCountdown();
-    this.clearExplode(true);
-    this.pauseTotal = 0;
-    this.pauseBegan = 0;
-    this.raceStart = 0;
-    this.lapStart = 0;
-    this.pendingSportScore = 0;
-    this.input.clearDriveKeys();
-    if (this.player) this.player.mesh.visible = false;
-    this.track.group.visible = false;
-    this.setAiVisible(false);
-    const paint = loadSportPaint(sport);
-    const bots = this.online || this.solo || this.practice ? 0 : 4;
-    this.sportSession = new SportSession(this.scene, sport, paint.primary, paint.accent, { bots });
-    const sky = this.sportSession.course.sky;
-    const fog = this.sportSession.course.fog;
-    this.renderer.setClearColor(sky, 1);
-    this.scene.background = new THREE.Color(sky);
-    this.scene.fog = new THREE.Fog(fog, 80, 420);
-    this.weather.setMode("dry");
-    this.el.finishEyebrow.textContent = "SESSION COMPLETE";
-    this.el.finishTitle.textContent = "FINISH";
-    this.el.finalPlace.textContent = this.solo || this.practice ? "1/1" : "1/5";
-    this.el.lap.innerHTML = this.practice ? "—" : "RUN";
-    this.el.best.textContent = "0";
-    this.el.gear.textContent = "—";
-    this.el.time.textContent = formatTime(0);
-    this.syncHudLabels();
-    const canvas = this.renderer.domElement;
-    canvas.tabIndex = 0;
-    canvas.focus({ preventScroll: true });
-    this.audio.stopRaceAudio();
-    this.audio.unmute();
-    this.syncMuteBtn();
-    this.sportSession.applyCamera(this.camera, this.camPos, this.camLook, 0);
-    this.beginCountdown();
-  }
-
-  private beginOnlineSport(_trackId: string) {
-    if (!this.online) return;
-    this.inLobby = false;
-    this.el.multiplayer.classList.add("hidden");
-    this.el.overlay.classList.add("hidden");
-    this.setNetStatus(`Live · ${this.net.room}`, "ok");
-    this.startSport({});
-  }
-
   private goHome() {
     this.running = false;
     this.finished = false;
@@ -2078,11 +1778,7 @@ export class Game {
     this.el.minimap.classList.add("hidden");
     this.el.rearview.classList.add("hidden");
     this.syncTouchControls();
-    this.disposeSportSession();
-    this.hubEl.classList.add("hidden");
     this.el.overlay.classList.remove("hidden");
-    this.applySportHomeCopy();
-    this.syncHudLabels();
     // Reset weather before rebuilding the menu track
     this.mpWeatherPreview = false;
     this.weather.setMode("dry");
@@ -2113,11 +1809,7 @@ export class Game {
         const verified = e.pubkey
           ? `<span class="board-verified" title="Nostr-signed · ${shortNpub(e.pubkey)}">✓</span>`
           : "";
-        return `<li class="${cls}"><span class="rank">${i + 1}</span><span class="name">${escapeHtml(e.name)}${verified}</span><span class="time">${
-          this.activeSport && this.activeSport !== "driving"
-            ? `${e.bestLapMs ?? 0} pts`
-            : formatBoardTime(e.timeMs)
-        }</span></li>`;
+        return `<li class="${cls}"><span class="rank">${i + 1}</span><span class="name">${escapeHtml(e.name)}${verified}</span><span class="time">${formatBoardTime(e.timeMs)}</span></li>`;
       })
       .join("");
   }
@@ -2132,17 +1824,10 @@ export class Game {
       boardEyebrow.textContent = `WORLDWIDE · ${new Date().getFullYear()}`;
     }
     // Last-played course if set, otherwise first map
-    this.boardTrackId =
-      this.activeSport && this.activeSport !== "driving"
-        ? boardIdForSport(this.activeSport)
-        : this.trackId || DEFAULT_TRACK_ID;
+    this.boardTrackId = this.trackId || DEFAULT_TRACK_ID;
     this.el.boardSource.textContent = "Loading…";
     this.el.boardList.innerHTML = "";
-    if (this.activeSport && this.activeSport !== "driving") {
-      this.el.boardTrackGrid.innerHTML = "";
-    } else {
-      this.renderBoardTrackPicker();
-    }
+    this.renderBoardTrackPicker();
     await this.loadBoardForTrack(this.boardTrackId);
     this.syncMuteBtn();
   }
@@ -2647,26 +2332,18 @@ export class Game {
     this.scoreSaveInFlight = true;
     btn.disabled = true;
     try {
-      const boardId =
-        this.activeSport && this.activeSport !== "driving"
-          ? boardIdForSport(this.activeSport)
-          : this.trackId;
       const { entries, source } = await submitScore(
         name,
         this.pendingFinishMs,
-        this.activeSport && this.activeSport !== "driving" ? this.pendingSportScore : this.bestLap,
-        boardId,
+        this.bestLap,
+        this.trackId,
         session.signer,
       );
       saveLocalDriverName(name);
       this.el.nameEntry.classList.add("hidden");
-      this.boardTrackId = boardId;
+      this.boardTrackId = this.trackId;
       this.el.leaderboard.classList.remove("hidden");
-      if (this.activeSport && this.activeSport !== "driving") {
-        this.el.boardTrackGrid.innerHTML = "";
-      } else {
-        this.renderBoardTrackPicker();
-      }
+      this.renderBoardTrackPicker();
       this.el.boardSource.textContent = boardSourceLabel(source, true);
       this.renderBoardList(entries);
     } finally {
@@ -2685,10 +2362,6 @@ export class Game {
     this.online = true;
     this.inLobby = true;
     this.lobbyPlayers = [...info.players];
-    if (info.sport && isSportId(info.sport)) {
-      this.activeSport = info.sport;
-      this.applySportHomeCopy();
-    }
     // Room kind is host-locked — personal garage paint/name still apply.
     const kind: VehicleKind = info.kind === "bike" || info.you.kind === "bike" ? "bike" : "car";
     this.garage = {
@@ -3169,11 +2842,6 @@ export class Game {
 
   /** Cars get the drive track; bikes only get the motorcycle engine sample. */
   private startRaceDriveAudio() {
-    if (this.sportSession) {
-      this.audio.stopDriveMusic();
-      this.audio.stopBikeEngine();
-      return;
-    }
     if (this.player?.mesh.userData.kind === "bike") {
       this.audio.stopDriveMusic();
     } else {
@@ -3219,47 +2887,6 @@ export class Game {
     this.lastFrame = performance.now();
     this.input.clearDriveKeys();
     this.renderer.domElement.focus({ preventScroll: true });
-  }
-
-  private tickSport(dt: number, now: number, inputPeek: ReturnType<Input["getState"]>) {
-    if (this.countingDown) this.tickCountdown(now);
-    const frozen = this.gridHeld;
-    const input =
-      frozen || this.finished
-        ? { ...inputPeek, throttle: 0, brake: 0, handbrake: 0, steer: 0, jump: 0, fire: false, shiftDelta: 0 as const }
-        : inputPeek;
-    if (!frozen && input.reset) this.sportSession?.resetPlayer();
-    this.sportSession?.update(dt, input, frozen);
-    if (this.sportSession && this.player) {
-      const pose = this.sportSession.pose();
-      this.player.state.position.set(pose.x, pose.y, pose.z);
-      this.player.state.heading = pose.h;
-      this.player.state.speed = pose.s;
-      for (const remote of this.remotes.values()) {
-        this.sportSession.liftRemote(remote.mesh, remote.mesh.position.x, remote.mesh.position.z);
-      }
-    }
-    if (this.online && this.sportSession && !frozen) {
-      const pose = this.sportSession.pose();
-      this.net.maybeSendPose(dt, {
-        x: pose.x,
-        z: pose.z,
-        h: pose.h,
-        s: pose.s,
-        g: String(Math.round(this.sportSession.hud().score % 99) || "1"),
-        lap: 1,
-      });
-    }
-    this.updateHud();
-    this.updateCamera(dt);
-    const hud = this.sportSession?.hud();
-    if (hud) this.pendingSportScore = hud.score;
-    if (hud && !this.practice && hud.finished && !this.finished) {
-      const timeMs = Math.max(0, this.raceNow() - this.raceStart);
-      this.sportSession?.awardFinishBonus(timeMs);
-      this.pendingSportScore = this.sportSession?.hud().score ?? this.pendingSportScore;
-      this.finishRace();
-    }
   }
 
   /** Sticky track projection: global search only on first use (spawn/reset),
@@ -3350,9 +2977,7 @@ export class Game {
       else if (this.running && !this.finished && !this.exploding) this.pause();
     }
 
-    if (this.sportSession && this.running && !this.paused && (!this.finished || this.online)) {
-      this.tickSport(dt, now, inputPeek);
-    } else if (this.running && !this.paused && (!this.finished || this.online)) {
+    if (this.running && !this.paused && (!this.finished || this.online)) {
       if (this.exploding) {
         this.updateExplode(dt);
         this.updateCamera(dt);
@@ -3590,12 +3215,12 @@ export class Game {
     const hz = Math.cos(s.heading);
     this.rearCamera.position.set(
       s.position.x - hx * 0.35,
-      1.95,
+      1.95 + s.position.y,
       s.position.z - hz * 0.35,
     );
     this.rearCamera.lookAt(
       s.position.x - hx * 28,
-      1.1,
+      1.1 + s.position.y,
       s.position.z - hz * 28,
     );
   }
@@ -3610,27 +3235,43 @@ export class Game {
     const margin = v.mesh.userData.kind === "bike" ? 0.35 : 0.55;
     const wall = this.track.width / 2 - margin;
     const d = proj.distanceFromCenter;
-    if (Math.abs(d) <= wall) return false;
+    let touching = false;
+    if (Math.abs(d) > wall) {
+      touching = true;
+      const side = Math.sign(d);
+      this._wallN.set(-proj.tangent.z, 0, proj.tangent.x);
+      // Remove only the lateral excess — tangential motion is untouched
+      v.state.position.addScaledVector(this._wallN, side * wall - d);
 
-    const side = Math.sign(d);
-    this._wallN.set(-proj.tangent.z, 0, proj.tangent.x);
-    // Remove only the lateral excess — tangential motion is untouched
-    v.state.position.addScaledVector(this._wallN, side * wall - d);
+      const s = v.state;
+      // Player only: remember which CAR side the wall is on — wall damage
+      // scuffs land on that side (track-space side alone flips with heading).
+      if (v === this.player) {
+        const carSide =
+          (Math.cos(s.heading) * this._wallN.x - Math.sin(s.heading) * this._wallN.z) * side;
+        this.lastWallSideCar = Math.sign(carSide) || 1;
+      }
+      const intoWall = (Math.sin(s.heading) * this._wallN.x + Math.cos(s.heading) * this._wallN.z) * side;
+      if (s.speed * intoWall > 0) {
+        s.speed *= 1 - intoWall * intoWall;
+      }
+    }
+    this.applyTrackGrade(v, proj.t);
+    if (touching || this.track.heightAt) v.syncCollision();
+    return touching;
+  }
 
-    const s = v.state;
-    // Player only: remember which CAR side the wall is on — wall damage
-    // scuffs land on that side (track-space side alone flips with heading).
-    if (v === this.player) {
-      const carSide =
-        (Math.cos(s.heading) * this._wallN.x - Math.sin(s.heading) * this._wallN.z) * side;
-      this.lastWallSideCar = Math.sign(carSide) || 1;
+  /** Sample yard-drift centerline height after planar physics. Other tracks stay at y=0. */
+  private applyTrackGrade(v: Vehicle, t: number) {
+    const heightAt = this.track.heightAt;
+    if (!heightAt) {
+      v.state.position.y = 0;
+      v.state.groundPitch = 0;
+      return;
     }
-    const intoWall = (Math.sin(s.heading) * this._wallN.x + Math.cos(s.heading) * this._wallN.z) * side;
-    if (s.speed * intoWall > 0) {
-      s.speed *= 1 - intoWall * intoWall;
-    }
-    v.syncCollision();
-    return true;
+    v.state.position.y = heightAt(t);
+    const grade = this.track.gradeAt?.(t) ?? 0;
+    v.state.groundPitch = -Math.atan(grade);
   }
 
   /** Edge-trigger + cooldown: count a hit when contact starts, not every scrape frame. */
@@ -4619,10 +4260,7 @@ export class Game {
       this.net.reportFinish(this.pendingFinishMs, this.bestLap);
     }
     this.el.finalTime.textContent = formatTime(this.pendingFinishMs);
-    this.el.finalBest.textContent =
-      this.activeSport && this.activeSport !== "driving"
-        ? `${this.pendingSportScore} pts`
-        : formatTime(this.bestLap);
+    this.el.finalBest.textContent = formatTime(this.bestLap);
     this.el.nameEntry.classList.add("hidden");
     this.el.driverName.value = "";
 
@@ -4676,18 +4314,6 @@ export class Game {
    * Offline: 1 + AI that already finished 3 laps. Online: live progress rank.
    */
   private playerFinishPlace(): number {
-    if (this.sportSession) {
-      if (this.online) {
-        let place = 1;
-        const z = this.sportSession.pose().z;
-        for (const remote of this.remotes.values()) {
-          if (remote.mesh.position.z > z + 0.5) place += 1;
-        }
-        return place;
-      }
-      if (this.solo || this.practice) return 1;
-      return 1 + this.sportSession.bots.filter((b) => b.finished).length;
-    }
     if (this.online) {
       const playerProgress = this.lap - 1 + this.raceProgress(this.player);
       let place = 1;
@@ -4704,15 +4330,7 @@ export class Game {
   }
 
   private async checkLeaderboardQualify() {
-    const boardId =
-      this.activeSport && this.activeSport !== "driving"
-        ? boardIdForSport(this.activeSport)
-        : this.trackId;
-    const qualifies = await wouldQualify(
-      this.pendingFinishMs,
-      boardId,
-      this.activeSport && this.activeSport !== "driving" ? this.pendingSportScore : undefined,
-    );
+    const qualifies = await wouldQualify(this.pendingFinishMs, this.trackId);
     if (!qualifies) return;
     this.el.nameEntry.classList.remove("hidden");
     this.renderNameEntryState();
@@ -4751,19 +4369,6 @@ export class Game {
     const hudNow = performance.now();
     if (hudNow - this.lastHudAt < 50) return;
     this.lastHudAt = hudNow;
-    if (this.sportSession) {
-      const h = this.sportSession.hud();
-      this.el.speed.textContent = String(h.speedKmh);
-      this.el.gear.textContent = h.trick || (h.combo > 1 ? `x${h.combo}` : "—");
-      this.el.lap.innerHTML = h.air ? "AIR" : "IN";
-      this.el.best.textContent = String(h.score);
-      if (this.el.position) this.el.position.textContent = String(h.score);
-      const clockMs =
-        this.gridHeld || this.raceStart === 0 ? 0 : this.raceNow() - this.raceStart;
-      this.el.time.textContent = formatTime(clockMs);
-      this.el.minimap.classList.add("hidden");
-      return;
-    }
     this.el.speed.textContent = String(Math.round(this.player.kmh));
     this.el.gear.textContent = this.player.gearLabel;
     // Practice: current lap clock; race: total race time — frozen at 0 during grid hold
@@ -4935,19 +4540,16 @@ export class Game {
   }
 
   private snapCamera() {
-    if (this.sportSession) {
-      this.sportSession.applyCamera(this.camera, this.camPos, this.camLook, 0);
-      return;
-    }
     const s = this.player.state;
+    const gy = s.position.y;
     this.camPos.set(
       s.position.x - Math.sin(s.heading) * 12,
-      4.5,
+      4.5 + gy,
       s.position.z - Math.cos(s.heading) * 12,
     );
     this.camLook.set(
       s.position.x + Math.sin(s.heading) * 8,
-      1.2,
+      1.2 + gy,
       s.position.z + Math.cos(s.heading) * 8,
     );
     this.camera.position.copy(this.camPos);
@@ -4955,13 +4557,10 @@ export class Game {
   }
 
   private updateCamera(dt: number) {
-    if (this.sportSession) {
-      this.sportSession.applyCamera(this.camera, this.camPos, this.camLook, dt);
-      return;
-    }
     const s = this.player.state;
+    const gy = s.position.y;
     const back = 12 + Math.min(Math.abs(s.speed) * 0.07, 6);
-    const height = 4.4 + Math.min(Math.abs(s.speed) * 0.028, 1.8);
+    const height = 4.4 + Math.min(Math.abs(s.speed) * 0.028, 1.8) + gy;
     this._camIdeal.set(
       s.position.x - Math.sin(s.heading) * back,
       height,
@@ -4973,7 +4572,7 @@ export class Game {
 
     this._camLookTarget.set(
       s.position.x + Math.sin(s.heading) * 10,
-      1.4,
+      1.4 + gy,
       s.position.z + Math.cos(s.heading) * 10,
     );
     this.camLook.lerp(this._camLookTarget, dt <= 0 ? 1 : 1 - Math.exp(-8 * dt));

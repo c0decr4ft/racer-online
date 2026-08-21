@@ -1,5 +1,4 @@
 import { DEFAULT_TRACK_ID, isTrackId, TRACKS } from "../trackDefs";
-import { isPointsBoard, SPORT_BOARD_IDS } from "../sports";
 import { apiUrl } from "./apiBase";
 import { scoreEventTemplate, verifyScoreEvent, publishScoreEvent } from "../nostr/scores";
 
@@ -93,14 +92,9 @@ export function sanitizeDriverName(raw: string): string {
   return cleaned || "RACER";
 }
 
-function allBoardIds(): string[] {
-  return [...TRACKS.map((t) => t.id), ...SPORT_BOARD_IDS];
-}
-
 function normalizeTrackId(raw: unknown): string {
   const id = String(raw ?? "").trim();
-  if (isTrackId(id) || SPORT_BOARD_IDS.includes(id)) return id;
-  return DEFAULT_TRACK_ID;
+  return isTrackId(id) ? id : DEFAULT_TRACK_ID;
 }
 
 /**
@@ -153,23 +147,9 @@ function isSameRun(a: LeaderboardEntry, b: LeaderboardEntry): boolean {
 
 /** Same key: a racer's faster time wins; ties go to the earlier submission; missing bestLap gets filled in. */
 function pickBetter(a: LeaderboardEntry, b: LeaderboardEntry): LeaderboardEntry {
-  const points = isPointsBoard(a.trackId || "") || isPointsBoard(b.trackId || "");
   let winner = a;
   let loser = b;
-  if (points) {
-    const sa = a.bestLapMs ?? 0;
-    const sb = b.bestLapMs ?? 0;
-    if (sa !== sb) {
-      winner = sa > sb ? a : b;
-      loser = winner === a ? b : a;
-    } else if (a.timeMs !== b.timeMs) {
-      winner = a.timeMs < b.timeMs ? a : b;
-      loser = winner === a ? b : a;
-    } else {
-      winner = (a.at || 0) <= (b.at || 0) ? a : b;
-      loser = winner === a ? b : a;
-    }
-  } else if (a.pubkey && a.pubkey === b.pubkey) {
+  if (a.pubkey && a.pubkey === b.pubkey) {
     winner = a.timeMs < b.timeMs || (a.timeMs === b.timeMs && (a.at || 0) <= (b.at || 0)) ? a : b;
     loser = winner === a ? b : a;
   } else {
@@ -214,34 +194,25 @@ export function normalize(entries: LeaderboardEntry[], trackId?: string): Leader
     }
   }
 
-  return unique
-    .sort((a, b) => {
-      if (tid && isPointsBoard(tid)) {
-        const sa = a.bestLapMs ?? 0;
-        const sb = b.bestLapMs ?? 0;
-        return sb - sa || a.timeMs - b.timeMs || (a.at || 0) - (b.at || 0);
-      }
-      return a.timeMs - b.timeMs || (a.at || 0) - (b.at || 0);
-    })
-    .slice(0, MAX);
+  return unique.sort((a, b) => a.timeMs - b.timeMs || (a.at || 0) - (b.at || 0)).slice(0, MAX);
 }
 
 export function emptyStore(): BoardStore {
   const store: BoardStore = {};
-  for (const id of allBoardIds()) store[id] = [];
+  for (const t of TRACKS) store[t.id] = [];
   return store;
 }
 
 /** Union all per-track lists, then normalize/top-N each track. */
 export function mergeBoardStores(...stores: BoardStore[]): BoardStore {
   const out = emptyStore();
-  for (const id of allBoardIds()) {
+  for (const t of TRACKS) {
     const merged: LeaderboardEntry[] = [];
     for (const s of stores) {
-      const list = s?.[id];
+      const list = s?.[t.id];
       if (Array.isArray(list) && list.length) merged.push(...list);
     }
-    out[id] = normalize(merged, id);
+    out[t.id] = normalize(merged, t.id);
   }
   return out;
 }
@@ -326,12 +297,12 @@ function entriesFor(store: BoardStore, trackId: string): LeaderboardEntry[] {
 
 function readLocalStore(): BoardStore {
   const store = emptyStore();
-  for (const id of allBoardIds()) store[id] = normalize(readLocal(id), id);
+  for (const t of TRACKS) store[t.id] = normalize(readLocal(t.id), t.id);
   return store;
 }
 
 function writeStoreLocally(store: BoardStore) {
-  for (const id of allBoardIds()) writeLocal(id, normalize(store[id] ?? [], id));
+  for (const t of TRACKS) writeLocal(t.id, normalize(store[t.id] ?? [], t.id));
 }
 
 function sleep(ms: number): Promise<void> {
@@ -431,25 +402,19 @@ async function publishEventToBlob(event: RawEvent, trackId: string): Promise<voi
   }
 
   const merged: Record<string, RawEvent[]> = {};
-  for (const id of allBoardIds()) {
-    const candidates = [...(existing[id] ?? []), ...(id === tid ? [event] : [])];
-    const byPubkey = new Map<string, { raw: RawEvent; timeMs: number; at: number; score: number }>();
+  for (const t of TRACKS) {
+    const candidates = [...(existing[t.id] ?? []), ...(t.id === tid ? [event] : [])];
+    const byPubkey = new Map<string, { raw: RawEvent; timeMs: number; at: number }>();
     for (const raw of candidates) {
-      const score = verifyScoreEvent(raw, id);
+      const score = verifyScoreEvent(raw, t.id);
       if (!score) continue;
       const prev = byPubkey.get(score.pubkey);
-      const pts = score.bestLapMs ?? 0;
-      const better = isPointsBoard(id)
-        ? !prev || pts > prev.score || (pts === prev.score && score.timeMs < prev.timeMs)
-        : !prev || score.timeMs < prev.timeMs || (score.timeMs === prev.timeMs && score.at < prev.at);
-      if (better) {
-        byPubkey.set(score.pubkey, { raw, timeMs: score.timeMs, at: score.at, score: pts });
+      if (!prev || score.timeMs < prev.timeMs || (score.timeMs === prev.timeMs && score.at < prev.at)) {
+        byPubkey.set(score.pubkey, { raw, timeMs: score.timeMs, at: score.at });
       }
     }
-    merged[id] = [...byPubkey.values()]
-      .sort((a, b) =>
-        isPointsBoard(id) ? b.score - a.score || a.timeMs - b.timeMs : a.timeMs - b.timeMs || a.at - b.at,
-      )
+    merged[t.id] = [...byPubkey.values()]
+      .sort((a, b) => a.timeMs - b.timeMs || a.at - b.at)
       .slice(0, BLOB_TRACK_CAP)
       .map((v) => v.raw);
   }
@@ -507,19 +472,13 @@ async function healServerFromBlob(serverStore: BoardStore): Promise<void> {
   } catch {
     return;
   }
-  for (const id of allBoardIds()) {
-    const serverBest = new Map((serverStore[id] ?? []).map((e) => [e.pubkey, e]));
-    for (const event of raw[id] ?? []) {
-      const score = verifyScoreEvent(event, id);
+  for (const t of TRACKS) {
+    const serverBest = new Map((serverStore[t.id] ?? []).map((e) => [e.pubkey, e.timeMs]));
+    for (const event of raw[t.id] ?? []) {
+      const score = verifyScoreEvent(event, t.id);
       if (!score) continue;
-      const existing = score.pubkey ? serverBest.get(score.pubkey) : undefined;
-      if (existing) {
-        const better = isPointsBoard(id)
-          ? (score.bestLapMs ?? 0) > (existing.bestLapMs ?? 0)
-          : existing.timeMs <= score.timeMs;
-        if (!better && isPointsBoard(id)) continue;
-        if (!isPointsBoard(id) && existing.timeMs <= score.timeMs) continue;
-      }
+      const serverTime = score.pubkey ? serverBest.get(score.pubkey) : undefined;
+      if (serverTime != null && serverTime <= score.timeMs) continue; // server already has same-or-better
       try {
         await fetch(serverUrl, {
           method: "POST",
@@ -533,16 +492,9 @@ async function healServerFromBlob(serverStore: BoardStore): Promise<void> {
   }
 }
 
-export async function wouldQualify(
-  timeMs: number,
-  trackId: string = DEFAULT_TRACK_ID,
-  score?: number,
-): Promise<boolean> {
+export async function wouldQualify(timeMs: number, trackId: string = DEFAULT_TRACK_ID): Promise<boolean> {
   const { entries } = await fetchLeaderboard(trackId);
   if (entries.length < MAX) return true;
-  if (isPointsBoard(trackId) && score != null) {
-    return score > (entries[entries.length - 1]!.bestLapMs ?? 0);
-  }
   return timeMs < entries[entries.length - 1]!.timeMs;
 }
 

@@ -527,46 +527,59 @@ export const TRACKS: TrackDef[] = [
 
 /**
  * Construction-yard drift park — Test Drive → Test Drift only.
- * Big rounded rectangle: long SF straight, wide SE sweeper, wide north 180,
- * west return. Hairpin radius stays ≳24m so a 16m road never self-overlaps.
+ * Figure-8 of two curvy lobes that cross once near the origin.
+ * First visit after SF = underpass (ramp into a ditch); second = bridge at grade.
+ * Corner radii stay ≳16m so a 16m road only overlaps at that designed crossing.
  */
 export const DRIFT_TRACK_ID = "yard-drift";
 
 const YARD_DRIFT: readonly (readonly [number, number])[] = [
-  [-52, -82],
-  [-36, -82],
-  [-18, -82],
-  [0, -82],
-  [18, -82],
-  [36, -82],
-  [52, -82],
-  [62, -80],
-  [72, -74],
-  [80, -64],
-  [86, -52],
-  [86, -40],
-  [80, -28],
-  [72, -18],
-  [62, -12],
-  [52, -8],
-  [48, 2],
-  [50, 16],
-  [46, 30],
-  [36, 40],
-  [22, 46],
-  [6, 48],
-  [-10, 46],
-  [-24, 40],
-  [-34, 30],
-  [-38, 16],
-  [-36, 4],
-  [-42, -6],
-  [-54, -14],
-  [-66, -24],
-  [-74, -38],
-  [-78, -52],
-  [-74, -66],
-  [-64, -76],
+  // SF straight — eastbound
+  [48, -52],
+  [58, -52],
+  [68, -50],
+  // East lobe — SE bulge, then north sweep
+  [78, -44],
+  [88, -34],
+  [94, -20],
+  [96, -6],
+  [94, 10],
+  [88, 24],
+  [78, 36],
+  [64, 44],
+  [48, 46],
+  [34, 42],
+  [22, 34],
+  // Into the X (NW) — underpass
+  [12, 20],
+  [6, 10],
+  [0, 0],
+  [-6, -10],
+  [-12, -20],
+  // West lobe — south wiggle, broader NW
+  [-22, -34],
+  [-34, -42],
+  [-48, -46],
+  [-62, -44],
+  [-76, -36],
+  [-88, -24],
+  [-96, -10],
+  [-98, 6],
+  [-94, 22],
+  [-84, 36],
+  [-70, 44],
+  [-54, 46],
+  [-40, 40],
+  [-28, 30],
+  // Back through the X (SE) — bridge
+  [-16, 18],
+  [-8, 8],
+  [0, 0],
+  [8, -8],
+  [16, -18],
+  [26, -32],
+  [36, -44],
+  [42, -50],
 ];
 
 export const DRIFT_TRACK: TrackDef = {
