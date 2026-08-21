@@ -417,54 +417,58 @@ export function createCar(
 /** Visual-only scale — physics / collision stay identical to cars. */
 const BIKE_VISUAL_SCALE = 1.1;
 
-/** Crouched sportbike rider — seated on the cowl, readable at chase-cam distance. */
+/** Tucked superbike rider — closed-face helmet reads at chase-cam distance. */
 function addRider(bike: THREE.Group, suitAccent: number) {
   const rider = new THREE.Group();
   rider.name = "rider";
-  // Anchor on the seat (local bike space before visual scale).
-  rider.position.set(0, 0.86, -0.38);
-  rider.rotation.x = 0.42;
+  rider.position.set(0, 0.84, -0.32);
+  rider.rotation.x = 0.48;
 
-  const suit = mat(0x171c24, { metal: 0.16, rough: 0.74 });
-  const trim = paintMat(suitAccent, { metal: 0.28, rough: 0.45, emit: 0.14 });
-  const helmet = mat(0xe8eef6, { metal: 0.4, rough: 0.28 });
-  const visor = mat(0x081018, { metal: 0.65, rough: 0.06 });
-  const gloves = mat(0x2c2420, { metal: 0.1, rough: 0.82 });
-  const boots = mat(0x101014, { metal: 0.22, rough: 0.68 });
-  const skin = mat(0xc4a07a, { metal: 0.05, rough: 0.7 });
+  const suit = mat(0x14181f, { metal: 0.18, rough: 0.72 });
+  const trim = paintMat(suitAccent, { metal: 0.3, rough: 0.42, emit: 0.16 });
+  const lid = paintMat(suitAccent, { metal: 0.35, rough: 0.32, emit: 0.12 });
+  const lidDark = mat(0x10141a, { metal: 0.45, rough: 0.28 });
+  const visor = mat(0x070d14, { metal: 0.85, rough: 0.04 });
+  const visorTint = mat(0x1a3048, { metal: 0.7, rough: 0.08, emissive: 0x152030, emit: 0.15 });
+  const gloves = mat(0x1c1816, { metal: 0.12, rough: 0.8 });
+  const boots = mat(0x0c0c10, { metal: 0.28, rough: 0.62 });
 
-  // Hips planted on seat
-  box(rider, 0.34, 0.18, 0.3, suit, 0, 0.02, 0.02);
-  // Torso lean toward bars
-  box(rider, 0.36, 0.28, 0.42, suit, 0, 0.28, 0.16, 0.2);
-  box(rider, 0.3, 0.1, 0.36, trim, 0, 0.38, 0.18, 0.2);
-  // Shoulders
-  box(rider, 0.46, 0.12, 0.2, suit, 0, 0.42, 0.28);
+  box(rider, 0.32, 0.16, 0.28, suit, 0, 0.0, 0.0);
+  box(rider, 0.34, 0.26, 0.44, suit, 0, 0.26, 0.18, 0.22);
+  box(rider, 0.28, 0.08, 0.38, trim, 0, 0.36, 0.2, 0.22);
+  box(rider, 0.48, 0.11, 0.18, suit, 0, 0.4, 0.32);
 
-  // Helmet + visor (forward of torso)
-  cyl(rider, 0.15, 0.16, 0.19, helmet, 0, 0.62, 0.42, 0.15, 0, 0, 14);
-  box(rider, 0.2, 0.09, 0.07, visor, 0, 0.6, 0.54, 0.1);
-  box(rider, 0.14, 0.05, 0.1, suit, 0, 0.5, 0.34); // collar
-  box(rider, 0.1, 0.04, 0.06, skin, 0, 0.52, 0.4); // chin hint
+  // Closed-face racing helmet (shell + chin bar + smoked visor).
+  const helm = new THREE.Group();
+  helm.name = "helmet";
+  helm.position.set(0, 0.64, 0.4);
+  helm.rotation.x = 0.12;
+  add(helm, new THREE.SphereGeometry(0.175, 16, 12), lid, 0, 0.02, 0);
+  box(helm, 0.22, 0.12, 0.16, lid, 0, -0.08, 0.08);
+  box(helm, 0.2, 0.1, 0.08, lidDark, 0, -0.1, 0.14);
+  box(helm, 0.24, 0.11, 0.06, visor, 0, 0.0, 0.15);
+  box(helm, 0.22, 0.04, 0.04, visorTint, 0, 0.03, 0.175);
+  box(helm, 0.04, 0.16, 0.22, lidDark, 0, 0.08, -0.02);
+  box(helm, 0.18, 0.03, 0.16, trim, 0, 0.14, -0.02);
+  rider.add(helm);
+  box(rider, 0.16, 0.06, 0.12, suit, 0, 0.48, 0.32);
 
-  // Arms reach to clip-ons
   for (const side of [-1, 1] as const) {
-    box(rider, 0.09, 0.09, 0.34, suit, side * 0.2, 0.36, 0.48, -0.45, 0, side * 0.28);
-    box(rider, 0.08, 0.08, 0.26, suit, side * 0.26, 0.28, 0.78, -0.2, 0, side * 0.1);
-    box(rider, 0.09, 0.07, 0.11, gloves, side * 0.27, 0.24, 0.98);
+    box(rider, 0.09, 0.09, 0.36, suit, side * 0.2, 0.34, 0.5, -0.48, 0, side * 0.3);
+    box(rider, 0.08, 0.08, 0.28, suit, side * 0.27, 0.24, 0.82, -0.18, 0, side * 0.08);
+    box(rider, 0.09, 0.07, 0.12, gloves, side * 0.28, 0.2, 1.02);
   }
 
-  // Legs tucked along tank / pegs
   for (const side of [-1, 1] as const) {
-    box(rider, 0.13, 0.14, 0.4, suit, side * 0.18, -0.08, 0.18, 0.35, 0, side * 0.1);
-    box(rider, 0.11, 0.12, 0.34, suit, side * 0.22, -0.28, 0.42, -0.35, 0, side * 0.06);
-    box(rider, 0.11, 0.09, 0.2, boots, side * 0.24, -0.42, 0.62, -0.15);
+    box(rider, 0.12, 0.13, 0.42, suit, side * 0.17, -0.1, 0.16, 0.38, 0, side * 0.12);
+    box(rider, 0.1, 0.11, 0.32, suit, side * 0.22, -0.3, 0.4, -0.38, 0, side * 0.05);
+    box(rider, 0.1, 0.09, 0.2, boots, side * 0.24, -0.44, 0.58, -0.12);
   }
 
   bike.add(rider);
 }
 
-/** Sport motorbike — cleaner fairing silhouette; slight visual scale only. */
+/** Racing superbike — pointed nose, belly pan, tall tail, tucked rider. */
 export function createBike(
   bodyColor = 0xd0d7e0,
   raceNumber = 7,
@@ -472,109 +476,130 @@ export function createBike(
   opts?: CreateVehicleOpts,
 ): THREE.Group {
   const bike = new THREE.Group();
-  const body = paintMat(bodyColor, { metal: 0.26, rough: 0.4, emit: 0.11 });
-  const dark = mat(0x12161c, { metal: 0.5, rough: 0.45 });
-  const carbon = mat(0x1a1f28, { metal: 0.4, rough: 0.55 });
-  const chrome = mat(0xc0c8d2, { metal: 1, rough: 0.16 });
-  const glass = mat(0x0a1520, { metal: 0.2, rough: 0.06 });
-  const head = mat(0xf7fafc, { metal: 0.15, rough: 0.25, emissive: 0xf7fafc, emit: 0.85 });
-  const tail = mat(0xff2418, { metal: 0.25, rough: 0.35, emissive: 0xff2418, emit: 0.65 });
-  const accent = paintMat(accentColor, { metal: 0.3, rough: 0.42, emit: 0.18 });
-  const seat = mat(0x1a1210, { metal: 0.15, rough: 0.85 });
+  const body = paintMat(bodyColor, { metal: 0.28, rough: 0.36, emit: 0.12 });
+  const dark = mat(0x10141a, { metal: 0.55, rough: 0.4 });
+  const carbon = mat(0x161b22, { metal: 0.42, rough: 0.5 });
+  const chrome = mat(0xc4ccd6, { metal: 1, rough: 0.14 });
+  const gold = mat(0xb08948, { metal: 0.95, rough: 0.22 });
+  const glass = mat(0x081018, { metal: 0.25, rough: 0.05 });
+  const head = mat(0xf7fafc, { metal: 0.15, rough: 0.22, emissive: 0xf7fafc, emit: 0.95 });
+  const tail = mat(0xff2418, { metal: 0.25, rough: 0.32, emissive: 0xff2418, emit: 0.75 });
+  const accent = paintMat(accentColor, { metal: 0.32, rough: 0.38, emit: 0.2 });
+  const seat = mat(0x121014, { metal: 0.12, rough: 0.88 });
+  const rubber = mat(0x0a0a0c, { metal: 0.08, rough: 0.92 });
 
-  // Compact trellis / spine — routed BETWEEN the wheel rings (front tire band
-  // starts at z≈0.71, rear at z≈-0.82) so the wheels never slice the frame.
-  box(bike, 0.16, 0.12, 1.46, carbon, 0, 0.58, -0.05);
-  box(bike, 0.1, 0.08, 1.3, chrome, 0, 0.46, 0.05);
+  // Spine sits between the wheel rings (front tire z≈0.74–1.54, rear ≈-1.60–-0.80).
+  box(bike, 0.12, 0.1, 1.28, carbon, 0, 0.54, 0.02);
+  box(bike, 0.08, 0.07, 1.1, chrome, 0, 0.44, 0.06);
 
-  // Engine + exhaust tips — lifted slightly so full lean doesn't bury the cases
-  box(bike, 0.44, 0.36, 0.58, dark, 0, 0.44, 0.08);
-  box(bike, 0.38, 0.1, 0.5, chrome, 0, 0.3, 0.08);
-  box(bike, 0.2, 0.08, 0.7, dark, 0.16, 0.34, -0.55, 0.12);
-  box(bike, 0.2, 0.08, 0.7, dark, -0.16, 0.34, -0.55, 0.12);
-  cyl(bike, 0.07, 0.07, 0.36, chrome, 0.2, 0.36, -0.28, 0, 0, Math.PI / 2, 10);
-  cyl(bike, 0.07, 0.07, 0.36, chrome, -0.2, 0.36, -0.28, 0, 0, Math.PI / 2, 10);
-
-  // Sculpted tank (named panel — wall damage skews it loose)
-  box(bike, 0.5, 0.26, 0.68, body, 0, 0.8, 0.18).name = "panel-hood";
-  box(bike, 0.42, 0.14, 0.5, body, 0, 0.96, 0.12);
-  box(bike, 0.36, 0.1, 0.28, body, 0, 0.9, 0.42, 0.25);
-  box(bike, 0.09, 0.17, 0.65, accent, 0, 0.885, 0.16);
-
-  // Nose fairing + windscreen — raised above the front tire's top (tire
-  // reaches y≈0.8 pre-scale) so the wheel never clips the cowl at any yaw.
-  box(bike, 0.58, 0.38, 0.52, body, 0, 1.03, 1.12);
-  box(bike, 0.48, 0.22, 0.28, body, 0, 0.95, 1.0, -0.2);
-  box(bike, 0.66, 0.1, 0.32, carbon, 0, 0.87, 1.26);
-  box(bike, 0.46, 0.2, 0.06, glass, 0, 1.25, 1.28, -0.42).name = "glass-front";
-  box(bike, 0.18, 0.07, 0.05, head, -0.2, 0.875, 1.4);
-  box(bike, 0.18, 0.07, 0.05, head, 0.2, 0.875, 1.4);
-  box(bike, 0.1, 0.05, 0.03, head, -0.2, 0.875, 1.44);
-  box(bike, 0.1, 0.05, 0.03, head, 0.2, 0.875, 1.44);
-  box(bike, 0.05, 0.04, 0.04, accent, 0, 0.86, 1.4);
-
-  // Side panels
-  for (const side of [-1, 1] as const) {
-    box(bike, 0.08, 0.28, 0.7, body, side * 0.28, 0.62, 0.35);
-    box(bike, 0.06, 0.18, 0.45, carbon, side * 0.3, 0.48, 0.2);
+  // Inline-four cases + sump (kept above the deck so lean doesn't bury them).
+  box(bike, 0.4, 0.3, 0.48, dark, 0, 0.42, 0.1);
+  box(bike, 0.34, 0.08, 0.4, chrome, 0, 0.26, 0.1);
+  box(bike, 0.12, 0.16, 0.36, dark, 0.18, 0.4, 0.08);
+  box(bike, 0.12, 0.16, 0.36, dark, -0.18, 0.4, 0.08);
+  for (const z of [0.22, 0.08, -0.06] as const) {
+    cyl(bike, 0.028, 0.028, 0.22, chrome, 0.16, 0.34, z, 0.55, 0, 0.4, 8);
+    cyl(bike, 0.028, 0.028, 0.22, chrome, -0.16, 0.34, z, 0.55, 0, -0.4, 8);
   }
 
-  // Tail cowl (named panel — wall damage skews it loose)
-  box(bike, 0.4, 0.12, 0.72, seat, 0, 0.76, -0.62);
-  box(bike, 0.4, 0.2, 0.72, body, 0, 0.86, -1.1).name = "panel-tail";
-  box(bike, 0.3, 0.14, 0.42, body, 0, 0.98, -1.42);
-  box(bike, 0.18, 0.08, 0.22, body, 0, 1.04, -1.62);
-  box(bike, 0.2, 0.07, 0.05, tail, 0, 0.88, -1.76);
-  box(bike, 0.065, 0.13, 0.61, accent, 0, 0.925, -1.18);
+  // Belly pan
+  box(bike, 0.5, 0.09, 0.9, body, 0, 0.2, 0.12);
+  box(bike, 0.4, 0.07, 0.42, carbon, 0, 0.16, -0.38);
+  box(bike, 0.22, 0.05, 0.28, carbon, 0, 0.14, 0.52);
 
-  // Swingarm + hugger — hugger plate raised above the rear tire's top so the
-  // ring can never slice through it.
-  box(bike, 0.07, 0.07, 0.72, chrome, 0.11, 0.4, -0.88);
-  box(bike, 0.07, 0.07, 0.72, chrome, -0.11, 0.4, -0.88);
-  box(bike, 0.48, 0.07, 0.32, carbon, 0, 0.86, -1.32);
+  // Side fairings + ram-air scoops
+  for (const side of [-1, 1] as const) {
+    box(bike, 0.07, 0.42, 0.95, body, side * 0.26, 0.5, 0.22);
+    box(bike, 0.08, 0.2, 0.32, carbon, side * 0.3, 0.58, 0.62, 0, 0, side * 0.18);
+    box(bike, 0.05, 0.12, 0.55, accent, side * 0.3, 0.62, 0.18);
+  }
 
-  // Clip-on bars
-  box(bike, 0.58, 0.045, 0.045, dark, 0, 1.02, 0.92);
-  box(bike, 0.07, 0.07, 0.12, dark, 0.26, 1.02, 0.92);
-  box(bike, 0.07, 0.07, 0.12, dark, -0.26, 1.02, 0.92);
+  // Peaked tank (named panel — wall damage skews it loose)
+  box(bike, 0.44, 0.22, 0.58, body, 0, 0.8, 0.1).name = "panel-hood";
+  box(bike, 0.3, 0.12, 0.36, body, 0, 0.96, 0.06);
+  box(bike, 0.26, 0.08, 0.22, body, 0, 0.9, 0.32, 0.28);
+  box(bike, 0.07, 0.16, 0.52, accent, 0, 0.9, 0.08);
+
+  // Pointed nose — above the front tire (top ≈ y 0.8) so the wheel never clips it.
+  box(bike, 0.5, 0.3, 0.5, body, 0, 0.98, 1.02);
+  box(bike, 0.36, 0.2, 0.32, body, 0, 0.9, 1.3, -0.18);
+  box(bike, 0.22, 0.12, 0.18, body, 0, 0.86, 1.46, -0.22);
+  box(bike, 0.48, 0.07, 0.22, carbon, 0, 0.84, 1.22);
+  box(bike, 0.4, 0.24, 0.05, glass, 0, 1.22, 1.16, -0.52).name = "glass-front";
+  box(bike, 0.28, 0.1, 0.06, head, 0, 0.9, 1.52);
+  box(bike, 0.12, 0.05, 0.04, head, -0.1, 0.9, 1.55);
+  box(bike, 0.12, 0.05, 0.04, head, 0.1, 0.9, 1.55);
+  box(bike, 0.05, 0.04, 0.04, accent, 0, 0.84, 1.5);
+
+  // Seat + tall race tail (named panel)
+  box(bike, 0.34, 0.08, 0.58, seat, 0, 0.76, -0.52);
+  box(bike, 0.36, 0.18, 0.78, body, 0, 0.9, -1.12).name = "panel-tail";
+  box(bike, 0.26, 0.12, 0.4, body, 0, 1.02, -1.48);
+  box(bike, 0.14, 0.08, 0.22, body, 0, 1.08, -1.7);
+  box(bike, 0.06, 0.12, 0.7, accent, 0, 0.96, -1.2);
+  box(bike, 0.18, 0.06, 0.05, tail, 0, 0.86, -1.82);
+  box(bike, 0.08, 0.04, 0.04, tail, -0.08, 0.86, -1.82);
+  box(bike, 0.08, 0.04, 0.04, tail, 0.08, 0.86, -1.82);
+
+  // Swingarm + hugger (hugger stays above the rear tire).
+  box(bike, 0.08, 0.08, 0.82, chrome, 0.13, 0.38, -0.86);
+  box(bike, 0.08, 0.08, 0.82, chrome, -0.13, 0.38, -0.86);
+  box(bike, 0.16, 0.06, 0.16, dark, 0, 0.38, -0.48);
+  box(bike, 0.42, 0.06, 0.28, carbon, 0, 0.86, -1.28);
+
+  // Under-tail race cans
+  cyl(bike, 0.055, 0.06, 0.42, carbon, 0.12, 0.58, -1.42, Math.PI / 2, 0, 0.12, 10);
+  cyl(bike, 0.055, 0.06, 0.42, carbon, -0.12, 0.58, -1.42, Math.PI / 2, 0, -0.12, 10);
+  cyl(bike, 0.045, 0.045, 0.06, chrome, 0.12, 0.58, -1.64, Math.PI / 2, 0, 0.12, 8);
+  cyl(bike, 0.045, 0.045, 0.06, chrome, -0.12, 0.58, -1.64, Math.PI / 2, 0, -0.12, 8);
+
+  // Triple clamp + clip-ons
+  box(bike, 0.42, 0.05, 0.08, dark, 0, 1.08, 0.82);
+  box(bike, 0.62, 0.04, 0.04, dark, 0, 1.0, 0.88);
+  box(bike, 0.08, 0.05, 0.12, rubber, 0.28, 1.0, 0.88);
+  box(bike, 0.08, 0.05, 0.12, rubber, -0.28, 1.0, 0.88);
 
   addRider(bike, accentColor);
 
-  // Number plate
   const numMat = mat(0xffffff, { metal: 0.1, rough: 0.55 });
-  box(bike, 0.26, 0.2, 0.02, numMat, 0, 0.76, -1.58);
+  box(bike, 0.24, 0.18, 0.02, numMat, 0, 0.92, -1.52);
   const n = Math.max(1, Math.min(99, raceNumber));
-  if (Math.floor(n / 10) > 0) box(bike, 0.05, 0.13, 0.03, dark, -0.06, 0.76, -1.57);
+  if (Math.floor(n / 10) > 0) box(bike, 0.045, 0.12, 0.03, dark, -0.055, 0.92, -1.51);
   for (let i = 0; i < Math.min(n % 10, 4); i++) {
-    box(bike, 0.04, 0.03, 0.03, dark, 0.06, 0.7 + i * 0.035, -1.57);
+    box(bike, 0.035, 0.028, 0.03, dark, 0.055, 0.865 + i * 0.032, -1.51);
   }
 
-  // Foot pegs
-  box(bike, 0.2, 0.035, 0.055, chrome, 0.26, 0.34, -0.12);
-  box(bike, 0.2, 0.035, 0.055, chrome, -0.26, 0.34, -0.12);
+  // Rear-sets
+  box(bike, 0.18, 0.03, 0.05, chrome, 0.28, 0.32, -0.18);
+  box(bike, 0.18, 0.03, 0.05, chrome, -0.28, 0.32, -0.18);
 
   const r = 0.4;
-  attachWheels(
-    bike,
-    [
-      [0, r, 1.12],
-      [0, r, -1.22],
-    ],
-    r,
-    0.17,
-    6,
-  );
-  bike.userData.steerCount = 1; // only front wheel yaws
+  const steers: THREE.Group[] = [];
+  const spinners: THREE.Group[] = [];
+  for (const spec of [
+    { z: 1.14, width: 0.12, spokes: 5 },
+    { z: -1.2, width: 0.22, spokes: 5 },
+  ] as const) {
+    const steer = new THREE.Group();
+    steer.position.set(0, r, spec.z);
+    const spin = wheel(r, spec.width, spec.spokes);
+    steer.add(spin);
+    bike.add(steer);
+    steers.push(steer);
+    spinners.push(spin);
+  }
+  bike.userData.steers = steers;
+  bike.userData.spinners = spinners;
+  bike.userData.steerCount = 1;
 
-  // Upside-down forks steer WITH the front wheel — mount them on the front
-  // steer group so the wheel can never yaw through them.
-  const frontSteer = (bike.userData.steers as THREE.Group[])[0];
+  const frontSteer = steers[0];
   if (frontSteer) {
-    box(frontSteer, 0.055, 0.58, 0.055, chrome, 0.11, 0.3, -0.1, 0.2);
-    box(frontSteer, 0.055, 0.58, 0.055, chrome, -0.11, 0.3, -0.1, 0.2);
+    box(frontSteer, 0.05, 0.62, 0.05, gold, 0.1, 0.32, -0.08, 0.18);
+    box(frontSteer, 0.05, 0.62, 0.05, gold, -0.1, 0.32, -0.08, 0.18);
+    box(frontSteer, 0.28, 0.04, 0.08, dark, 0, 0.58, -0.06);
+    box(frontSteer, 0.2, 0.045, 0.3, body, 0, 0.4, 0.16);
   }
 
-  // Tiny visual size bump only — shared Vehicle/AI/collision path unchanged.
   bike.scale.setScalar(BIKE_VISUAL_SCALE);
   bike.userData.wheelRadius = r * BIKE_VISUAL_SCALE;
 
@@ -584,8 +609,8 @@ export function createBike(
   bike.userData.tailLightMaterials = [tail];
   if (opts?.headlights) {
     attachHeadBeams(bike, [
-      { x: -0.2, y: 0.875, z: 1.4 },
-      { x: 0.2, y: 0.875, z: 1.4 },
+      { x: -0.1, y: 0.9, z: 1.52 },
+      { x: 0.1, y: 0.9, z: 1.52 },
     ]);
   }
   return bike;

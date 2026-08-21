@@ -4,6 +4,7 @@ import {
   ACCEL_BASE,
   BRAKE,
   DRAG,
+  DRIFT_SLIP,
   DRIFT_YAW,
   ENGINE_BRAKE,
   GEAR_STATS,
@@ -24,6 +25,8 @@ export type PhysicsVehicleState = {
   speed: number;
   steerAngle: number;
   gear: Gear;
+  /** Body vs travel heading while drifting — eases in/out, never unbounded. */
+  driftSlip?: number;
 };
 
 type VehicleCoreExports = WebAssembly.Exports & {
@@ -213,7 +216,11 @@ function stepWithTypeScript(
   state.position.y = 0;
 }
 
-/** Spacebar slide: bleed a little speed and yaw harder while steering. */
+/**
+ * Space + steer: grippy slide. The car rotates a little extra into the
+ * corner (capped) so you can drift the line; a tiny outward slip keeps it
+ * loose. No full-lock snap and no unbounded spin into the wall.
+ */
 function applyHandbrakeDrift(
   state: PhysicsVehicleState,
   dt: number,
@@ -221,25 +228,43 @@ function applyHandbrakeDrift(
   steer: number,
 ) {
   const hb = clamp(handbrake || 0, 0, 1);
-  if (hb <= 0) return;
   const absSpeed = Math.abs(state.speed);
-  if (absSpeed > 0.4) {
+  if (hb > 0 && absSpeed > 0.4) {
     state.speed -= Math.sign(state.speed) * HANDBRAKE * hb * dt;
   }
-  const commit = clamp((Math.abs(steer) - 0.08) / 0.75, 0, 1);
-  if (commit <= 0 || absSpeed < 5) return;
-  const speedFactor = clamp(0.4 + absSpeed / 36, 0.4, 1.2);
+
+  const commit = clamp((Math.abs(steer) - 0.14) / 0.7, 0, 1);
+  const sliding = hb > 0.35 && commit > 0 && absSpeed > 7;
+  const speedScale = clamp(absSpeed / 42, 0.4, 1);
+  const target = sliding
+    ? Math.sign(steer) * (state.speed >= 0 ? 1 : -1) * commit * hb * DRIFT_SLIP * speedScale
+    : 0;
+
+  const prev = state.driftSlip || 0;
+  const rate = sliding ? 9 : 6;
+  const k = 1 - Math.exp(-rate * dt);
+  const slip = prev + (target - prev) * k;
+  state.driftSlip = Math.abs(slip) < 0.002 ? 0 : slip;
+
+  const live = state.driftSlip || 0;
+  if (Math.abs(live) < 0.004 || absSpeed < 1) return;
+
+  const sign = Math.sign(live);
+  const grip = clamp(Math.abs(live) / 0.12, 0, 1);
+  // A bit more yaw when slower so the handbrake still makes the corner.
   const yaw =
-    Math.sign(steer) *
-    (state.speed >= 0 ? 1 : -1) *
+    sign *
+    grip *
     commit *
     hb *
-    speedFactor *
     DRIFT_YAW *
-    clamp(absSpeed / 16, 0.45, 1.25);
+    clamp(1.05 - absSpeed / 95, 0.55, 1.05);
   state.heading += yaw * dt;
-  const lock = Math.sign(steer) * MAX_STEER * (0.72 + commit * 0.28);
-  state.steerAngle += (lock - state.steerAngle) * Math.min(1, 12 * dt);
+
+  const h = state.heading;
+  const push = absSpeed * dt * live * 0.08;
+  state.position.x -= Math.cos(h) * push;
+  state.position.z += Math.sin(h) * push;
 }
 
 export function stepVehiclePhysics(

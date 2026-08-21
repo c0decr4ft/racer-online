@@ -16,6 +16,7 @@ export type VehicleState = {
   speed: number;
   steerAngle: number;
   gear: Gear;
+  driftSlip: number;
 };
 
 /**
@@ -66,6 +67,7 @@ export class Vehicle {
       speed: 0,
       steerAngle: 0,
       gear: 1,
+      driftSlip: 0,
     };
     this.syncMesh();
   }
@@ -76,6 +78,7 @@ export class Vehicle {
     this.state.speed = 0;
     this.state.steerAngle = 0;
     this.state.gear = 1;
+    this.state.driftSlip = 0;
     this.shiftTimer = 0;
     this.powerMul = 1;
     this.animalHitPenalty = 0;
@@ -115,6 +118,9 @@ export class Vehicle {
     }
 
     let physicsInput = input;
+    if (this.mesh.userData.kind === "bike") {
+      physicsInput = { ...physicsInput, handbrake: 0 };
+    }
     if (this.animalHitPenalty > 0) {
       this.animalHitPenalty = Math.max(0, this.animalHitPenalty - dt);
       physicsInput = {
@@ -126,7 +132,7 @@ export class Vehicle {
     }
 
     stepVehiclePhysics(s, dt, physicsInput, this.powerMul);
-    this.updateDriftPose(dt, physicsInput);
+    this.updateDriftPose(dt);
 
     this.syncMesh(dt);
     this.animateWheels(dt);
@@ -180,14 +186,10 @@ export class Vehicle {
   private leanSmooth = 0;
   private driftYaw = 0;
 
-  private updateDriftPose(dt: number, input: InputState) {
+  private updateDriftPose(dt: number) {
     const s = this.state;
-    const sliding =
-      input.handbrake > 0.35 && Math.abs(input.steer) > 0.12 && Math.abs(s.speed) > 6;
-    const target = sliding
-      ? Math.sign(input.steer) * Math.min(0.34, 0.1 + Math.abs(s.speed) / 70)
-      : 0;
-    const rate = sliding ? 11 : 6;
+    const target = s.driftSlip || 0;
+    const rate = Math.abs(target) > 0.02 ? 10 : 7;
     const k = 1 - Math.exp(-rate * dt);
     this.driftYaw += (target - this.driftYaw) * k;
   }
