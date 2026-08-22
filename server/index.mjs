@@ -3,7 +3,7 @@ import { verifyEvent } from "nostr-tools";
 import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
 import { payments, depositProofs, recordPayout, loadPayouts, savePayouts } from "./payments.mjs";
-import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, statSync, renameSync, unlinkSync } from "node:fs";
 import { dirname, join, extname, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -594,8 +594,28 @@ function emptyStore() {
   return store;
 }
 
-/** @returns {BoardStore} */
-function loadStore() {
+/**
+ * Serialize load→mutate→save on leaderboard.json. Concurrent POSTs (score
+ * submits + healServerFromBlob) and the 15-min relay sync used to interleave
+ * with writeFileSync's truncate-then-write: a tear-read hit JSON.parse →
+ * emptyStore() → save wiped the durable board.
+ */
+let boardTail = Promise.resolve();
+function withBoardLock(fn) {
+  const run = boardTail.catch(() => {}).then(fn);
+  boardTail = run.then(
+    () => {},
+    () => {},
+  );
+  return run;
+}
+
+/**
+ * @param {{ allowEmptyOnCorrupt?: boolean }} [opts]
+ * @returns {BoardStore}
+ */
+function loadStore(opts = {}) {
+  const allowEmptyOnCorrupt = opts.allowEmptyOnCorrupt !== false;
   try {
     if (!existsSync(LEADERBOARD_PATH)) return emptyStore();
     const raw = JSON.parse(readFileSync(LEADERBOARD_PATH, "utf8"));
@@ -619,7 +639,9 @@ function loadStore() {
       }
     }
     return store;
-  } catch {
+  } catch (err) {
+    // Mutations must not treat a torn/corrupt file as empty and overwrite it.
+    if (!allowEmptyOnCorrupt && existsSync(LEADERBOARD_PATH)) throw err;
     return emptyStore();
   }
 }
@@ -629,7 +651,20 @@ function saveStore(store) {
   /** @type {BoardStore} */
   const byTrack = {};
   for (const id of TRACK_IDS) byTrack[id] = sortBoard(store[id] || [], id);
-  writeFileSync(LEADERBOARD_PATH, JSON.stringify({ byTrack }, null, 2));
+  const payload = JSON.stringify({ byTrack }, null, 2);
+  // Atomic replace: readers never observe a truncated mid-write file.
+  const tmp = `${LEADERBOARD_PATH}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeFileSync(tmp, payload);
+    renameSync(tmp, LEADERBOARD_PATH);
+  } catch (err) {
+    try {
+      if (existsSync(tmp)) unlinkSync(tmp);
+    } catch {
+      /* ignore */
+    }
+    throw err;
+  }
 }
 
 /**
@@ -651,16 +686,18 @@ async function syncBoardFromRelays() {
     } finally {
       pool.close(SCORE_RELAYS);
     }
-    const store = loadStore();
-    let merged = 0;
-    for (const ev of events) {
-      const score = verifyScoreEvent(ev);
-      if (!score) continue;
-      store[score.trackId] = sortBoard([...(store[score.trackId] || []), score], score.trackId);
-      merged++;
-    }
-    if (merged > 0) saveStore(store);
-    console.log(`[board] relay sync — ${merged} signed scores merged, ${events.length} events seen`);
+    await withBoardLock(async () => {
+      const store = loadStore({ allowEmptyOnCorrupt: false });
+      let merged = 0;
+      for (const ev of events) {
+        const score = verifyScoreEvent(ev);
+        if (!score) continue;
+        store[score.trackId] = sortBoard([...(store[score.trackId] || []), score], score.trackId);
+        merged++;
+      }
+      if (merged > 0) saveStore(store);
+      console.log(`[board] relay sync — ${merged} signed scores merged, ${events.length} events seen`);
+    });
   } catch (err) {
     console.warn("[board] relay sync failed:", err?.message || err);
   }
@@ -1496,11 +1533,22 @@ const httpServer = createServer(async (req, res) => {
         pubkey: score.pubkey,
         eventId: score.eventId,
       };
-      const store = loadStore();
-      store[tid] = sortBoard([...(store[tid] || []), entry], tid);
-      saveStore(store);
+      let saved;
+      try {
+        saved = await withBoardLock(async () => {
+          const store = loadStore({ allowEmptyOnCorrupt: false });
+          store[tid] = sortBoard([...(store[tid] || []), entry], tid);
+          saveStore(store);
+          return store;
+        });
+      } catch (err) {
+        console.error("[board] refuse to save over unreadable leaderboard.json:", err?.message || err);
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "leaderboard temporarily unavailable" }));
+        return;
+      }
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true, trackId: tid, entries: store[tid], byTrack: store }));
+      res.end(JSON.stringify({ ok: true, trackId: tid, entries: saved[tid], byTrack: saved }));
     } catch {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "bad json" }));
