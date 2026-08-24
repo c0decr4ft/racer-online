@@ -1545,6 +1545,20 @@ export class Game {
     document.getElementById("event-token-box")?.classList.add("hidden");
     this.clearPayoutTokenQr();
     this.net.claimPot(tipPercent);
+    // If the WS drops the success frame, the button used to stay disabled forever
+    // with no token. Re-enable so a second click can idempotently resend.
+    window.setTimeout(() => {
+      const box = document.getElementById("event-token-box");
+      const tokenShown = Boolean(box && !box.classList.contains("hidden"));
+      const btn = document.getElementById("event-claim-btn") as HTMLButtonElement | null;
+      if (!tokenShown && btn?.disabled) {
+        btn.disabled = false;
+        const st = document.getElementById("event-payout-status");
+        if (st && /Sending your sats/i.test(st.textContent || "")) {
+          st.textContent = "No payout yet — tap CLAIM again to retry";
+        }
+      }
+    }, 12_000);
   }
 
   private onPayoutResult(result: {
@@ -1584,8 +1598,11 @@ export class Game {
         this.clearPayoutTokenQr();
       }
     } else {
-      status.classList.add("nostr-error");
-      status.textContent = `Payout failed — ${result.error || "unknown error"}`;
+      const pending = /in progress/i.test(result.error || "");
+      status.classList.toggle("nostr-error", !pending);
+      status.textContent = pending
+        ? "Claim still running — wait a moment, then tap CLAIM again if needed"
+        : `Payout failed — ${result.error || "unknown error"}`;
       if (claim) claim.disabled = false;
       this.clearPayoutTokenQr();
     }

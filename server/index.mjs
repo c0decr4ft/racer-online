@@ -214,7 +214,7 @@ function normalizeSessionId(raw) {
 /** @typedef {{ trackId: string, order: number }} TrackVote */
 /** @typedef {{ paymentHash: string, paymentRequest: string, bolt11?: string, paidAt: number, netSats?: number }} BuyIn */
 /** @typedef {{ at: number, level: 'info' | 'warn' | 'error', msg: string }} PotLogEntry */
-/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, lastCrashAt: number, clients: Map<string, Client>, isEvent: boolean, buyInSats: number, buyInFeeSats: number, buyIns: Map<string, BuyIn>, potSats: number, potId: string, potClaimed: boolean, potLogs: PotLogEntry[] }} Room */
+/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, lastCrashAt: number, clients: Map<string, Client>, isEvent: boolean, buyInSats: number, buyInFeeSats: number, buyIns: Map<string, BuyIn>, potSats: number, potId: string, potClaimed: boolean, potLogs: PotLogEntry[], payoutComplete?: boolean, payoutWinnerToken?: string, payoutWinnerSats?: number, payoutFeeSats?: number }} Room */
 
 /** Persist a debug line on the event pot (disk + in-memory) so the DEV table can show it. */
 function potLog(room, level, msg) {
@@ -1331,6 +1331,10 @@ function admitClient(ws, msg, mode) {
       payoutTipSats: 0,
       payoutTipCollected: false,
       payoutTipToken: "",
+      payoutComplete: false,
+      payoutWinnerToken: "",
+      payoutWinnerSats: 0,
+      payoutFeeSats: 0,
     };
     rooms.set(roomName, room);
     if (room.isEvent) {
@@ -2073,7 +2077,26 @@ wss.on("connection", (ws) => {
     if (msg.t === "claimPot") {
       if (!room.isEvent || room.phase !== "finished") return;
       if (client.id !== room.winnerId) return;
-      if (room.potClaimed || room.potSats <= 0) {
+      // Idempotent resend: a dropped payoutResult used to strand the winner with
+      // "already claimed" and no bearer token (sats left the pot, UI stuck).
+      if (room.potClaimed) {
+        if (room.payoutComplete) {
+          send(ws, {
+            t: "payoutResult",
+            ok: true,
+            token: room.payoutWinnerToken || "",
+            winnerSats: room.payoutWinnerSats || 0,
+            tipSats: room.payoutTipSats || 0,
+            tipCollected: room.payoutTipCollected === true,
+            feeSats: room.payoutFeeSats || 0,
+            mock: payments.mock,
+          });
+          return;
+        }
+        send(ws, { t: "payoutResult", ok: false, error: "claim in progress — wait a moment" });
+        return;
+      }
+      if (room.potSats <= 0) {
         send(ws, { t: "payoutResult", ok: false, error: "pot already claimed" });
         return;
       }
@@ -2140,6 +2163,10 @@ wss.on("connection", (ws) => {
           }
 
           const feeSats = Math.max(0, room.potSats - winnerSats - tipSats);
+          room.payoutWinnerToken = winnerToken;
+          room.payoutWinnerSats = winnerSats;
+          room.payoutFeeSats = feeSats;
+          room.payoutComplete = true;
           recordPayout({
             room: room.name,
             potId: room.potId,
@@ -2154,6 +2181,8 @@ wss.on("connection", (ws) => {
             collectedAt: tipCollected ? Date.now() : null,
             // Leftover bearer token stays on disk for a server-side retry only.
             tipToken: tipCollected ? null : room.payoutTipToken || null,
+            // Winner token kept so a dropped WS frame can be resent on reclaim.
+            winnerToken: winnerToken || null,
             mock: payments.mock,
           });
           send(ws, {
@@ -2177,6 +2206,7 @@ wss.on("connection", (ws) => {
           );
         } catch (err) {
           room.potClaimed = false; // payment failed — allow retry (tip already collected is skipped)
+          room.payoutComplete = false;
           potLog(room, "error", `claim failed: ${String(err?.message || err).slice(0, 160)}`);
           send(ws, { t: "payoutResult", ok: false, error: String(err?.message || err).slice(0, 140) });
         }
