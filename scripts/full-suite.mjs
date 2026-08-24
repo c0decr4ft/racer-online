@@ -444,11 +444,16 @@ async function main() {
       JSON.stringify(payout ?? {}),
     );
 
-    // Double claim rejected
+    // Second claim by the winner must idempotently resend the same token
+    // (a dropped first payoutResult used to strand them with "already claimed").
     const againP = waitForWsEvent(evHost.ws, "payoutResult", 4000);
     evHost.ws.send(JSON.stringify({ t: "claimPot", tipPercent: 2 }));
     const again = await againP;
-    assert("event:double-claim-blocked", again?.ok === false && /claimed/.test(again?.error || ""), JSON.stringify(again ?? {}));
+    assert(
+      "event:claim-idempotent-resend",
+      again?.ok === true && again?.token === payout.token && again?.winnerSats === payout.winnerSats,
+      JSON.stringify(again ?? {}),
+    );
 
     // Loser gets no claim response at all
     const loserP = waitForWsEvent(evGuest.ws, "payoutResult", 3000);
