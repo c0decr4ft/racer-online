@@ -16,7 +16,7 @@
  * straight into the tip wallet so a bearer token never sits around to be
  * double-spent.
  */
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -136,35 +136,122 @@ function emptyStore() {
   };
 }
 
+function parseStoreData(data) {
+  if (!data || !Array.isArray(data.proofs)) return null;
+  return {
+    mintUrl: String(data.mintUrl || ""),
+    proofs: data.proofs.map((p) => ({ ...p, amount: BigInt(p.amount ?? 0) })),
+    withdrawnSats: Math.max(0, Math.round(Number(data.withdrawnSats) || 0)),
+    pendingWithdraw:
+      data.pendingWithdraw && typeof data.pendingWithdraw.token === "string"
+        ? {
+            token: data.pendingWithdraw.token,
+            amountSats: Math.max(0, Math.round(Number(data.pendingWithdraw.amountSats) || 0)),
+            at: Number(data.pendingWithdraw.at) || Date.now(),
+          }
+        : null,
+    receivedIds: Array.isArray(data.receivedIds)
+      ? data.receivedIds.map((id) => String(id)).filter(Boolean).slice(-500)
+      : [],
+    logs: normalizeLogs(data.logs),
+    roomName: String(data.roomName || "").slice(0, 80),
+  };
+}
+
 function peekStore(path) {
   try {
     if (!existsSync(path)) return null;
-    const data = JSON.parse(readFileSync(path, "utf8"));
-    if (!data || !Array.isArray(data.proofs)) return null;
-    return {
-      mintUrl: String(data.mintUrl || ""),
-      proofs: data.proofs.map((p) => ({ ...p, amount: BigInt(p.amount ?? 0) })),
-      withdrawnSats: Math.max(0, Math.round(Number(data.withdrawnSats) || 0)),
-      pendingWithdraw:
-        data.pendingWithdraw && typeof data.pendingWithdraw.token === "string"
-          ? {
-              token: data.pendingWithdraw.token,
-              amountSats: Math.max(0, Math.round(Number(data.pendingWithdraw.amountSats) || 0)),
-              at: Number(data.pendingWithdraw.at) || Date.now(),
-            }
-          : null,
-      receivedIds: Array.isArray(data.receivedIds)
-        ? data.receivedIds.map((id) => String(id)).filter(Boolean).slice(-500)
-        : [],
-      logs: normalizeLogs(data.logs),
-      roomName: String(data.roomName || "").slice(0, 80),
-    };
+    return parseStoreData(JSON.parse(readFileSync(path, "utf8")));
   } catch {
     return null;
   }
 }
 
+/** Sidecar written when the primary pot/tip file cannot be updated. */
+function volatilePath(path) {
+  return `${path}.volatile`;
+}
+
+/**
+ * In-process custody after a failed disk write. loadStore prefers this (then the
+ * sidecar) over a stale primary file so buy-in/payout mutations are not discarded
+ * while the lobby still marks the payer paid / returns a winner token.
+ */
+const volatileByPath = new Map();
+
+function cloneStore(store) {
+  return {
+    mintUrl: store.mintUrl || CASHU_MINT_URL,
+    proofs: (store.proofs || []).map((p) => ({ ...p, amount: BigInt(p.amount ?? 0) })),
+    withdrawnSats: store.withdrawnSats || 0,
+    pendingWithdraw: store.pendingWithdraw
+      ? {
+          token: store.pendingWithdraw.token,
+          amountSats: store.pendingWithdraw.amountSats,
+          at: store.pendingWithdraw.at,
+        }
+      : null,
+    receivedIds: [...(store.receivedIds || [])],
+    logs: [...(store.logs || [])],
+    roomName: store.roomName || "",
+  };
+}
+
+function serializeStore(store) {
+  return JSON.stringify(store, (key, v) => (typeof v === "bigint" ? v.toString() : v), 2);
+}
+
+function rememberVolatile(path, store) {
+  const cloned = cloneStore(store);
+  cloned.mintUrl = CASHU_MINT_URL;
+  volatileByPath.set(path, cloned);
+  try {
+    writeFileSync(volatilePath(path), serializeStore(cloned));
+  } catch (err) {
+    console.error(
+      "[cashu] volatile sidecar write failed — holding proofs in memory only until restart:",
+      err?.message || err,
+    );
+  }
+}
+
+function clearVolatile(path) {
+  volatileByPath.delete(path);
+  try {
+    if (existsSync(volatilePath(path))) unlinkSync(volatilePath(path));
+  } catch {
+    /* ignore */
+  }
+}
+
+function hasVolatileCustody(path) {
+  if (volatileByPath.has(path)) return true;
+  try {
+    return existsSync(volatilePath(path));
+  } catch {
+    return false;
+  }
+}
+
 function loadStore(path) {
+  // Newest failed write wins over a stale primary file (and over an older sidecar).
+  const mem = volatileByPath.get(path);
+  if (mem && sameMint(mem.mintUrl || CASHU_MINT_URL, CASHU_MINT_URL)) {
+    return cloneStore(mem);
+  }
+  const diskVol = peekStore(volatilePath(path));
+  if (diskVol && sameMint(diskVol.mintUrl || CASHU_MINT_URL, CASHU_MINT_URL)) {
+    return {
+      mintUrl: CASHU_MINT_URL,
+      proofs: diskVol.proofs,
+      withdrawnSats: diskVol.withdrawnSats,
+      pendingWithdraw: diskVol.pendingWithdraw,
+      receivedIds: diskVol.receivedIds,
+      logs: diskVol.logs,
+      roomName: diskVol.roomName,
+    };
+  }
+
   const peeked = peekStore(path);
   if (!peeked) return emptyStore();
   if (!sameMint(peeked.mintUrl, CASHU_MINT_URL)) {
@@ -187,13 +274,12 @@ function loadStore(path) {
 function saveStore(path, store) {
   try {
     // v4 proofs use bigint amounts — JSON can't serialize them without a replacer
-    writeFileSync(
-      path,
-      JSON.stringify(store, (key, v) => (typeof v === "bigint" ? v.toString() : v), 2),
-    );
+    writeFileSync(path, serializeStore(store));
+    clearVolatile(path);
     return true;
   } catch (err) {
-    console.error("[cashu] failed to persist proofs — money at risk!", err?.message || err);
+    console.error("[cashu] failed to persist proofs — holding volatile custody!", err?.message || err);
+    rememberVolatile(path, store);
     return false;
   }
 }
@@ -213,7 +299,14 @@ async function persistPotProofs(freshProofs, paymentHash, potId) {
     store.proofs.push(...freshProofs);
     if (id) store.receivedIds = [...(store.receivedIds || []), id].slice(-500);
     if (!saveStore(path, store)) {
-      throw new Error("could not persist buy-in proofs to disk");
+      // saveStore already stashed memory + sidecar. Do NOT throw/drop — the mint
+      // swap already burned the payer's proofs into `freshProofs`.
+      if (!hasVolatileCustody(path)) {
+        throw new Error("could not persist buy-in proofs to disk or volatile custody");
+      }
+      console.error(
+        `[cashu] buy-in disk write failed for ${potId} — proofs held in volatile custody (${proofsSum(store.proofs)} sats)`,
+      );
     }
   });
 }
@@ -716,11 +809,11 @@ async function cashuReceivePayloadLocked({ paymentHash, amountSats, payload: raw
   } catch (err) {
     const { getEncodedToken } = await import("@cashu/cashu-ts");
     console.error(
-      "[cashu] EMERGENCY buy-in token — disk persist failed, redeem this once:",
+      "[cashu] EMERGENCY buy-in token — disk + volatile persist failed, redeem this once:",
       getEncodedToken({ mint: CASHU_MINT_URL, proofs: fresh }),
     );
-    // Still return proofs so the lobby marks paid; money is in `fresh` even if disk failed.
-    console.error("[cashu] marking buy-in paid despite persist failure:", err?.message || err);
+    // Do not mark paid without custody — rethrow so the lobby stays unpaid.
+    throw err;
   }
   console.log(`[cashu] buy-in received — ${proofsSum(fresh)} sats into pot (${paymentHash})`);
   return fresh;
@@ -744,10 +837,17 @@ async function cashuReceiveToken({ amountSats, token }) {
  * Pay out sats as a fresh cashuA token string from a proof store.
  * With `includeFees`, the token carries the mint's input fee on top, so the
  * receiver redeems the EXACT amount (fee paid by the sending wallet).
+ *
+ * `alreadyLocked`: caller already holds `withStoreLock(path)`.
+ * `afterSend(store, token)`: mutate the store (e.g. set pendingWithdraw) before save.
  */
-async function sendTokenFromStore(path, amountSats, { includeFees = false } = {}) {
-  const wallet = await getWallet();
-  return withStoreLock(path, async () => {
+async function sendTokenFromStore(
+  path,
+  amountSats,
+  { includeFees = false, alreadyLocked = false, afterSend } = {},
+) {
+  const run = async () => {
+    const wallet = await getWallet();
     const store = loadStore(path);
     const total = proofsSum(store.proofs);
     if (total < amountSats) throw new Error(`wallet short (${total} < ${amountSats} sats)`);
@@ -759,11 +859,20 @@ async function sendTokenFromStore(path, amountSats, { includeFees = false } = {}
       console.warn("[cashu] fee-inclusive send failed — sending plain token:", err?.message || err);
       ({ keep, send } = await wallet.send(amountSats, store.proofs));
     }
-    store.proofs = keep;
-    if (!saveStore(path, store)) throw new Error("could not persist remaining proofs");
     const { getEncodedToken } = await import("@cashu/cashu-ts");
-    return { token: getEncodedToken({ mint: CASHU_MINT_URL, proofs: send }) };
-  });
+    const token = getEncodedToken({ mint: CASHU_MINT_URL, proofs: send });
+    store.proofs = keep;
+    if (typeof afterSend === "function") afterSend(store, token);
+    // Mint already moved secrets into `send`. Never drop the token or `keep` on
+    // a disk error — volatile custody covers `keep`, caller gets `token`.
+    if (!saveStore(path, store)) {
+      console.error(
+        "[cashu] post-send disk write failed — keep held in volatile custody; returning token",
+      );
+    }
+    return { token };
+  };
+  return alreadyLocked ? run() : withStoreLock(path, run);
 }
 
 async function cashuSendToken(amountSats, { includeFees = false, potId } = {}) {
@@ -805,15 +914,23 @@ async function cashuReceiveTipToken(token) {
 
 /** Export sats from the tip wallet as a cashuA token (for cashu.me). Reuses a pending withdraw. */
 async function cashuWithdrawTip(amountSats) {
-  const store = loadTipStore();
-  if (store.pendingWithdraw?.token) return store.pendingWithdraw;
   const amt = Math.max(0, Math.round(Number(amountSats) || 0));
   if (amt <= 0) throw new Error("nothing to withdraw");
-  const { token } = await sendTokenFromStore(TIPS_PATH, amt, { includeFees: true });
-  const next = loadTipStore();
-  next.pendingWithdraw = { token, amountSats: amt, at: Date.now() };
-  saveTipStore(next);
-  return next.pendingWithdraw;
+  // Single lock: check pending + send + set pendingWithdraw atomically so a
+  // concurrent tip collect cannot be clobbered by a stale save of pendingWithdraw.
+  return withStoreLock(TIPS_PATH, async () => {
+    const store = loadTipStore();
+    if (store.pendingWithdraw?.token) return store.pendingWithdraw;
+    const at = Date.now();
+    const { token } = await sendTokenFromStore(TIPS_PATH, amt, {
+      includeFees: true,
+      alreadyLocked: true,
+      afterSend(next, tok) {
+        next.pendingWithdraw = { token: tok, amountSats: amt, at };
+      },
+    });
+    return { token, amountSats: amt, at };
+  });
 }
 
 function cashuMarkWithdrawCopied() {

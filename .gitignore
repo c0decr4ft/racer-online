@@ -30,7 +30,9 @@ server/feedback.json
 # Event Mode payout audit log + Cashu wallets (the files ARE the money)
 server/payouts.json
 server/cashu-proofs.json
+server/cashu-proofs.json.volatile
 server/cashu-tips.json
+server/cashu-tips.json.volatile
 server/cashu-pots/
 
 # stray nested clone, not part of the game
