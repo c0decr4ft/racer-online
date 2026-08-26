@@ -202,16 +202,26 @@ function proofsSum(proofs) {
   return (proofs || []).reduce((a, p) => a + Number(p.amount), 0);
 }
 
-/** Persist buy-in proofs into THAT event's pot immediately — before the HTTP response. */
-async function persistPotProofs(freshProofs, paymentHash, potId) {
+/**
+ * Persist buy-in proofs into THAT event's pot immediately — before the HTTP response.
+ *
+ * @param {{ force?: boolean }} [opts]  `force: true` for Lightning mint quotes: the mint
+ *   already issued these secrets, so they must be custodied even when `paymentHash` is
+ *   already in `receivedIds` (Cashu paid the same buy-in first). Without force, a
+ *   Cashu/Lightning double-pay race drops the minted proofs forever.
+ */
+async function persistPotProofs(freshProofs, paymentHash, potId, opts = {}) {
   if (PAYMENTS_MOCK || !Array.isArray(freshProofs) || !freshProofs.length) return;
+  const force = opts?.force === true;
   const path = potFile(potId);
   await withStoreLock(path, async () => {
     const store = loadStore(path);
     const id = String(paymentHash || "");
-    if (id && (store.receivedIds || []).includes(id)) return;
+    if (id && (store.receivedIds || []).includes(id) && !force) return;
     store.proofs.push(...freshProofs);
-    if (id) store.receivedIds = [...(store.receivedIds || []), id].slice(-500);
+    if (id && !(store.receivedIds || []).includes(id)) {
+      store.receivedIds = [...(store.receivedIds || []), id].slice(-500);
+    }
     if (!saveStore(path, store)) {
       throw new Error("could not persist buy-in proofs to disk");
     }
@@ -624,7 +634,10 @@ async function cashuSettleIfPaid(paymentHash) {
       return null;
     }
     const proofs = await wallet.mintProofsBolt11(q.amountSats, status);
-    await persistPotProofs(proofs, paymentHash, q.potId);
+    // Force custody: if the player also paid the Cashu creq for this same
+    // paymentHash, receivedIds is already set and a plain persist would
+    // discard these freshly minted secrets (real sats lost at the mint).
+    await persistPotProofs(proofs, paymentHash, q.potId, { force: true });
     const netSats = proofsSum(proofs);
     q.settled = { netSats };
     q.minting = false;
@@ -880,6 +893,23 @@ export const payments = {
 /** Record fresh buy-in proofs into the pot wallet store (real mode). */
 export async function depositProofs(freshProofs, potId) {
   await persistPotProofs(freshProofs, "", potId);
+}
+
+/**
+ * Idempotent Cashu-path persist (skips when paymentHash already received).
+ * Exported so tests can contrast with {@link depositLightningProofs}.
+ */
+export async function depositBuyInProofs(freshProofs, paymentHash, potId) {
+  await persistPotProofs(freshProofs, paymentHash, potId);
+}
+
+/**
+ * Custody Lightning-minted buy-in proofs even when Cashu already recorded the
+ * same paymentHash (Event Mode exposes both pay methods for one buy-in).
+ * Exported for regression tests.
+ */
+export async function depositLightningProofs(freshProofs, paymentHash, potId) {
+  await persistPotProofs(freshProofs, paymentHash, potId, { force: true });
 }
 
 /** Append a payout attempt to the audit log (gitignored). */
