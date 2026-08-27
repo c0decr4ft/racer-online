@@ -1066,6 +1066,18 @@ function roomPlayers(room) {
   return [...room.clients.values()].map((c) => c.pose);
 }
 
+/** Coerce wire numbers to finite floats (Infinity/NaN → fallback). */
+function finiteOr(n, fallback = 0) {
+  const v = +n;
+  return Number.isFinite(v) ? v : fallback;
+}
+
+/** Shortest-angle wrap — keeps headings in (-π, π] for binary sync. */
+function wrapHeading(h) {
+  const v = finiteOr(h, 0);
+  return Math.atan2(Math.sin(v), Math.cos(v));
+}
+
 /**
  * Compact binary racing state for any lobby size (2–6).
  * Layout: u8 type | f64 at | u8 count | count × (8-byte id | 4×f32 xzh s | u8 gear | u8 lap)
@@ -1077,7 +1089,7 @@ function encodeStateBinary(players, at) {
   const buf = Buffer.allocUnsafe(10 + n * 26);
   let o = 0;
   buf.writeUInt8(STATE_BIN_TYPE, o++);
-  buf.writeDoubleLE(at, o);
+  buf.writeDoubleLE(finiteOr(at, Date.now()), o);
   o += 8;
   buf.writeUInt8(n, o++);
   for (let i = 0; i < n; i++) {
@@ -1086,13 +1098,15 @@ function encodeStateBinary(players, at) {
     buf.fill(0, o, o + 8);
     buf.write(id, o, "ascii");
     o += 8;
-    buf.writeFloatLE(+p.x || 0, o);
+    buf.writeFloatLE(finiteOr(p.x), o);
     o += 4;
-    buf.writeFloatLE(+p.z || 0, o);
+    buf.writeFloatLE(finiteOr(p.z), o);
     o += 4;
-    buf.writeFloatLE(+p.h || 0, o);
+    // Wrap — do NOT clamp to ±10: client heading accumulates unboundedly and
+    // a hard clamp freezes remotes mid-race once |h| exceeds ~10 rad (~lap 2).
+    buf.writeFloatLE(wrapHeading(p.h), o);
     o += 4;
-    buf.writeFloatLE(+p.s || 0, o);
+    buf.writeFloatLE(finiteOr(p.s), o);
     o += 4;
     buf.writeUInt8(String(p.g || "1").charCodeAt(0) & 0xff, o++);
     buf.writeUInt8(Math.max(1, Math.min(99, p.lap | 0)), o++);
@@ -1954,10 +1968,12 @@ wss.on("connection", (ws) => {
       client.lastPoseAt = now;
       const p = client.pose;
       // Sanity clamps — the client is untrusted; keep poses inside plausible bounds.
-      p.x = Math.max(-20_000, Math.min(20_000, +msg.x || 0));
-      p.z = Math.max(-20_000, Math.min(20_000, +msg.z || 0));
-      p.h = Math.max(-10, Math.min(10, +msg.h || 0));
-      p.s = Math.max(-150, Math.min(150, +msg.s || 0)); // ±540 km/h ceiling
+      // Heading must be angle-wrapped, not magnitude-clamped: local yaw accumulates
+      // past ±10 rad within a normal 3-lap race, and clamping freezes peer remotes.
+      p.x = Math.max(-20_000, Math.min(20_000, finiteOr(msg.x)));
+      p.z = Math.max(-20_000, Math.min(20_000, finiteOr(msg.z)));
+      p.h = wrapHeading(msg.h);
+      p.s = Math.max(-150, Math.min(150, finiteOr(msg.s))); // ±540 km/h ceiling
       p.g = String(msg.g || "1").slice(0, 2);
       p.lap = Math.max(1, Math.min(99, msg.lap | 0));
       // Ignore client kind — room class is locked by the host at create.

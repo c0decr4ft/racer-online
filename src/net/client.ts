@@ -35,9 +35,9 @@ function poseKind(pose: PlayerPose): VehicleKind {
 }
 
 function wrapPi(dh: number): number {
-  while (dh > Math.PI) dh -= Math.PI * 2;
-  while (dh < -Math.PI) dh += Math.PI * 2;
-  return dh;
+  // atan2 form — finite for huge/non-finite inputs (while-loop hangs on Infinity).
+  if (!Number.isFinite(dh)) return 0;
+  return Math.atan2(Math.sin(dh), Math.cos(dh));
 }
 
 /** Remote racer — buffered snapshot lerp for every lobby size (2–6). */
