@@ -58,6 +58,7 @@ const DIR = dirname(fileURLToPath(import.meta.url));
 const PROOFS_PATH = join(DIR, "cashu-proofs.json");
 const TIPS_PATH = join(DIR, "cashu-tips.json");
 const PAYOUTS_PATH = join(DIR, "payouts.json");
+const QUOTES_PATH = join(DIR, "cashu-mint-quotes.json");
 const POTS_DIR = join(DIR, "cashu-pots");
 
 const storeTails = new Map();
@@ -546,8 +547,97 @@ function mockMarkWithdrawCopied() {
 
 /* ---------------- real adapter (cashu-ts) ---------------- */
 
-/** Live Lightning mint quotes: paymentHash → { quoteId, amountSats, minting }. */
+/**
+ * Lightning mint quotes: paymentHash → { quoteId, amountSats, potId, minting, settled? }.
+ * Also mirrored to cashu-mint-quotes.json so a leave/redeploy cannot strand a PAID
+ * NUT-04 invoice (quoteId was previously memory-only and the lobby poll only walked
+ * live buyIns — both gone after leave or process restart).
+ */
 const mintQuotes = new Map();
+const MAX_SETTLED_QUOTES = 200;
+
+function readQuotesFile() {
+  try {
+    if (!existsSync(QUOTES_PATH)) return {};
+    const data = JSON.parse(readFileSync(QUOTES_PATH, "utf8"));
+    return data && typeof data === "object" && !Array.isArray(data) ? data : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeQuotesFile(all) {
+  try {
+    writeFileSync(QUOTES_PATH, JSON.stringify(all, null, 2));
+    return true;
+  } catch (err) {
+    console.error("[cashu] failed to persist mint quotes — PAID invoices may be lost on restart!", err?.message || err);
+    return false;
+  }
+}
+
+/** Serialize in-memory quotes to disk (unsettled kept; settled capped). */
+function persistMintQuotes() {
+  const unsettled = {};
+  const settled = [];
+  for (const [hash, q] of mintQuotes) {
+    if (!q?.quoteId || !q?.potId) continue;
+    const row = {
+      quoteId: String(q.quoteId),
+      amountSats: Math.max(0, Math.round(Number(q.amountSats) || 0)),
+      potId: String(q.potId),
+      createdAt: Number(q.createdAt) || Date.now(),
+      settled: q.settled
+        ? { netSats: Math.max(0, Math.round(Number(q.settled.netSats) || 0)), at: Number(q.settled.at) || Date.now() }
+        : null,
+    };
+    if (row.settled) settled.push([hash, row]);
+    else unsettled[hash] = row;
+  }
+  settled.sort((a, b) => (a[1].settled?.at || 0) - (b[1].settled?.at || 0));
+  const kept = settled.slice(-MAX_SETTLED_QUOTES);
+  const all = { ...unsettled };
+  for (const [hash, row] of kept) all[hash] = row;
+  return writeQuotesFile(all);
+}
+
+function rememberMintQuote(paymentHash, entry) {
+  const hash = String(paymentHash || "");
+  if (!hash || !entry?.quoteId || !entry?.potId) return;
+  mintQuotes.set(hash, {
+    quoteId: String(entry.quoteId),
+    amountSats: Math.max(0, Math.round(Number(entry.amountSats) || 0)),
+    potId: requirePotId(entry.potId),
+    minting: false,
+    createdAt: Number(entry.createdAt) || Date.now(),
+    settled: entry.settled || null,
+  });
+  persistMintQuotes();
+}
+
+function loadMintQuotesFromDisk() {
+  const all = readQuotesFile();
+  let n = 0;
+  for (const [hash, row] of Object.entries(all)) {
+    if (!row?.quoteId || !row?.potId) continue;
+    try {
+      mintQuotes.set(String(hash), {
+        quoteId: String(row.quoteId),
+        amountSats: Math.max(0, Math.round(Number(row.amountSats) || 0)),
+        potId: requirePotId(row.potId),
+        minting: false,
+        createdAt: Number(row.createdAt) || Date.now(),
+        settled: row.settled
+          ? { netSats: Math.max(0, Math.round(Number(row.settled.netSats) || 0)), at: Number(row.settled.at) || 0 }
+          : null,
+      });
+      if (!row.settled) n += 1;
+    } catch {
+      /* skip corrupt potId */
+    }
+  }
+  if (n > 0) console.log(`[cashu] restored ${n} pending Lightning mint quote(s) from disk`);
+}
 
 async function cashuCreatePaymentRequest({ amountSats, memo, baseUrl, potId }) {
   requirePotId(potId);
@@ -592,7 +682,12 @@ async function cashuCreatePaymentRequest({ amountSats, memo, baseUrl, potId }) {
     bolt11 = String(quote.request || "").trim();
     const quoteId = String(quote.quote || "").trim();
     if (bolt11 && quoteId) {
-      mintQuotes.set(paymentHash, { quoteId, amountSats, minting: false, potId: requirePotId(potId) });
+      rememberMintQuote(paymentHash, {
+        quoteId,
+        amountSats,
+        potId: requirePotId(potId),
+        createdAt: Date.now(),
+      });
     }
   } catch (err) {
     console.warn("[cashu] Lightning mint quote failed — Cashu request still valid:", err?.message || err);
@@ -626,15 +721,30 @@ async function cashuSettleIfPaid(paymentHash) {
     const proofs = await wallet.mintProofsBolt11(q.amountSats, status);
     await persistPotProofs(proofs, paymentHash, q.potId);
     const netSats = proofsSum(proofs);
-    q.settled = { netSats };
+    q.settled = { netSats, at: Date.now() };
     q.minting = false;
-    console.log(`[cashu] Lightning buy-in minted — ${netSats} sats into pot`);
+    persistMintQuotes();
+    console.log(`[cashu] Lightning buy-in minted — ${netSats} sats into pot ${q.potId}`);
     return q.settled;
   } catch (err) {
     q.minting = false;
     console.warn("[cashu] mint-quote redeem failed:", err?.message || err);
     return null;
   }
+}
+
+/**
+ * Redeem every unsettled Lightning mint quote (live lobby + orphans after leave/restart).
+ * Returns [{ paymentHash, potId, netSats }] for newly settled quotes this pass.
+ */
+async function cashuSettlePendingQuotes() {
+  const out = [];
+  for (const [hash, q] of [...mintQuotes.entries()]) {
+    if (!q || q.settled) continue;
+    const settled = await cashuSettleIfPaid(hash);
+    if (settled) out.push({ paymentHash: hash, potId: q.potId, netSats: settled.netSats });
+  }
+  return out;
 }
 
 /** Swap incoming proofs at the mint. Pass the proof array (not an encoded token)
@@ -837,6 +947,7 @@ function cashuWithdrawnSats() {
 /* ---------------- unified surface ---------------- */
 
 if (!PAYMENTS_MOCK) {
+  loadMintQuotesFromDisk();
   console.log(`[cashu] live mint ${CASHU_MINT_URL} (real sats) · pot + tip wallets`);
 } else {
   console.log("[cashu] mock mode — fake sats, RACER_PAYMENTS_MOCK=1");
@@ -850,6 +961,8 @@ export const payments = {
     : cashuCreatePaymentRequest,
   /** Poll Lightning mint quotes (real) or the mock auto-pay timer. Returns {netSats} or null. */
   settleIfPaid: PAYMENTS_MOCK ? mockSettleIfPaid : cashuSettleIfPaid,
+  /** Redeem all unsettled LN mint quotes (including orphans after leave/restart). */
+  settlePendingQuotes: PAYMENTS_MOCK ? async () => [] : cashuSettlePendingQuotes,
   receivePayload: PAYMENTS_MOCK ? null : cashuReceivePayload,
   alreadyReceived,
   receiveToken: PAYMENTS_MOCK ? async () => [] : cashuReceiveToken,
@@ -876,6 +989,18 @@ export const payments = {
   /** Persist a debug line on one event pot (no-op in mock). */
   appendPotLog,
 };
+
+/** Test/helpers: remember a Lightning mint quote without hitting the mint. */
+export function __rememberMintQuoteForTests(paymentHash, entry) {
+  rememberMintQuote(paymentHash, entry);
+}
+
+/** Test/helpers: pending (unsettled) quote count. */
+export function __pendingMintQuoteCountForTests() {
+  let n = 0;
+  for (const q of mintQuotes.values()) if (q && !q.settled) n += 1;
+  return n;
+}
 
 /** Record fresh buy-in proofs into the pot wallet store (real mode). */
 export async function depositProofs(freshProofs, potId) {

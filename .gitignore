@@ -31,6 +31,7 @@ server/feedback.json
 server/payouts.json
 server/cashu-proofs.json
 server/cashu-tips.json
+server/cashu-mint-quotes.json
 server/cashu-pots/
 
 # stray nested clone, not part of the game
