@@ -15,7 +15,8 @@
     "start": "node server/index.mjs",
     "start:prod": "node server/index.mjs",
     "start:local": "npm run dev:online",
-    "test:full": "node scripts/full-suite.mjs"
+    "test:full": "node scripts/full-suite.mjs",
+    "test:heading-wrap": "node scripts/test-pose-heading-wrap.mjs"
   },
   "devDependencies": {
     "@types/qrcode": "^1.5.6",
