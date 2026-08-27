@@ -2230,8 +2230,41 @@ setInterval(() => {
 
 // Event Mode: mock auto-pays after ~3s; live mode also polls Lightning mint
 // quotes (Cashu POSTs land via /api/ecash/pay without polling).
+// settlePendingQuotes covers orphans: leave deletes buyIns and restarts wipe
+// memory — quotes are on disk so PAID invoices still mint into the pot file.
 setInterval(() => {
   if (!payments.settleIfPaid) return;
+  const creditIfLive = (paymentHash, netSats) => {
+    const found = findBuyInByHash(paymentHash);
+    if (!found) return;
+    const buyIn = found.room.buyIns.get(found.clientId);
+    if (!buyIn || buyIn.paidAt > 0) return;
+    if (found.room.phase !== "lobby") return;
+    markBuyInPaid(found.room, found.clientId, netSats);
+  };
+  if (typeof payments.settlePendingQuotes === "function") {
+    void payments
+      .settlePendingQuotes()
+      .then((results) => {
+        for (const r of results || []) {
+          if (!r?.paymentHash) continue;
+          creditIfLive(r.paymentHash, r.netSats);
+          if (!findBuyInByHash(r.paymentHash)) {
+            console.log(
+              `[cashu] orphan Lightning buy-in minted into pot ${r.potId} (${r.netSats} sats)`,
+            );
+            void payments.appendPotLog?.(r.potId, {
+              level: "info",
+              msg: `orphan Lightning settle · ${r.netSats} sats (${String(r.paymentHash).slice(0, 12)}…)`,
+            });
+          }
+        }
+      })
+      .catch((err) => {
+        console.warn("[event] settlePendingQuotes failed:", err?.message || err);
+      });
+    return;
+  }
   for (const room of rooms.values()) {
     if (!room.isEvent || room.phase !== "lobby") continue;
     for (const [id, buyIn] of room.buyIns) {
