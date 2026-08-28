@@ -351,6 +351,7 @@ async function sweepPendingTipTokens() {
   if (payments.mock) return 0;
   const list = loadPayouts();
   let swept = 0;
+  let dirty = false;
   for (const r of list) {
     if (!r || r.mock || r.collected || r.claimedAt || !r.tipToken || !(Number(r.tipSats) > 0)) continue;
     try {
@@ -360,11 +361,17 @@ async function sweepPendingTipTokens() {
       r.tipSats = Number.isFinite(net) && net > 0 ? net : r.tipSats;
       delete r.tipToken;
       swept += 1;
+      dirty = true;
     } catch (err) {
+      // Persist failed after mint swap — replace spent bearer so a later sweep can retry.
+      if (err?.emergencyToken) {
+        r.tipToken = err.emergencyToken;
+        dirty = true;
+      }
       console.warn(`[dev] tip sweep failed (${r.room}):`, err?.message || err);
     }
   }
-  if (swept > 0) savePayouts(list);
+  if (dirty) savePayouts(list);
   return swept;
 }
 
@@ -1624,8 +1631,16 @@ const httpServer = createServer(async (req, res) => {
         try {
           if (rec.tipToken) {
             // Leftover bearer token — swap it into the tip wallet (burns the token).
-            const net = await payments.receiveTipToken(rec.tipToken, Math.round(Number(rec.tipSats)));
-            rec.tipSats = Number.isFinite(net) && net > 0 ? net : rec.tipSats;
+            try {
+              const net = await payments.receiveTipToken(rec.tipToken, Math.round(Number(rec.tipSats)));
+              rec.tipSats = Number.isFinite(net) && net > 0 ? net : rec.tipSats;
+            } catch (err) {
+              if (err?.emergencyToken) {
+                rec.tipToken = err.emergencyToken;
+                savePayouts(list);
+              }
+              throw err;
+            }
           } else {
             // Never left the pot — collect now.
             const result = await payments.collectTip(Math.round(Number(rec.tipSats)), rec.potId);
@@ -2106,6 +2121,8 @@ wss.on("connection", (ws) => {
               room.payoutTipSats = tipSats;
               room.payoutTipToken = "";
             } catch (err) {
+              // Mint swap burned the old bearer — keep the re-encoded secrets for retry.
+              if (err?.emergencyToken) room.payoutTipToken = err.emergencyToken;
               console.warn(`[event] leftover tip token collect failed:`, err?.message || err);
               potLog(room, "warn", `leftover tip token collect failed: ${String(err?.message || err).slice(0, 160)}`);
             }
