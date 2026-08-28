@@ -770,8 +770,16 @@ async function cashuSendToken(amountSats, { includeFees = false, potId } = {}) {
   return sendTokenFromStore(potId ? potFile(potId) : PROOFS_PATH, amountSats, { includeFees });
 }
 
+/** Encode proofs as a cashuA bearer token (mint already burned the prior secrets). */
+async function encodeProofsToken(proofs) {
+  const { getEncodedToken } = await import("@cashu/cashu-ts");
+  return getEncodedToken({ mint: CASHU_MINT_URL, proofs });
+}
+
 /**
  * Move `amountSats` from one event pot into the tip wallet.
+ * On tip-wallet disk failure after the mint swap, returns collected:false with a
+ * fresh bearer token (the pot→tip token is already spent).
  */
 async function cashuCollectTip(amountSats, potId) {
   const path = potId ? potFile(potId) : PROOFS_PATH;
@@ -781,24 +789,57 @@ async function cashuCollectTip(amountSats, potId) {
     await withStoreLock(TIPS_PATH, async () => {
       const store = loadTipStore();
       store.proofs.push(...fresh);
-      saveTipStore(store);
+      if (!saveTipStore(store)) {
+        const err = new Error("could not persist tip proofs to disk");
+        err.fresh = fresh;
+        throw err;
+      }
     });
     const sats = proofsSum(fresh);
     console.log(`[cashu] tip collected — ${sats} sats into tip wallet`);
     return { sats, collected: true };
   } catch (err) {
-    console.warn("[cashu] tip collect receive failed — holding token for retry:", err?.message || err);
-    return { sats: amountSats, collected: false, token };
+    let retryToken = token;
+    let sats = amountSats;
+    if (err?.fresh) {
+      sats = proofsSum(err.fresh);
+      try {
+        // Original `token` is spent — hand back the post-swap secrets for retry.
+        retryToken = await encodeProofsToken(err.fresh);
+      } catch (encodeErr) {
+        console.error(
+          "[cashu] tip persist failed and could not re-encode fresh proofs — money at risk:",
+          encodeErr?.message || encodeErr,
+        );
+      }
+    }
+    console.warn("[cashu] tip collect receive/persist failed — holding token for retry:", err?.message || err);
+    return { sats, collected: false, token: retryToken };
   }
 }
 
-/** Redeem a leftover tip bearer token into the tip wallet (burns it at the mint). */
+/**
+ * Redeem a leftover tip bearer token into the tip wallet (burns it at the mint).
+ * Throws on persist failure with `err.emergencyToken` set to a re-encoded bearer
+ * so callers can replace the spent tipToken and retry.
+ */
 async function cashuReceiveTipToken(token) {
   const fresh = await cashuReceiveToken({ amountSats: 1, token: String(token || "").trim() });
   await withStoreLock(TIPS_PATH, async () => {
     const store = loadTipStore();
     store.proofs.push(...fresh);
-    saveTipStore(store);
+    if (!saveTipStore(store)) {
+      const err = new Error("could not persist tip proofs to disk");
+      try {
+        err.emergencyToken = await encodeProofsToken(fresh);
+      } catch (encodeErr) {
+        console.error(
+          "[cashu] tip-token persist failed and could not re-encode — money at risk:",
+          encodeErr?.message || encodeErr,
+        );
+      }
+      throw err;
+    }
   });
   return proofsSum(fresh);
 }
