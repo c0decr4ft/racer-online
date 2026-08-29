@@ -1656,7 +1656,7 @@ const httpServer = createServer(async (req, res) => {
         return;
       }
       // Mark the pending withdraw as copied (token already left the tip wallet).
-      const marked = payments.markWithdrawCopied();
+      const marked = await payments.markWithdrawCopied();
       if (marked > 0) markCollectedTipsClaimed();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ...(await devTipsSummary()), marked }));
