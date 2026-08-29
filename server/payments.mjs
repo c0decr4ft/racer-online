@@ -744,11 +744,18 @@ async function cashuReceiveToken({ amountSats, token }) {
  * Pay out sats as a fresh cashuA token string from a proof store.
  * With `includeFees`, the token carries the mint's input fee on top, so the
  * receiver redeems the EXACT amount (fee paid by the sending wallet).
+ *
+ * `asPendingWithdraw`: tip-wallet export — encode the send and write
+ * `pendingWithdraw` in the SAME locked save so a concurrent tip collect cannot
+ * land proofs that a later unlocked RMW then wipes.
  */
-async function sendTokenFromStore(path, amountSats, { includeFees = false } = {}) {
+async function sendTokenFromStore(path, amountSats, { includeFees = false, asPendingWithdraw = false } = {}) {
   const wallet = await getWallet();
   return withStoreLock(path, async () => {
     const store = loadStore(path);
+    if (asPendingWithdraw && store.pendingWithdraw?.token) {
+      return { token: store.pendingWithdraw.token, pendingWithdraw: store.pendingWithdraw };
+    }
     const total = proofsSum(store.proofs);
     if (total < amountSats) throw new Error(`wallet short (${total} < ${amountSats} sats)`);
     let keep, send;
@@ -759,10 +766,14 @@ async function sendTokenFromStore(path, amountSats, { includeFees = false } = {}
       console.warn("[cashu] fee-inclusive send failed — sending plain token:", err?.message || err);
       ({ keep, send } = await wallet.send(amountSats, store.proofs));
     }
-    store.proofs = keep;
-    if (!saveStore(path, store)) throw new Error("could not persist remaining proofs");
     const { getEncodedToken } = await import("@cashu/cashu-ts");
-    return { token: getEncodedToken({ mint: CASHU_MINT_URL, proofs: send }) };
+    const token = getEncodedToken({ mint: CASHU_MINT_URL, proofs: send });
+    store.proofs = keep;
+    if (asPendingWithdraw) {
+      store.pendingWithdraw = { token, amountSats, at: Date.now() };
+    }
+    if (!saveStore(path, store)) throw new Error("could not persist remaining proofs");
+    return asPendingWithdraw ? { token, pendingWithdraw: store.pendingWithdraw } : { token };
   });
 }
 
@@ -805,25 +816,27 @@ async function cashuReceiveTipToken(token) {
 
 /** Export sats from the tip wallet as a cashuA token (for cashu.me). Reuses a pending withdraw. */
 async function cashuWithdrawTip(amountSats) {
-  const store = loadTipStore();
-  if (store.pendingWithdraw?.token) return store.pendingWithdraw;
   const amt = Math.max(0, Math.round(Number(amountSats) || 0));
   if (amt <= 0) throw new Error("nothing to withdraw");
-  const { token } = await sendTokenFromStore(TIPS_PATH, amt, { includeFees: true });
-  const next = loadTipStore();
-  next.pendingWithdraw = { token, amountSats: amt, at: Date.now() };
-  saveTipStore(next);
-  return next.pendingWithdraw;
+  // Atomic with the mint send: pendingWithdraw must not be a second unlocked RMW
+  // (that raced tip collects and wiped freshly deposited tip proofs).
+  const { pendingWithdraw } = await sendTokenFromStore(TIPS_PATH, amt, {
+    includeFees: true,
+    asPendingWithdraw: true,
+  });
+  return pendingWithdraw;
 }
 
-function cashuMarkWithdrawCopied() {
-  const store = loadTipStore();
-  if (!store.pendingWithdraw) return 0;
-  const n = store.pendingWithdraw.amountSats;
-  store.withdrawnSats += n;
-  store.pendingWithdraw = null;
-  saveTipStore(store);
-  return n;
+async function cashuMarkWithdrawCopied() {
+  return withStoreLock(TIPS_PATH, async () => {
+    const store = loadTipStore();
+    if (!store.pendingWithdraw) return 0;
+    const n = store.pendingWithdraw.amountSats;
+    store.withdrawnSats += n;
+    store.pendingWithdraw = null;
+    if (!saveTipStore(store)) throw new Error("could not persist tip withdraw clear");
+    return n;
+  });
 }
 
 function cashuPendingWithdraw() {
