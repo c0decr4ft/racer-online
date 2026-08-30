@@ -882,25 +882,25 @@ export async function depositProofs(freshProofs, potId) {
   await persistPotProofs(freshProofs, "", potId);
 }
 
-/** Append a payout attempt to the audit log (gitignored). */
-export function recordPayout(record) {
-  let list = [];
-  try {
-    if (existsSync(PAYOUTS_PATH)) list = JSON.parse(readFileSync(PAYOUTS_PATH, "utf8"));
-  } catch {
-    list = [];
-  }
-  if (!Array.isArray(list)) list = [];
-  list.push({ at: Date.now(), ...record });
-  try {
-    writeFileSync(PAYOUTS_PATH, JSON.stringify(list.slice(-200), null, 2));
-  } catch {
-    /* ignore */
-  }
+/* ---------------- payouts.json (audit + uncollected tip tokens) ----------------
+ * Tip bearer tokens live here until swept into the tip wallet. Concurrent
+ * claimPot / tip-sweep / DEV retry used to load → await mint → save a stale
+ * snapshot and wipe sibling records (including tipToken secrets). All writers
+ * go through withPayoutsLock; long mint awaits must run OUTSIDE the lock and
+ * re-apply via updatePayouts.
+ */
+
+const payoutsTail = { p: Promise.resolve() };
+function withPayoutsLock(fn) {
+  const run = payoutsTail.p.catch(() => {}).then(fn);
+  payoutsTail.p = run.then(
+    () => {},
+    () => {},
+  );
+  return run;
 }
 
-/** Read the payout audit log (tips live here). */
-export function loadPayouts() {
+function readPayoutsFile() {
   try {
     if (!existsSync(PAYOUTS_PATH)) return [];
     const list = JSON.parse(readFileSync(PAYOUTS_PATH, "utf8"));
@@ -910,11 +910,45 @@ export function loadPayouts() {
   }
 }
 
-/** Persist the payout audit log (e.g. after marking tips collected). */
-export function savePayouts(list) {
+function writePayoutsFile(list) {
   try {
     writeFileSync(PAYOUTS_PATH, JSON.stringify((Array.isArray(list) ? list : []).slice(-200), null, 2));
-  } catch {
-    /* ignore */
+    return true;
+  } catch (err) {
+    console.error("[cashu] failed to persist payouts.json:", err?.message || err);
+    return false;
   }
+}
+
+/** Append a payout attempt to the audit log (gitignored). Serialized vs other writers. */
+export async function recordPayout(record) {
+  return updatePayouts((list) => {
+    list.push({ at: Date.now(), ...record });
+  });
+}
+
+/** Read the payout audit log (tips live here). Snapshot only — not a lock. */
+export function loadPayouts() {
+  return readPayoutsFile();
+}
+
+/**
+ * Atomic read/mutate/write of payouts.json. Hold the lock only for disk work —
+ * await mint I/O outside, then call again to commit.
+ * @param {(list: object[]) => unknown | Promise<unknown>} mutator
+ */
+export async function updatePayouts(mutator) {
+  return withPayoutsLock(async () => {
+    const list = readPayoutsFile();
+    const result = await mutator(list);
+    writePayoutsFile(list);
+    return result;
+  });
+}
+
+/** Persist the payout audit log. Prefer updatePayouts after an await gap. */
+export async function savePayouts(list) {
+  return withPayoutsLock(async () => {
+    writePayoutsFile(list);
+  });
 }
