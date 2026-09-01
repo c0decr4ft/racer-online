@@ -214,7 +214,7 @@ function normalizeSessionId(raw) {
 /** @typedef {{ trackId: string, order: number }} TrackVote */
 /** @typedef {{ paymentHash: string, paymentRequest: string, bolt11?: string, paidAt: number, netSats?: number }} BuyIn */
 /** @typedef {{ at: number, level: 'info' | 'warn' | 'error', msg: string }} PotLogEntry */
-/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, lastCrashAt: number, clients: Map<string, Client>, isEvent: boolean, buyInSats: number, buyInFeeSats: number, buyIns: Map<string, BuyIn>, potSats: number, potId: string, potClaimed: boolean, potLogs: PotLogEntry[] }} Room */
+/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, claimSecret: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, lastCrashAt: number, clients: Map<string, Client>, isEvent: boolean, buyInSats: number, buyInFeeSats: number, buyIns: Map<string, BuyIn>, potSats: number, potId: string, potClaimed: boolean, potLogs: PotLogEntry[] }} Room */
 
 /** Persist a debug line on the event pot (disk + in-memory) so the DEV table can show it. */
 function potLog(room, level, msg) {
@@ -1288,6 +1288,7 @@ function admitClient(ws, msg, mode) {
   const password = sanitizePassword(msg.password);
   const name = sanitizeDriverName(msg.name || "Racer");
   const accent = normalizeColor(msg.accent, 0xff3b2e);
+  let reclaimingWinner = false;
 
   /** @type {Room | undefined} */
   let room = rooms.get(roomName);
@@ -1328,6 +1329,7 @@ function admitClient(ws, msg, mode) {
       potId: msg.event ? randomUUID() : "",
       potClaimed: false,
       potLogs: [],
+      claimSecret: "",
       payoutTipSats: 0,
       payoutTipCollected: false,
       payoutTipToken: "",
@@ -1337,7 +1339,15 @@ function admitClient(ws, msg, mode) {
       potLog(room, "info", `created · buy-in ${room.buyInSats} sats`);
     }
   } else {
-    if (!room || room.clients.size === 0) {
+    // Empty rooms are normally gone — except Event Mode pots held open for reclaim.
+    const heldForClaim =
+      room &&
+      room.isEvent &&
+      room.phase === "finished" &&
+      !room.potClaimed &&
+      room.potSats > 0 &&
+      room.claimSecret;
+    if (!room || (room.clients.size === 0 && !heldForClaim)) {
       send(ws, { t: "error", message: "room not found" });
       try {
         ws.close();
@@ -1346,7 +1356,18 @@ function admitClient(ws, msg, mode) {
       }
       return null;
     }
-    if (room.phase !== "lobby") {
+    // Event Mode: allow the winner back into a finished room while the pot is
+    // still unclaimed (refresh / WS drop otherwise permanently locks the sats).
+    const reclaiming =
+      room.isEvent &&
+      room.phase === "finished" &&
+      !room.potClaimed &&
+      room.potSats > 0 &&
+      typeof msg.claimSecret === "string" &&
+      msg.claimSecret.length >= 16 &&
+      msg.claimSecret === room.claimSecret;
+    reclaimingWinner = reclaiming === true;
+    if (room.phase !== "lobby" && !reclaiming) {
       send(ws, { t: "error", message: "race already started" });
       try {
         ws.close();
@@ -1379,7 +1400,8 @@ function admitClient(ws, msg, mode) {
       }
       return null;
     }
-    if (room.clients.size >= room.maxPlayers) {
+    // Reclaiming winners keep their slot even if the lobby looks full of spectators.
+    if (!reclaiming && room.clients.size >= room.maxPlayers) {
       send(ws, { t: "error", message: `room full (max ${room.maxPlayers})` });
       try {
         ws.close();
@@ -1417,6 +1439,10 @@ function admitClient(ws, msg, mode) {
   const client = { id, name, color, room: roomName, ws, pose, lastPoseAt: 0 };
   room.clients.set(id, client);
   if (!room.hostId || mode === "create") room.hostId = id;
+  if (reclaimingWinner) {
+    room.winnerId = id;
+    potLog(room, "info", `${name} rejoined to claim the pot`);
+  }
 
   send(ws, {
     t: "welcome",
@@ -1431,14 +1457,16 @@ function admitClient(ws, msg, mode) {
     maxPlayers: room.maxPlayers,
     phase: room.phase,
     event: eventInfo(room),
+    // Winner-only: let the client restore checkout after a reconnect.
+    ...(reclaimingWinner && room.claimSecret ? { claimSecret: room.claimSecret } : {}),
   });
   broadcast(room, { t: "join", player: pose }, id);
-  broadcast(room, { t: "notice", text: `${name} joined` });
-  broadcast(room, lobbySnapshot(room));
-  // Event Mode: every racer gets their own buy-in invoice
-  if (room.isEvent) void createBuyInInvoice(room, client);
+  broadcast(room, { t: "notice", text: reclaimingWinner ? `${name} rejoined to claim` : `${name} joined` });
+  if (room.phase === "lobby") broadcast(room, lobbySnapshot(room));
+  // Event Mode: every racer gets their own buy-in invoice (skip on pot reclaim).
+  if (room.isEvent && room.phase === "lobby") void createBuyInInvoice(room, client);
   console.log(
-    `[${mode}] ${name} (${kind}) → ${roomName} (${room.clients.size}/${room.maxPlayers}) track=${room.trackId} weather=${room.weather || "dry"}`,
+    `[${mode}] ${name} (${kind}) → ${roomName} (${room.clients.size}/${room.maxPlayers}) track=${room.trackId} weather=${room.weather || "dry"}${reclaimingWinner ? " [reclaim]" : ""}`,
   );
   return client;
 }
@@ -1999,6 +2027,10 @@ wss.on("connection", (ws) => {
       room.phase = "finished";
       // Event Mode: one race, winner takes the pot — no map vote / next round
       if (room.isEvent) {
+        // Mint the reclaim secret immediately (before any await) so a fast WS
+        // drop still leaves a held room the winner can rejoin.
+        room.claimSecret = randomUUID().replaceAll("-", "");
+        const claimSecret = room.claimSecret;
         void (async () => {
           // Attach the payout fee budget (both sends: winner + tip) so the
           // winner's checkout shows the real split.
@@ -2008,7 +2040,9 @@ wss.on("connection", (ws) => {
             info.potFeeSats = perSend * 2;
           }
           if (rooms.get(room.name) !== room) return;
-          broadcast(room, {
+          // One-time reclaim secret — only the winner's socket gets it so a
+          // refresh / WS drop can rejoin and claim without locking the pot.
+          const resultBase = {
             t: "raceResult",
             winnerId: client.id,
             winnerName: client.name,
@@ -2016,7 +2050,9 @@ wss.on("connection", (ws) => {
             trackOptions: [],
             voteEndsAt: 0,
             event: info,
-          });
+          };
+          send(client.ws, { ...resultBase, claimSecret });
+          broadcast(room, resultBase, client.id);
         })();
         potLog(room, "info", `finished · ${client.name} won · accounted ${room.potSats} sats`);
         console.log(`[event] ${room.name} won by ${client.name} — pot ${room.potSats} sats`);
@@ -2166,6 +2202,7 @@ wss.on("connection", (ws) => {
             feeSats,
             mock: payments.mock,
           });
+          room.claimSecret = ""; // pot paid — no further reclaim
           broadcast(room, { t: "notice", text: `${client.name} claimed the pot — ${winnerSats} sats` });
           potLog(
             room,
@@ -2197,8 +2234,16 @@ wss.on("connection", (ws) => {
     room.buyIns.delete(client.id); // event: drop their buy-in record (v1 — paid buy-ins are not refunded)
     console.log(`[leave] ${client.name}`);
     if (room.clients.size === 0) {
-      potLog(room, "info", "last player left — room closed (pot file kept)");
-      rooms.delete(client.room);
+      // Hold Event Mode rooms with an unclaimed pot so the winner can reclaim.
+      const holdForClaim =
+        room.isEvent && room.phase === "finished" && !room.potClaimed && room.potSats > 0 && room.claimSecret;
+      if (holdForClaim) {
+        potLog(room, "warn", "last player left — holding room open for pot claim");
+        console.log(`[event] ${room.name} held open — unclaimed pot ${room.potSats} sats`);
+      } else {
+        potLog(room, "info", "last player left — room closed (pot file kept)");
+        rooms.delete(client.room);
+      }
     } else {
       if (room.hostId === client.id) {
         room.hostId = room.clients.keys().next().value;

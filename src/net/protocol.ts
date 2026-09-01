@@ -129,6 +129,8 @@ export type ServerMsg =
       maxPlayers: number;
       phase: LobbyPhase;
       event?: EventRoomInfo | null;
+      /** Winner reclaim after disconnect — only set when rejoining to claim. */
+      claimSecret?: string;
     }
   | { t: "join"; player: PlayerPose }
   | { t: "leave"; id: string; hostId?: string }
@@ -182,6 +184,8 @@ export type ServerMsg =
       trackOptions: string[];
       voteEndsAt: number;
       event?: EventRoomInfo | null;
+      /** Winner-only: rejoin secret if the WS drops before claimPot. */
+      claimSecret?: string;
     }
   | { t: "voteUpdate"; votes: Record<string, number>; received: number; total: number }
   | { t: "voteResult"; trackId: string }

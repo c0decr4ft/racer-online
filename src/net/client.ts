@@ -400,6 +400,8 @@ export type WelcomeInfo = {
   weather: NetWeatherMode;
   maxPlayers: number;
   phase: LobbyPhase;
+  /** Winner reclaim after disconnect. */
+  claimSecret?: string;
 };
 
 export type NetHandlers = {
@@ -471,6 +473,8 @@ export type RoomConnectOpts = {
   eventBuyInSats?: number;
   /** True when joining via Event Mode — server rejects cross-type joins. */
   eventMode?: boolean;
+  /** Winner reclaim secret after a disconnect mid-checkout. */
+  claimSecret?: string;
   mode: "create" | "join";
 };
 
@@ -508,6 +512,10 @@ export class NetClient {
     buyInSats?: number;
     feeSats?: number;
   } | null = null;
+  /** Winner-only reclaim secret for Event Mode pot claim after disconnect. */
+  claimSecret = "";
+  /** Last join/create opts — used to auto-reclaim after a mid-checkout drop. */
+  private lastRoomOpts: RoomConnectOpts | null = null;
   /** Bumps on each connect/disconnect so stale socket handlers are ignored. */
   private connGen = 0;
   /** Lobby/race ping loop — keeps a live latency reading even outside races. */
@@ -587,6 +595,7 @@ export class NetClient {
   private connect(opts: RoomConnectOpts) {
     this.disconnect();
     this.pending = opts;
+    this.lastRoomOpts = { ...opts };
     const gen = ++this.connGen;
 
     const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -664,6 +673,7 @@ export class NetClient {
               accent: opts.accent,
               pubkey: opts.pubkey,
               event: opts.eventMode || undefined,
+              claimSecret: opts.claimSecret || undefined,
             };
       ws.send(JSON.stringify(payload));
       this.pingAt = performance.now();
@@ -702,13 +712,19 @@ export class NetClient {
         this.maxPlayers = msg.maxPlayers;
         this.phase = msg.phase;
         this.event = msg.event ?? null;
+        if (typeof msg.claimSecret === "string" && msg.claimSecret.length >= 16) {
+          this.claimSecret = msg.claimSecret;
+          this.persistClaimSecret(msg.room, msg.claimSecret);
+        }
         this.myBuyIn = null;
         this.pending = null;
         this.roster.clear();
         this.clockReady = false;
         this.rememberPlayers(msg.players);
         this.rememberPlayer(msg.you);
-        this.handlers.onStatus(`Lobby · ${msg.room}`);
+        this.handlers.onStatus(
+          msg.phase === "finished" ? `Claim · ${msg.room}` : `Lobby · ${msg.room}`,
+        );
         this.handlers.onWelcome({
           id: msg.id,
           room: msg.room,
@@ -720,6 +736,7 @@ export class NetClient {
           weather: this.weather,
           maxPlayers: msg.maxPlayers,
           phase: msg.phase,
+          claimSecret: msg.claimSecret,
         });
       } else if (msg.t === "join") {
         this.rememberPlayer(msg.player);
@@ -753,6 +770,10 @@ export class NetClient {
       } else if (msg.t === "raceResult") {
         this.phase = "finished";
         if (msg.event !== undefined) this.event = msg.event;
+        if (typeof msg.claimSecret === "string" && msg.claimSecret.length >= 16) {
+          this.claimSecret = msg.claimSecret;
+          this.persistClaimSecret(this.room, msg.claimSecret);
+        }
         this.handlers.onRaceResult(
           msg.winnerId,
           msg.winnerName,
@@ -789,6 +810,10 @@ export class NetClient {
           msg.bolt11,
         );
       } else if (msg.t === "payoutResult") {
+        if (msg.ok) {
+          this.clearClaimSecret(this.room);
+          this.claimSecret = "";
+        }
         this.handlers.onPayoutResult({
           ok: msg.ok,
           token: msg.token,
@@ -820,10 +845,36 @@ export class NetClient {
       }
       // Intentional leave / softClose already cleared pending + ids
       if (!this.myId && !this.pending) return;
+
+      // Event Mode winner: auto-rejoin with the claim secret so a blip cannot
+      // permanently lock the pot behind a dead winnerId.
+      const reclaim =
+        this.phase === "finished" &&
+        this.event &&
+        this.claimSecret.length >= 16 &&
+        this.lastRoomOpts;
+      const roomName = this.room;
+      const secret = this.claimSecret;
+      const opts = this.lastRoomOpts;
       this.myId = "";
       this.hostId = "";
       this.phase = "";
       this.pending = null;
+      if (reclaim && opts && roomName && secret) {
+        this.handlers.onStatus("Reconnecting to claim…");
+        const retry: RoomConnectOpts = {
+          ...opts,
+          mode: "join",
+          room: roomName,
+          eventMode: true,
+          claimSecret: secret,
+        };
+        setTimeout(() => {
+          if (this.connected || this.pending) return;
+          this.connect(retry);
+        }, 400);
+        return;
+      }
       this.handlers.onStatus("Disconnected");
     };
 
@@ -874,6 +925,43 @@ export class NetClient {
       ws?.close();
     } catch {
       /* ignore */
+    }
+  }
+
+  /** Leave Event Mode entirely — drop any stored reclaim secret for this room. */
+  abandonClaim() {
+    if (this.room) this.clearClaimSecret(this.room);
+    this.claimSecret = "";
+    this.lastRoomOpts = null;
+  }
+
+  private claimStorageKey(room: string) {
+    return `racer-claim-secret:${String(room || "").trim().toLowerCase()}`;
+  }
+
+  private persistClaimSecret(room: string, secret: string) {
+    try {
+      sessionStorage.setItem(this.claimStorageKey(room), secret);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  private clearClaimSecret(room: string) {
+    try {
+      sessionStorage.removeItem(this.claimStorageKey(room));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** Load a previously stored reclaim secret (page refresh mid-checkout). */
+  loadClaimSecret(room: string): string {
+    try {
+      const s = sessionStorage.getItem(this.claimStorageKey(room)) || "";
+      return s.length >= 16 ? s : "";
+    } catch {
+      return "";
     }
   }
 

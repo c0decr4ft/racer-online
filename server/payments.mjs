@@ -298,7 +298,9 @@ async function auditOne(label, path) {
     out.unspentSats = proofsSum(grouped.unspent);
     out.spentSats = proofsSum(grouped.spent);
     out.pendingSats = proofsSum(grouped.pending);
-    if (orphaned && grouped.unspent.length) {
+    // Rescue token for any unspent leftover (orphaned mint OR same-mint pots
+    // stranded after the winner disconnected before claim).
+    if (grouped.unspent.length) {
       const { getEncodedToken } = await import("@cashu/cashu-ts");
       out.rescueToken = getEncodedToken({ mint, proofs: grouped.unspent });
     }
