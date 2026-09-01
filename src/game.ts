@@ -1049,6 +1049,7 @@ export class Game {
     this.online = false;
     this.eventMode = false;
     this.lobbyPlayers = [];
+    this.net.abandonClaim();
     this.net.disconnect();
     this.clearRemotes();
     this.el.netStatus.classList.add("hidden");
@@ -1253,6 +1254,7 @@ export class Game {
       accent: this.garage.accent,
       pubkey: getSession()?.pubkey,
       eventMode: this.eventMode,
+      claimSecret: this.eventMode ? this.net.loadClaimSecret(room) || undefined : undefined,
     });
   }
 
@@ -2161,7 +2163,10 @@ export class Game {
       orphanBox?.classList.remove("hidden");
       if (orphanInput) orphanInput.value = rescue;
       if (orphanHint) {
-        orphanHint.textContent = `Unspent proofs on disk from ${orphanMint.replace(/^https?:\/\//, "")} — add that mint in cashu.me, then paste once.`;
+        const mintLabel = (orphanMint || rescueEvent?.mintUrl || "").replace(/^https?:\/\//, "");
+        orphanHint.textContent = rescueEvent?.orphaned
+          ? `Unspent proofs on disk from ${mintLabel} — add that mint in cashu.me, then paste once.`
+          : `Leftover unclaimed pot proofs (${mintLabel || "current mint"}) — paste into cashu.me to rescue.`;
       }
     } else {
       orphanBox?.classList.add("hidden");
@@ -2472,14 +2477,15 @@ export class Game {
   }
 
   private onNetWelcome(info: WelcomeInfo) {
+    const reclaiming = info.phase === "finished" && !!info.claimSecret && !!this.net.event;
     // User hit Back/Leave before the server replied — drop the late welcome.
-    if (!this.expectingLobby) {
+    // Exception: Event Mode pot reclaim after a mid-checkout WS drop.
+    if (!this.expectingLobby && !reclaiming) {
       this.net.disconnect();
       return;
     }
     this.expectingLobby = false;
     this.online = true;
-    this.inLobby = true;
     this.lobbyPlayers = [...info.players];
     // Room kind is host-locked — personal garage paint/name still apply.
     const kind: VehicleKind = info.kind === "bike" || info.you.kind === "bike" ? "bike" : "car";
@@ -2491,6 +2497,23 @@ export class Game {
     };
     this.net.kind = kind;
     this.net.weather = normalizeWeatherMode(info.weather);
+
+    // Winner reclaiming an unclaimed Event Mode pot — skip lobby, open checkout.
+    if (reclaiming) {
+      this.inLobby = false;
+      this.el.multiplayer.classList.add("hidden");
+      this.el.overlay.classList.add("hidden");
+      this.finished = true;
+      this.running = false;
+      this.setNetStatus(`Claim · ${info.room}`, "ok");
+      this.el.finish.classList.remove("hidden");
+      this.applyOnlineResult(info.id, info.you.name);
+      this.applyEventResult(info.id);
+      this.syncMuteBtn();
+      return;
+    }
+
+    this.inLobby = true;
     this.setNetStatus(`Lobby · ${info.room}`, "ok");
     this.el.overlay.classList.add("hidden");
     this.el.mpLobbyFeed.innerHTML = "";
