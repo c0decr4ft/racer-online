@@ -40,6 +40,15 @@ function wrapPi(dh: number): number {
   return dh;
 }
 
+/**
+ * Admit-phase server errors (no welcome yet) drop the socket. Mid-session
+ * errors must keep the connection — kicking a joined Event Mode player
+ * deletes their buyIn on leave and can strand paid sats in the pot.
+ */
+export function shouldSoftCloseOnServerError(myId: string): boolean {
+  return !myId;
+}
+
 /** Remote racer — buffered snapshot lerp for every lobby size (2–6). */
 export class RemotePlayer {
   readonly id: string;
@@ -804,8 +813,12 @@ export class NetClient {
       } else if (msg.t === "error") {
         this.handlers.onError(msg.message);
         this.handlers.onStatus(msg.message);
-        // Drop the dead socket without a misleading "Disconnected" status.
-        this.softClose(ws, gen);
+        // Admit failures (room full, wrong password, …) never get a welcome —
+        // drop the socket quietly. Mid-session errors must NOT kick a joined
+        // player: Event Mode "waiting for buy-ins" / rejected paste would
+        // otherwise close the WS, delete their buyIn on leave, and strand
+        // paid sats in the pot file.
+        if (shouldSoftCloseOnServerError(this.myId)) this.softClose(ws, gen);
       }
     };
 
