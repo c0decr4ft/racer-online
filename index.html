@@ -24,16 +24,16 @@
       <div id="hud">
         <div class="hud-top">
           <div class="hud-top-left">
-            <div class="brand">SATS<span>RACER</span></div>
+            <div class="brand">SATS<span id="brand-accent">RACER</span></div>
             <div id="net-status" class="net-status hidden">OFFLINE</div>
           </div>
           <div class="hud-stats">
             <div class="pos-block">
-              <div class="label">POS</div>
+              <div class="label" id="hud-pos-label">POS</div>
               <div id="position">1/6</div>
             </div>
             <div class="lap-block">
-              <div class="label">LAP</div>
+              <div class="label" id="hud-lap-label">LAP</div>
               <div id="lap">1<span>/3</span></div>
             </div>
             <div class="time-block">
@@ -64,6 +64,8 @@
           </div>
         </div>
 
+        <div id="paint-crosshair" class="paint-crosshair hidden" aria-hidden="true"></div>
+        <div id="paint-tagged" class="paint-tagged hidden" aria-live="assertive">Spectating teammate · Space next</div>
         <div id="wrong-way" class="wrong-way hidden" aria-live="assertive">WRONG WAY</div>
         <div id="explode-flash" class="explode-flash hidden" aria-live="assertive">DESTROYED</div>
         <div id="animal-hit" class="animal-hit hidden" aria-live="assertive">COW!</div>
@@ -343,7 +345,25 @@
         </svg>
       </button>
 
-      <div id="overlay" class="overlay">
+      <div id="mode-hub" class="overlay sports-hub">
+        <div class="overlay-inner sports-hub-inner">
+          <p class="eyebrow">PICK YOUR MODE</p>
+          <h1>SATS<br /><span>PLAY</span></h1>
+          <p class="tagline">Racing · paintball · same voxel world</p>
+          <div class="sport-grid mode-grid" role="list">
+            <button id="mode-racing-btn" class="sport-card" type="button" data-mode="racing" style="--sport-color:#ff3b2e;--sport-wash:rgba(255,59,46,0.55)">
+              <span class="sport-card-label">RACING</span>
+              <span class="sport-card-blurb">Cars, bikes, circuits</span>
+            </button>
+            <button id="mode-paintball-btn" class="sport-card" type="button" data-mode="paintball" style="--sport-color:#7cff4a;--sport-wash:rgba(90,220,60,0.5)">
+              <span class="sport-card-label">PAINTBALL</span>
+              <span class="sport-card-blurb">Speedball · first to 5</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div id="overlay" class="overlay hidden">
         <div class="home-top-actions">
           <button id="home-garage-btn" class="board-icon-btn" type="button" aria-label="Garage">
             <svg class="board-icon-svg" viewBox="0 0 24 24" aria-hidden="true">
@@ -370,10 +390,10 @@
             <span class="board-icon-label">DEV</span>
           </button>
         </div>
-        <div class="overlay-inner">
-          <p class="eyebrow">READY TO RACE</p>
-          <h1>SATS<br /><span>RACER</span></h1>
-          <p class="tagline">Cars &amp; bikes · AI rivals · sats racer rooms</p>
+        <div class="overlay-inner" id="home-menu-inner">
+          <p class="eyebrow" id="home-eyebrow">READY TO RACE</p>
+          <h1>SATS<br /><span id="home-brand-accent">RACER</span></h1>
+          <p class="tagline" id="home-tagline">Cars &amp; bikes · AI rivals · sats racer rooms</p>
 
           <div class="menu-actions">
             <button id="start-btn" type="button">START RACE</button>
@@ -381,6 +401,24 @@
             <button id="event-btn" class="btn-ghost" type="button">EVENT MODE</button>
             <button id="test-drive-btn" class="btn-ghost" type="button">TEST DRIVE</button>
             <button id="solo-race-btn" class="btn-ghost" type="button">SOLO RACE</button>
+            <button id="paintball-range-btn" class="btn-ghost hidden" type="button">TEST RANGE</button>
+            <button id="racing-back-btn" class="btn-ghost" type="button">ALL MODES</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="paintball-menu" class="overlay hidden">
+        <!-- Unused entry shell — paintball uses the shared #overlay buttons. -->
+      </div>
+
+      <div id="paintball-over" class="overlay hidden paintball-theme">
+        <div class="overlay-inner">
+          <p class="eyebrow" id="paintball-over-eyebrow">MATCH OVER</p>
+          <h1 id="paintball-over-title">WIN</h1>
+          <p class="tagline" id="paintball-over-tag">5 tags · field clear</p>
+          <div class="menu-actions">
+            <button id="paintball-again-btn" type="button">PLAY AGAIN</button>
+            <button id="paintball-over-home-btn" class="btn-ghost" type="button">HOME</button>
           </div>
         </div>
       </div>
@@ -474,7 +512,7 @@
                 <input id="mp-create-buyin" type="number" min="1" max="1000000" step="1" value="100" />
               </label>
               <div class="mp-fields-row mp-pickers-row">
-                <div class="mp-field">
+                <div class="mp-field" id="mp-create-kind-field">
                   <span>Vehicle</span>
                   <div class="garage-kind mp-kind" role="group" aria-label="Vehicle type">
                     <button id="mp-create-kind-car" class="garage-kind-btn is-active" type="button" data-kind="car">CAR</button>
@@ -490,7 +528,7 @@
                   </div>
                 </div>
               </div>
-              <div class="mp-field mp-track-field">
+              <div class="mp-field mp-track-field" id="mp-create-track-field">
                 <span>Track</span>
                 <div id="mp-create-track-grid" class="map-grid mp-track-grid" role="listbox" aria-label="Tracks"></div>
               </div>

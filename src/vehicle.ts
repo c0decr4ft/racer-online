@@ -113,6 +113,7 @@ export class Vehicle {
     gear: null,
     shiftDelta: 0,
     fire: false,
+    jump: false,
   };
 
   update(dt: number, input: InputState) {
@@ -147,6 +148,7 @@ export class Vehicle {
       p.gear = input.gear;
       p.shiftDelta = input.shiftDelta;
       p.fire = input.fire;
+      p.jump = input.jump;
       if (this.animalHitPenalty > 0) {
         this.animalHitPenalty = Math.max(0, this.animalHitPenalty - dt);
         p.throttle = input.throttle * 0.12;
@@ -345,6 +347,7 @@ export class RivalAI {
     gear: null,
     shiftDelta: 0,
     fire: false,
+    jump: false,
   };
   private readonly _shiftOpts = {
     maxKappa: 0,

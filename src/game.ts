@@ -21,10 +21,11 @@ import {
   isDriftTrack,
 } from "./track";
 import { drawTrackPreview } from "./mapPreview";
-import { Input } from "./input";
+import { Input, type InputState } from "./input";
 import { isTouchPrimary, TouchControls, viewportSize } from "./touch";
 import { Vehicle, RivalAI } from "./vehicle";
 import { NetClient, RemotePlayer, type RemoteTrackAdapter, type WelcomeInfo } from "./net/client";
+import { WreckFire } from "./wreckFire";
 import type { EventRoomInfo, NetVehicleKind, PlayerPose } from "./net/protocol";
 import {
   boardSourceLabel,
@@ -77,15 +78,23 @@ import {
   type WeatherMode,
 } from "./weather";
 import { WildlifeHerd } from "./wildlife";
+import { PaintballMatch } from "./paintball";
+import { savePlayMode, type PlayMode } from "./modes";
 
 function formatTime(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "--:--.---";
   const total = Math.floor(ms);
+  if (total === _fmtTimeMs) return _fmtTimeStr;
+  _fmtTimeMs = total;
   const m = Math.floor(total / 60000);
   const s = Math.floor((total % 60000) / 1000);
   const milli = total % 1000;
-  return `${m}:${s.toString().padStart(2, "0")}.${milli.toString().padStart(3, "0")}`;
+  _fmtTimeStr = `${m}:${s.toString().padStart(2, "0")}.${milli.toString().padStart(3, "0")}`;
+  return _fmtTimeStr;
 }
+
+let _fmtTimeMs = -1;
+let _fmtTimeStr = "--:--.---";
 
 const TOTAL_LAPS = 3;
 const COUNTDOWN_STEPS = ["3", "2", "1", "GO"] as const;
@@ -189,7 +198,11 @@ export class Game {
     reset: false,
     pause: false,
     fire: false,
+    jump: false,
   };
+  /** Scratch origin for paintball weather.update (no player pos). */
+  private readonly _pathScratch = new THREE.Vector3();
+  private readonly _weatherOrigin = new THREE.Vector3();
 
   running = false;
   finished = false;
@@ -198,6 +211,10 @@ export class Game {
   practice = false;
   /** Timed race with no AI rivals — empty track, wall explode on. */
   solo = false;
+  private paintball: PaintballMatch | null = null;
+  private paintballPractice = false;
+  /** Hub → racing | paintball. Shared Multiplayer / Event Mode entry points. */
+  private playMode: PlayMode = "hub";
   online = false;
   /** Event Mode lobby flow (Lightning buy-in gate + winner's pot) vs plain multiplayer. */
   private eventMode = false;
@@ -265,6 +282,11 @@ export class Game {
     time: document.getElementById("time")!,
     best: document.getElementById("best")!,
     overlay: document.getElementById("overlay")!,
+    modeHub: document.getElementById("mode-hub")!,
+    paintballMenu: document.getElementById("paintball-menu")!,
+    paintballOver: document.getElementById("paintball-over")!,
+    paintCrosshair: document.getElementById("paint-crosshair")!,
+    paintTagged: document.getElementById("paint-tagged")!,
     finish: document.getElementById("finish")!,
     pause: document.getElementById("pause")!,
     pauseBtn: document.getElementById("pause-btn")!,
@@ -364,11 +386,17 @@ export class Game {
     metalness: 0.05,
   });
   private exploding = false;
+  /** Multiplayer/event: crashed racer burns in place and cannot drive. */
+  private onlineWrecked = false;
+  private localWreckFire: WreckFire | null = null;
+  private wreckBannerUntil = 0;
+  /** Seconds the local car has been overlapping a burning wreck (MP fire spread). */
+  private wreckContactS = 0;
+  private readonly wreckedIds = new Set<string>();
+  private lastFieldResetAt = 0;
   /** Dev dashboard GOD MODE — boosts AI power locally only (never syncs). */
   private godMode = false;
   private explodeRestartAt = 0;
-  /** Prevent double grid-reset from crashReset + local explode timer. */
-  private lastCrashResetAt = 0;
   private explodeParts: {
     mesh: THREE.Mesh;
     vel: THREE.Vector3;
@@ -488,7 +516,8 @@ export class Game {
         this.renderLobby();
       },
       onStart: (_at, trackId, kind, weather) => this.beginOnlineRace(trackId, kind, weather),
-      onCrashReset: (_byId, byName) => this.applyOnlineCrashReset(byName),
+      onWrecked: (id, name) => this.applyOnlineWreck(id, name),
+      onFieldReset: () => this.applyOnlineFieldReset(),
       onRaceResult: (winnerId, winnerName, timeMs, trackOptions, voteEndsAt) =>
         this.finishRace({
           winnerId,
@@ -584,37 +613,56 @@ export class Game {
       this.running &&
       !this.paused &&
       !this.finished &&
-      !this.exploding;
+      !this.exploding &&
+      !this.onlineWrecked;
     this.touch.setVisible(racing);
   }
 
   private bindUi() {
     // Bind menu actions first — syncMuteBtn/onHomeOrBoard must not abort handler wiring
     // if a removed overlay ref throws (that previously left every homepage button dead).
+    document.getElementById("mode-racing-btn")!.onclick = () => this.openRacingMenu();
+    document.getElementById("mode-paintball-btn")!.onclick = () => this.openPaintballMenu();
+    document.getElementById("racing-back-btn")!.onclick = () => this.goHub();
+    document.getElementById("paintball-range-btn")!.onclick = () => {
+      void this.bootPaintball({ practice: true });
+    };
+    document.getElementById("paintball-again-btn")!.onclick = () => {
+      void this.bootPaintball({ practice: this.paintballPractice });
+    };
+    document.getElementById("paintball-over-home-btn")!.onclick = () => this.goHome();
     document.getElementById("start-btn")!.onclick = () => {
-      // Start Race with AI — random course, no picker
+      if (this.playMode === "paintball") {
+        void this.bootPaintball({ practice: false });
+        return;
+      }
       void this.bootFromMenu({ trackId: randomTrackId() });
     };
     document.getElementById("test-drive-btn")!.onclick = () => {
-      // Practice: keep map picker so you can choose a circuit to learn
       void this.unlockAndMaybeMenuMusic().then(() => this.openMapSelect());
     };
     document.getElementById("solo-race-btn")!.onclick = () => {
-      // Solo Race — random course on Play (same as Start Race)
       void this.bootFromMenu({ solo: true, trackId: randomTrackId() });
     };
     document.getElementById("multiplayer-btn")!.onclick = () => {
-      // Multiplayer needs a Nostr identity — prompt sign-in first, then continue.
+      // Same Multiplayer lobby for racing and paintball (Nostr gate).
+      const prompt =
+        this.playMode === "paintball"
+          ? "Sign in with Nostr to play paintball multiplayer"
+          : "Sign in with Nostr to race on Sats Racer";
       void this.unlockAndMaybeMenuMusic()
-        .then(() => ensureNostrLogin("Sign in with Nostr to race on Sats Racer"))
+        .then(() => ensureNostrLogin(prompt))
         .then((session) => {
           if (session) this.openMultiplayer();
         });
     };
     document.getElementById("event-btn")!.onclick = () => {
-      // Event Mode — same flow with a Lightning buy-in gate + winner's pot.
+      const prompt =
+        this.playMode === "paintball"
+          ? "Sign in with Nostr for paintball event mode"
+          : "Sign in with Nostr to race event mode";
       void this.unlockAndMaybeMenuMusic()
-        .then(() => ensureNostrLogin("Sign in with Nostr to race event mode"))
+        .then(() => ensureNostrLogin(prompt))
         .then((session) => {
           if (session) this.openMultiplayer(true);
         });
@@ -626,7 +674,10 @@ export class Game {
     document.getElementById("restart-btn")!.onclick = () => {
       void this.audio.unlock().then(() => {
         this.audio.stopRaceAudio();
-        // AI race again → new random map; solo/online keep chosen course
+        if (this.paintball) {
+          void this.bootPaintball({ practice: this.paintballPractice });
+          return;
+        }
         const trackId =
           this.online || this.solo || this.practice ? this.trackId : randomTrackId();
         this.startRace({
@@ -640,6 +691,10 @@ export class Game {
     document.getElementById("pause-restart-btn")!.onclick = () => {
       void this.audio.unlock().then(() => {
         this.audio.stopRaceAudio();
+        if (this.paintball) {
+          void this.bootPaintball({ practice: this.paintballPractice });
+          return;
+        }
         this.startRace({
           practice: this.practice,
           solo: this.solo,
@@ -821,12 +876,23 @@ export class Game {
     const boardOpen = !this.el.leaderboard.classList.contains("hidden");
     const garageOpen = !this.el.garage.classList.contains("hidden");
     const mpOpen = !this.el.multiplayer.classList.contains("hidden");
+    const hubOpen = !this.el.modeHub.classList.contains("hidden");
+    const paintMenu = !this.el.paintballMenu.classList.contains("hidden");
+    const paintOver = !this.el.paintballOver.classList.contains("hidden");
     const devOpen = !document.getElementById("dev-dash")?.classList.contains("hidden");
     return (
       !this.running &&
       !this.finished &&
       !this.paused &&
-      (!this.el.overlay.classList.contains("hidden") || mapOpen || boardOpen || garageOpen || mpOpen || devOpen)
+      (hubOpen ||
+        paintMenu ||
+        paintOver ||
+        !this.el.overlay.classList.contains("hidden") ||
+        mapOpen ||
+        boardOpen ||
+        garageOpen ||
+        mpOpen ||
+        devOpen)
     );
   }
 
@@ -1024,13 +1090,20 @@ export class Game {
     this.mpCreateTrackId = DEFAULT_TRACK_ID;
     // Event Mode: show the buy-in field; plain multiplayer hides it.
     document.getElementById("mp-create-buyin-field")?.classList.toggle("hidden", !eventMode);
+    const paint = this.playMode === "paintball";
     const entryTitle = document.querySelector("#mp-entry h1");
     if (entryTitle) entryTitle.textContent = eventMode ? "EVENT MODE" : "MULTIPLAYER";
     const entryTagline = document.querySelector("#mp-entry .tagline");
     if (entryTagline) {
-      entryTagline.textContent = eventMode
-        ? "Buy-in races — everyone pays, winner takes the pot"
-        : "Create a private room or join with a password";
+      if (paint) {
+        entryTagline.textContent = eventMode
+          ? "Buy-in paintball — same pot rules as Saturday racer"
+          : "Create or join a paintball room — same lobby as racing";
+      } else {
+        entryTagline.textContent = eventMode
+          ? "Buy-in races — everyone pays, winner takes the pot"
+          : "Create a private room or join with a password";
+      }
     }
     // Signed in → prefill the racer name from the Nostr profile (username, never
     // the npub); it may arrive a moment after the lobby opens. Guests start blank.
@@ -1364,16 +1437,21 @@ export class Game {
     const allPaid = !event || (this.lobbyPlayers.length > 0 && paidCount === this.lobbyPlayers.length);
     this.el.mpStartBtn.classList.toggle("hidden", !host);
     this.el.mpStartBtn.disabled = !host || !allPaid;
+    this.el.mpStartBtn.textContent = this.playMode === "paintball" ? "START MATCH" : "START RACE";
     const unpaidNote = unpaidNames.length ? ` — waiting on ${unpaidNames.join(", ")}` : "";
     this.el.mpStatus.textContent = host
       ? allPaid
-        ? "All buy-ins paid — start when ready"
+        ? this.playMode === "paintball"
+          ? "All buy-ins paid — start when ready"
+          : "All buy-ins paid — start when ready"
         : `Waiting for buy-ins (${paidCount}/${this.lobbyPlayers.length} paid)${unpaidNote}`
       : event
         ? allPaid
           ? "All paid — waiting for host to start…"
           : `Waiting for buy-ins (${paidCount}/${this.lobbyPlayers.length} paid)${unpaidNote}`
-        : "Waiting for host to start the race…";
+        : this.playMode === "paintball"
+          ? "Waiting for host to start the match…"
+          : "Waiting for host to start the race…";
   }
 
   /** Event Mode: show my buy-in (Cashu creqA QR + optional Lightning invoice). */
@@ -1867,6 +1945,9 @@ export class Game {
     this.el.mapSelect.classList.add("hidden");
     this.el.garage.classList.add("hidden");
     this.el.multiplayer.classList.add("hidden");
+    this.el.modeHub.classList.add("hidden");
+    this.el.paintballMenu.classList.add("hidden");
+    this.el.paintballOver.classList.add("hidden");
     this.startRace(opts);
   }
 
@@ -1887,6 +1968,7 @@ export class Game {
     this.pauseBegan = 0;
     this.clearCountdown();
     this.clearExplode(true);
+    this.clearOnlineWreck();
     this.clearShells();
     this.hideAnimalHit();
     this.resetWallHits();
@@ -1894,6 +1976,7 @@ export class Game {
     this.audio.mute();
     this.audio.stopRaceAudio();
     this.input.clearDriveKeys();
+    this.disposePaintball();
     this.el.pause.classList.add("hidden");
     this.el.finish.classList.add("hidden");
     this.el.pauseBtn.classList.add("hidden");
@@ -1910,7 +1993,7 @@ export class Game {
     this.el.minimap.classList.add("hidden");
     this.el.rearview.classList.add("hidden");
     this.syncTouchControls();
-    this.el.overlay.classList.remove("hidden");
+    this.goHub();
     // Reset weather before rebuilding the menu track
     this.mpWeatherPreview = false;
     this.weather.setMode("dry");
@@ -1928,6 +2011,176 @@ export class Game {
     this.audio.playMenuMusic();
     this.syncMuteBtn();
     setVehicleHeadlights(this.player?.mesh, false);
+  }
+
+  private hideMenus() {
+    this.el.modeHub.classList.add("hidden");
+    this.el.overlay.classList.add("hidden");
+    this.el.paintballMenu.classList.add("hidden");
+    this.el.paintballOver.classList.add("hidden");
+    this.el.mapSelect.classList.add("hidden");
+    this.el.garage.classList.add("hidden");
+    this.el.leaderboard.classList.add("hidden");
+    this.el.multiplayer.classList.add("hidden");
+    document.getElementById("dev-dash")?.classList.add("hidden");
+  }
+
+  private goHub() {
+    this.hideMenus();
+    this.playMode = "hub";
+    savePlayMode("hub");
+    this.el.modeHub.classList.remove("hidden");
+    this.setHudPaint(false);
+    this.syncMuteBtn();
+    void this.unlockAndMaybeMenuMusic();
+  }
+
+  private applyHomeMenuForMode() {
+    const paint = this.playMode === "paintball";
+    const eyebrow = document.getElementById("home-eyebrow");
+    const brand = document.getElementById("home-brand-accent");
+    const tag = document.getElementById("home-tagline");
+    const start = document.getElementById("start-btn");
+    if (eyebrow) eyebrow.textContent = paint ? "LOCK AND LOAD" : "READY TO RACE";
+    if (brand) brand.textContent = paint ? "PAINT" : "RACER";
+    if (tag) {
+      tag.textContent = paint
+        ? "Speedball · teammates · same multiplayer & event rooms"
+        : "Cars & bikes · AI rivals · sats racer rooms";
+    }
+    if (start) start.textContent = paint ? "START MATCH" : "START RACE";
+    document.getElementById("test-drive-btn")?.classList.toggle("hidden", paint);
+    document.getElementById("solo-race-btn")?.classList.toggle("hidden", paint);
+    document.getElementById("paintball-range-btn")?.classList.toggle("hidden", !paint);
+    this.el.overlay.classList.toggle("paintball-theme", paint);
+  }
+
+  private openRacingMenu() {
+    this.playMode = "racing";
+    savePlayMode("racing");
+    this.hideMenus();
+    this.applyHomeMenuForMode();
+    this.el.overlay.classList.remove("hidden");
+    this.setHudPaint(false);
+    this.syncMuteBtn();
+    void this.unlockAndMaybeMenuMusic();
+  }
+
+  private openPaintballMenu() {
+    // Same START / MULTIPLAYER / EVENT MODE buttons as racing — no paintball-only MP/Event.
+    this.playMode = "paintball";
+    savePlayMode("paintball");
+    this.hideMenus();
+    this.applyHomeMenuForMode();
+    this.el.overlay.classList.remove("hidden");
+    this.setHudPaint(false);
+    this.syncMuteBtn();
+    void this.unlockAndMaybeMenuMusic();
+  }
+
+  private async bootPaintball(opts: { practice: boolean }) {
+    await this.audio.unlock();
+    this.audio.stopMenuMusic();
+    this.startPaintball(opts);
+  }
+
+  private startPaintball(opts: { practice: boolean }) {
+    this.disposePaintball();
+    this.paintballPractice = opts.practice;
+    this.hideMenus();
+    this.running = true;
+    this.finished = false;
+    this.paused = false;
+    this.practice = opts.practice;
+    this.solo = false;
+    this.online = false;
+    this.pauseTotal = 0;
+    this.pauseBegan = 0;
+    this.clearCountdown();
+    this.el.pause.classList.add("hidden");
+    this.el.pauseBtn.classList.remove("hidden");
+    this.el.minimap.classList.add("hidden");
+    this.el.rearview.classList.add("hidden");
+    this.track.group.visible = false;
+    if (this.player) this.player.mesh.visible = false;
+    this.setAiVisible(false);
+    if (this.wildlife) this.wildlife.group.visible = false;
+    this.weather.setMode("dry");
+    this.weather.placeSun(new THREE.Vector3(0, 0, 0), { snap: true });
+    this.paintball = new PaintballMatch(this.scene, this.camera, this.renderer.domElement, {
+      practice: opts.practice,
+      paintColor: this.garage.accent,
+    });
+    this.setHudPaint(true);
+    this.shadowNeedsWarmup = true;
+    this.syncTouchControls();
+    this.syncMuteBtn();
+    const pauseTag = this.el.pause.querySelector(".tagline");
+    if (pauseTag) pauseTag.textContent = "Match frozen · press Esc to resume";
+  }
+
+  private disposePaintball() {
+    this.paintball?.dispose();
+    this.paintball = null;
+    this.track.group.visible = true;
+    if (this.player) this.player.mesh.visible = true;
+    if (this.wildlife) this.wildlife.group.visible = true;
+    this.setHudPaint(false);
+    this.el.paintCrosshair.classList.add("hidden");
+    this.el.paintTagged.classList.add("hidden");
+    this.el.paintballOver.classList.add("hidden");
+    const pauseTag = this.el.pause.querySelector(".tagline");
+    if (pauseTag) pauseTag.textContent = "Race frozen · press Esc to resume";
+    const accent = document.getElementById("brand-accent");
+    if (accent) accent.textContent = "RACER";
+  }
+
+  private setHudPaint(on: boolean) {
+    document.getElementById("hud")?.classList.toggle("hud-paint", on);
+    this.el.paintCrosshair.classList.toggle("hidden", !on);
+    if (!on) this.el.paintTagged.classList.add("hidden");
+    const accent = document.getElementById("brand-accent");
+    if (accent) accent.textContent = on ? "PAINT" : "RACER";
+    const posLabel = document.getElementById("hud-pos-label");
+    const lapLabel = document.getElementById("hud-lap-label");
+    if (posLabel) posLabel.textContent = on ? "TAGS" : "POS";
+    if (lapLabel) lapLabel.textContent = on ? "OUT" : "LAP";
+  }
+
+  private updatePaintballHud() {
+    if (!this.paintball) return;
+    const h = this.paintball.hud;
+    if (this.el.position) this.el.position.textContent = h.practice ? `${h.tags}` : `${h.tags}/${h.goal}`;
+    const lap = document.getElementById("lap");
+    if (lap) {
+      if (h.spectating) lap.textContent = h.spectateLabel || "TEAM";
+      else lap.textContent = h.practice ? String(h.bots) : `${h.deaths}/${h.loseAt}`;
+    }
+    this.el.time.textContent = formatTime(h.timeMs);
+    this.el.paintTagged.classList.toggle("hidden", !h.tagged);
+    if (h.tagged) {
+      this.el.paintTagged.textContent = h.spectating
+        ? "Spectating teammate · Space next"
+        : "Tagged · waiting for teammates…";
+    }
+  }
+
+  private endPaintballMatch() {
+    if (!this.paintball) return;
+    this.running = false;
+    this.finished = true;
+    this.paused = false;
+    this.paintball.setPaused(true);
+    this.el.pause.classList.add("hidden");
+    this.el.pauseBtn.classList.add("hidden");
+    const win = this.paintball.result === "win";
+    document.getElementById("paintball-over-eyebrow")!.textContent = "MATCH OVER";
+    document.getElementById("paintball-over-title")!.textContent = win ? "WIN" : "OUT";
+    document.getElementById("paintball-over-tag")!.textContent = win
+      ? `${this.paintball.hud.tags} tags · field clear`
+      : `Tagged ${this.paintball.hud.deaths} times`;
+    this.el.paintballOver.classList.remove("hidden");
+    this.syncMuteBtn();
   }
 
   private renderBoardList(entries: LeaderboardEntry[]) {
@@ -2521,6 +2774,13 @@ export class Game {
     this.el.multiplayer.classList.add("hidden");
     this.el.overlay.classList.add("hidden");
 
+    // Paintball rooms reuse the same lobby / event buy-in / start handshake.
+    if (this.playMode === "paintball") {
+      this.setNetStatus(`Match · ${this.net.room}`, "ok");
+      void this.bootPaintball({ practice: false });
+      return;
+    }
+
     const kind: VehicleKind =
       kindHint === "bike" || this.net.kind === "bike" || this.garage.kind === "bike" ? "bike" : "car";
     this.garage = { ...this.garage, kind };
@@ -2530,7 +2790,6 @@ export class Game {
       weatherHint,
       applyWireWeather(this.net.weather, this.mpCreateWeather),
     );
-    this.net.weather = weather;
     this.disposeVehicleMesh(this.player);
     const mesh = createVehicle(kind, this.garage.primary, 7, this.garage.accent, {
       headlights: true,
@@ -2560,12 +2819,14 @@ export class Game {
       if (p.id === this.net.id) continue;
       seen.add(p.id);
       p.kind = roomKind;
+      if (p.wrecked) this.wreckedIds.add(p.id);
       const remote = this.remotes.get(p.id);
       if (remote) remote.push(p, at);
       else {
         this.spawnRemote(p);
         this.remotes.get(p.id)?.push(p, at);
       }
+      if (p.wrecked) this.remotes.get(p.id)?.setOnFire();
     }
     for (const id of this.remotes.keys()) {
       if (!seen.has(id)) this.removeRemote(id);
@@ -2590,6 +2851,7 @@ export class Game {
     // Local-only beams: remotes keep emissive lenses, never SpotLights.
     stripVehicleSpotLights(remote.mesh);
     this.remotes.set(pose.id, remote);
+    if (this.wreckedIds.has(pose.id)) remote.setOnFire();
   }
 
   private removeRemote(id: string) {
@@ -2743,7 +3005,11 @@ export class Game {
 
   private disposeVehicleMesh(vehicle: Vehicle | undefined) {
     if (!vehicle) return;
-    if (vehicle === this.player) this.clearEngineSmoke();
+    if (vehicle === this.player) {
+      this.clearEngineSmoke();
+      this.localWreckFire?.dispose();
+      this.localWreckFire = null;
+    }
     this.scene.remove(vehicle.mesh);
     disposeVehicleGroup(vehicle.mesh);
   }
@@ -2808,6 +3074,7 @@ export class Game {
     trackId?: string;
     weather?: WeatherMode;
   } = {}) {
+    this.disposePaintball();
     this.practice = !!opts.practice;
     this.solo = !!opts.solo && !this.online;
     const nextId = opts.trackId ?? this.trackId ?? DEFAULT_TRACK_ID;
@@ -2815,6 +3082,9 @@ export class Game {
     if (!this.online) this.applyGarageToWorld();
     this.setAiVisible(!this.solo && !this.online);
     this.el.overlay.classList.add("hidden");
+    this.el.modeHub.classList.add("hidden");
+    this.el.paintballMenu.classList.add("hidden");
+    this.el.paintballOver.classList.add("hidden");
     this.el.mapSelect.classList.add("hidden");
     this.el.multiplayer.classList.add("hidden");
     this.el.garage.classList.add("hidden");
@@ -2847,6 +3117,7 @@ export class Game {
     this.lapStart = 0;
     this.input.clearDriveKeys();
     this.clearExplode(true);
+    this.clearOnlineWreck();
     this.clearShells();
     this.resetWallHits();
     // Online: host-chosen weather only. Solo/practice: random pick.
@@ -2992,12 +3263,19 @@ export class Game {
   }
 
   pause() {
-    if (!this.running || this.finished || this.paused) return;
+    if (!this.running || this.finished || this.paused || this.exploding || this.onlineWrecked) return;
     this.paused = true;
     this.pauseBegan = performance.now();
     this.input.clearDriveKeys();
     this.audio.mute();
     this.audio.stopRaceAudio();
+    this.paintball?.setPaused(true);
+    const pauseTag = this.el.pause.querySelector(".tagline");
+    if (pauseTag) {
+      pauseTag.textContent = this.paintball
+        ? "Match frozen · press Esc to resume"
+        : "Race frozen · press Esc to resume";
+    }
     this.el.pause.classList.remove("hidden");
     this.el.pauseBtn.classList.add("hidden");
     this.syncTouchControls();
@@ -3012,7 +3290,7 @@ export class Game {
     this.paused = false;
     this.audio.unmute();
     // Drive audio only after GO (gridHeld covers 3-2-1)
-    if (!this.gridHeld) this.startRaceDriveAudio();
+    if (!this.gridHeld && !this.paintball) this.startRaceDriveAudio();
     this.el.pause.classList.add("hidden");
     this.el.pauseBtn.classList.remove("hidden");
     this.syncTouchControls();
@@ -3020,6 +3298,7 @@ export class Game {
     this.lastFrame = performance.now();
     this.input.clearDriveKeys();
     this.renderer.domElement.focus({ preventScroll: true });
+    this.paintball?.requestLook();
   }
 
   /** Sticky track projection: global search only on first use (spawn/reset),
@@ -3099,6 +3378,7 @@ export class Game {
         remote.update(now, this.camera, remoteViewportWidth, remoteViewportHeight);
       }
     }
+    this.localWreckFire?.update(dt);
 
     const inputPeek = this.input.getState();
     // Online mode skips the second full scene render; smooth input/physics matter
@@ -3107,7 +3387,24 @@ export class Game {
     this.wantRearview = false;
     if (inputPeek.pause) {
       if (this.paused) this.resume();
-      else if (this.running && !this.finished && !this.exploding) this.pause();
+      else if (this.running && !this.finished && !this.exploding && !this.onlineWrecked) this.pause();
+    }
+
+    if (this.paintball) {
+      if (this.running && !this.paused && !this.finished) {
+        this.paintball.update(dt, inputPeek);
+        this.updatePaintballHud();
+        if (this.paintball.finished) this.endPaintballMatch();
+      }
+      if (this.weather) {
+        this.weather.update(dt, this._weatherOrigin, 0, this.running && !this.finished, undefined, {
+          particles: false,
+          lampMeshes: [],
+          preview: false,
+        });
+      }
+      this.renderViews();
+      return;
     }
 
     if (this.running && !this.paused && (!this.finished || this.online)) {
@@ -3115,16 +3412,11 @@ export class Game {
         this.updateExplode(dt);
         this.updateCamera(dt);
         if (performance.now() >= this.explodeRestartAt) {
-          // Online: server crashReset handles the shared restart; local fallback if late
-          if (this.online) {
-            this.applyOnlineCrashReset();
-          } else {
-            this.startRace({
-              practice: this.practice,
-              solo: this.solo,
-              trackId: this.trackId,
-            });
-          }
+          this.startRace({
+            practice: this.practice,
+            solo: this.solo,
+            trackId: this.trackId,
+          });
         }
       } else {
         if (this.countingDown) this.tickCountdown(now);
@@ -3138,13 +3430,13 @@ export class Game {
           // a stop and keeps streaming poses so remotes watch the same settled
           // car we see (instead of a frozen mid-corner ghost).
           let input = inputPeek;
-          if (this.finished && this.online) {
+          if ((this.finished && this.online) || this.onlineWrecked) {
             const c = this._coastInput;
             c.pause = inputPeek.pause;
             c.fire = false;
             input = c;
           }
-          if (input.reset) {
+          if (input.reset && !this.onlineWrecked) {
             this.player.reset(this.track.startPosition.clone(), this.track.startHeading);
             this.resetSticky(this.player);
             this.lastT = this.projectSticky(this.player, this.player.state.position).t;
@@ -3166,14 +3458,23 @@ export class Game {
           for (const r of this.rivals) r.godBoost = aiPower;
 
           this.player.update(dt, input);
+          if (this.onlineWrecked) {
+            this.player.state.speed = 0;
+            this.player.state.steerAngle = 0;
+            this.player.syncCollision();
+          }
           if (this.player.mesh.userData.kind === "bike") {
             this.audio.updateBikeEngine(this.player.state.speed, input.throttle);
           } else {
             this.audio.stopBikeEngine();
           }
           if (input.fire) this.tryFireTankShell();
-          const onWall = this.keepOnTrack(this.player);
-          this.notePlayerWallHit(onWall, dt);
+          if (this.onlineWrecked) {
+            this.player.syncCollision();
+          } else {
+            const onWall = this.keepOnTrack(this.player);
+            this.notePlayerWallHit(onWall, dt);
+          }
 
           if (!this.online && !this.solo) {
             // keepOnTrack already refreshed sticky t — reuse instead of projecting again
@@ -3201,11 +3502,14 @@ export class Game {
               x: this.player.state.position.x,
               z: this.player.state.position.z,
               h: this.player.state.heading,
-              s: this.player.state.speed,
+              s: this.onlineWrecked ? 0 : this.player.state.speed,
               g: this.player.gearLabel,
               lap: this.lap,
             });
-            this.resolveRemoteCollisions();
+            if (!this.onlineWrecked) {
+              this.resolveRemoteCollisions();
+              this.tickWreckContact(dt);
+            }
             this.pingTimer += dt;
             if (this.pingTimer > 2) {
               this.pingTimer = 0;
@@ -3217,7 +3521,7 @@ export class Game {
           }
 
           if (!this.exploding) {
-            this.updateLaps();
+            if (!this.onlineWrecked) this.updateLaps();
             this.updateHud();
             this.updateCamera(dt);
           } else {
@@ -3226,6 +3530,10 @@ export class Game {
         }
       }
       this.updateWildlife(dt);
+      if (this.onlineWrecked && this.wreckBannerUntil > 0 && now >= this.wreckBannerUntil) {
+        this.el.explodeFlash.classList.add("hidden");
+        this.wreckBannerUntil = 0;
+      }
       if (!this.exploding) this.tickEngineSmoke(dt);
       // Crush/shot debris animates even when the player isn't mid-explosion
       if (!this.exploding && this.explodeParts.length > 0) this.updateExplode(dt);
@@ -3415,7 +3723,7 @@ export class Game {
       this.wallTouching = touching;
       return;
     }
-    if (this.exploding || this.gridHeld) {
+    if (this.exploding || this.onlineWrecked || this.gridHeld) {
       this.wallTouching = touching;
       return;
     }
@@ -3641,7 +3949,7 @@ export class Game {
   }
 
   private tickEngineSmoke(dt: number) {
-    const smoking = this.wallHits === ENGINE_SMOKE_HITS && !this.practice && !this.exploding;
+    const smoking = this.wallHits === ENGINE_SMOKE_HITS && !this.practice && !this.exploding && !this.onlineWrecked;
     if (!smoking) {
       if (this.engineSmoke) this.engineSmoke.visible = false;
       return;
@@ -3687,7 +3995,12 @@ export class Game {
   }
 
   private triggerExplode() {
-    if (this.exploding) return;
+    if (this.exploding || this.onlineWrecked) return;
+    if (this.online) {
+      this.igniteLocal("You crashed — on fire");
+      this.net.reportCrash();
+      return;
+    }
     this.exploding = true;
     this.explodeRestartAt = performance.now() + EXPLODE_RESTART_MS;
     this.player.state.speed = 0;
@@ -3696,32 +4009,105 @@ export class Game {
     this.player.mesh.visible = false;
     this.input.clearDriveKeys();
     this.el.wrongWay.classList.add("hidden");
+    this.el.explodeFlash.textContent = "DESTROYED";
     this.el.explodeFlash.classList.remove("hidden");
     this.syncTouchControls();
     this.audio.stopRaceAudio();
     this.audio.playExplode();
     this.clearEngineSmoke();
     this.spawnExplodeFx();
-    // Multiplayer: tell the room so every driver resets to the start line
-    if (this.online) this.net.reportCrash();
+  }
+
+  /** Freeze the local car as a burning wreck (multiplayer / event). */
+  private igniteLocal(_toast?: string) {
+    if (this.onlineWrecked || !this.player) return;
+    this.onlineWrecked = true;
+    if (this.net.id) this.wreckedIds.add(this.net.id);
+    this.player.state.speed = 0;
+    this.player.state.steerAngle = 0;
+    this.player.syncCollision();
+    this.player.mesh.visible = true;
+    this.input.clearDriveKeys();
+    this.el.wrongWay.classList.add("hidden");
+    this.el.explodeFlash.textContent = "ON FIRE";
+    this.el.explodeFlash.classList.remove("hidden");
+    this.wreckBannerUntil = performance.now() + 2400;
+    this.syncTouchControls();
+    this.audio.playExplode();
+    this.clearEngineSmoke();
+    this.localWreckFire ??= new WreckFire(this.player.mesh, this.scene);
+    if (_toast) this.showToast(_toast);
+  }
+
+  private clearOnlineWreck() {
+    this.onlineWrecked = false;
+    this.wreckBannerUntil = 0;
+    this.wreckedIds.clear();
+    this.wreckContactS = 0;
+    this.localWreckFire?.dispose();
+    this.localWreckFire = null;
+    for (const remote of this.remotes.values()) remote.clearFire();
+    if (this.el.explodeFlash.textContent === "ON FIRE") {
+      this.el.explodeFlash.classList.add("hidden");
+      this.el.explodeFlash.textContent = "DESTROYED";
+    }
+  }
+
+  /** Server says this racer is burning — no grid reset / chain reaction. */
+  private applyOnlineWreck(id: string, name: string) {
+    if (!this.online || !this.running) return;
+    this.wreckedIds.add(id);
+    if (id === this.net.id) {
+      this.igniteLocal(this.onlineWrecked ? undefined : "You caught fire");
+      return;
+    }
+    this.remotes.get(id)?.setOnFire();
+    this.showToast(`${name} is on fire`);
   }
 
   /**
-   * Shared MP restart after any racer hits the wall limit — everyone back on the grid.
-   * Idempotent so the exploding client and remote clients can both apply it.
+   * Local backup for fire spread: stay on a burning wreck for 3s → ignite.
+   * Server does the same from poses; this catches grinding the visual wreck.
    */
-  private applyOnlineCrashReset(_byName?: string) {
+  private tickWreckContact(dt: number) {
+    if (!this.online || this.onlineWrecked || this.finished || this.gridHeld) {
+      this.wreckContactS = 0;
+      return;
+    }
+    let touching = false;
+    for (const remote of this.remotes.values()) {
+      if (!remote.wrecked && !this.wreckedIds.has(remote.id)) continue;
+      const dx = remote.mesh.position.x - this.player.state.position.x;
+      const dz = remote.mesh.position.z - this.player.state.position.z;
+      const reach = (remote.kind === "bike" ? 1.1 : 1.7) + this.vehicleRadius(this.player) + 1.6;
+      if (dx * dx + dz * dz < reach * reach) {
+        touching = true;
+        break;
+      }
+    }
+    if (touching) this.wreckContactS += dt;
+    else this.wreckContactS = Math.max(0, this.wreckContactS - dt * 0.4);
+    if (this.wreckContactS < 3) return;
+    this.wreckContactS = 0;
+    this.igniteLocal("You caught fire");
+    this.net.reportCrash();
+  }
+
+  /** Everyone burned — back on the grid. Idempotent for the exploding client + remotes. */
+  private applyOnlineFieldReset() {
     if (!this.online || !this.running || this.finished) return;
     const now = performance.now();
-    if (now - this.lastCrashResetAt < 1500) return;
-    this.lastCrashResetAt = now;
-    this.clearExplode(true);
+    if (now - this.lastFieldResetAt < 1500) return;
+    this.lastFieldResetAt = now;
+    this.clearOnlineWreck();
     this.resetWallHits();
     this.paused = false;
     this.el.pause.classList.add("hidden");
     this.el.pauseBtn.classList.remove("hidden");
     this.el.finish.classList.add("hidden");
     this.el.wrongWay.classList.add("hidden");
+    this.el.explodeFlash.classList.add("hidden");
+    this.el.explodeFlash.textContent = "DESTROYED";
     this.lap = 1;
     this.bestLap = Infinity;
     this.hideAnimalHit();
@@ -3742,6 +4128,7 @@ export class Game {
     this.beginCountdown();
     this.syncTouchControls();
     this.syncMuteBtn();
+    this.showToast("Everyone is on fire — restarting");
   }
 
   private spawnExplodeFx() {
@@ -4379,6 +4766,7 @@ export class Game {
     this.paused = false;
     this.clearCountdown();
     this.clearExplode(true);
+    this.clearOnlineWreck();
     this.audio.mute();
     this.audio.stopRaceAudio();
     this.el.wrongWay.classList.add("hidden");
@@ -4559,16 +4947,17 @@ export class Game {
     let maxX = -Infinity;
     let minZ = Infinity;
     let maxZ = -Infinity;
+    const scratch = this._pathScratch;
     for (let i = 0; i < n; i++) {
-      const p = path.getPointAt(i / n);
-      pts.push({ x: p.x, z: p.z });
-      if (p.x < minX) minX = p.x;
-      if (p.x > maxX) maxX = p.x;
-      if (p.z < minZ) minZ = p.z;
-      if (p.z > maxZ) maxZ = p.z;
+      path.getPointAt(i / n, scratch);
+      pts.push({ x: scratch.x, z: scratch.z });
+      if (scratch.x < minX) minX = scratch.x;
+      if (scratch.x > maxX) maxX = scratch.x;
+      if (scratch.z < minZ) minZ = scratch.z;
+      if (scratch.z > maxZ) maxZ = scratch.z;
     }
     // Close the loop
-    const first = pts[0];
+    const first = pts[0]!;
     pts.push({ x: first.x, z: first.z });
     this.minimapPts = pts;
     const pad = 8;

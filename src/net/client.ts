@@ -16,6 +16,7 @@ import {
 } from "./protocol";
 import { applyWireWeather, normalizeWeatherMode } from "../weather";
 import { configuredApiBase, configuredWsUrl, sameOriginOnline } from "./onlineConfig";
+import { WreckFire } from "../wreckFire";
 
 type Snapshot = { at: number; pose: PlayerPose };
 
@@ -75,6 +76,8 @@ export class RemotePlayer {
   private track?: RemoteTrackAdapter;
   private projT = 0;
   private projSnapshotAt = 0;
+  private fire: WreckFire | null = null;
+  wrecked = false;
 
   constructor(pose: PlayerPose, scene: THREE.Scene, labelRoot: HTMLElement, track?: RemoteTrackAdapter) {
     this.id = pose.id;
@@ -115,6 +118,8 @@ export class RemotePlayer {
   }
 
   private rebuildMesh(kind: VehicleKind, color: number, accent: number) {
+    const keepFire = this.wrecked;
+    this.clearFire();
     this.scene.remove(this.mesh);
     disposeVehicleGroup(this.mesh);
     this.mesh = createVehicle(kind, color, Math.abs(this.id.charCodeAt(0) % 90) + 10, accent);
@@ -123,6 +128,7 @@ export class RemotePlayer {
     this.kind = kind;
     this.color = color;
     this.accent = accent;
+    if (keepFire) this.setOnFire();
   }
 
   private applyMeta(pose: PlayerPose) {
@@ -186,6 +192,19 @@ export class RemotePlayer {
 
     const dt = this.lastUpdateAt > 0 ? Math.min(0.05, (now - this.lastUpdateAt) / 1000) : 0;
     this.lastUpdateAt = now;
+
+    // Burning wrecks stay put — don't interpolate/extrapolate leftover motion.
+    if (this.wrecked && this.latest) {
+      const p = this.latest.pose;
+      this.mesh.position.set(p.x, VISUAL_RIDE_Y, p.z);
+      this.mesh.rotation.y = p.h;
+      this.mesh.rotation.z = 0;
+      this.fire?.update(dt);
+      this.updateLabel(camera, viewportWidth, viewportHeight);
+      return;
+    }
+
+    this.fire?.update(dt);
 
     // Adaptive jitter buffer: on good links the remote renders just ~1.2 ticks
     // behind (~40ms at 30Hz — much more present than the old 2.2-tick floor),
@@ -361,6 +380,31 @@ export class RemotePlayer {
     }
 
     // Project name tag
+    this.updateLabel(camera, viewportWidth, viewportHeight);
+  }
+
+  setOnFire() {
+    if (this.wrecked && this.fire) return;
+    this.wrecked = true;
+    this.mesh.frustumCulled = false;
+    this.fire ??= new WreckFire(this.mesh, this.scene);
+    this.hasDisplay = false;
+    this.errX = this.errZ = this.errH = 0;
+    if (this.latest) {
+      const p = this.latest.pose;
+      this.mesh.position.set(p.x, VISUAL_RIDE_Y, p.z);
+      this.mesh.rotation.y = p.h;
+      this.mesh.rotation.z = 0;
+    }
+  }
+
+  clearFire() {
+    this.wrecked = false;
+    this.fire?.dispose();
+    this.fire = null;
+  }
+
+  private updateLabel(camera: THREE.Camera, viewportWidth: number, viewportHeight: number) {
     const v = this.labelPoint.set(this.mesh.position.x, 2.2, this.mesh.position.z).project(camera);
     if (v.z > 1) {
       if (this.labelVisible) {
@@ -383,6 +427,7 @@ export class RemotePlayer {
   }
 
   dispose(scene: THREE.Scene) {
+    this.clearFire();
     scene.remove(this.mesh);
     disposeVehicleGroup(this.mesh);
     this.label.remove();
@@ -436,8 +481,10 @@ export type NetHandlers = {
     mock?: boolean;
     error?: string;
   }) => void;
-  /** Another (or local) driver crashed — reset everyone to the start grid. */
-  onCrashReset: (byId: string, byName: string) => void;
+  /** A driver crashed — they burn in place instead of resetting the field. */
+  onWrecked: (id: string, name: string) => void;
+  /** Every racer is on fire — shared grid restart. */
+  onFieldReset: () => void;
   onRaceResult: (
     winnerId: string,
     winnerName: string,
@@ -562,6 +609,7 @@ export class NetClient {
         s: m.s,
         g: m.g,
         lap: m.lap,
+        wrecked: m.wrecked,
       };
       this.roster.set(m.id, pose);
       out.push(pose);
@@ -747,9 +795,11 @@ export class NetClient {
         this.kind = msg.kind === "bike" ? "bike" : "car";
         this.weather = applyWireWeather(msg.weather, this.weather);
         this.handlers.onStart(msg.at, msg.trackId, this.kind, this.weather);
-      } else if (msg.t === "crashReset") {
+      } else if (msg.t === "wrecked") {
+        this.handlers.onWrecked(msg.id, msg.name);
+      } else if (msg.t === "fieldReset") {
         this.finishSent = false;
-        this.handlers.onCrashReset(msg.byId, msg.byName);
+        this.handlers.onFieldReset();
       } else if (msg.t === "raceResult") {
         this.phase = "finished";
         if (msg.event !== undefined) this.event = msg.event;
@@ -892,7 +942,7 @@ export class NetClient {
     this.ws.send(JSON.stringify({ t: "start", weather: normalizeWeatherMode(this.weather) }));
   }
 
-  /** Local wall-explode — server tells every racer to reset to the start grid. */
+  /** Local wall-explode — server freezes this racer on fire (no field reset). */
   reportCrash() {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.myId) return;
     if (this.phase !== "racing") return;
