@@ -75,6 +75,8 @@ export class Input {
   /** Gamepad — polled each getState() and merged like the touch pads. */
   private padIndex: number | null = null;
   private padPrevButtons: boolean[] = [];
+  /** Mutated in place by readPad — avoid a new object every frame. */
+  private readonly padState = { throttle: 0, brake: 0, handbrake: 0, steer: 0 };
   /** Called once when a gamepad first appears (e.g. to toast the player). */
   onPadConnected?: (name: string) => void;
   /** Mutated in place by getState — avoid a new object every frame. */
@@ -154,8 +156,12 @@ export class Input {
    * shoulder buttons shift, Start pauses, Y resets — all edge-triggered.
    */
   private readPad(): { throttle: number; brake: number; handbrake: number; steer: number } {
-    const none = { throttle: 0, brake: 0, handbrake: 0, steer: 0 };
-    if (typeof navigator === "undefined" || !navigator.getGamepads) return none;
+    const out = this.padState;
+    out.throttle = 0;
+    out.brake = 0;
+    out.handbrake = 0;
+    out.steer = 0;
+    if (typeof navigator === "undefined" || !navigator.getGamepads) return out;
     const pads = navigator.getGamepads();
     let pad: Gamepad | null = null;
     if (this.padIndex != null && pads[this.padIndex]?.connected) {
@@ -172,7 +178,7 @@ export class Input {
         }
       }
     }
-    if (!pad) return none;
+    if (!pad) return out;
 
     const pressedNow = (i: number) => pad.buttons[i]?.pressed ?? false;
     const value = (i: number) => pad.buttons[i]?.value ?? 0;
@@ -200,10 +206,11 @@ export class Input {
     }
     steer += (pressedNow(14) ? 1 : 0) - (pressedNow(15) ? 1 : 0); // d-pad fallback
 
-    const throttle = Math.max(value(7), pressedNow(0) ? 1 : 0); // RT, A fallback
-    const brake = value(6); // LT
-    const handbrake = pressedNow(1) ? 1 : 0; // B / Circle — drift
-    return { throttle, brake, steer, handbrake };
+    out.throttle = Math.max(value(7), pressedNow(0) ? 1 : 0); // RT, A fallback
+    out.brake = value(6); // LT
+    out.handbrake = pressedNow(1) ? 1 : 0; // B / Circle — drift
+    out.steer = steer;
+    return out;
   }
 
   getState(): InputState {

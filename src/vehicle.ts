@@ -102,6 +102,19 @@ export class Vehicle {
     }
   }
 
+  /** Reused physics input when bike strips handbrake or animal-hit penalty applies. */
+  private readonly _physInput: InputState = {
+    throttle: 0,
+    brake: 0,
+    handbrake: 0,
+    steer: 0,
+    reset: false,
+    pause: false,
+    gear: null,
+    shiftDelta: 0,
+    fire: false,
+  };
+
   update(dt: number, input: InputState) {
     const s = this.state;
     this.shiftTimer = Math.max(0, this.shiftTimer - dt);
@@ -122,17 +135,25 @@ export class Vehicle {
     }
 
     let physicsInput = input;
-    if (this.mesh.userData.kind === "bike") {
-      physicsInput = { ...physicsInput, handbrake: 0 };
-    }
-    if (this.animalHitPenalty > 0) {
-      this.animalHitPenalty = Math.max(0, this.animalHitPenalty - dt);
-      physicsInput = {
-        ...input,
-        throttle: input.throttle * 0.12,
-        brake: Math.max(input.brake, 0.18),
-        handbrake: 0,
-      };
+    const isBike = this.mesh.userData.kind === "bike";
+    if (isBike || this.animalHitPenalty > 0) {
+      const p = this._physInput;
+      p.throttle = input.throttle;
+      p.brake = input.brake;
+      p.handbrake = isBike ? 0 : input.handbrake;
+      p.steer = input.steer;
+      p.reset = input.reset;
+      p.pause = input.pause;
+      p.gear = input.gear;
+      p.shiftDelta = input.shiftDelta;
+      p.fire = input.fire;
+      if (this.animalHitPenalty > 0) {
+        this.animalHitPenalty = Math.max(0, this.animalHitPenalty - dt);
+        p.throttle = input.throttle * 0.12;
+        p.brake = Math.max(input.brake, 0.18);
+        p.handbrake = 0;
+      }
+      physicsInput = p;
     }
 
     stepVehiclePhysics(s, dt, physicsInput, this.powerMul);
@@ -141,6 +162,9 @@ export class Vehicle {
     this.syncMesh(dt);
     this.animateWheels(dt);
   }
+
+  private leanSmooth = 0;
+  private driftYaw = 0;
 
   /**
    * AI gear selection using the same GEAR_STATS / setGear path as the player.
@@ -186,9 +210,6 @@ export class Vehicle {
   syncCollision() {
     this.syncMesh();
   }
-
-  private leanSmooth = 0;
-  private driftYaw = 0;
 
   private updateDriftPose(dt: number) {
     const s = this.state;
@@ -324,6 +345,12 @@ export class RivalAI {
     gear: null,
     shiftDelta: 0,
     fire: false,
+  };
+  private readonly _shiftOpts = {
+    maxKappa: 0,
+    nearKappa: 0,
+    turnAngle: 0,
+    cornerKmh: 0,
   };
 
   constructor(vehicle: Vehicle, laneOffset: number, skill: number, gridIndex = 0) {
@@ -490,7 +517,11 @@ export class RivalAI {
     const targetKmh = Math.min(cruiseKmh, cornerKmh);
 
     // Fair gears only — shift after we know curvature / corner target
-    this.vehicle.aiShift({ maxKappa, nearKappa, turnAngle, cornerKmh });
+    this._shiftOpts.maxKappa = maxKappa;
+    this._shiftOpts.nearKappa = nearKappa;
+    this._shiftOpts.turnAngle = turnAngle;
+    this._shiftOpts.cornerKmh = cornerKmh;
+    this.vehicle.aiShift(this._shiftOpts);
 
     // --- Primary steer: pure pursuit on THIS car's re-traced groove ---
     const nearDist = THREE.MathUtils.clamp(lookDist * 0.32, 8, 22);

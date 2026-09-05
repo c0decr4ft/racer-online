@@ -2,13 +2,13 @@ import * as THREE from "three";
 import { biomeForTrack, type BiomeStyle } from "./biomes";
 import {
   DEFAULT_TRACK_ID,
-  DRIFT_TRACK_ID,
   getTrackDef,
+  isDriftTrack,
   type TrackDef,
 } from "./trackDefs";
 
 export type { TrackDef };
-export { TRACKS, DEFAULT_TRACK_ID, DRIFT_TRACK_ID, getTrackDef, randomTrackId, isTrackId } from "./trackDefs";
+export { TRACKS, DEFAULT_TRACK_ID, DRIFT_TRACK_ID, getTrackDef, randomTrackId, isTrackId, isDriftTrack } from "./trackDefs";
 
 export type TrackData = {
   id: string;
@@ -18,7 +18,7 @@ export type TrackData = {
   startPosition: THREE.Vector3;
   startHeading: number;
   width: number;
-  /** Centerline height along t — set on yard-drift for the underpass grade. */
+  /** Centerline height along t — set on drift parks for the underpass grade. */
   heightAt?: (t: number) => number;
   /** dy/ds along the centerline (for visual pitch). */
   gradeAt?: (t: number) => number;
@@ -4927,7 +4927,9 @@ function plantDriftUnderpass(
     soffit,
   );
   placeBridge(under, 0, deckBot - 0.04, 0);
-  under.castShadow = true;
+  // Underside is coplanar with the deck in the light view — casting it only
+  // adds depth fighting / acne under the overpass, not a useful silhouette.
+  under.castShadow = false;
 
   const roadPad = new THREE.Mesh(
     new THREE.BoxGeometry(roadHalf * 2, 0.1, grade.deckAlong + 0.4),
@@ -5083,13 +5085,13 @@ export function createTrack(
   const biome = biomeForTrack(def.biome ?? def.id);
   const sceneryScale = opts?.sceneryScale ?? 1;
   const group = new THREE.Group();
-  const width = def.id === DRIFT_TRACK_ID ? 16 : 14;
+  const width = isDriftTrack(def.id) ? 16 : 14;
   const half = width / 2;
 
   const pts = pointsFromDef(def);
   const path = new THREE.CatmullRomCurve3(pts, true, "catmullrom", 0.5);
   const bounds = pathBounds(path);
-  const grade = def.id === DRIFT_TRACK_ID ? makeDriftGrade(path, half) : null;
+  const grade = isDriftTrack(def.id) ? makeDriftGrade(path, half) : null;
   const yAt = grade ? grade.heightAt : undefined;
 
   // Biome ground — baseColor preserved so weather tint doesn't flatten the palette.
@@ -5533,43 +5535,39 @@ export class OffsetRacingLine {
     distMeters: number,
     outPoint = new THREE.Vector3(),
     outTan = new THREE.Vector3(),
-  ): { point: THREE.Vector3; tangent: THREE.Vector3; t: number } {
+  ): void {
     const i0 = this.indexAtT(t);
-    const target = this.cum[i0] + distMeters;
     // Walk forward along cum (with wrap)
     let i = i0;
     const n = this.count;
     let guard = 0;
-    let s = this.cum[i0];
     let remain = distMeters;
     while (remain > 0 && guard++ < n + 2) {
       const iNext = (i + 1) % n;
       const seg =
         iNext === 0
-          ? this.length - this.cum[i]
-          : this.cum[iNext] - this.cum[i];
+          ? this.length - this.cum[i]!
+          : this.cum[iNext]! - this.cum[i]!;
       if (seg <= 1e-6) {
         i = iNext;
         continue;
       }
       if (remain <= seg) {
         const u = remain / seg;
-        outPoint.lerpVectors(this.points[i], this.points[iNext], u);
-        outTan.copy(this.tangents[iNext]).multiplyScalar(u).addScaledVector(this.tangents[i], 1 - u);
+        outPoint.lerpVectors(this.points[i]!, this.points[iNext]!, u);
+        outTan
+          .copy(this.tangents[iNext]!)
+          .multiplyScalar(u)
+          .addScaledVector(this.tangents[i]!, 1 - u);
         const tl = Math.hypot(outTan.x, outTan.z) || 1;
         outTan.set(outTan.x / tl, 0, outTan.z / tl);
-        const tOut = (this.ts[i] * (1 - u) + this.ts[iNext] * u + (iNext === 0 ? 1 : 0)) % 1;
-        return { point: outPoint, tangent: outTan, t: tOut };
+        return;
       }
       remain -= seg;
       i = iNext;
-      s += seg;
     }
-    void target;
-    void s;
-    outPoint.copy(this.points[i]);
-    outTan.copy(this.tangents[i]);
-    return { point: outPoint, tangent: outTan, t: this.ts[i] };
+    outPoint.copy(this.points[i]!);
+    outTan.copy(this.tangents[i]!);
   }
 
   /**
@@ -5609,9 +5607,15 @@ export class OffsetRacingLine {
     // Also measure total heading change / lookDist as a smooth "bend threat"
     const bulk = turnAngle / Math.max(lookDist, 1);
     maxKappa = Math.max(maxKappa, bulk);
-    return { maxKappa, nearKappa: Math.max(nearKappa, bulk * 0.85), turnAngle };
+    // Reused result — callers must read fields before the next curvatureAhead call.
+    _curveAheadOut.maxKappa = maxKappa;
+    _curveAheadOut.nearKappa = Math.max(nearKappa, bulk * 0.85);
+    _curveAheadOut.turnAngle = turnAngle;
+    return _curveAheadOut;
   }
 }
+
+const _curveAheadOut = { maxKappa: 0, nearKappa: 0, turnAngle: 0 };
 
 /** Single-point sample (no continuity cache) — prefer OffsetRacingLine for AI. */
 export function pointOnOffsetLine(

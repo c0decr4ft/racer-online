@@ -151,6 +151,9 @@ export class WeatherController {
   /** Continuous follow aim (lerped); quantized only when writing the light. */
   private readonly _sunFollow = new THREE.Vector3();
   private _sunFollowReady = false;
+  /** Last quantized follow written to the light — skip matrix churn when unchanged. */
+  private _sunQuantX = NaN;
+  private _sunQuantZ = NaN;
 
   constructor(
     renderer: THREE.WebGLRenderer,
@@ -190,6 +193,9 @@ export class WeatherController {
     surfaceGrip = PRESETS[this.mode].grip;
     this.lastHeadlightsOn = null;
     this.lastNightLampActive = null;
+    // New sun offset — force placeSun to rewrite light matrices.
+    this._sunQuantX = NaN;
+    this._sunQuantZ = NaN;
     this.applyAtmosphere();
   }
 
@@ -286,6 +292,8 @@ export class WeatherController {
     if (opts?.snap || !this._sunFollowReady) {
       this._sunFollow.set(at.x, 0, at.z);
       this._sunFollowReady = true;
+      this._sunQuantX = NaN;
+      this._sunQuantZ = NaN;
     } else {
       // ~12 Hz settle — snappy enough to keep the car in-frustum, soft enough
       // to avoid per-frame ortho pops when the player jerks.
@@ -297,6 +305,11 @@ export class WeatherController {
 
     const qx = Math.round(this._sunFollow.x / texel) * texel;
     const qz = Math.round(this._sunFollow.z / texel) * texel;
+
+    // Direction is world-stable; only rewrite light matrices when the texel snap moves.
+    if (qx === this._sunQuantX && qz === this._sunQuantZ) return;
+    this._sunQuantX = qx;
+    this._sunQuantZ = qz;
 
     this.sun.target.position.set(qx, 0, qz);
     this.sun.position.set(qx + ox, oy, qz + oz);
