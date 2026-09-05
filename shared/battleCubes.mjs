@@ -12,7 +12,7 @@
  *
  * After someone finishes 1st, the server locks claimable shares:
  *   each racer claims their collected cube sats
- *   leftover is added to the race finisher
+ *   leftover goes to the developer tip wallet
  * so claimed + leftover = potSats for the whole match.
  *
  * Client pickup roulette may *display* cycling fake amounts for drama, but the
@@ -28,8 +28,21 @@ const POINTS = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), "trackPoints.json"), "utf8"),
 );
 
-/** How close a racer must be (meters) to collect a cube. */
-export const BATTLE_PICKUP_RADIUS = 5.5;
+/**
+ * How close a racer’s position must be (meters, XZ) to collect a cube.
+ * Sized for arcade cars (~2m half-length) glancing the box at race speed —
+ * client also sweeps between frames; server accepts a fresher pose on pickup.
+ */
+export const BATTLE_PICKUP_RADIUS = 8.5;
+
+/** Extra pad the client adds for car extents / visual box size (server stays stricter). */
+export const BATTLE_PICKUP_CLIENT_PAD = 2.5;
+
+/**
+ * Max distance (m) a pickup’s claimed x/z may drift from the last networked pose.
+ * Covers pose-tick lag (~30Hz) + one frame of high speed without allowing teleports.
+ */
+export const BATTLE_PICKUP_POSE_SLACK = 45;
 
 /**
  * Battle-only asphalt width multiplier applied when the client builds the track.

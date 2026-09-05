@@ -1023,11 +1023,19 @@ export class NetClient {
     this.ws.send(JSON.stringify({ t: "submitToken", token: trimmed }));
   }
 
-  /** Event Mode Battle — try to collect a money cube. */
-  pickupCube(cubeId: number) {
+  /** Event Mode Battle — try to collect a money cube (include freshest local pose). */
+  pickupCube(cubeId: number, x?: number, z?: number) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.myId) return;
     if (this.phase !== "racing" || !this.event) return;
-    this.ws.send(JSON.stringify({ t: "pickupCube", cubeId: Math.round(cubeId) }));
+    const payload: { t: "pickupCube"; cubeId: number; x?: number; z?: number } = {
+      t: "pickupCube",
+      cubeId: Math.round(cubeId),
+    };
+    if (Number.isFinite(x) && Number.isFinite(z)) {
+      payload.x = +Number(x).toFixed(3);
+      payload.z = +Number(z).toFixed(3);
+    }
+    this.ws.send(JSON.stringify(payload));
   }
 
   /** Event Mode — winner (Race) or claimable racer (Battle) claims Cashu; tip 0–100 to the dev. */

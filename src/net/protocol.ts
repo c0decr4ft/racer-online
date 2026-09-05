@@ -49,7 +49,7 @@ export type EventRoomInfo = {
   mode?: EventGameMode;
   /** Battle: sats each racer has collected so far (live + finish). */
   battleEarnings?: Record<string, number>;
-  /** Battle: sats each racer may claim after the race (cubes + leftover to finisher). */
+  /** Battle: sats each racer may claim after the race (collected cubes only). */
   battleClaimable?: Record<string, number>;
   /** Battle: player ids who already claimed their share. */
   battleClaimedIds?: string[];
@@ -133,7 +133,7 @@ export type ClientMsg =
   /** Event Mode — manual buy-in: paste a cashuA token instead of scanning the request. */
   | { t: "submitToken"; token: string }
   /** Event Mode Battle — attempt to collect a money cube (server validates range). */
-  | { t: "pickupCube"; cubeId: number }
+  | { t: "pickupCube"; cubeId: number; x?: number; z?: number }
   /** Event Mode — winner (Race) or any claimable racer (Battle) claims Cashu: tip 0–100% to the dev. */
   | { t: "claimPot"; tipPercent: number }
   /** Host-only. Optional weather re-asserts the room setting on play. */
