@@ -7,6 +7,8 @@ services:
     plan: free
     # Frankfurt — players are mostly in Europe; Oregon added ~160ms RTT (jumpy remotes).
     region: frankfurt
+    # DEPLOY.md + existing dashboard: production deploys from main (not feature branches).
+    branch: main
     # --include=dev: NODE_ENV=production is set on the service, which would make
     # npm ci skip devDependencies — but tsc + vite are needed to build.
     buildCommand: npm ci --include=dev && npm run build
