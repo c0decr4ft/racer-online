@@ -188,6 +188,15 @@ export type ServerMsg =
       earnings: number;
       battleEarnings: Record<string, number>;
     }
+  /** Event Mode Battle — wrecked racer's haul respawned as cubes. */
+  | {
+      t: "cubesDropped";
+      fromId: string;
+      fromName: string;
+      haulSats: number;
+      cubes: BattleCubeWire[];
+      battleEarnings: Record<string, number>;
+    }
   /** Event Mode — your personal buy-in (NUT-18 creqA + optional Lightning invoice). */
   | {
       t: "eventInvoice";

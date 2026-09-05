@@ -3,7 +3,8 @@
  * Layout / values come from the server over the wire.
  *
  * Pot split lives in shared/battleCubes.mjs: cube sats sum to the event pot;
- * roulette UI may cycle decoy amounts but locks to each cube’s real share.
+ * wreck drops re-emit haul as new cubes (same pot accounting). Roulette UI may
+ * cycle decoy amounts but locks to each cube’s real share.
  */
 import * as THREE from "three";
 import type { BattleCubeWire } from "./net/protocol";
