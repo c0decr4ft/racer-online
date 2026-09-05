@@ -7,8 +7,10 @@
  * `sats` values sum exactly to `potSats` (the buy-in pool at race start).
  *
  * During the race:
- *   claimed  = sum of sats on cubes players have picked up
- *   leftover = potSats − claimed  (uncollected cubes)
+ *   claimed  = sum of sats on cubes players have picked up (battleEarnings)
+ *   leftover = potSats − claimed  (untaken cubes still on the map)
+ * On wreck, a player's unclaimed haul returns to untaken cubes (earnings→0,
+ * new cubes via buildDroppedBattleCubes) so claimed + leftover stays = potSats.
  *
  * After someone finishes 1st, the server locks claimable shares:
  *   each racer claims their collected cube sats
@@ -182,6 +184,127 @@ export function buildBattleCubes(trackId, potSats, seed = 1) {
       id: c,
       x: sample.x + sample.nx * side * lat,
       z: sample.z + sample.nz * side * lat,
+      sats: entry.sats,
+      tier: entry.tier,
+    });
+  }
+  return cubes;
+}
+
+/** Seed string/number → integer mixer (same family as buildBattleCubes). */
+function seedToN(seed) {
+  return typeof seed === "string"
+    ? [...seed].reduce((a, c) => a + c.charCodeAt(0), 0)
+    : Number(seed) || 1;
+}
+
+/**
+ * Split a wrecked racer's haul into new item cubes whose sats sum exactly to
+ * `haulSats`. Scattered near the crash site and a bit along the track so others
+ * can scoop them (Mario Kart–style drop).
+ *
+ * @param {string} trackId
+ * @param {number} haulSats
+ * @param {number} originX — crash / wreck X
+ * @param {number} originZ — crash / wreck Z
+ * @param {string | number} [seed]
+ * @param {number} [startId] — first cube id (server uses max existing + 1)
+ * @returns {BattleCube[]}
+ */
+export function buildDroppedBattleCubes(
+  trackId,
+  haulSats,
+  originX,
+  originZ,
+  seed = 1,
+  startId = 0,
+) {
+  const haul = Math.max(0, Math.round(Number(haulSats) || 0));
+  if (haul <= 0) return [];
+
+  const pts = trackPoints(trackId);
+  const seedN = seedToN(seed);
+  const id0 = Math.max(0, Math.round(Number(startId) || 0));
+  const ox = Number(originX) || 0;
+  const oz = Number(originZ) || 0;
+
+  // Tier bases scale with the dropped haul (not the full pot).
+  const small = Math.max(1, Math.round(haul * 0.1));
+  const medium = Math.max(small + 1, Math.round(haul * 0.25));
+  const large = Math.max(medium + 1, Math.round(haul * 0.45));
+
+  /** @type {{ tier: 'small' | 'medium' | 'large', sats: number }[]} */
+  const plan = [];
+  let remaining = haul;
+  let i = 0;
+  // Fewer cubes than a full pot layout — readable pile around the wreck.
+  while (remaining > 0 && plan.length < 14) {
+    const roll = hash01(seedN * 19 + i * 83);
+    let tier = /** @type {'small' | 'medium' | 'large'} */ ("small");
+    let sats = small;
+    if (roll > 0.78 && remaining >= large) {
+      tier = "large";
+      sats = large;
+    } else if (roll > 0.42 && remaining >= medium) {
+      tier = "medium";
+      sats = medium;
+    }
+    if (sats > remaining) sats = remaining;
+    plan.push({ tier, sats });
+    remaining -= sats;
+    i += 1;
+  }
+  if (remaining > 0 && plan.length) {
+    plan[plan.length - 1].sats += remaining;
+  }
+
+  // Nearest track sample to the crash — anchor for along-track scatter.
+  let bestT = 0;
+  let bestD = Infinity;
+  const samples = 96;
+  for (let s = 0; s < samples; s++) {
+    const t = s / samples;
+    const samp = sampleClosed(pts, t);
+    const d = (samp.x - ox) * (samp.x - ox) + (samp.z - oz) * (samp.z - oz);
+    if (d < bestD) {
+      bestD = d;
+      bestT = t;
+    }
+  }
+
+  const latScale = BATTLE_TRACK_WIDTH_SCALE;
+  /** @type {BattleCube[]} */
+  const cubes = [];
+  for (let c = 0; c < plan.length; c++) {
+    const entry = plan[c];
+    const placeRoll = hash01(seedN + c * 47);
+    let x;
+    let z;
+    if (placeRoll < 0.55) {
+      // Near crash: ring on / beside asphalt around the wreck.
+      const ang = hash01(seedN + c * 59) * Math.PI * 2;
+      const rad = 3.5 + hash01(seedN + c * 67) * 12;
+      const near = sampleClosed(pts, bestT + (hash01(seedN + c * 73) - 0.5) * 0.04);
+      const side = hash01(seedN + c * 79) > 0.5 ? 1 : -1;
+      const lat = (1.5 + hash01(seedN + c * 89) * 3.2) * latScale;
+      // Blend ring offset with track-lateral so boxes stay readable on road.
+      x = ox + Math.cos(ang) * rad * 0.55 + near.nx * side * lat * 0.65;
+      z = oz + Math.sin(ang) * rad * 0.55 + near.nz * side * lat * 0.65;
+    } else {
+      // Along track ahead/behind the wreck (±~8% of lap).
+      const along = (hash01(seedN + c * 97) - 0.5) * 0.16;
+      let t = bestT + along;
+      t = ((t % 1) + 1) % 1;
+      const side = hash01(seedN + c * 103) > 0.5 ? 1 : -1;
+      const lat = (2.0 + hash01(seedN + c * 107) * 3.6) * latScale;
+      const sample = sampleClosed(pts, t);
+      x = sample.x + sample.nx * side * lat;
+      z = sample.z + sample.nz * side * lat;
+    }
+    cubes.push({
+      id: id0 + c,
+      x,
+      z,
       sats: entry.sats,
       tier: entry.tier,
     });

@@ -551,6 +551,7 @@ export class Game {
       onStart: (_at, trackId, kind, weather, battleCubes) =>
         this.beginOnlineRace(trackId, kind, weather, battleCubes),
       onCubeTaken: (info) => this.onBattleCubeTaken(info),
+      onCubesDropped: (info) => this.onBattleCubesDropped(info),
       onWrecked: (id, name) => this.applyOnlineWreck(id, name),
       onFieldReset: () => this.applyOnlineFieldReset(),
       onRaceResult: (winnerId, winnerName, timeMs, trackOptions, voteEndsAt) =>
@@ -4680,6 +4681,27 @@ export class Game {
       this.startBattleRoulette(info.sats, info.earnings);
     } else if (this.online && !this.finished) {
       this.showToast(`${info.byName} +${info.sats} sats`);
+    }
+  }
+
+  /** Server respawned a wrecked racer's haul as new item cubes. */
+  private onBattleCubesDropped(info: {
+    fromId: string;
+    fromName: string;
+    haulSats: number;
+    cubes: BattleCubeWire[];
+    battleEarnings: Record<string, number>;
+  }) {
+    if (!info.cubes?.length) return;
+    // Append — do not clear existing untaken cubes on the map.
+    const spawned = spawnBattleCubeMeshes(this.scene, info.cubes);
+    this.battleCubes.push(...spawned);
+    if (info.fromId === this.net.id) {
+      this.clearBattleRoulette();
+      const earnEl = document.getElementById("battle-earnings");
+      if (earnEl) earnEl.textContent = "0";
+    } else if (this.online && !this.finished) {
+      this.showToast(`${info.fromName} dropped ${info.haulSats} sats`);
     }
   }
 

@@ -478,6 +478,14 @@ export type NetHandlers = {
     earnings: number;
     battleEarnings: Record<string, number>;
   }) => void;
+  /** Event Mode Battle — a wrecked racer's haul was dropped as new cubes. */
+  onCubesDropped: (info: {
+    fromId: string;
+    fromName: string;
+    haulSats: number;
+    cubes: BattleCubeWire[];
+    battleEarnings: Record<string, number>;
+  }) => void;
   /** Event Mode — your buy-in payment request (creqA) and optional Lightning invoice. */
   onEventInvoice: (
     paymentRequest: string,
@@ -832,6 +840,20 @@ export class NetClient {
           byName: msg.byName,
           sats: msg.sats,
           earnings: msg.earnings,
+          battleEarnings: msg.battleEarnings,
+        });
+      } else if (msg.t === "cubesDropped") {
+        if (this.event) {
+          this.event = {
+            ...this.event,
+            battleEarnings: msg.battleEarnings,
+          };
+        }
+        this.handlers.onCubesDropped({
+          fromId: msg.fromId,
+          fromName: msg.fromName,
+          haulSats: msg.haulSats,
+          cubes: msg.cubes ?? [],
           battleEarnings: msg.battleEarnings,
         });
       } else if (msg.t === "wrecked") {

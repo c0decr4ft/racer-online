@@ -3,7 +3,12 @@ import { verifyEvent } from "nostr-tools";
 import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
 import { payments, depositProofs, recordPayout, loadPayouts, savePayouts } from "./payments.mjs";
-import { buildBattleCubes, BATTLE_PICKUP_RADIUS, BATTLE_PICKUP_POSE_SLACK } from "../shared/battleCubes.mjs";
+import {
+  buildBattleCubes,
+  buildDroppedBattleCubes,
+  BATTLE_PICKUP_RADIUS,
+  BATTLE_PICKUP_POSE_SLACK,
+} from "../shared/battleCubes.mjs";
 import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { dirname, join, extname, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1099,6 +1104,63 @@ function pruneFireContact(room, id) {
   }
 }
 
+/** Next free battle cube id in this room (drops append after the start layout). */
+function nextBattleCubeId(room) {
+  let max = -1;
+  for (const id of room.battleCubes?.keys() || []) {
+    if (id > max) max = id;
+  }
+  return max + 1;
+}
+
+/**
+ * Battle Mode: zero a wrecked racer's unclaimed haul and respawn it as item
+ * cubes for others. Keeps pot invariant (earnings + untaken cube sats = pot).
+ * @param {Room} room
+ * @param {Client} client
+ */
+function dropBattleHaulOnWreck(room, client) {
+  if (!room.isEvent || room.eventMode !== "battle") return;
+  if (room.phase !== "racing" || room.winnerId) return;
+  // Claim is post-race; if somehow already claimed, do not re-mint those sats.
+  if (room.battleClaimedIds?.has(client.id)) return;
+
+  const haul = Math.max(0, Math.round(room.battleEarnings?.get(client.id) || 0));
+  if (haul <= 0) return;
+
+  room.battleEarnings.set(client.id, 0);
+  const startId = nextBattleCubeId(room);
+  const seed = `${room.potId || room.name}:${client.id}:${startId}:${haul}`;
+  const cubes = buildDroppedBattleCubes(
+    room.trackId,
+    haul,
+    client.pose.x,
+    client.pose.z,
+    seed,
+    startId,
+  );
+  room.battleCubes ??= new Map();
+  for (const c of cubes) {
+    room.battleCubes.set(c.id, { ...c, takenBy: "" });
+  }
+
+  /** @type {Record<string, number>} */
+  const battleEarnings = {};
+  for (const [id, sats] of room.battleEarnings) battleEarnings[id] = sats;
+
+  broadcast(room, {
+    t: "cubesDropped",
+    fromId: client.id,
+    fromName: client.name,
+    haulSats: haul,
+    cubes,
+    battleEarnings,
+  });
+  broadcast(room, { t: "notice", text: `${client.name} dropped ${haul} sats` });
+  potLog(room, "info", `battle haul drop · ${client.name} · ${haul} sats → ${cubes.length} cubes`);
+  console.log(`[battle] ${room.name} ${client.name} dropped ${haul} sats (${cubes.length} cubes)`);
+}
+
 /**
  * Freeze a racer as a burning wreck. Does not reset the field (no chain reaction).
  * @param {Room} room
@@ -1116,6 +1178,8 @@ function markWrecked(room, client, how) {
     how === "contact" ? `${client.name} caught fire` : `${client.name} crashed — on fire`;
   broadcast(room, { t: "wrecked", id: client.id, name: client.name });
   broadcast(room, { t: "notice", text });
+  // Battle: spill unclaimed haul back onto the map for others.
+  dropBattleHaulOnWreck(room, client);
   console.log(`[wreck] ${room.name} ${client.name} (${how})`);
   scheduleAllWreckReset(room);
   return true;
