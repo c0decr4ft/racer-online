@@ -589,6 +589,10 @@ export const DRIFT_TRACK: TrackDef = {
   points: YARD_DRIFT,
 };
 
+export function isDriftTrack(id: string): boolean {
+  return id === DRIFT_TRACK_ID;
+}
+
 export const DEFAULT_TRACK_ID = TRACKS[0]!.id;
 
 export function getTrackDef(id: string): TrackDef {
@@ -603,5 +607,6 @@ export function randomTrackId(): string {
 }
 
 export function isTrackId(id: string): boolean {
-  return id === DRIFT_TRACK_ID || TRACKS.some((t) => t.id === id);
+  return isDriftTrack(id) || TRACKS.some((t) => t.id === id);
 }
+

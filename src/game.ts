@@ -18,6 +18,7 @@ import {
   DEFAULT_TRACK_ID,
   getTrackDef,
   DRIFT_TRACK_ID,
+  isDriftTrack,
 } from "./track";
 import { drawTrackPreview } from "./mapPreview";
 import { Input } from "./input";
@@ -171,12 +172,24 @@ export class Game {
   private wantRearview = false;
   /** One-shot shadow rebuild after home/track transitions (menu orbit is static-lit). */
   private shadowNeedsWarmup = true;
-  /** FPS scaler: sustained slow frames throttle shadow-map rebuilds (mobile GPUs). */
+  /** Frame-time EMA (ms) — used to drop non-essential HUD/FX work under load. */
   private fpsEmaMs = 16.7;
   private lowFpsSince = 0;
   private highFpsSince = 0;
-  private shadowThrottle = false;
-  private shadowFrame = 0;
+  /** Sustained slow frames → skip minimap / rain particles (never skip shadow maps). */
+  private perfThrottle = false;
+  /** Reused coasting input when finished/wrecked online — avoid per-frame object alloc. */
+  private readonly _coastInput: InputState = {
+    throttle: 0,
+    brake: 0,
+    handbrake: 0,
+    steer: 0,
+    gear: null,
+    shiftDelta: 0,
+    reset: false,
+    pause: false,
+    fire: false,
+  };
 
   running = false;
   finished = false;
@@ -2738,6 +2751,7 @@ export class Game {
   /** Rebuild player + AI meshes from garage (bots match player kind, except dev extras; keep own paint). */
   private applyGarageToWorld(force = false) {
     const next = loadGarage();
+    if (isDriftTrack(this.trackId)) next.kind = "car";
     const currentKind = (this.player?.mesh.userData.kind as VehicleKind | undefined) ?? null;
     const currentPrimary = (this.player?.mesh.userData.bodyColor as number | undefined) ?? null;
     const currentAccent = (this.player?.mesh.userData.accentColor as number | undefined) ?? null;
@@ -2844,7 +2858,7 @@ export class Game {
     const raceWeather = this.online
       ? normalizeWeatherMode(opts.weather ?? this.net.weather)
       : // Dev extras (monster truck / tank) always race in daylight
-        this.garage.kind === "truck" || this.garage.kind === "tank" || this.trackId === DRIFT_TRACK_ID
+        this.garage.kind === "truck" || this.garage.kind === "tank" || isDriftTrack(this.trackId)
         ? "dry"
         : pickWeather();
     if (this.online) this.net.weather = raceWeather;
@@ -3029,24 +3043,24 @@ export class Game {
     return performance.now() - this.pauseTotal - extra;
   }
 
-  /** FPS scaler with hysteresis: >21ms EMA for 1.5s throttles shadows, <16ms for 4s restores. */
-  private updateShadowThrottle(now: number) {
+  /** FPS scaler: >21ms EMA for 1.5s drops minimap/rain; <16ms for 4s restores. Shadows stay every frame. */
+  private updatePerfThrottle(now: number) {
     if (!this.running || this.paused || this.finished) {
-      this.shadowThrottle = false;
+      this.perfThrottle = false;
       this.lowFpsSince = 0;
       this.highFpsSince = 0;
       return;
     }
-    if (!this.shadowThrottle) {
+    if (!this.perfThrottle) {
       if (this.fpsEmaMs > 21) {
         if (!this.lowFpsSince) this.lowFpsSince = now;
-        if (now - this.lowFpsSince > 1500) this.shadowThrottle = true;
+        if (now - this.lowFpsSince > 1500) this.perfThrottle = true;
       } else {
         this.lowFpsSince = 0;
       }
     } else if (this.fpsEmaMs < 16) {
       if (!this.highFpsSince) this.highFpsSince = now;
-      if (now - this.highFpsSince > 4000) this.shadowThrottle = false;
+      if (now - this.highFpsSince > 4000) this.perfThrottle = false;
     } else {
       this.highFpsSince = 0;
     }
@@ -3072,10 +3086,10 @@ export class Game {
     const rawDeltaMs = now - this.lastFrame;
     const dt = Math.min(rawDeltaMs / 1000, 0.05);
     this.lastFrame = now;
-    // FPS scaler: watch real frame pacing and throttle shadow rebuilds on
-    // sustained slow frames (mobile GPUs), restore when healthy again.
+    // FPS scaler: watch real frame pacing; under load drop minimap/rain — never
+    // skip shadow-map rebuilds (that lagged behind the car and looked janky).
     this.fpsEmaMs += (Math.min(rawDeltaMs, 100) - this.fpsEmaMs) * 0.05;
-    this.updateShadowThrottle(now);
+    this.updatePerfThrottle(now);
 
     // Always interpolate remotes (cheap) even if paused locally
     if (this.remotes.size > 0) {
@@ -3123,10 +3137,13 @@ export class Game {
           // After finishing online, driving input is ignored — the car coasts to
           // a stop and keeps streaming poses so remotes watch the same settled
           // car we see (instead of a frozen mid-corner ghost).
-          const input =
-            this.finished && this.online
-              ? { ...inputPeek, throttle: 0, brake: 0, handbrake: 0, steer: 0, gear: null, shiftDelta: 0 as const, reset: false }
-              : inputPeek;
+          let input = inputPeek;
+          if (this.finished && this.online) {
+            const c = this._coastInput;
+            c.pause = inputPeek.pause;
+            c.fire = false;
+            input = c;
+          }
           if (input.reset) {
             this.player.reset(this.track.startPosition.clone(), this.track.startHeading);
             this.resetSticky(this.player);
@@ -3238,7 +3255,8 @@ export class Game {
       }
       for (const remote of this.remotes.values()) lamps.push(remote.mesh);
       this.weather.update(dt, pos, heading, sessionLive, this.player?.mesh, {
-        particles: sessionLive || preview,
+        // Under load, skip rain particle sim (lights/fog/sun follow stay on).
+        particles: (sessionLive || preview) && !this.perfThrottle,
         lampMeshes: lamps,
         preview,
       });
@@ -3266,15 +3284,12 @@ export class Game {
     this.renderer.setScissorTest(false);
     this.renderer.setViewport(0, 0, w, h);
     this.renderer.autoClear = true;
-    // Rearview reuses the main pass shadow map. Rebuild every frame while
-    // driving — a low-Hz map lagged behind the car (looked like a rear trail)
-    // and popped when it finally caught up. Soft PCF + ride height unchanged.
+    // Rearview reuses the main pass shadow map (autoUpdate=false). Rebuild
+    // once before the main pass every live frame — skipping frames lagged
+    // behind the car (rear trail / pop). Soft PCF + resolution unchanged.
     // Home/pause/finish: casters are still — skip rebuilds after a warmup.
-    // FPS scaler: sustained slow frames → rebuild every 3rd frame instead.
     const liveShadows = this.running && !this.paused && !this.finished;
-    this.shadowFrame = (this.shadowFrame + 1) % 3;
-    const shadowTick = !this.shadowThrottle || this.shadowFrame === 0;
-    this.renderer.shadowMap.needsUpdate = (liveShadows || this.shadowNeedsWarmup) && shadowTick;
+    this.renderer.shadowMap.needsUpdate = liveShadows || this.shadowNeedsWarmup;
     if (this.shadowNeedsWarmup) this.shadowNeedsWarmup = false;
     this.renderer.render(this.scene, this.camera);
 
@@ -4501,7 +4516,8 @@ export class Game {
     this.updateFinalLapFlash();
     this.updateDelta(clockMs);
     this.updateAnimalHit();
-    this.updateMinimap();
+    // Under load, skip the canvas minimap redraw (HUD text still updates).
+    if (!this.perfThrottle) this.updateMinimap();
 
     if (this.el.position) {
       // Finished AI sit at race distance; otherwise laps + track fraction.
