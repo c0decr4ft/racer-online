@@ -49,6 +49,8 @@ export type PlayerPose = {
   s: number; // speed m/s
   g: string; // gear label
   lap: number;
+  /** Burning wreck — other racers see fire on this car. */
+  wrecked?: boolean;
 };
 
 /** Motion-only fields carried on the hot state path (identity comes from lobby/join). */
@@ -60,6 +62,7 @@ export type PoseMotion = {
   s: number;
   g: string;
   lap: number;
+  wrecked?: boolean;
 };
 
 export type ClientMsg =
@@ -172,8 +175,10 @@ export type ServerMsg =
       mock?: boolean;
       error?: string;
     }
-  /** One driver exploded — everyone resets to the start grid. */
-  | { t: "crashReset"; byId: string; byName: string }
+  /** One driver crashed — they burn in place. No chain-reaction grid reset. */
+  | { t: "wrecked"; id: string; name: string }
+  /** Every racer is on fire — reset the field and countdown. */
+  | { t: "fieldReset"; reason: "allWrecked" }
   | {
       t: "raceResult";
       winnerId: string;
@@ -190,8 +195,8 @@ export type ServerMsg =
 
 export const PLAYER_COLORS = [0xe4eaf2, 0xe23b2e, 0x2a66f0, 0xf0c020, 0x1dbf6a, 0xb44dff, 0xff6b9d, 0x00d4ff];
 
-/** Bytes per player in a binary state frame (8-char id + 4×f32 + gear + lap). */
-const STATE_PLAYER_BYTES = 8 + 16 + 2;
+/** Bytes per player in a binary state frame (8-char id + 4×f32 + gear + lap + wrecked flag). */
+const STATE_PLAYER_BYTES = 8 + 16 + 3;
 
 /** Decode a binary racing-state frame. Returns null if the buffer is not a state packet. */
 export function decodeStateBinary(buf: ArrayBuffer): { at: number; motions: PoseMotion[] } | null {
@@ -220,7 +225,8 @@ export function decodeStateBinary(buf: ArrayBuffer): { at: number; motions: Pose
     o += 4;
     const g = String.fromCharCode(view.getUint8(o++) || 49);
     const lap = view.getUint8(o++) || 1;
-    motions.push({ id, x, z, h, s, g, lap });
+    const wrecked = (view.getUint8(o++) & 1) !== 0;
+    motions.push({ id, x, z, h, s, g, lap, wrecked });
   }
   return { at, motions };
 }

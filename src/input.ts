@@ -59,6 +59,8 @@ export type InputState = {
   shiftDelta: -1 | 0 | 1;
   /** One-shot fire (dev tank cannon). Consumed once per frame. */
   fire: boolean;
+  /** Space / pad A — sports / on-foot jump when a mode reads it. */
+  jump: boolean;
 };
 
 export class Input {
@@ -90,6 +92,7 @@ export class Input {
     gear: null,
     shiftDelta: 0,
     fire: false,
+    jump: false,
   };
 
   constructor() {
@@ -251,6 +254,7 @@ export class Input {
     s.gear = gear;
     s.shiftDelta = shiftDelta;
     s.fire = fire;
+    s.jump = this.keys.has("Space");
     return s;
   }
 }

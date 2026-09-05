@@ -42,6 +42,12 @@ const STATIC_BASE = (
       : "/racer-online"
 ).replace(/\/$/, "");
 const NET_TICK_MS = 1000 / 30;
+/** Seconds of overlap with a burning wreck before that racer ignites too. */
+const WRECK_IGNITE_MS = 3_000;
+/** Brief separation does not reset the 3s fire-spread timer. */
+const WRECK_CONTACT_GRACE_MS = 450;
+/** Pause so the field sees everyone burning before the shared restart. */
+const ALL_WRECK_RESET_DELAY_MS = 1_600;
 /** Binary state frame type — must match src/net/protocol.ts STATE_BIN_TYPE. */
 const STATE_BIN_TYPE = 1;
 const MAP_VOTE_MS = 20_000;
@@ -214,7 +220,7 @@ function normalizeSessionId(raw) {
 /** @typedef {{ trackId: string, order: number }} TrackVote */
 /** @typedef {{ paymentHash: string, paymentRequest: string, bolt11?: string, paidAt: number, netSats?: number }} BuyIn */
 /** @typedef {{ at: number, level: 'info' | 'warn' | 'error', msg: string }} PotLogEntry */
-/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, lastCrashAt: number, clients: Map<string, Client>, isEvent: boolean, buyInSats: number, buyInFeeSats: number, buyIns: Map<string, BuyIn>, potSats: number, potId: string, potClaimed: boolean, potLogs: PotLogEntry[] }} Room */
+/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, wreckedIds: Set<string>, fireContactMs: Map<string, number>, fireContactLast: Map<string, number>, allWreckResetAt: number, clients: Map<string, Client>, isEvent: boolean, buyInSats: number, buyInFeeSats: number, buyIns: Map<string, BuyIn>, potSats: number, potId: string, potClaimed: boolean, potLogs: PotLogEntry[] }} Room */
 
 /** Persist a debug line on the event pot (disk + in-memory) so the DEV table can show it. */
 function potLog(room, level, msg) {
@@ -690,7 +696,11 @@ function sortBoard(entries, trackId) {
   const byPubkey = new Map();
   for (const e of cleaned) {
     const prev = byPubkey.get(e.pubkey);
-    if (!prev || e.timeMs < prev.timeMs || (e.timeMs === prev.timeMs && (e.at || 0) < (prev.at || 0))) {
+    if (
+      !prev ||
+      e.timeMs < prev.timeMs ||
+      (e.timeMs === prev.timeMs && (e.at || 0) < (prev.at || 0))
+    ) {
       byPubkey.set(e.pubkey, e);
     }
   }
@@ -1066,15 +1076,136 @@ function roomPlayers(room) {
   return [...room.clients.values()].map((c) => c.pose);
 }
 
+function wreckRadius(room) {
+  // Generous vs client collision (cars ~3.4m) so grinding a wreck still counts.
+  return room.kind === "bike" ? 4.0 : 5.5;
+}
+
+/** @param {Room} room */
+function clearWrecks(room) {
+  room.wreckedIds = new Set();
+  room.fireContactMs = new Map();
+  room.fireContactLast = new Map();
+  room.allWreckResetAt = 0;
+}
+
+/** @param {Room} room @param {string} id */
+function pruneFireContact(room, id) {
+  const contact = room.fireContactMs;
+  if (!contact) return;
+  for (const key of [...contact.keys()]) {
+    if (key.startsWith(`${id}\t`) || key.endsWith(`\t${id}`)) contact.delete(key);
+  }
+}
+
+/**
+ * Freeze a racer as a burning wreck. Does not reset the field (no chain reaction).
+ * @param {Room} room
+ * @param {Client} client
+ * @param {"crash" | "contact"} how
+ */
+function markWrecked(room, client, how) {
+  room.wreckedIds ??= new Set();
+  room.fireContactMs ??= new Map();
+  if (room.wreckedIds.has(client.id)) return false;
+  room.wreckedIds.add(client.id);
+  client.pose.s = 0;
+  pruneFireContact(room, client.id);
+  const text =
+    how === "contact" ? `${client.name} caught fire` : `${client.name} crashed — on fire`;
+  broadcast(room, { t: "wrecked", id: client.id, name: client.name });
+  broadcast(room, { t: "notice", text });
+  console.log(`[wreck] ${room.name} ${client.name} (${how})`);
+  scheduleAllWreckReset(room);
+  return true;
+}
+
+function allClientsWrecked(room) {
+  if (!room.clients.size) return false;
+  room.wreckedIds ??= new Set();
+  for (const c of room.clients.values()) {
+    if (!room.wreckedIds.has(c.id)) return false;
+  }
+  return true;
+}
+
+/** @param {Room} room */
+function scheduleAllWreckReset(room) {
+  if (room.phase !== "racing" || room.winnerId) {
+    room.allWreckResetAt = 0;
+    return;
+  }
+  if (!allClientsWrecked(room)) {
+    room.allWreckResetAt = 0;
+    return;
+  }
+  if (room.allWreckResetAt) return;
+  room.allWreckResetAt = Date.now() + ALL_WRECK_RESET_DELAY_MS;
+  broadcast(room, { t: "notice", text: "Everyone is on fire — restarting" });
+  console.log(`[wreck] ${room.name} all on fire — reset in ${ALL_WRECK_RESET_DELAY_MS}ms`);
+}
+
+/** @param {Room} room */
+function runFieldReset(room) {
+  room.allWreckResetAt = 0;
+  if (room.phase !== "racing" || room.winnerId) return;
+  clearWrecks(room);
+  for (const c of room.clients.values()) {
+    c.pose.s = 0;
+    c.pose.lap = 1;
+    c.pose.g = "1";
+  }
+  broadcast(room, { t: "fieldReset", reason: "allWrecked" });
+  console.log(`[wreck] ${room.name} field reset`);
+}
+
+/** Overlap a burning wreck for 3s → ignite. @param {Room} room @param {number} dtMs */
+function tickWreckFire(room, dtMs) {
+  const wrecked = room.wreckedIds;
+  if (!wrecked || wrecked.size === 0 || room.phase !== "racing") return;
+  room.fireContactMs ??= new Map();
+  room.fireContactLast ??= new Map();
+  const now = Date.now();
+  const r2 = wreckRadius(room) ** 2;
+  /** @type {Client[]} */
+  const ignite = [];
+  for (const alive of room.clients.values()) {
+    if (wrecked.has(alive.id)) continue;
+    for (const wid of wrecked) {
+      const wreck = room.clients.get(wid);
+      if (!wreck) continue;
+      const dx = alive.pose.x - wreck.pose.x;
+      const dz = alive.pose.z - wreck.pose.z;
+      const key = `${alive.id}\t${wid}`;
+      if (dx * dx + dz * dz <= r2) {
+        const next = (room.fireContactMs.get(key) || 0) + dtMs;
+        room.fireContactMs.set(key, next);
+        room.fireContactLast.set(key, now);
+        if (next >= WRECK_IGNITE_MS) ignite.push(alive);
+      } else {
+        const last = room.fireContactLast.get(key) || 0;
+        if (now - last > WRECK_CONTACT_GRACE_MS) {
+          room.fireContactMs.delete(key);
+          room.fireContactLast.delete(key);
+        }
+      }
+    }
+  }
+  for (const c of ignite) markWrecked(room, c, "contact");
+}
+
+
 /**
  * Compact binary racing state for any lobby size (2–6).
- * Layout: u8 type | f64 at | u8 count | count × (8-byte id | 4×f32 xzh s | u8 gear | u8 lap)
+ * Layout: u8 type | f64 at | u8 count | count × (8-byte id | 4×f32 xzh s | u8 gear | u8 lap | u8 flags)
+ * flags bit0 = wrecked (on fire).
  * @param {Pose[]} players
  * @param {number} at
+ * @param {Set<string>} [wreckedIds]
  */
-function encodeStateBinary(players, at) {
+function encodeStateBinary(players, at, wreckedIds) {
   const n = Math.min(MAX_PLAYERS, players.length);
-  const buf = Buffer.allocUnsafe(10 + n * 26);
+  const buf = Buffer.allocUnsafe(10 + n * 27);
   let o = 0;
   buf.writeUInt8(STATE_BIN_TYPE, o++);
   buf.writeDoubleLE(at, o);
@@ -1096,6 +1227,7 @@ function encodeStateBinary(players, at) {
     o += 4;
     buf.writeUInt8(String(p.g || "1").charCodeAt(0) & 0xff, o++);
     buf.writeUInt8(Math.max(1, Math.min(99, p.lap | 0)), o++);
+    buf.writeUInt8(wreckedIds?.has(p.id) ? 1 : 0, o++);
   }
   return buf.subarray(0, o);
 }
@@ -1317,7 +1449,10 @@ function admitClient(ws, msg, mode) {
       votes: new Map(),
       voteOrder: 0,
       voteEndsAt: 0,
-      lastCrashAt: 0,
+      wreckedIds: new Set(),
+      fireContactMs: new Map(),
+      fireContactLast: new Map(),
+      allWreckResetAt: 0,
       clients: new Map(),
       // Event Mode: buy-in gate + winner-takes-the-pot
       isEvent: !!msg.event,
@@ -1932,6 +2067,7 @@ wss.on("connection", (ws) => {
       room.votes.clear();
       room.voteOrder = 0;
       room.voteEndsAt = 0;
+      clearWrecks(room);
       const at = Date.now() + 250;
       broadcast(room, {
         t: "start",
@@ -1948,6 +2084,11 @@ wss.on("connection", (ws) => {
       // Keep poses flowing while finished too — the finisher's car coasts to a
       // stop and remotes must see it settle, not freeze mid-corner.
       if (room.phase !== "racing" && room.phase !== "finished") return;
+      // Burning wrecks stay where they ignited — ignore further driving.
+      if (room.wreckedIds?.has(client.id)) {
+        client.pose.s = 0;
+        return;
+      }
       const now = Date.now();
       // Accept jitter around the 90Hz client cadence (drops ~2× tick-rate senders).
       if (now - client.lastPoseAt < NET_TICK_MS * 0.55) return;
@@ -1973,22 +2114,7 @@ wss.on("connection", (ws) => {
 
     if (msg.t === "crash") {
       if (room.phase !== "racing" || room.winnerId) return;
-      const now = Date.now();
-      // Debounce so multiple near-simultaneous explodes don't spam resets
-      if (room.lastCrashAt && now - room.lastCrashAt < 2_000) return;
-      room.lastCrashAt = now;
-      for (const c of room.clients.values()) {
-        c.pose.s = 0;
-        c.pose.lap = 1;
-        c.pose.g = "1";
-      }
-      broadcast(room, {
-        t: "crashReset",
-        byId: client.id,
-        byName: client.name,
-      });
-      broadcast(room, { t: "notice", text: `${client.name} crashed — restarting` });
-      console.log(`[crash] ${room.name} by ${client.name} → reset grid`);
+      markWrecked(room, client, "crash");
       return;
     }
 
@@ -1997,7 +2123,7 @@ wss.on("connection", (ws) => {
       const timeMs = Math.max(1_000, Math.min(3_600_000, Math.round(Number(msg.timeMs) || 0)));
       room.winnerId = client.id;
       room.phase = "finished";
-      // Event Mode: one race, winner takes the pot — no map vote / next round
+      // Event Mode: one race, winner takes it — skip the map vote
       if (room.isEvent) {
         void (async () => {
           // Attach the payout fee budget (both sends: winner + tip) so the
@@ -2195,6 +2321,8 @@ wss.on("connection", (ws) => {
     room.clients.delete(client.id);
     room.votes.delete(client.id);
     room.buyIns.delete(client.id); // event: drop their buy-in record (v1 — paid buy-ins are not refunded)
+    room.wreckedIds?.delete(client.id);
+    pruneFireContact(room, client.id);
     console.log(`[leave] ${client.name}`);
     if (room.clients.size === 0) {
       potLog(room, "info", "last player left — room closed (pot file kept)");
@@ -2209,6 +2337,7 @@ wss.on("connection", (ws) => {
       if (room.phase === "finished") {
         broadcastVoteState(room);
       }
+      if (room.phase === "racing") scheduleAllWreckReset(room);
     }
     client = null;
   });
@@ -2221,7 +2350,11 @@ setInterval(() => {
     // through the finished phase so remotes see finishers park instead of freezing.
     // ~218 B/frame × 30 × 6 clients ≈ 39 KB/s/room — fine for small lobbies.
     if ((room.phase !== "racing" && room.phase !== "finished") || room.clients.size === 0) continue;
-    const raw = encodeStateBinary(roomPlayers(room), at);
+    if (room.phase === "racing") {
+      tickWreckFire(room, NET_TICK_MS);
+      if (room.allWreckResetAt && Date.now() >= room.allWreckResetAt) runFieldReset(room);
+    }
+    const raw = encodeStateBinary(roomPlayers(room), at, room.wreckedIds);
     for (const c of room.clients.values()) {
       if (c.ws.readyState === 1) c.ws.send(raw);
     }
