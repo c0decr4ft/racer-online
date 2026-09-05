@@ -64,8 +64,6 @@
           </div>
         </div>
 
-        <div id="paint-crosshair" class="paint-crosshair hidden" aria-hidden="true"></div>
-        <div id="paint-tagged" class="paint-tagged hidden" aria-live="assertive">Spectating teammate · Space next</div>
         <div id="wrong-way" class="wrong-way hidden" aria-live="assertive">WRONG WAY</div>
         <div id="explode-flash" class="explode-flash hidden" aria-live="assertive">DESTROYED</div>
         <div id="animal-hit" class="animal-hit hidden" aria-live="assertive">COW!</div>
@@ -345,25 +343,7 @@
         </svg>
       </button>
 
-      <div id="mode-hub" class="overlay sports-hub">
-        <div class="overlay-inner sports-hub-inner">
-          <p class="eyebrow">PICK YOUR MODE</p>
-          <h1>SATS<br /><span>PLAY</span></h1>
-          <p class="tagline">Racing · paintball · same voxel world</p>
-          <div class="sport-grid mode-grid" role="list">
-            <button id="mode-racing-btn" class="sport-card" type="button" data-mode="racing" style="--sport-color:#ff3b2e;--sport-wash:rgba(255,59,46,0.55)">
-              <span class="sport-card-label">RACING</span>
-              <span class="sport-card-blurb">Cars, bikes, circuits</span>
-            </button>
-            <button id="mode-paintball-btn" class="sport-card" type="button" data-mode="paintball" style="--sport-color:#7cff4a;--sport-wash:rgba(90,220,60,0.5)">
-              <span class="sport-card-label">PAINTBALL</span>
-              <span class="sport-card-blurb">Speedball · first to 5</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div id="overlay" class="overlay hidden">
+      <div id="overlay" class="overlay">
         <div class="home-top-actions">
           <button id="home-garage-btn" class="board-icon-btn" type="button" aria-label="Garage">
             <svg class="board-icon-svg" viewBox="0 0 24 24" aria-hidden="true">
@@ -390,10 +370,10 @@
             <span class="board-icon-label">DEV</span>
           </button>
         </div>
-        <div class="overlay-inner" id="home-menu-inner">
-          <p class="eyebrow" id="home-eyebrow">READY TO RACE</p>
-          <h1>SATS<br /><span id="home-brand-accent">RACER</span></h1>
-          <p class="tagline" id="home-tagline">Cars &amp; bikes · AI rivals · sats racer rooms</p>
+        <div class="overlay-inner">
+          <p class="eyebrow">READY TO RACE</p>
+          <h1>SATS<br /><span>RACER</span></h1>
+          <p class="tagline">Cars &amp; bikes · AI rivals · sats racer rooms</p>
 
           <div class="menu-actions">
             <button id="start-btn" type="button">START RACE</button>
@@ -401,24 +381,6 @@
             <button id="event-btn" class="btn-ghost" type="button">EVENT MODE</button>
             <button id="test-drive-btn" class="btn-ghost" type="button">TEST DRIVE</button>
             <button id="solo-race-btn" class="btn-ghost" type="button">SOLO RACE</button>
-            <button id="paintball-range-btn" class="btn-ghost hidden" type="button">TEST RANGE</button>
-            <button id="racing-back-btn" class="btn-ghost" type="button">ALL MODES</button>
-          </div>
-        </div>
-      </div>
-
-      <div id="paintball-menu" class="overlay hidden">
-        <!-- Unused entry shell — paintball uses the shared #overlay buttons. -->
-      </div>
-
-      <div id="paintball-over" class="overlay hidden paintball-theme">
-        <div class="overlay-inner">
-          <p class="eyebrow" id="paintball-over-eyebrow">MATCH OVER</p>
-          <h1 id="paintball-over-title">WIN</h1>
-          <p class="tagline" id="paintball-over-tag">5 tags · field clear</p>
-          <div class="menu-actions">
-            <button id="paintball-again-btn" type="button">PLAY AGAIN</button>
-            <button id="paintball-over-home-btn" class="btn-ghost" type="button">HOME</button>
           </div>
         </div>
       </div>

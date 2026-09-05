@@ -78,8 +78,6 @@ import {
   type WeatherMode,
 } from "./weather";
 import { WildlifeHerd } from "./wildlife";
-import { PaintballMatch } from "./paintball";
-import { savePlayMode, type PlayMode } from "./modes";
 
 function formatTime(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "--:--.---";
@@ -200,9 +198,7 @@ export class Game {
     fire: false,
     jump: false,
   };
-  /** Scratch origin for paintball weather.update (no player pos). */
   private readonly _pathScratch = new THREE.Vector3();
-  private readonly _weatherOrigin = new THREE.Vector3();
 
   running = false;
   finished = false;
@@ -211,10 +207,6 @@ export class Game {
   practice = false;
   /** Timed race with no AI rivals — empty track, wall explode on. */
   solo = false;
-  private paintball: PaintballMatch | null = null;
-  private paintballPractice = false;
-  /** Hub → racing | paintball. Shared Multiplayer / Event Mode entry points. */
-  private playMode: PlayMode = "hub";
   online = false;
   /** Event Mode lobby flow (Lightning buy-in gate + winner's pot) vs plain multiplayer. */
   private eventMode = false;
@@ -282,11 +274,6 @@ export class Game {
     time: document.getElementById("time")!,
     best: document.getElementById("best")!,
     overlay: document.getElementById("overlay")!,
-    modeHub: document.getElementById("mode-hub")!,
-    paintballMenu: document.getElementById("paintball-menu")!,
-    paintballOver: document.getElementById("paintball-over")!,
-    paintCrosshair: document.getElementById("paint-crosshair")!,
-    paintTagged: document.getElementById("paint-tagged")!,
     finish: document.getElementById("finish")!,
     pause: document.getElementById("pause")!,
     pauseBtn: document.getElementById("pause-btn")!,
@@ -621,21 +608,7 @@ export class Game {
   private bindUi() {
     // Bind menu actions first — syncMuteBtn/onHomeOrBoard must not abort handler wiring
     // if a removed overlay ref throws (that previously left every homepage button dead).
-    document.getElementById("mode-racing-btn")!.onclick = () => this.openRacingMenu();
-    document.getElementById("mode-paintball-btn")!.onclick = () => this.openPaintballMenu();
-    document.getElementById("racing-back-btn")!.onclick = () => this.goHub();
-    document.getElementById("paintball-range-btn")!.onclick = () => {
-      void this.bootPaintball({ practice: true });
-    };
-    document.getElementById("paintball-again-btn")!.onclick = () => {
-      void this.bootPaintball({ practice: this.paintballPractice });
-    };
-    document.getElementById("paintball-over-home-btn")!.onclick = () => this.goHome();
     document.getElementById("start-btn")!.onclick = () => {
-      if (this.playMode === "paintball") {
-        void this.bootPaintball({ practice: false });
-        return;
-      }
       void this.bootFromMenu({ trackId: randomTrackId() });
     };
     document.getElementById("test-drive-btn")!.onclick = () => {
@@ -645,24 +618,15 @@ export class Game {
       void this.bootFromMenu({ solo: true, trackId: randomTrackId() });
     };
     document.getElementById("multiplayer-btn")!.onclick = () => {
-      // Same Multiplayer lobby for racing and paintball (Nostr gate).
-      const prompt =
-        this.playMode === "paintball"
-          ? "Sign in with Nostr to play paintball multiplayer"
-          : "Sign in with Nostr to race on Sats Racer";
       void this.unlockAndMaybeMenuMusic()
-        .then(() => ensureNostrLogin(prompt))
+        .then(() => ensureNostrLogin("Sign in with Nostr to race on Sats Racer"))
         .then((session) => {
           if (session) this.openMultiplayer();
         });
     };
     document.getElementById("event-btn")!.onclick = () => {
-      const prompt =
-        this.playMode === "paintball"
-          ? "Sign in with Nostr for paintball event mode"
-          : "Sign in with Nostr to race event mode";
       void this.unlockAndMaybeMenuMusic()
-        .then(() => ensureNostrLogin(prompt))
+        .then(() => ensureNostrLogin("Sign in with Nostr to race event mode"))
         .then((session) => {
           if (session) this.openMultiplayer(true);
         });
@@ -674,10 +638,6 @@ export class Game {
     document.getElementById("restart-btn")!.onclick = () => {
       void this.audio.unlock().then(() => {
         this.audio.stopRaceAudio();
-        if (this.paintball) {
-          void this.bootPaintball({ practice: this.paintballPractice });
-          return;
-        }
         const trackId =
           this.online || this.solo || this.practice ? this.trackId : randomTrackId();
         this.startRace({
@@ -691,10 +651,6 @@ export class Game {
     document.getElementById("pause-restart-btn")!.onclick = () => {
       void this.audio.unlock().then(() => {
         this.audio.stopRaceAudio();
-        if (this.paintball) {
-          void this.bootPaintball({ practice: this.paintballPractice });
-          return;
-        }
         this.startRace({
           practice: this.practice,
           solo: this.solo,
@@ -876,23 +832,17 @@ export class Game {
     const boardOpen = !this.el.leaderboard.classList.contains("hidden");
     const garageOpen = !this.el.garage.classList.contains("hidden");
     const mpOpen = !this.el.multiplayer.classList.contains("hidden");
-    const hubOpen = !this.el.modeHub.classList.contains("hidden");
-    const paintMenu = !this.el.paintballMenu.classList.contains("hidden");
-    const paintOver = !this.el.paintballOver.classList.contains("hidden");
     const devOpen = !document.getElementById("dev-dash")?.classList.contains("hidden");
     return (
       !this.running &&
       !this.finished &&
       !this.paused &&
-      (hubOpen ||
-        paintMenu ||
-        paintOver ||
-        !this.el.overlay.classList.contains("hidden") ||
+      (!this.el.overlay.classList.contains("hidden") ||
         mapOpen ||
         boardOpen ||
         garageOpen ||
         mpOpen ||
-        devOpen)
+        !!devOpen)
     );
   }
 
@@ -1090,20 +1040,13 @@ export class Game {
     this.mpCreateTrackId = DEFAULT_TRACK_ID;
     // Event Mode: show the buy-in field; plain multiplayer hides it.
     document.getElementById("mp-create-buyin-field")?.classList.toggle("hidden", !eventMode);
-    const paint = this.playMode === "paintball";
     const entryTitle = document.querySelector("#mp-entry h1");
     if (entryTitle) entryTitle.textContent = eventMode ? "EVENT MODE" : "MULTIPLAYER";
     const entryTagline = document.querySelector("#mp-entry .tagline");
     if (entryTagline) {
-      if (paint) {
-        entryTagline.textContent = eventMode
-          ? "Buy-in paintball — same pot rules as Saturday racer"
-          : "Create or join a paintball room — same lobby as racing";
-      } else {
-        entryTagline.textContent = eventMode
-          ? "Buy-in races — everyone pays, winner takes the pot"
-          : "Create a private room or join with a password";
-      }
+      entryTagline.textContent = eventMode
+        ? "Buy-in races — everyone pays, winner takes the pot"
+        : "Create a private room or join with a password";
     }
     // Signed in → prefill the racer name from the Nostr profile (username, never
     // the npub); it may arrive a moment after the lobby opens. Guests start blank.
@@ -1437,21 +1380,17 @@ export class Game {
     const allPaid = !event || (this.lobbyPlayers.length > 0 && paidCount === this.lobbyPlayers.length);
     this.el.mpStartBtn.classList.toggle("hidden", !host);
     this.el.mpStartBtn.disabled = !host || !allPaid;
-    this.el.mpStartBtn.textContent = this.playMode === "paintball" ? "START MATCH" : "START RACE";
+    this.el.mpStartBtn.textContent = "START RACE";
     const unpaidNote = unpaidNames.length ? ` — waiting on ${unpaidNames.join(", ")}` : "";
     this.el.mpStatus.textContent = host
       ? allPaid
-        ? this.playMode === "paintball"
-          ? "All buy-ins paid — start when ready"
-          : "All buy-ins paid — start when ready"
+        ? "All buy-ins paid — start when ready"
         : `Waiting for buy-ins (${paidCount}/${this.lobbyPlayers.length} paid)${unpaidNote}`
       : event
         ? allPaid
           ? "All paid — waiting for host to start…"
           : `Waiting for buy-ins (${paidCount}/${this.lobbyPlayers.length} paid)${unpaidNote}`
-        : this.playMode === "paintball"
-          ? "Waiting for host to start the match…"
-          : "Waiting for host to start the race…";
+        : "Waiting for host to start the race…";
   }
 
   /** Event Mode: show my buy-in (Cashu creqA QR + optional Lightning invoice). */
@@ -1945,9 +1884,6 @@ export class Game {
     this.el.mapSelect.classList.add("hidden");
     this.el.garage.classList.add("hidden");
     this.el.multiplayer.classList.add("hidden");
-    this.el.modeHub.classList.add("hidden");
-    this.el.paintballMenu.classList.add("hidden");
-    this.el.paintballOver.classList.add("hidden");
     this.startRace(opts);
   }
 
@@ -1976,7 +1912,6 @@ export class Game {
     this.audio.mute();
     this.audio.stopRaceAudio();
     this.input.clearDriveKeys();
-    this.disposePaintball();
     this.el.pause.classList.add("hidden");
     this.el.finish.classList.add("hidden");
     this.el.pauseBtn.classList.add("hidden");
@@ -1993,7 +1928,7 @@ export class Game {
     this.el.minimap.classList.add("hidden");
     this.el.rearview.classList.add("hidden");
     this.syncTouchControls();
-    this.goHub();
+    this.el.overlay.classList.remove("hidden");
     // Reset weather before rebuilding the menu track
     this.mpWeatherPreview = false;
     this.weather.setMode("dry");
@@ -2011,176 +1946,6 @@ export class Game {
     this.audio.playMenuMusic();
     this.syncMuteBtn();
     setVehicleHeadlights(this.player?.mesh, false);
-  }
-
-  private hideMenus() {
-    this.el.modeHub.classList.add("hidden");
-    this.el.overlay.classList.add("hidden");
-    this.el.paintballMenu.classList.add("hidden");
-    this.el.paintballOver.classList.add("hidden");
-    this.el.mapSelect.classList.add("hidden");
-    this.el.garage.classList.add("hidden");
-    this.el.leaderboard.classList.add("hidden");
-    this.el.multiplayer.classList.add("hidden");
-    document.getElementById("dev-dash")?.classList.add("hidden");
-  }
-
-  private goHub() {
-    this.hideMenus();
-    this.playMode = "hub";
-    savePlayMode("hub");
-    this.el.modeHub.classList.remove("hidden");
-    this.setHudPaint(false);
-    this.syncMuteBtn();
-    void this.unlockAndMaybeMenuMusic();
-  }
-
-  private applyHomeMenuForMode() {
-    const paint = this.playMode === "paintball";
-    const eyebrow = document.getElementById("home-eyebrow");
-    const brand = document.getElementById("home-brand-accent");
-    const tag = document.getElementById("home-tagline");
-    const start = document.getElementById("start-btn");
-    if (eyebrow) eyebrow.textContent = paint ? "LOCK AND LOAD" : "READY TO RACE";
-    if (brand) brand.textContent = paint ? "PAINT" : "RACER";
-    if (tag) {
-      tag.textContent = paint
-        ? "Speedball · teammates · same multiplayer & event rooms"
-        : "Cars & bikes · AI rivals · sats racer rooms";
-    }
-    if (start) start.textContent = paint ? "START MATCH" : "START RACE";
-    document.getElementById("test-drive-btn")?.classList.toggle("hidden", paint);
-    document.getElementById("solo-race-btn")?.classList.toggle("hidden", paint);
-    document.getElementById("paintball-range-btn")?.classList.toggle("hidden", !paint);
-    this.el.overlay.classList.toggle("paintball-theme", paint);
-  }
-
-  private openRacingMenu() {
-    this.playMode = "racing";
-    savePlayMode("racing");
-    this.hideMenus();
-    this.applyHomeMenuForMode();
-    this.el.overlay.classList.remove("hidden");
-    this.setHudPaint(false);
-    this.syncMuteBtn();
-    void this.unlockAndMaybeMenuMusic();
-  }
-
-  private openPaintballMenu() {
-    // Same START / MULTIPLAYER / EVENT MODE buttons as racing — no paintball-only MP/Event.
-    this.playMode = "paintball";
-    savePlayMode("paintball");
-    this.hideMenus();
-    this.applyHomeMenuForMode();
-    this.el.overlay.classList.remove("hidden");
-    this.setHudPaint(false);
-    this.syncMuteBtn();
-    void this.unlockAndMaybeMenuMusic();
-  }
-
-  private async bootPaintball(opts: { practice: boolean }) {
-    await this.audio.unlock();
-    this.audio.stopMenuMusic();
-    this.startPaintball(opts);
-  }
-
-  private startPaintball(opts: { practice: boolean }) {
-    this.disposePaintball();
-    this.paintballPractice = opts.practice;
-    this.hideMenus();
-    this.running = true;
-    this.finished = false;
-    this.paused = false;
-    this.practice = opts.practice;
-    this.solo = false;
-    this.online = false;
-    this.pauseTotal = 0;
-    this.pauseBegan = 0;
-    this.clearCountdown();
-    this.el.pause.classList.add("hidden");
-    this.el.pauseBtn.classList.remove("hidden");
-    this.el.minimap.classList.add("hidden");
-    this.el.rearview.classList.add("hidden");
-    this.track.group.visible = false;
-    if (this.player) this.player.mesh.visible = false;
-    this.setAiVisible(false);
-    if (this.wildlife) this.wildlife.group.visible = false;
-    this.weather.setMode("dry");
-    this.weather.placeSun(new THREE.Vector3(0, 0, 0), { snap: true });
-    this.paintball = new PaintballMatch(this.scene, this.camera, this.renderer.domElement, {
-      practice: opts.practice,
-      paintColor: this.garage.accent,
-    });
-    this.setHudPaint(true);
-    this.shadowNeedsWarmup = true;
-    this.syncTouchControls();
-    this.syncMuteBtn();
-    const pauseTag = this.el.pause.querySelector(".tagline");
-    if (pauseTag) pauseTag.textContent = "Match frozen · press Esc to resume";
-  }
-
-  private disposePaintball() {
-    this.paintball?.dispose();
-    this.paintball = null;
-    this.track.group.visible = true;
-    if (this.player) this.player.mesh.visible = true;
-    if (this.wildlife) this.wildlife.group.visible = true;
-    this.setHudPaint(false);
-    this.el.paintCrosshair.classList.add("hidden");
-    this.el.paintTagged.classList.add("hidden");
-    this.el.paintballOver.classList.add("hidden");
-    const pauseTag = this.el.pause.querySelector(".tagline");
-    if (pauseTag) pauseTag.textContent = "Race frozen · press Esc to resume";
-    const accent = document.getElementById("brand-accent");
-    if (accent) accent.textContent = "RACER";
-  }
-
-  private setHudPaint(on: boolean) {
-    document.getElementById("hud")?.classList.toggle("hud-paint", on);
-    this.el.paintCrosshair.classList.toggle("hidden", !on);
-    if (!on) this.el.paintTagged.classList.add("hidden");
-    const accent = document.getElementById("brand-accent");
-    if (accent) accent.textContent = on ? "PAINT" : "RACER";
-    const posLabel = document.getElementById("hud-pos-label");
-    const lapLabel = document.getElementById("hud-lap-label");
-    if (posLabel) posLabel.textContent = on ? "TAGS" : "POS";
-    if (lapLabel) lapLabel.textContent = on ? "OUT" : "LAP";
-  }
-
-  private updatePaintballHud() {
-    if (!this.paintball) return;
-    const h = this.paintball.hud;
-    if (this.el.position) this.el.position.textContent = h.practice ? `${h.tags}` : `${h.tags}/${h.goal}`;
-    const lap = document.getElementById("lap");
-    if (lap) {
-      if (h.spectating) lap.textContent = h.spectateLabel || "TEAM";
-      else lap.textContent = h.practice ? String(h.bots) : `${h.deaths}/${h.loseAt}`;
-    }
-    this.el.time.textContent = formatTime(h.timeMs);
-    this.el.paintTagged.classList.toggle("hidden", !h.tagged);
-    if (h.tagged) {
-      this.el.paintTagged.textContent = h.spectating
-        ? "Spectating teammate · Space next"
-        : "Tagged · waiting for teammates…";
-    }
-  }
-
-  private endPaintballMatch() {
-    if (!this.paintball) return;
-    this.running = false;
-    this.finished = true;
-    this.paused = false;
-    this.paintball.setPaused(true);
-    this.el.pause.classList.add("hidden");
-    this.el.pauseBtn.classList.add("hidden");
-    const win = this.paintball.result === "win";
-    document.getElementById("paintball-over-eyebrow")!.textContent = "MATCH OVER";
-    document.getElementById("paintball-over-title")!.textContent = win ? "WIN" : "OUT";
-    document.getElementById("paintball-over-tag")!.textContent = win
-      ? `${this.paintball.hud.tags} tags · field clear`
-      : `Tagged ${this.paintball.hud.deaths} times`;
-    this.el.paintballOver.classList.remove("hidden");
-    this.syncMuteBtn();
   }
 
   private renderBoardList(entries: LeaderboardEntry[]) {
@@ -2774,13 +2539,6 @@ export class Game {
     this.el.multiplayer.classList.add("hidden");
     this.el.overlay.classList.add("hidden");
 
-    // Paintball rooms reuse the same lobby / event buy-in / start handshake.
-    if (this.playMode === "paintball") {
-      this.setNetStatus(`Match · ${this.net.room}`, "ok");
-      void this.bootPaintball({ practice: false });
-      return;
-    }
-
     const kind: VehicleKind =
       kindHint === "bike" || this.net.kind === "bike" || this.garage.kind === "bike" ? "bike" : "car";
     this.garage = { ...this.garage, kind };
@@ -3074,7 +2832,6 @@ export class Game {
     trackId?: string;
     weather?: WeatherMode;
   } = {}) {
-    this.disposePaintball();
     this.practice = !!opts.practice;
     this.solo = !!opts.solo && !this.online;
     const nextId = opts.trackId ?? this.trackId ?? DEFAULT_TRACK_ID;
@@ -3082,9 +2839,6 @@ export class Game {
     if (!this.online) this.applyGarageToWorld();
     this.setAiVisible(!this.solo && !this.online);
     this.el.overlay.classList.add("hidden");
-    this.el.modeHub.classList.add("hidden");
-    this.el.paintballMenu.classList.add("hidden");
-    this.el.paintballOver.classList.add("hidden");
     this.el.mapSelect.classList.add("hidden");
     this.el.multiplayer.classList.add("hidden");
     this.el.garage.classList.add("hidden");
@@ -3269,13 +3023,8 @@ export class Game {
     this.input.clearDriveKeys();
     this.audio.mute();
     this.audio.stopRaceAudio();
-    this.paintball?.setPaused(true);
     const pauseTag = this.el.pause.querySelector(".tagline");
-    if (pauseTag) {
-      pauseTag.textContent = this.paintball
-        ? "Match frozen · press Esc to resume"
-        : "Race frozen · press Esc to resume";
-    }
+    if (pauseTag) pauseTag.textContent = "Race frozen · press Esc to resume";
     this.el.pause.classList.remove("hidden");
     this.el.pauseBtn.classList.add("hidden");
     this.syncTouchControls();
@@ -3290,7 +3039,7 @@ export class Game {
     this.paused = false;
     this.audio.unmute();
     // Drive audio only after GO (gridHeld covers 3-2-1)
-    if (!this.gridHeld && !this.paintball) this.startRaceDriveAudio();
+    if (!this.gridHeld) this.startRaceDriveAudio();
     this.el.pause.classList.add("hidden");
     this.el.pauseBtn.classList.remove("hidden");
     this.syncTouchControls();
@@ -3298,7 +3047,6 @@ export class Game {
     this.lastFrame = performance.now();
     this.input.clearDriveKeys();
     this.renderer.domElement.focus({ preventScroll: true });
-    this.paintball?.requestLook();
   }
 
   /** Sticky track projection: global search only on first use (spawn/reset),
@@ -3388,23 +3136,6 @@ export class Game {
     if (inputPeek.pause) {
       if (this.paused) this.resume();
       else if (this.running && !this.finished && !this.exploding && !this.onlineWrecked) this.pause();
-    }
-
-    if (this.paintball) {
-      if (this.running && !this.paused && !this.finished) {
-        this.paintball.update(dt, inputPeek);
-        this.updatePaintballHud();
-        if (this.paintball.finished) this.endPaintballMatch();
-      }
-      if (this.weather) {
-        this.weather.update(dt, this._weatherOrigin, 0, this.running && !this.finished, undefined, {
-          particles: false,
-          lampMeshes: [],
-          preview: false,
-        });
-      }
-      this.renderViews();
-      return;
     }
 
     if (this.running && !this.paused && (!this.finished || this.online)) {
