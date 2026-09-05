@@ -128,6 +128,9 @@ const LAUNCH_MIN_POWER = 0.42;
 const LAUNCH_RAMP_S = 3.6;
 /** Dev-only GOD MODE: AI power multiplier (a lot faster, that is the point). */
 const GOD_MODE_AI_POWER = 1.5;
+/** Dev-only GOD MODE on City Circuit (`oval-circuit`): shared player+AI speed/accel scale. */
+const CITY_TRACK_ID = "oval-circuit";
+const GOD_MODE_CITY_SPEED = 1.3;
 /** Dev extras: a crushed/shot AI car sits out this long, then reappears. */
 const RIVAL_DISABLE_MS = 10_000;
 /** Tank cannon — shell speed (m/s), max flight time, refire delay. */
@@ -420,7 +423,7 @@ export class Game {
   private wreckContactS = 0;
   private readonly wreckedIds = new Set<string>();
   private lastFieldResetAt = 0;
-  /** Dev dashboard GOD MODE — boosts AI power locally only (never syncs). */
+  /** Dev dashboard GOD MODE — AI power (+ city speed); local only, never syncs. */
   private godMode = false;
   private explodeRestartAt = 0;
   private explodeParts: {
@@ -3323,10 +3326,14 @@ export class Game {
 
           // Launch ramp: cars pull away gently then build power through the
           // gears off the line. GOD MODE (dev only) gives AI the same ramp
-          // times a big multiplier — the player is untouched.
+          // times a big multiplier. On City Circuit only, player + AI also
+          // share an extra max-speed / accel scale.
           const launch = this.launchPower();
-          this.player.powerMul = launch;
-          const aiPower = launch * (this.godMode ? GOD_MODE_AI_POWER : 1);
+          const cityGod =
+            this.godMode && this.trackId === CITY_TRACK_ID ? GOD_MODE_CITY_SPEED : 1;
+          this.player.powerMul = launch * cityGod;
+          const aiPower =
+            launch * (this.godMode ? GOD_MODE_AI_POWER : 1) * cityGod;
           for (const r of this.rivals) r.godBoost = aiPower;
 
           this.player.update(dt, input);
@@ -4185,7 +4192,7 @@ export class Game {
     return Math.min(1, LAUNCH_MIN_POWER + (1 - LAUNCH_MIN_POWER) * (t / LAUNCH_RAMP_S));
   }
 
-  /** Dev dashboard GOD MODE toggle — AI rivals get a big power boost, locally only. */
+  /** Dev dashboard GOD MODE toggle — AI power boost (+ city speed), locally only. */
   private toggleGodMode() {
     this.godMode = !this.godMode;
     const btn = document.getElementById("dev-god-btn");
@@ -4193,7 +4200,13 @@ export class Game {
       btn.textContent = `GOD MODE: ${this.godMode ? "ON" : "OFF"}`;
       btn.classList.toggle("is-active", this.godMode);
     }
-    this.showToast(this.godMode ? "GOD MODE — rivals unchained" : "GOD MODE OFF");
+    this.showToast(
+      this.godMode
+        ? this.trackId === CITY_TRACK_ID
+          ? "GOD MODE — city speed + rivals"
+          : "GOD MODE — rivals unchained"
+        : "GOD MODE OFF",
+    );
   }
 
   /** Collision radius per vehicle kind — bikes are far narrower than cars. */
