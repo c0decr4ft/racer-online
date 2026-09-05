@@ -26,6 +26,16 @@
           <div class="hud-top-left">
             <div class="brand">SATS<span id="brand-accent">RACER</span></div>
             <div id="net-status" class="net-status hidden">OFFLINE</div>
+            <!-- Battle: Mario Kart–style item roulette (cycles decoys, locks real cube sats) -->
+            <div id="battle-roulette" class="battle-roulette hidden" aria-live="polite" aria-hidden="true">
+              <div class="battle-roulette-face" aria-hidden="true">
+                <span class="battle-roulette-q">?</span>
+              </div>
+              <div class="battle-roulette-readout">
+                <div id="battle-roulette-value" class="battle-roulette-value">—</div>
+                <div class="battle-roulette-unit">SATS</div>
+              </div>
+            </div>
           </div>
           <div class="hud-stats">
             <div class="pos-block">
@@ -61,6 +71,11 @@
           <div class="wall-block">
             <div class="label">WALL</div>
             <div id="wall-hits">0/10</div>
+          </div>
+          <div id="battle-earnings-block" class="battle-earnings-block hidden">
+            <div class="label">HAUL</div>
+            <div id="battle-earnings">0</div>
+            <div class="unit">SATS</div>
           </div>
         </div>
 
@@ -131,6 +146,26 @@
               stroke-linecap="round"
               d="M12 3.5v6.25M7.2 16.8l3.3-3.3M16.8 16.8l-3.3-3.3"
             />
+          </svg>
+        </button>
+        <button
+          id="instructions-btn"
+          class="feedback-btn"
+          type="button"
+          aria-haspopup="dialog"
+          aria-controls="home-instructions"
+          aria-label="Instructions"
+          title="Instructions"
+        >
+          <svg class="feedback-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              stroke-linecap="round"
+              d="M12 7.2v.2M12 10.5v6.3"
+            />
+            <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.75" />
           </svg>
         </button>
       </div>
@@ -217,6 +252,34 @@
           </div>
           <div class="feedback-compose-actions">
             <button id="controls-help-close" class="btn-ghost" type="button">CLOSE</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="home-instructions" class="feedback-compose hidden" role="dialog" aria-modal="true" aria-labelledby="home-instructions-title">
+        <div class="feedback-compose-panel controls-help-panel">
+          <p class="eyebrow" id="home-instructions-title">INSTRUCTIONS</p>
+          <p class="feedback-compose-hint">How the modes work</p>
+          <div class="controls-help-groups">
+            <section class="controls-help-group" aria-labelledby="instr-race-modes">
+              <h3 class="controls-help-group-title" id="instr-race-modes">Racing</h3>
+              <dl class="controls-help-list">
+                <div class="controls-help-row"><dt>Start Race</dt><dd>Local race vs AI on a track you pick</dd></div>
+                <div class="controls-help-row"><dt>Multiplayer</dt><dd>Private rooms — no buy-in</dd></div>
+                <div class="controls-help-row"><dt>Test Drive / Solo</dt><dd>Practice alone or empty track</dd></div>
+              </dl>
+            </section>
+            <section class="controls-help-group" aria-labelledby="instr-event">
+              <h3 class="controls-help-group-title" id="instr-event">Event Mode</h3>
+              <p class="instr-blurb">Everyone pays a buy-in in sats. Host picks <strong>Race</strong> or <strong>Battle</strong> in Create Room settings.</p>
+              <dl class="controls-help-list">
+                <div class="controls-help-row"><dt>Race</dt><dd>Classic event — finish 1st and claim the pot</dd></div>
+                <div class="controls-help-row"><dt>Battle</dt><dd>Same buy-in on wider tracks — scoop spinning ? item boxes while you race. Boxes share the pot exactly; your haul counts even if you don’t finish 1st. Uncollected leftover goes to whoever crosses the line first.</dd></div>
+              </dl>
+            </section>
+          </div>
+          <div class="feedback-compose-actions">
+            <button id="home-instructions-close" class="btn-ghost" type="button">CLOSE</button>
           </div>
         </div>
       </div>
@@ -469,8 +532,15 @@
                   <input id="mp-create-max" type="number" min="2" max="6" value="4" />
                 </label>
               </div>
+              <div class="mp-field mp-event-mode-pick hidden" id="mp-event-mode-pick" role="group" aria-label="Event type">
+                <span>Event type</span>
+                <div class="garage-kind mp-kind" role="group" aria-label="Race or Battle">
+                  <button id="mp-event-pick-race" class="garage-kind-btn is-active" type="button" data-mode="race">RACE</button>
+                  <button id="mp-event-pick-battle" class="garage-kind-btn" type="button" data-mode="battle">BATTLE</button>
+                </div>
+              </div>
               <label class="mp-field hidden" id="mp-create-buyin-field">
-                <span>Buy-in per racer (real sats) · winner takes the pot</span>
+                <span id="mp-create-buyin-label">Buy-in per racer (real sats) · winner takes the pot</span>
                 <input id="mp-create-buyin" type="number" min="1" max="1000000" step="1" value="100" />
               </label>
               <div class="mp-fields-row mp-pickers-row">
@@ -699,6 +769,7 @@
           </section>
           <section id="event-checkout" class="event-checkout hidden" aria-labelledby="event-checkout-title">
             <p class="eyebrow" id="event-checkout-title">POT WON</p>
+            <p id="event-battle-summary" class="event-battle-summary hidden" aria-live="polite"></p>
             <p class="event-pot"><span id="event-pot-sats">0</span><span class="event-pot-unit">SATS</span></p>
             <label class="event-tip-row" for="event-tip-range">
               <span>DEVELOPER TIP · <span id="event-tip-label">2%</span></span>

@@ -22,6 +22,18 @@ export type NetVehicleKind = "car" | "bike";
 export type NetWeatherMode = "dry" | "night" | "rain";
 export type LobbyPhase = "lobby" | "racing" | "finished" | "starting";
 
+/** Event Mode flavor — Race = finish for the pot; Battle = money cubes + race. */
+export type EventGameMode = "race" | "battle";
+
+/** Collectible Battle item box broadcast at race start (values sum to the pot). */
+export type BattleCubeWire = {
+  id: number;
+  x: number;
+  z: number;
+  sats: number;
+  tier: "small" | "medium" | "large";
+};
+
 /** Event Mode room state — buy-in gate + pot. Present only in event rooms. */
 export type EventRoomInfo = {
   buyInSats: number;
@@ -33,6 +45,14 @@ export type EventRoomInfo = {
   potFeeSats?: number;
   /** True when the server runs the mock payment adapter (dev/testing — fake sats). */
   mock?: boolean;
+  /** Host-chosen at create — defaults to race when omitted (older rooms). */
+  mode?: EventGameMode;
+  /** Battle: sats each racer has collected so far (live + finish). */
+  battleEarnings?: Record<string, number>;
+  /** Battle: sats each racer may claim after the race (cubes + leftover to finisher). */
+  battleClaimable?: Record<string, number>;
+  /** Battle: player ids who already claimed their share. */
+  battleClaimedIds?: string[];
 };
 
 export type PlayerPose = {
@@ -81,7 +101,7 @@ export type ClientMsg =
       /** Nostr identity (64-hex pubkey) of the host. */
       pubkey?: string;
       /** Event Mode — buy-in per racer in sats; host cannot start until all paid. */
-      event?: { buyInSats: number };
+      event?: { buyInSats: number; mode?: EventGameMode };
     }
   | {
       t: "join";
@@ -112,7 +132,9 @@ export type ClientMsg =
   | { t: "vote"; trackId: string }
   /** Event Mode — manual buy-in: paste a cashuA token instead of scanning the request. */
   | { t: "submitToken"; token: string }
-  /** Event Mode — winner claims the pot as a Cashu token: tip 0–100% to the dev. */
+  /** Event Mode Battle — attempt to collect a money cube (server validates range). */
+  | { t: "pickupCube"; cubeId: number }
+  /** Event Mode — winner (Race) or any claimable racer (Battle) claims Cashu: tip 0–100% to the dev. */
   | { t: "claimPot"; tipPercent: number }
   /** Host-only. Optional weather re-asserts the room setting on play. */
   | { t: "start"; weather?: NetWeatherMode }
@@ -147,7 +169,25 @@ export type ServerMsg =
       event?: EventRoomInfo | null;
     }
   | { t: "state"; players: PlayerPose[]; at?: number }
-  | { t: "start"; at: number; trackId: string; kind: NetVehicleKind; weather: NetWeatherMode }
+  | {
+      t: "start";
+      at: number;
+      trackId: string;
+      kind: NetVehicleKind;
+      weather: NetWeatherMode;
+      /** Battle Mode — money cubes for this race (omitted in Race / normal rooms). */
+      battleCubes?: BattleCubeWire[];
+    }
+  /** Event Mode Battle — a cube was collected. */
+  | {
+      t: "cubeTaken";
+      cubeId: number;
+      byId: string;
+      byName: string;
+      sats: number;
+      earnings: number;
+      battleEarnings: Record<string, number>;
+    }
   /** Event Mode — your personal buy-in (NUT-18 creqA + optional Lightning invoice). */
   | {
       t: "eventInvoice";

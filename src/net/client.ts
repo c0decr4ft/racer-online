@@ -6,6 +6,8 @@ import {
   MAX_EXTRAPOLATE_MS,
   NET_TICK_MS,
   decodeStateBinary,
+  type BattleCubeWire,
+  type EventGameMode,
   type EventRoomInfo,
   type LobbyPhase,
   type NetVehicleKind,
@@ -460,7 +462,22 @@ export type NetHandlers = {
     hostId: string;
     maxPlayers: number;
   }) => void;
-  onStart: (at: number, trackId: string, kind: NetVehicleKind, weather: NetWeatherMode) => void;
+  onStart: (
+    at: number,
+    trackId: string,
+    kind: NetVehicleKind,
+    weather: NetWeatherMode,
+    battleCubes?: BattleCubeWire[],
+  ) => void;
+  /** Event Mode Battle — a money cube was collected. */
+  onCubeTaken: (info: {
+    cubeId: number;
+    byId: string;
+    byName: string;
+    sats: number;
+    earnings: number;
+    battleEarnings: Record<string, number>;
+  }) => void;
   /** Event Mode — your buy-in payment request (creqA) and optional Lightning invoice. */
   onEventInvoice: (
     paymentRequest: string,
@@ -516,6 +533,8 @@ export type RoomConnectOpts = {
   pubkey?: string;
   /** Event Mode (host, on create): buy-in per racer in sats. */
   eventBuyInSats?: number;
+  /** Event Mode (host): race (default) or battle. */
+  eventGameMode?: EventGameMode;
   /** True when joining via Event Mode — server rejects cross-type joins. */
   eventMode?: boolean;
   mode: "create" | "join";
@@ -701,7 +720,12 @@ export class NetClient {
               color: opts.color,
               accent: opts.accent,
               pubkey: opts.pubkey,
-              event: opts.eventBuyInSats ? { buyInSats: opts.eventBuyInSats } : undefined,
+              event: opts.eventBuyInSats
+                ? {
+                    buyInSats: opts.eventBuyInSats,
+                    mode: opts.eventGameMode === "battle" ? "battle" : "race",
+                  }
+                : undefined,
             }
           : {
               t: "join" as const,
@@ -794,7 +818,22 @@ export class NetClient {
         this.trackId = msg.trackId;
         this.kind = msg.kind === "bike" ? "bike" : "car";
         this.weather = applyWireWeather(msg.weather, this.weather);
-        this.handlers.onStart(msg.at, msg.trackId, this.kind, this.weather);
+        this.handlers.onStart(msg.at, msg.trackId, this.kind, this.weather, msg.battleCubes);
+      } else if (msg.t === "cubeTaken") {
+        if (this.event) {
+          this.event = {
+            ...this.event,
+            battleEarnings: msg.battleEarnings,
+          };
+        }
+        this.handlers.onCubeTaken({
+          cubeId: msg.cubeId,
+          byId: msg.byId,
+          byName: msg.byName,
+          sats: msg.sats,
+          earnings: msg.earnings,
+          battleEarnings: msg.battleEarnings,
+        });
       } else if (msg.t === "wrecked") {
         this.handlers.onWrecked(msg.id, msg.name);
       } else if (msg.t === "fieldReset") {
@@ -854,8 +893,9 @@ export class NetClient {
       } else if (msg.t === "error") {
         this.handlers.onError(msg.message);
         this.handlers.onStatus(msg.message);
-        // Drop the dead socket without a misleading "Disconnected" status.
-        this.softClose(ws, gen);
+        // Admit failures (no welcome yet) drop the socket. In-lobby errors
+        // (buy-in wait, token reject, invoice retry, …) must stay connected.
+        if (!this.myId) this.softClose(ws, gen);
       }
     };
 
@@ -983,7 +1023,14 @@ export class NetClient {
     this.ws.send(JSON.stringify({ t: "submitToken", token: trimmed }));
   }
 
-  /** Event Mode — winner claims the pot; tip 0–100 goes to the dev. */
+  /** Event Mode Battle — try to collect a money cube. */
+  pickupCube(cubeId: number) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.myId) return;
+    if (this.phase !== "racing" || !this.event) return;
+    this.ws.send(JSON.stringify({ t: "pickupCube", cubeId: Math.round(cubeId) }));
+  }
+
+  /** Event Mode — winner (Race) or claimable racer (Battle) claims Cashu; tip 0–100 to the dev. */
   claimPot(tipPercent: number) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.myId) return;
     if (this.phase !== "finished" || !this.event) return;
