@@ -15,6 +15,7 @@ ENV STATIC_BASE=/racer-online
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY server ./server
+COPY shared ./shared
 COPY --from=build /app/dist ./dist
 # Runtime online.json points at this same host (overwritten by platform env if needed)
 RUN printf '%s\n' '{"apiBase":"/api","wsUrl":""}' > ./dist/online.json

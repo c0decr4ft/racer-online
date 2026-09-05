@@ -5074,6 +5074,12 @@ function buildRibbon(
 export type CreateTrackOptions = {
   /** Vegetation / grove density multiplier. Use <1 for the home-menu backdrop. */
   sceneryScale?: number;
+  /**
+   * Asphalt / runoff / wall width multiplier. Battle Event Mode passes >1 so
+   * tracks feel roomier for item-box grabs — Race / casual leave this at 1.
+   * Does not change trackDefs; only this build.
+   */
+  widthScale?: number;
 };
 
 /** Build a full track scene from a named path definition. */
@@ -5084,8 +5090,10 @@ export function createTrack(
   const def = getTrackDef(trackId);
   const biome = biomeForTrack(def.biome ?? def.id);
   const sceneryScale = opts?.sceneryScale ?? 1;
+  const widthScale = Math.max(0.5, opts?.widthScale ?? 1);
   const group = new THREE.Group();
-  const width = isDriftTrack(def.id) ? 16 : 14;
+  const baseWidth = isDriftTrack(def.id) ? 16 : 14;
+  const width = baseWidth * widthScale;
   const half = width / 2;
 
   const pts = pointsFromDef(def);

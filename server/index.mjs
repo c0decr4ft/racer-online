@@ -3,6 +3,7 @@ import { verifyEvent } from "nostr-tools";
 import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
 import { payments, depositProofs, recordPayout, loadPayouts, savePayouts } from "./payments.mjs";
+import { buildBattleCubes, BATTLE_PICKUP_RADIUS } from "../shared/battleCubes.mjs";
 import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { dirname, join, extname, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -220,7 +221,7 @@ function normalizeSessionId(raw) {
 /** @typedef {{ trackId: string, order: number }} TrackVote */
 /** @typedef {{ paymentHash: string, paymentRequest: string, bolt11?: string, paidAt: number, netSats?: number }} BuyIn */
 /** @typedef {{ at: number, level: 'info' | 'warn' | 'error', msg: string }} PotLogEntry */
-/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, wreckedIds: Set<string>, fireContactMs: Map<string, number>, fireContactLast: Map<string, number>, allWreckResetAt: number, clients: Map<string, Client>, isEvent: boolean, buyInSats: number, buyInFeeSats: number, buyIns: Map<string, BuyIn>, potSats: number, potId: string, potClaimed: boolean, potLogs: PotLogEntry[] }} Room */
+/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, wreckedIds: Set<string>, fireContactMs: Map<string, number>, fireContactLast: Map<string, number>, allWreckResetAt: number, clients: Map<string, Client>, isEvent: boolean, eventMode: 'race' | 'battle', buyInSats: number, buyInFeeSats: number, buyIns: Map<string, BuyIn>, potSats: number, potId: string, potClaimed: boolean, potLogs: PotLogEntry[], battleCubes: Map<number, { id: number, x: number, z: number, sats: number, tier: string, takenBy: string }>, battleEarnings: Map<string, number>, battleClaimable: Map<string, number>, battleClaimedIds: Set<string> }} Room */
 
 /** Persist a debug line on the event pot (disk + in-memory) so the DEV table can show it. */
 function potLog(room, level, msg) {
@@ -1338,13 +1339,50 @@ function eventInfo(room) {
   if (!room.isEvent) return null;
   const paidIds = [];
   for (const [id, b] of room.buyIns) if (b.paidAt > 0) paidIds.push(id);
+  /** @type {Record<string, number>} */
+  const battleEarnings = {};
+  for (const [id, sats] of room.battleEarnings || []) battleEarnings[id] = sats;
+  /** @type {Record<string, number>} */
+  const battleClaimable = {};
+  for (const [id, sats] of room.battleClaimable || []) battleClaimable[id] = sats;
   return {
     buyInSats: room.buyInSats,
     feeSats: room.buyInFeeSats || 0,
     paidIds,
     potSats: room.potSats,
     mock: payments.mock,
+    mode: room.eventMode === "battle" ? "battle" : "race",
+    battleEarnings,
+    battleClaimable,
+    battleClaimedIds: [...(room.battleClaimedIds || [])],
   };
+}
+
+function normalizeEventMode(raw) {
+  return String(raw ?? "").toLowerCase() === "battle" ? "battle" : "race";
+}
+
+/**
+ * Lock Battle claimable shares after someone finishes 1st.
+ *
+ * Pot invariant (see shared/battleCubes.mjs):
+ *   sum(all cube sats) === potSats at race start
+ *   collected + leftover === potSats at finish
+ * Each racer claims their collected cube sats; uncollected leftover goes to the
+ * race finisher. Roulette UI is display-only and never invents extra pot value.
+ */
+function finalizeBattleClaimable(room) {
+  room.battleClaimable = new Map();
+  let collected = 0;
+  for (const [id, sats] of room.battleEarnings || []) {
+    const n = Math.max(0, Math.round(sats) || 0);
+    if (n > 0) room.battleClaimable.set(id, n);
+    collected += n;
+  }
+  const leftover = Math.max(0, room.potSats - collected);
+  if (leftover > 0 && room.winnerId) {
+    room.battleClaimable.set(room.winnerId, (room.battleClaimable.get(room.winnerId) || 0) + leftover);
+  }
 }
 
 /** Create a buy-in payment request (NUT-18 creq) for a freshly joined event-room racer. */
@@ -1380,7 +1418,11 @@ async function createBuyInInvoice(room, client) {
   } catch (err) {
     console.warn(`[event] payment request failed for ${client.name}:`, err?.message || err);
     potLog(room, "error", `buy-in request failed for ${client.name}: ${String(err?.message || err).slice(0, 160)}`);
-    send(client.ws, { t: "error", message: "could not create buy-in request — try rejoining" });
+    // Stay connected — client used to softClose on any `error` and drop the lobby.
+    send(client.ws, {
+      t: "notice",
+      text: "could not create buy-in request — leave and rejoin to retry",
+    });
   }
 }
 
@@ -1454,8 +1496,9 @@ function admitClient(ws, msg, mode) {
       fireContactLast: new Map(),
       allWreckResetAt: 0,
       clients: new Map(),
-      // Event Mode: buy-in gate + winner-takes-the-pot
+      // Event Mode: buy-in gate + winner-takes-the-pot (Race) or cube shares (Battle)
       isEvent: !!msg.event,
+      eventMode: msg.event ? normalizeEventMode(msg.event.mode) : "race",
       buyInSats: clampBuyIn(msg.event?.buyInSats),
       buyInFeeSats: 0,
       buyIns: new Map(),
@@ -1466,10 +1509,14 @@ function admitClient(ws, msg, mode) {
       payoutTipSats: 0,
       payoutTipCollected: false,
       payoutTipToken: "",
+      battleCubes: new Map(),
+      battleEarnings: new Map(),
+      battleClaimable: new Map(),
+      battleClaimedIds: new Set(),
     };
-    rooms.set(roomName, room);
+  rooms.set(roomName, room);
     if (room.isEvent) {
-      potLog(room, "info", `created · buy-in ${room.buyInSats} sats`);
+      potLog(room, "info", `created · ${room.eventMode} · buy-in ${room.buyInSats} sats`);
     }
   } else {
     if (!room || room.clients.size === 0) {
@@ -2038,7 +2085,7 @@ wss.on("connection", (ws) => {
 
     if (msg.t === "start") {
       if (client.id !== room.hostId) {
-        send(ws, { t: "error", message: "only the host can start" });
+        send(ws, { t: "notice", text: "only the host can start" });
         return;
       }
       if (room.phase !== "lobby") return;
@@ -2046,7 +2093,10 @@ wss.on("connection", (ws) => {
       if (room.isEvent) {
         const unpaid = [...room.clients.values()].filter((c) => !room.buyIns.get(c.id)?.paidAt);
         if (unpaid.length > 0) {
-          send(ws, { t: "error", message: `waiting for buy-ins: ${unpaid.map((c) => c.name).join(", ")}` });
+          send(ws, {
+            t: "notice",
+            text: `waiting for buy-ins: ${unpaid.map((c) => c.name).join(", ")}`,
+          });
           return;
         }
         // Pot = what actually landed (mint fees absorbed by the house)
@@ -2068,6 +2118,20 @@ wss.on("connection", (ws) => {
       room.voteOrder = 0;
       room.voteEndsAt = 0;
       clearWrecks(room);
+      room.battleCubes = new Map();
+      room.battleEarnings = new Map();
+      room.battleClaimable = new Map();
+      room.battleClaimedIds = new Set();
+      /** @type {import('../shared/battleCubes.mjs').BattleCube[] | undefined} */
+      let battleCubesWire;
+      if (room.isEvent && room.eventMode === "battle") {
+        const built = buildBattleCubes(room.trackId, room.potSats, room.potId || room.name);
+        for (const c of built) {
+          room.battleCubes.set(c.id, { ...c, takenBy: "" });
+        }
+        battleCubesWire = built;
+        potLog(room, "info", `battle cubes · ${built.length} · ${room.potSats} sats`);
+      }
       const at = Date.now() + 250;
       broadcast(room, {
         t: "start",
@@ -2075,8 +2139,9 @@ wss.on("connection", (ws) => {
         trackId: room.trackId,
         kind: room.kind,
         weather: room.weather || "dry",
+        battleCubes: battleCubesWire,
       });
-      console.log(`[start] ${room.name} by ${client.name} → ${room.trackId} ${room.kind} ${room.weather || "dry"} (${room.clients.size}p)`);
+      console.log(`[start] ${room.name} by ${client.name} → ${room.trackId} ${room.kind} ${room.weather || "dry"} (${room.clients.size}p)${room.eventMode === "battle" ? " battle" : ""}`);
       return;
     }
 
@@ -2118,20 +2183,55 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    if (msg.t === "pickupCube") {
+      if (!room.isEvent || room.eventMode !== "battle" || room.phase !== "racing") return;
+      if (room.winnerId) return;
+      if (room.wreckedIds?.has(client.id)) return;
+      const cubeId = Math.round(Number(msg.cubeId));
+      if (!Number.isFinite(cubeId)) return;
+      const cube = room.battleCubes?.get(cubeId);
+      if (!cube || cube.takenBy) return;
+      const dx = client.pose.x - cube.x;
+      const dz = client.pose.z - cube.z;
+      if (dx * dx + dz * dz > BATTLE_PICKUP_RADIUS * BATTLE_PICKUP_RADIUS) return;
+      cube.takenBy = client.id;
+      const next = (room.battleEarnings.get(client.id) || 0) + cube.sats;
+      room.battleEarnings.set(client.id, next);
+      /** @type {Record<string, number>} */
+      const battleEarnings = {};
+      for (const [id, sats] of room.battleEarnings) battleEarnings[id] = sats;
+      broadcast(room, {
+        t: "cubeTaken",
+        cubeId,
+        byId: client.id,
+        byName: client.name,
+        sats: cube.sats,
+        earnings: next,
+        battleEarnings,
+      });
+      return;
+    }
+
     if (msg.t === "finish") {
       if (room.phase !== "racing" || room.winnerId) return;
       const timeMs = Math.max(1_000, Math.min(3_600_000, Math.round(Number(msg.timeMs) || 0)));
       room.winnerId = client.id;
       room.phase = "finished";
-      // Event Mode: one race, winner takes it — skip the map vote
+      // Event Mode: one race, skip the map vote
       if (room.isEvent) {
+        if (room.eventMode === "battle") finalizeBattleClaimable(room);
         void (async () => {
-          // Attach the payout fee budget (both sends: winner + tip) so the
-          // winner's checkout shows the real split.
+          // Attach the payout fee budget so checkout shows the real split.
+          // Race: tip + winner sends. Battle: estimate two sends per claimer.
           const info = eventInfo(room);
           if (info) {
             const perSend = Math.max(0, await payments.sendFeeSats(room.potId).catch(() => 0));
-            info.potFeeSats = perSend * 2;
+            if (room.eventMode === "battle") {
+              const claimers = [...(room.battleClaimable?.values() || [])].filter((s) => s > 0).length || 1;
+              info.potFeeSats = perSend * 2 * claimers;
+            } else {
+              info.potFeeSats = perSend * 2;
+            }
           }
           if (rooms.get(room.name) !== room) return;
           broadcast(room, {
@@ -2144,8 +2244,14 @@ wss.on("connection", (ws) => {
             event: info,
           });
         })();
-        potLog(room, "info", `finished · ${client.name} won · accounted ${room.potSats} sats`);
-        console.log(`[event] ${room.name} won by ${client.name} — pot ${room.potSats} sats`);
+        potLog(
+          room,
+          "info",
+          room.eventMode === "battle"
+            ? `finished · ${client.name} crossed first · battle claimable locked · pot ${room.potSats} sats`
+            : `finished · ${client.name} won · accounted ${room.potSats} sats`,
+        );
+        console.log(`[event] ${room.name} won by ${client.name} — pot ${room.potSats} sats (${room.eventMode})`);
         return;
       }
       room.voteOptions = shuffledVoteTracks();
@@ -2190,7 +2296,7 @@ wss.on("connection", (ws) => {
           markBuyInPaid(room, client.id, fresh.reduce((a, p) => a + Number(p.amount), 0));
         } catch (err) {
           potLog(room, "error", `pasted token rejected for ${client.name}: ${String(err?.message || err).slice(0, 160)}`);
-          send(ws, { t: "error", message: `token rejected — ${String(err?.message || err).slice(0, 100)}` });
+          send(ws, { t: "notice", text: `token rejected — ${String(err?.message || err).slice(0, 100)}` });
         }
       })();
       return;
@@ -2198,12 +2304,109 @@ wss.on("connection", (ws) => {
 
     if (msg.t === "claimPot") {
       if (!room.isEvent || room.phase !== "finished") return;
+      const tipPercent = Math.max(0, Math.min(100, Math.round(Number(msg.tipPercent) || 0)));
+      const isBattle = room.eventMode === "battle";
+
+      if (isBattle) {
+        const claimable = Math.max(0, Math.round(room.battleClaimable?.get(client.id) || 0));
+        if (claimable <= 0) {
+          send(ws, { t: "payoutResult", ok: false, error: "nothing to claim — collect cubes next time" });
+          return;
+        }
+        if (room.battleClaimedIds?.has(client.id)) {
+          send(ws, { t: "payoutResult", ok: false, error: "already claimed" });
+          return;
+        }
+        room.battleClaimedIds.add(client.id);
+        potLog(room, "info", `battle claim started by ${client.name} · ${claimable} sats · tip ${tipPercent}%`);
+        void (async () => {
+          try {
+            const perSendFee = Math.max(0, await payments.sendFeeSats(room.potId).catch(() => 0));
+            const balanceNow = async () =>
+              Promise.resolve()
+                .then(() => payments.potBalanceSats?.(room.potId))
+                .then((v) => (Number.isFinite(v) ? v : 0))
+                .catch(() => 0);
+
+            const bal = await balanceNow();
+            // Cap this share so concurrent claimers can't overdraw the pot.
+            const shareCap = Math.min(claimable, bal);
+            const tipWanted = Math.floor((shareCap * tipPercent) / 100);
+            const tipCap = Math.min(tipWanted, Math.max(0, shareCap - perSendFee));
+
+            let tipSats = 0;
+            let tipCollected = true;
+            let tipToken = "";
+            if (tipCap > 0) {
+              const result = await payments.collectTip(tipCap, room.potId);
+              tipSats = result.sats;
+              tipCollected = result.collected === true;
+              tipToken = result.token || "";
+              if (!tipCollected) {
+                potLog(room, "warn", `battle tip ${tipSats} swapped but tip-wallet receive failed`);
+              }
+            }
+
+            const remaining = await balanceNow();
+            // Player share: their remaining slice after tip, never more than shareCap - tip.
+            const maxPlayer = Math.max(0, shareCap - tipSats);
+            const winnerSats = Math.max(0, Math.min(maxPlayer, remaining - perSendFee));
+            if (winnerSats <= 0 && tipSats <= 0) throw new Error("share too small to pay out");
+            let winnerToken = "";
+            if (winnerSats > 0) {
+              const sent = await payments.sendToken(winnerSats, { includeFees: true, potId: room.potId });
+              winnerToken = sent.token;
+            }
+
+            const feeSats = Math.max(0, shareCap - winnerSats - tipSats);
+            recordPayout({
+              room: room.name,
+              potId: room.potId,
+              winnerId: client.id,
+              winnerPubkey: client.pose.pubkey || null,
+              potSats: shareCap,
+              winnerSats,
+              tipSats,
+              tipPercent,
+              feeSats,
+              collected: tipCollected,
+              collectedAt: tipCollected ? Date.now() : null,
+              tipToken: tipCollected ? null : tipToken || null,
+              mock: payments.mock,
+            });
+            send(ws, {
+              t: "payoutResult",
+              ok: true,
+              token: winnerToken,
+              winnerSats,
+              tipSats,
+              tipCollected,
+              feeSats,
+              mock: payments.mock,
+            });
+            broadcast(room, {
+              t: "notice",
+              text: `${client.name} claimed ${winnerSats} sats from battle`,
+            });
+            potLog(
+              room,
+              tipCollected ? "info" : "warn",
+              `battle claimed · ${client.name} ${winnerSats} · tip ${tipSats}${tipCollected ? "" : " pending"} · fee ${feeSats}`,
+            );
+          } catch (err) {
+            room.battleClaimedIds.delete(client.id);
+            potLog(room, "error", `battle claim failed: ${String(err?.message || err).slice(0, 160)}`);
+            send(ws, { t: "payoutResult", ok: false, error: String(err?.message || err).slice(0, 140) });
+          }
+        })();
+        return;
+      }
+
       if (client.id !== room.winnerId) return;
       if (room.potClaimed || room.potSats <= 0) {
         send(ws, { t: "payoutResult", ok: false, error: "pot already claimed" });
         return;
       }
-      const tipPercent = Math.max(0, Math.min(100, Math.round(Number(msg.tipPercent) || 0)));
       room.potClaimed = true; // lock before paying — no double claims
       potLog(room, "info", `claim started by ${client.name} · tip ${tipPercent}%`);
       void (async () => {

@@ -26,7 +26,15 @@ import { isTouchPrimary, TouchControls, viewportSize } from "./touch";
 import { Vehicle, RivalAI } from "./vehicle";
 import { NetClient, RemotePlayer, type RemoteTrackAdapter, type WelcomeInfo } from "./net/client";
 import { WreckFire } from "./wreckFire";
-import type { EventRoomInfo, NetVehicleKind, PlayerPose } from "./net/protocol";
+import type { EventGameMode, EventRoomInfo, NetVehicleKind, PlayerPose, BattleCubeWire } from "./net/protocol";
+import {
+  animateBattleCubes,
+  BATTLE_PICKUP_RADIUS,
+  BATTLE_TRACK_WIDTH_SCALE,
+  disposeBattleCubes,
+  spawnBattleCubeMeshes,
+  type BattleCubeVisual,
+} from "./battleCubes";
 import {
   boardSourceLabel,
   fetchLeaderboard,
@@ -103,7 +111,8 @@ const COUNTDOWN_STEP_MS = 1000;
 const WALL_HIT_LIMIT = 10;
 /** Engine starts smoking on this hit — explode still fires at WALL_HIT_LIMIT. */
 const ENGINE_SMOKE_HITS = 9;
-const ENGINE_SMOKE_COUNT = 72;
+/** Concurrent puffs at hit 9 — dense enough to read at speed. */
+const ENGINE_SMOKE_COUNT = 180;
 /** Min seconds between counted wall hits (sliding shouldn't rack them up). */
 const WALL_HIT_COOLDOWN = 0.4;
 /** Brief DESTROYED hold before auto-restart. */
@@ -210,6 +219,26 @@ export class Game {
   online = false;
   /** Event Mode lobby flow (Lightning buy-in gate + winner's pot) vs plain multiplayer. */
   private eventMode = false;
+  /** Host-chosen Event Mode flavor — Race (default) or Battle. */
+  private eventGameMode: EventGameMode = "race";
+  /** Battle item boxes currently in the scene. */
+  private battleCubes: BattleCubeVisual[] = [];
+  /** Cooldown so we don't spam pickupCube for the same id. */
+  private battlePickupSent = new Set<number>();
+  /** Width scale used for the active track mesh (1 = normal; battle uses BATTLE_TRACK_WIDTH_SCALE). */
+  private trackWidthScale = 1;
+  /**
+   * Top-left Mario Kart–style roulette: cycles decoy sat amounts, then locks the
+   * cube’s real share (pot-accounting is server-side — display only).
+   */
+  private battleRoulette: {
+    award: number;
+    earningsAfter: number;
+    options: number[];
+    startMs: number;
+    lockAtMs: number;
+    locked: boolean;
+  } | null = null;
   private remotes = new Map<string, RemotePlayer>();
   private readonly seenRemoteIds = new Set<string>();
   private net: NetClient;
@@ -490,7 +519,14 @@ export class Game {
           if (name && this.online) this.showToast(`${name} left the room`);
         }
       },
-      onNotice: (text) => this.pushLobbyNotice(text),
+      onNotice: (text) => {
+        this.pushLobbyNotice(text);
+        if (this.inLobby) {
+          this.el.mpStatus.textContent = text;
+          const inv = document.getElementById("mp-invoice-status");
+          if (inv && /buy-in request|token rejected/i.test(text)) inv.textContent = text;
+        }
+      },
       onLobby: (info) => {
         if (!this.inLobby) return;
         this.lobbyPlayers = info.players;
@@ -502,7 +538,9 @@ export class Game {
         this.applyMenuWeatherPreview(this.net.weather);
         this.renderLobby();
       },
-      onStart: (_at, trackId, kind, weather) => this.beginOnlineRace(trackId, kind, weather),
+      onStart: (_at, trackId, kind, weather, battleCubes) =>
+        this.beginOnlineRace(trackId, kind, weather, battleCubes),
+      onCubeTaken: (info) => this.onBattleCubeTaken(info),
       onWrecked: (id, name) => this.applyOnlineWreck(id, name),
       onFieldReset: () => this.applyOnlineFieldReset(),
       onRaceResult: (winnerId, winnerName, timeMs, trackOptions, voteEndsAt) =>
@@ -631,6 +669,8 @@ export class Game {
           if (session) this.openMultiplayer(true);
         });
     };
+    document.getElementById("mp-event-pick-race")!.onclick = () => this.setEventGameModePick("race");
+    document.getElementById("mp-event-pick-battle")!.onclick = () => this.setEventGameModePick("battle");
     document.getElementById("map-select-back")!.onclick = () => this.closeMapSelect();
     document.getElementById("test-drift-btn")!.onclick = () => {
       void this.bootFromMenu({ practice: true, solo: true, trackId: DRIFT_TRACK_ID });
@@ -1029,6 +1069,7 @@ export class Game {
 
   private openMultiplayer(eventMode = false) {
     this.eventMode = eventMode;
+    this.eventGameMode = "race";
     this.el.mapSelect.classList.add("hidden");
     this.el.leaderboard.classList.add("hidden");
     this.el.garage.classList.add("hidden");
@@ -1038,14 +1079,17 @@ export class Game {
     this.mpCreateKind = this.garage.kind === "bike" ? "bike" : "car";
     this.mpCreateWeather = "dry";
     this.mpCreateTrackId = DEFAULT_TRACK_ID;
-    // Event Mode: show the buy-in field; plain multiplayer hides it.
+    // Event Mode: show buy-in + Race/Battle in create-room settings.
     document.getElementById("mp-create-buyin-field")?.classList.toggle("hidden", !eventMode);
+    document.getElementById("mp-event-mode-pick")?.classList.toggle("hidden", !eventMode);
+    this.syncEventGameModePickUi();
+    this.syncEventBuyInLabel();
     const entryTitle = document.querySelector("#mp-entry h1");
     if (entryTitle) entryTitle.textContent = eventMode ? "EVENT MODE" : "MULTIPLAYER";
     const entryTagline = document.querySelector("#mp-entry .tagline");
     if (entryTagline) {
       entryTagline.textContent = eventMode
-        ? "Buy-in races — everyone pays, winner takes the pot"
+        ? "Buy-in sats · Race or Battle — set mode when you create the room"
         : "Create a private room or join with a password";
     }
     // Signed in → prefill the racer name from the Nostr profile (username, never
@@ -1077,12 +1121,15 @@ export class Game {
     this.inLobby = false;
     this.online = false;
     this.eventMode = false;
+    this.eventGameMode = "race";
+    this.clearBattleCubes();
     this.lobbyPlayers = [];
     this.net.disconnect();
     this.clearRemotes();
     this.el.netStatus.classList.add("hidden");
     this.el.mpLobbyFeed.innerHTML = "";
     document.getElementById("mp-buyin")?.classList.add("hidden");
+    document.getElementById("mp-event-mode-pick")?.classList.add("hidden");
     this.el.multiplayer.classList.add("hidden");
     this.showMpView("entry");
     // Lobby flow hides the home overlay — always restore it when leaving MP.
@@ -1247,7 +1294,30 @@ export class Game {
       accent: this.garage.accent,
       pubkey: getSession()?.pubkey,
       eventBuyInSats,
+      eventGameMode: this.eventMode ? this.eventGameMode : undefined,
     });
+  }
+
+  private setEventGameModePick(mode: EventGameMode) {
+    this.eventGameMode = mode;
+    this.syncEventGameModePickUi();
+    this.syncEventBuyInLabel();
+  }
+
+  private syncEventGameModePickUi() {
+    const race = document.getElementById("mp-event-pick-race");
+    const battle = document.getElementById("mp-event-pick-battle");
+    race?.classList.toggle("is-active", this.eventGameMode === "race");
+    battle?.classList.toggle("is-active", this.eventGameMode === "battle");
+  }
+
+  private syncEventBuyInLabel() {
+    const label = document.getElementById("mp-create-buyin-label");
+    if (!label) return;
+    label.textContent =
+      this.eventGameMode === "battle"
+        ? "Buy-in per racer (real sats) · item boxes share the pot"
+        : "Buy-in per racer (real sats) · winner takes the pot";
   }
 
   private async joinMultiplayerRoom() {
@@ -1351,12 +1421,16 @@ export class Game {
     const buyin = document.getElementById("mp-buyin");
     if (buyin) buyin.classList.toggle("hidden", !event);
     if (event) {
+      if (event.mode === "battle" || event.mode === "race") this.eventGameMode = event.mode;
       const banner = document.getElementById("mp-buyin-banner");
       if (banner) {
         const fee = event.feeSats ?? 0;
+        const modeTag = event.mode === "battle" ? "BATTLE · " : "RACE · ";
+        const potNote =
+          event.mode === "battle" ? " · BOXES SHARE THE POT" : "";
         banner.textContent = fee
-          ? `BUY-IN ${event.buyInSats} SATS + ${fee} SAT MINT FEE · POT ${event.buyInSats * this.lobbyPlayers.length} SATS`
-          : `BUY-IN ${event.buyInSats} SATS · POT ${event.buyInSats * this.lobbyPlayers.length} SATS`;
+          ? `${modeTag}BUY-IN ${event.buyInSats} SATS + ${fee} SAT MINT FEE · POT ${event.buyInSats * this.lobbyPlayers.length} SATS${potNote}`
+          : `${modeTag}BUY-IN ${event.buyInSats} SATS · POT ${event.buyInSats * this.lobbyPlayers.length} SATS${potNote}`;
       }
       const minePaid = event.paidIds.includes(this.net.id);
       const box = document.getElementById("mp-invoice-box");
@@ -1504,9 +1578,33 @@ export class Game {
 
   /** Winner's checkout: pot breakdown, tip slider (default 2%), Cashu token claim. */
   private setupEventCheckout(event: EventRoomInfo) {
-    const { pot } = this.eventPotBreakdown(event);
+    const isBattle = event.mode === "battle";
+    const myId = this.net.id;
+    const claimable = isBattle
+      ? Math.max(0, Math.round(event.battleClaimable?.[myId] ?? event.battleEarnings?.[myId] ?? 0))
+      : 0;
+    const alreadyClaimed = !!event.battleClaimedIds?.includes(myId);
+    const title = document.getElementById("event-checkout-title");
+    if (title) title.textContent = isBattle ? "YOUR SHARE" : "POT WON";
+    const summary = document.getElementById("event-battle-summary");
+    if (summary) {
+      if (isBattle) {
+        const earned = Math.max(0, Math.round(event.battleEarnings?.[myId] ?? 0));
+        summary.textContent =
+          claimable > 0
+            ? `Battle haul ${earned} sats in cubes` +
+              (claimable > earned ? ` · +${claimable - earned} leftover for crossing first` : "") +
+              ` · claim ${claimable} sats`
+            : "No cubes collected — nothing to claim";
+        summary.classList.remove("hidden");
+      } else {
+        summary.classList.add("hidden");
+        summary.textContent = "";
+      }
+    }
+    const displayPot = isBattle ? claimable : this.eventPotBreakdown(event).pot;
     const potEl = document.getElementById("event-pot-sats");
-    if (potEl) potEl.textContent = String(pot);
+    if (potEl) potEl.textContent = String(displayPot);
     const range = document.getElementById("event-tip-range") as HTMLInputElement | null;
     if (range) range.value = "2";
     const status = document.getElementById("event-payout-status");
@@ -1516,14 +1614,30 @@ export class Game {
     if (out) out.value = "";
     this.clearPayoutTokenQr();
     const claim = document.getElementById("event-claim-btn") as HTMLButtonElement | null;
-    if (claim) claim.disabled = pot <= 0;
+    if (claim) {
+      claim.textContent = isBattle ? "CLAIM SHARE" : "CLAIM POT";
+      claim.disabled = displayPot <= 0 || alreadyClaimed;
+    }
     this.updateEventTipBreakdown();
   }
 
   private updateEventTipBreakdown() {
     const event = this.net.event;
     if (!event) return;
-    const { pot, fee } = this.eventPotBreakdown(event);
+    const isBattle = event.mode === "battle";
+    const myId = this.net.id;
+    const { pot: fullPot, fee: fullFee } = this.eventPotBreakdown(event);
+    const claimable = isBattle
+      ? Math.max(0, Math.round(event.battleClaimable?.[myId] ?? event.battleEarnings?.[myId] ?? 0))
+      : fullPot;
+    // Battle: mint fee estimate is shared across claimers — show a per-share slice.
+    const fee = isBattle
+      ? Math.min(
+          claimable,
+          Math.round(fullFee / Math.max(1, Object.values(event.battleClaimable ?? {}).filter((s) => s > 0).length || 1)),
+        )
+      : fullFee;
+    const pot = isBattle ? claimable : fullPot;
     const range = document.getElementById("event-tip-range") as HTMLInputElement | null;
     const tipPercent = Math.max(0, Math.min(100, Number(range?.value ?? 2)));
     const label = document.getElementById("event-tip-label");
@@ -1551,7 +1665,7 @@ export class Game {
     setText("event-sched-pay", String(buyIn + buyInFee));
     setText("event-sched-buyin", String(buyIn));
     setText("event-sched-infee", String(buyInFee));
-    setText("event-sched-pot", String(pot));
+    setText("event-sched-pot", String(isBattle ? pot : fullPot));
     setText("event-sched-tip", String(tipSats));
     setText("event-sched-you", String(winnerSats));
     setText("event-sched-outfee", String(fee));
@@ -1785,12 +1899,14 @@ export class Game {
    * Dispose current track mesh and rebuild from a named path definition.
    * `menu: true` builds a lighter Forest Loop backdrop (no wildlife).
    */
-  private setActiveTrack(trackId: string, opts?: { menu?: boolean }) {
+  private setActiveTrack(trackId: string, opts?: { menu?: boolean; widthScale?: number }) {
     const menu = !!opts?.menu;
+    const widthScale = Math.max(0.5, opts?.widthScale ?? 1);
     if (
       this.trackId === trackId &&
       this.track.id === trackId &&
-      this.menuScenery === menu
+      this.menuScenery === menu &&
+      this.trackWidthScale === widthScale
     ) {
       return;
     }
@@ -1798,10 +1914,12 @@ export class Game {
     disposeTrack(this.track);
     this.track = createTrack(trackId, {
       sceneryScale: menu ? MENU_SCENERY_SCALE : 1,
+      widthScale,
     });
     this.trackId = this.track.id;
     this.boardTrackId = this.track.id;
     this.menuScenery = menu;
+    this.trackWidthScale = widthScale;
     this.scene.add(this.track.group);
     this.weather?.setTrackRoot(this.track.group);
     if (!menu) this.syncWildlife();
@@ -1897,6 +2015,7 @@ export class Game {
     this.inLobby = false;
     this.expectingLobby = false;
     this.lobbyPlayers = [];
+    this.clearBattleCubes();
     this.net.disconnect();
     this.clearRemotes();
     this.el.netStatus.classList.add("hidden");
@@ -2533,7 +2652,12 @@ export class Game {
   }
 
   /** Host pressed Start Race (or we received the shared start). */
-  private beginOnlineRace(trackId: string, kindHint?: VehicleKind, weatherHint?: WeatherMode) {
+  private beginOnlineRace(
+    trackId: string,
+    kindHint?: VehicleKind,
+    weatherHint?: WeatherMode,
+    battleCubes?: BattleCubeWire[],
+  ) {
     if (!this.online) return;
     this.inLobby = false;
     this.el.multiplayer.classList.add("hidden");
@@ -2566,6 +2690,7 @@ export class Game {
       trackId: trackId || this.net.trackId || this.trackId,
       weather,
     });
+    this.setupBattleCubes(battleCubes);
   }
 
   private onNetState(players: PlayerPose[], at = performance.now()) {
@@ -2835,7 +2960,14 @@ export class Game {
     this.practice = !!opts.practice;
     this.solo = !!opts.solo && !this.online;
     const nextId = opts.trackId ?? this.trackId ?? DEFAULT_TRACK_ID;
-    this.setActiveTrack(nextId, { menu: false });
+    // Battle Event Mode only: thicker asphalt for item-box racing. Race / casual stay 1×.
+    const battleWide =
+      this.online &&
+      (this.net.event?.mode === "battle" || this.eventGameMode === "battle");
+    this.setActiveTrack(nextId, {
+      menu: false,
+      widthScale: battleWide ? BATTLE_TRACK_WIDTH_SCALE : 1,
+    });
     if (!this.online) this.applyGarageToWorld();
     this.setAiVisible(!this.solo && !this.online);
     this.el.overlay.classList.add("hidden");
@@ -3253,6 +3385,7 @@ export class Game {
 
           if (!this.exploding) {
             if (!this.onlineWrecked) this.updateLaps();
+            this.tickBattleCubes(now * 0.001);
             this.updateHud();
             this.updateCamera(dt);
           } else {
@@ -3576,10 +3709,11 @@ export class Game {
     c.width = 64;
     c.height = 64;
     const ctx = c.getContext("2d")!;
-    const g = ctx.createRadialGradient(32, 32, 3, 32, 32, 30);
-    g.addColorStop(0, "rgba(190,190,190,0.85)");
-    g.addColorStop(0.28, "rgba(120,120,120,0.5)");
-    g.addColorStop(1, "rgba(70,70,70,0)");
+    const g = ctx.createRadialGradient(32, 32, 2, 32, 32, 30);
+    g.addColorStop(0, "rgba(55,55,55,0.98)");
+    g.addColorStop(0.22, "rgba(40,40,40,0.82)");
+    g.addColorStop(0.55, "rgba(28,28,28,0.45)");
+    g.addColorStop(1, "rgba(18,18,18,0)");
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, 64, 64);
     const tex = new THREE.CanvasTexture(c);
@@ -3617,9 +3751,9 @@ export class Game {
     root.updateMatrixWorld();
     root.localToWorld(this._smokeWorld);
     const i3 = i * 3;
-    positions[i3] = this._smokeWorld.x + (Math.random() - 0.5) * 0.28;
-    positions[i3 + 1] = this._smokeWorld.y + Math.random() * 0.1;
-    positions[i3 + 2] = this._smokeWorld.z + (Math.random() - 0.5) * 0.22;
+    positions[i3] = this._smokeWorld.x + (Math.random() - 0.5) * 0.48;
+    positions[i3 + 1] = this._smokeWorld.y + Math.random() * 0.18;
+    positions[i3 + 2] = this._smokeWorld.z + (Math.random() - 0.5) * 0.4;
 
     const spd = this.player.state.speed;
     const abs = Math.abs(spd);
@@ -3628,11 +3762,11 @@ export class Game {
     // Relative wind washes the puff back over the body (~hood to tail in ~0.4s).
     const wash = 2.6 + abs * 0.15;
     const along = spd - Math.sign(spd || 1) * wash;
-    const jitter = 1.2 + abs * 0.03;
+    const jitter = 1.5 + abs * 0.04;
     vel[i3] = hx * along + (Math.random() - 0.5) * jitter;
-    vel[i3 + 1] = 0.35 + Math.random() * 0.45;
+    vel[i3 + 1] = 0.55 + Math.random() * 0.7;
     vel[i3 + 2] = hz * along + (Math.random() - 0.5) * jitter;
-    life[i] = 1.2 + Math.random() * 0.9;
+    life[i] = 2.2 + Math.random() * 1.4;
   }
 
   private ensureEngineSmoke() {
@@ -3662,10 +3796,10 @@ export class Game {
     geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
     const mat = new THREE.PointsMaterial({
       map: this.smokeTexture(),
-      color: 0x9a9a9a,
-      size: 0.82,
+      color: 0x2a2a2a,
+      size: 1.7,
       transparent: true,
-      opacity: 0.58,
+      opacity: 0.9,
       depthWrite: false,
       sizeAttenuation: true,
     });
@@ -3693,9 +3827,10 @@ export class Game {
     const pos = pts.geometry.getAttribute("position") as THREE.BufferAttribute;
     const arr = pos.array as Float32Array;
     const dtClamped = Math.min(dt, 0.05);
-    const drag = Math.exp(-0.55 * dtClamped);
+    const drag = Math.exp(-0.45 * dtClamped);
     for (let i = 0; i < life.length; i++) {
-      life[i]! -= dtClamped * (0.55 + Math.random() * 0.25);
+      // Slower fade → longer trail; higher count still yields more respawns/s.
+      life[i]! -= dtClamped * (0.32 + Math.random() * 0.14);
       const i3 = i * 3;
       if (life[i]! <= 0) {
         this.emitEngineSmokePuff(i, arr, vel, life);
@@ -4460,19 +4595,179 @@ export class Game {
   }
 
   /**
-   * Event Mode finish UI: the winner gets the pot checkout (claim as a Cashu
-   * token), everyone else gets "winner takes the pot". One race per event — no
-   * restart button. Idempotent: runs both on the local finish and again when the
-   * server's raceResult lands (the winner hits the second call only).
+   * Event Mode finish UI: Race winner gets the pot checkout; Battle lets anyone
+   * with a claimable share claim. Idempotent across local finish + raceResult.
    */
   private applyEventResult(winnerId: string) {
     const eventRoom = this.net.event;
     if (!this.online || !eventRoom) return;
-    const won = winnerId === this.net.id;
-    document.getElementById("event-checkout")?.classList.toggle("hidden", !won);
-    document.getElementById("event-lost-note")?.classList.toggle("hidden", won);
+    const isBattle = eventRoom.mode === "battle";
+    const myId = this.net.id;
+    const claimable = Math.max(
+      0,
+      Math.round(eventRoom.battleClaimable?.[myId] ?? eventRoom.battleEarnings?.[myId] ?? 0),
+    );
+    const alreadyClaimed = !!eventRoom.battleClaimedIds?.includes(myId);
+    const canClaim = isBattle ? claimable > 0 && !alreadyClaimed : winnerId === myId;
+    document.getElementById("event-checkout")?.classList.toggle("hidden", !canClaim);
+    const lost = document.getElementById("event-lost-note");
+    if (lost) {
+      if (isBattle) {
+        lost.textContent =
+          claimable > 0
+            ? alreadyClaimed
+              ? "Share claimed"
+              : ""
+            : "No cube haul — first across the line keeps uncollected leftover";
+        lost.classList.toggle("hidden", canClaim);
+      } else {
+        lost.textContent = "Winner takes the pot";
+        lost.classList.toggle("hidden", canClaim);
+      }
+    }
     this.el.restartBtn.classList.add("hidden");
-    if (won) this.setupEventCheckout(eventRoom);
+    if (canClaim) this.setupEventCheckout(eventRoom);
+  }
+
+  private setupBattleCubes(cubes?: BattleCubeWire[]) {
+    this.clearBattleCubes();
+    this.battlePickupSent.clear();
+    const block = document.getElementById("battle-earnings-block");
+    const earnEl = document.getElementById("battle-earnings");
+    if (!cubes?.length) {
+      block?.classList.add("hidden");
+      return;
+    }
+    this.battleCubes = spawnBattleCubeMeshes(this.scene, cubes);
+    if (earnEl) earnEl.textContent = "0";
+    block?.classList.remove("hidden");
+  }
+
+  private clearBattleCubes() {
+    disposeBattleCubes(this.scene, this.battleCubes);
+    this.battleCubes = [];
+    this.battlePickupSent.clear();
+    this.clearBattleRoulette();
+    document.getElementById("battle-earnings-block")?.classList.add("hidden");
+  }
+
+  private onBattleCubeTaken(info: {
+    cubeId: number;
+    byId: string;
+    byName: string;
+    sats: number;
+    earnings: number;
+    battleEarnings: Record<string, number>;
+  }) {
+    const cube = this.battleCubes.find((c) => c.id === info.cubeId);
+    if (cube && !cube.taken) {
+      cube.taken = true;
+      cube.mesh.visible = false;
+    }
+    this.battlePickupSent.add(info.cubeId);
+    if (info.byId === this.net.id) {
+      // Roulette cycles decoys then locks info.sats — the cube’s real pot share.
+      this.startBattleRoulette(info.sats, info.earnings);
+    } else if (this.online && !this.finished) {
+      this.showToast(`${info.byName} +${info.sats} sats`);
+    }
+  }
+
+  /**
+   * Mario Kart–style item roulette (top-left).
+   * Visual only: cycles plausible sat amounts, then locks the awarded cube value.
+   * Pot accounting stays exact — locked value is always the cube’s share from the
+   * server layout (sum of all cube sats = event pot).
+   */
+  private startBattleRoulette(award: number, earningsAfter: number) {
+    const pool = new Set<number>();
+    for (const c of this.battleCubes) {
+      if (c.sats > 0) pool.add(c.sats);
+    }
+    // Decoys: other cube shares + a few nearby amounts so the spin feels random.
+    const base = [...pool];
+    if (!base.length) base.push(award);
+    for (const v of base) {
+      pool.add(Math.max(1, Math.round(v * 0.5)));
+      pool.add(Math.max(1, Math.round(v * 1.5)));
+      pool.add(Math.max(1, v + 1));
+    }
+    pool.add(award);
+    const options = [...pool].sort((a, b) => a - b);
+    const now = performance.now();
+    this.battleRoulette = {
+      award,
+      earningsAfter,
+      options,
+      startMs: now,
+      lockAtMs: now + 1100 + Math.random() * 350,
+      locked: false,
+    };
+    const el = document.getElementById("battle-roulette");
+    const val = document.getElementById("battle-roulette-value");
+    if (val) val.textContent = String(options[0] ?? award);
+    el?.classList.remove("hidden", "is-locked");
+    el?.classList.add("is-spinning");
+    el?.setAttribute("aria-hidden", "false");
+  }
+
+  private clearBattleRoulette() {
+    this.battleRoulette = null;
+    const el = document.getElementById("battle-roulette");
+    el?.classList.add("hidden");
+    el?.classList.remove("is-spinning", "is-locked");
+    el?.setAttribute("aria-hidden", "true");
+    const val = document.getElementById("battle-roulette-value");
+    if (val) val.textContent = "—";
+  }
+
+  private tickBattleRoulette(nowMs: number) {
+    const r = this.battleRoulette;
+    if (!r) return;
+    const val = document.getElementById("battle-roulette-value");
+    const el = document.getElementById("battle-roulette");
+    if (!r.locked) {
+      if (nowMs >= r.lockAtMs) {
+        r.locked = true;
+        if (val) val.textContent = String(r.award);
+        el?.classList.remove("is-spinning");
+        el?.classList.add("is-locked");
+        const earnEl = document.getElementById("battle-earnings");
+        if (earnEl) earnEl.textContent = String(r.earningsAfter);
+        // Hold the locked readout briefly, then tuck it away.
+        window.setTimeout(() => {
+          if (this.battleRoulette === r) this.clearBattleRoulette();
+        }, 900);
+        return;
+      }
+      // Ease from fast ticks → slower as lock approaches (roulette feel).
+      const t = Math.min(1, (nowMs - r.startMs) / Math.max(1, r.lockAtMs - r.startMs));
+      const tickMs = 40 + t * t * 160;
+      const idx = Math.floor(nowMs / tickMs) % r.options.length;
+      if (val) val.textContent = String(r.options[idx] ?? r.award);
+    }
+  }
+
+  private tickBattleCubes(nowSec: number) {
+    if (!this.battleCubes.length || this.finished || this.onlineWrecked) {
+      this.tickBattleRoulette(performance.now());
+      return;
+    }
+    animateBattleCubes(this.battleCubes, nowSec);
+    this.tickBattleRoulette(performance.now());
+    if (!this.online || !this.net.event || this.net.event.mode !== "battle") return;
+    const px = this.player.state.position.x;
+    const pz = this.player.state.position.z;
+    const r2 = BATTLE_PICKUP_RADIUS * BATTLE_PICKUP_RADIUS;
+    for (const c of this.battleCubes) {
+      if (c.taken || this.battlePickupSent.has(c.id)) continue;
+      const dx = c.mesh.position.x - px;
+      const dz = c.mesh.position.z - pz;
+      if (dx * dx + dz * dz <= r2) {
+        this.battlePickupSent.add(c.id);
+        this.net.pickupCube(c.id);
+      }
+    }
   }
 
   private finishRace(result?: {
@@ -4498,6 +4793,9 @@ export class Game {
     this.clearCountdown();
     this.clearExplode(true);
     this.clearOnlineWreck();
+    // Stop cube pickups; leave meshes until home so the finish screen stays calm.
+    this.battlePickupSent.clear();
+    for (const c of this.battleCubes) c.taken = true;
     this.audio.mute();
     this.audio.stopRaceAudio();
     this.el.wrongWay.classList.add("hidden");

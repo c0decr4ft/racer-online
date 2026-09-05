@@ -1015,6 +1015,169 @@ body:has(#mute-btn.hidden) .hud-top {
   line-height: 1.35;
 }
 
+.mp-event-mode-pick {
+  width: 100%;
+}
+
+.mp-event-mode-pick.hidden {
+  display: none;
+}
+
+.instr-blurb {
+  margin: 0 0 0.55rem;
+  font-family: "Rajdhani", sans-serif;
+  font-size: 0.88rem;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+.instr-blurb strong {
+  color: #fff;
+  font-weight: 700;
+}
+
+.event-battle-summary {
+  margin: 0 0 0.35rem;
+  font-family: "Rajdhani", sans-serif;
+  font-size: 0.88rem;
+  line-height: 1.35;
+  color: #ffc857;
+  text-align: center;
+}
+
+.event-battle-summary.hidden {
+  display: none;
+}
+
+.battle-earnings-block {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 3.5rem;
+}
+
+.battle-earnings-block.hidden {
+  display: none;
+}
+
+.battle-earnings-block .label {
+  font-family: var(--font-display);
+  font-size: 0.62rem;
+  letter-spacing: 0.14em;
+  color: #ffc857;
+}
+
+#battle-earnings {
+  font-family: var(--font-display);
+  font-size: 1.35rem;
+  font-weight: 800;
+  line-height: 1;
+  color: #ffc857;
+}
+
+.battle-earnings-block .unit {
+  font-family: var(--font-display);
+  font-size: 0.58rem;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+
+/* Battle item roulette — top-left Mario Kart–style slot */
+.battle-roulette {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-left: 0.35rem;
+  padding: 0.28rem 0.55rem 0.28rem 0.28rem;
+  border: 2px solid rgba(255, 200, 87, 0.85);
+  background:
+    linear-gradient(135deg, rgba(255, 59, 46, 0.35), rgba(61, 187, 255, 0.28) 45%, rgba(196, 92, 255, 0.32)),
+    rgba(8, 10, 16, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+  pointer-events: none;
+}
+
+.battle-roulette.hidden {
+  display: none;
+}
+
+.battle-roulette.is-spinning .battle-roulette-face {
+  animation: battle-roulette-spin 0.18s linear infinite;
+}
+
+.battle-roulette.is-locked .battle-roulette-value {
+  color: #ffe566;
+  text-shadow: 0 0 12px rgba(255, 200, 87, 0.65);
+}
+
+.battle-roulette-face {
+  width: 2.35rem;
+  height: 2.35rem;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  background: linear-gradient(
+    145deg,
+    #ff3b2e 0%,
+    #ff9a3c 18%,
+    #ffe566 36%,
+    #3dff9a 54%,
+    #3dbbff 72%,
+    #c45cff 90%,
+    #ff3b2e 100%
+  );
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  box-shadow: inset 0 0 0 2px rgba(12, 14, 20, 0.35);
+}
+
+.battle-roulette-q {
+  font-family: var(--font-display);
+  font-size: 1.45rem;
+  font-weight: 900;
+  line-height: 1;
+  color: #141820;
+  background: rgba(255, 255, 255, 0.92);
+  width: 1.35rem;
+  height: 1.35rem;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+}
+
+.battle-roulette-readout {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 3.2rem;
+}
+
+.battle-roulette-value {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 800;
+  line-height: 1;
+  color: #fff7e0;
+  letter-spacing: 0.02em;
+  transition: color 0.12s ease;
+}
+
+.battle-roulette-unit {
+  font-family: var(--font-display);
+  font-size: 0.55rem;
+  letter-spacing: 0.14em;
+  color: rgba(255, 231, 170, 0.75);
+  margin-top: 0.12rem;
+}
+
+@keyframes battle-roulette-spin {
+  from {
+    filter: hue-rotate(0deg) brightness(1.05);
+  }
+  to {
+    filter: hue-rotate(360deg) brightness(1.15);
+  }
+}
+
 .mp-invoice-box {
   display: flex;
   flex-direction: column;
