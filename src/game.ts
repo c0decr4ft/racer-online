@@ -29,9 +29,11 @@ import { WreckFire } from "./wreckFire";
 import type { EventGameMode, EventRoomInfo, NetVehicleKind, PlayerPose, BattleCubeWire } from "./net/protocol";
 import {
   animateBattleCubes,
+  BATTLE_PICKUP_CLIENT_PAD,
   BATTLE_PICKUP_RADIUS,
   BATTLE_TRACK_WIDTH_SCALE,
   disposeBattleCubes,
+  distSqPointToSegmentXZ,
   spawnBattleCubeMeshes,
   type BattleCubeVisual,
 } from "./battleCubes";
@@ -223,8 +225,16 @@ export class Game {
   private eventGameMode: EventGameMode = "race";
   /** Battle item boxes currently in the scene. */
   private battleCubes: BattleCubeVisual[] = [];
-  /** Cooldown so we don't spam pickupCube for the same id. */
-  private battlePickupSent = new Set<number>();
+  /**
+   * Pending pickup attempts — cubeId → last send time (ms).
+   * Cleared on server `cubeTaken`. Retries if the server rejected (stale pose)
+   * so driving through a box doesn't permanently miss.
+   */
+  private battlePickupPending = new Map<number, number>();
+  /** Previous player XZ for segment sweep (tunneling between frames). */
+  private battlePrevX = 0;
+  private battlePrevZ = 0;
+  private battlePrevValid = false;
   /** Width scale used for the active track mesh (1 = normal; battle uses BATTLE_TRACK_WIDTH_SCALE). */
   private trackWidthScale = 1;
   /**
@@ -1592,9 +1602,7 @@ export class Game {
         const earned = Math.max(0, Math.round(event.battleEarnings?.[myId] ?? 0));
         summary.textContent =
           claimable > 0
-            ? `Battle haul ${earned} sats in cubes` +
-              (claimable > earned ? ` · +${claimable - earned} leftover for crossing first` : "") +
-              ` · claim ${claimable} sats`
+            ? `Battle haul ${earned} sats in cubes · claim ${claimable} sats`
             : "No cubes collected — nothing to claim";
         summary.classList.remove("hidden");
       } else {
@@ -4618,7 +4626,7 @@ export class Game {
             ? alreadyClaimed
               ? "Share claimed"
               : ""
-            : "No cube haul — first across the line keeps uncollected leftover";
+            : "No cubes collected — uncollected sats go to the developer";
         lost.classList.toggle("hidden", canClaim);
       } else {
         lost.textContent = "Winner takes the pot";
@@ -4631,7 +4639,8 @@ export class Game {
 
   private setupBattleCubes(cubes?: BattleCubeWire[]) {
     this.clearBattleCubes();
-    this.battlePickupSent.clear();
+    this.battlePickupPending.clear();
+    this.battlePrevValid = false;
     const block = document.getElementById("battle-earnings-block");
     const earnEl = document.getElementById("battle-earnings");
     if (!cubes?.length) {
@@ -4646,7 +4655,8 @@ export class Game {
   private clearBattleCubes() {
     disposeBattleCubes(this.scene, this.battleCubes);
     this.battleCubes = [];
-    this.battlePickupSent.clear();
+    this.battlePickupPending.clear();
+    this.battlePrevValid = false;
     this.clearBattleRoulette();
     document.getElementById("battle-earnings-block")?.classList.add("hidden");
   }
@@ -4664,7 +4674,7 @@ export class Game {
       cube.taken = true;
       cube.mesh.visible = false;
     }
-    this.battlePickupSent.add(info.cubeId);
+    this.battlePickupPending.delete(info.cubeId);
     if (info.byId === this.net.id) {
       // Roulette cycles decoys then locks info.sats — the cube’s real pot share.
       this.startBattleRoulette(info.sats, info.earnings);
@@ -4751,23 +4761,43 @@ export class Game {
   private tickBattleCubes(nowSec: number) {
     if (!this.battleCubes.length || this.finished || this.onlineWrecked) {
       this.tickBattleRoulette(performance.now());
+      this.battlePrevValid = false;
       return;
     }
     animateBattleCubes(this.battleCubes, nowSec);
     this.tickBattleRoulette(performance.now());
-    if (!this.online || !this.net.event || this.net.event.mode !== "battle") return;
+    if (!this.online || !this.net.event || this.net.event.mode !== "battle") {
+      this.battlePrevValid = false;
+      return;
+    }
+
     const px = this.player.state.position.x;
     const pz = this.player.state.position.z;
-    const r2 = BATTLE_PICKUP_RADIUS * BATTLE_PICKUP_RADIUS;
+    // Client pad: car half-length + box half-size so glancing hits still register.
+    // Server uses BATTLE_PICKUP_RADIUS alone with the fresher pose on the message.
+    const hitR = BATTLE_PICKUP_RADIUS + BATTLE_PICKUP_CLIENT_PAD;
+    const hitR2 = hitR * hitR;
+    const nowMs = performance.now();
+    // Retry interval when the server silently rejects (stale pose) — don't spam.
+    const RETRY_MS = 180;
+
     for (const c of this.battleCubes) {
-      if (c.taken || this.battlePickupSent.has(c.id)) continue;
-      const dx = c.mesh.position.x - px;
-      const dz = c.mesh.position.z - pz;
-      if (dx * dx + dz * dz <= r2) {
-        this.battlePickupSent.add(c.id);
-        this.net.pickupCube(c.id);
-      }
+      if (c.taken) continue;
+      const nearPoint = (c.x - px) * (c.x - px) + (c.z - pz) * (c.z - pz) <= hitR2;
+      const nearSweep =
+        this.battlePrevValid &&
+        distSqPointToSegmentXZ(c.x, c.z, this.battlePrevX, this.battlePrevZ, px, pz) <= hitR2;
+      if (!nearPoint && !nearSweep) continue;
+
+      const last = this.battlePickupPending.get(c.id);
+      if (last != null && nowMs - last < RETRY_MS) continue;
+      this.battlePickupPending.set(c.id, nowMs);
+      this.net.pickupCube(c.id, px, pz);
     }
+
+    this.battlePrevX = px;
+    this.battlePrevZ = pz;
+    this.battlePrevValid = true;
   }
 
   private finishRace(result?: {
@@ -4794,7 +4824,8 @@ export class Game {
     this.clearExplode(true);
     this.clearOnlineWreck();
     // Stop cube pickups; leave meshes until home so the finish screen stays calm.
-    this.battlePickupSent.clear();
+    this.battlePickupPending.clear();
+    this.battlePrevValid = false;
     for (const c of this.battleCubes) c.taken = true;
     this.audio.mute();
     this.audio.stopRaceAudio();

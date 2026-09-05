@@ -3,7 +3,7 @@ import { verifyEvent } from "nostr-tools";
 import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
 import { payments, depositProofs, recordPayout, loadPayouts, savePayouts } from "./payments.mjs";
-import { buildBattleCubes, BATTLE_PICKUP_RADIUS } from "../shared/battleCubes.mjs";
+import { buildBattleCubes, BATTLE_PICKUP_RADIUS, BATTLE_PICKUP_POSE_SLACK } from "../shared/battleCubes.mjs";
 import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { dirname, join, extname, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -221,7 +221,7 @@ function normalizeSessionId(raw) {
 /** @typedef {{ trackId: string, order: number }} TrackVote */
 /** @typedef {{ paymentHash: string, paymentRequest: string, bolt11?: string, paidAt: number, netSats?: number }} BuyIn */
 /** @typedef {{ at: number, level: 'info' | 'warn' | 'error', msg: string }} PotLogEntry */
-/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, wreckedIds: Set<string>, fireContactMs: Map<string, number>, fireContactLast: Map<string, number>, allWreckResetAt: number, clients: Map<string, Client>, isEvent: boolean, eventMode: 'race' | 'battle', buyInSats: number, buyInFeeSats: number, buyIns: Map<string, BuyIn>, potSats: number, potId: string, potClaimed: boolean, potLogs: PotLogEntry[], battleCubes: Map<number, { id: number, x: number, z: number, sats: number, tier: string, takenBy: string }>, battleEarnings: Map<string, number>, battleClaimable: Map<string, number>, battleClaimedIds: Set<string> }} Room */
+/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, wreckedIds: Set<string>, fireContactMs: Map<string, number>, fireContactLast: Map<string, number>, allWreckResetAt: number, clients: Map<string, Client>, isEvent: boolean, eventMode: 'race' | 'battle', buyInSats: number, buyInFeeSats: number, buyIns: Map<string, BuyIn>, potSats: number, potId: string, potClaimed: boolean, potLogs: PotLogEntry[], battleCubes: Map<number, { id: number, x: number, z: number, sats: number, tier: string, takenBy: string }>, battleEarnings: Map<string, number>, battleClaimable: Map<string, number>, battleClaimedIds: Set<string>, battleLeftoverSats: number, battleLeftoverCollected: boolean, battleLeftoverToken: string }} Room */
 
 /** Persist a debug line on the event pot (disk + in-memory) so the DEV table can show it. */
 function potLog(room, level, msg) {
@@ -1363,13 +1363,15 @@ function normalizeEventMode(raw) {
 }
 
 /**
- * Lock Battle claimable shares after someone finishes 1st.
+ * Lock Battle claimable shares after someone finishes 1st (full race — typically
+ * 3 laps). Called only from the finish handler once `winnerId` is set, never mid-race.
  *
  * Pot invariant (see shared/battleCubes.mjs):
  *   sum(all cube sats) === potSats at race start
  *   collected + leftover === potSats at finish
- * Each racer claims their collected cube sats; uncollected leftover goes to the
- * race finisher. Roulette UI is display-only and never invents extra pot value.
+ * Each racer claims their collected cube sats; uncollected cube sats (+ any pot
+ * accounting gap) go to the developer tip wallet via collectBattleLeftover.
+ * Roulette UI is display-only.
  */
 function finalizeBattleClaimable(room) {
   room.battleClaimable = new Map();
@@ -1379,9 +1381,112 @@ function finalizeBattleClaimable(room) {
     if (n > 0) room.battleClaimable.set(id, n);
     collected += n;
   }
-  const leftover = Math.max(0, room.potSats - collected);
-  if (leftover > 0 && room.winnerId) {
-    room.battleClaimable.set(room.winnerId, (room.battleClaimable.get(room.winnerId) || 0) + leftover);
+  // Source of truth for leftover: cubes still untaken at the finish line.
+  let leftover = 0;
+  for (const cube of room.battleCubes?.values() || []) {
+    if (cube.takenBy) continue;
+    leftover += Math.max(0, Math.round(cube.sats) || 0);
+  }
+  // Seal any pot/accounting drift so the full pot is always distributed.
+  const accountingGap = Math.max(0, Math.round(room.potSats || 0) - collected - leftover);
+  leftover += accountingGap;
+  room.battleLeftoverSats = leftover;
+  room.battleLeftoverCollected = leftover <= 0;
+  room.battleLeftoverToken = "";
+  if (leftover > 0) {
+    potLog(room, "info", `battle leftover ${leftover} sats → developer tip wallet`);
+  }
+}
+
+/**
+ * Move uncollected battle cube sats into the tip wallet (same path as claim tips).
+ * Idempotent — safe from finish and again on claim if the first attempt failed.
+ */
+async function collectBattleLeftover(room) {
+  if (!room?.isEvent || room.eventMode !== "battle") return;
+  if (room.battleLeftoverCollected) return;
+  const wanted = Math.max(0, Math.round(room.battleLeftoverSats) || 0);
+  if (wanted <= 0) {
+    room.battleLeftoverCollected = true;
+    return;
+  }
+
+  // Retry a prior tip-wallet receive that left a bearer token.
+  if (room.battleLeftoverToken) {
+    try {
+      const net = await payments.receiveTipToken(room.battleLeftoverToken, wanted);
+      const tipSats = Number.isFinite(net) && net > 0 ? net : wanted;
+      room.battleLeftoverSats = tipSats;
+      room.battleLeftoverCollected = true;
+      room.battleLeftoverToken = "";
+      potLog(room, "info", `battle leftover tip-wallet receive ok · ${tipSats} sats`);
+      return;
+    } catch (err) {
+      console.warn(`[event] battle leftover tip token collect failed:`, err?.message || err);
+      potLog(
+        room,
+        "warn",
+        `battle leftover tip token collect failed: ${String(err?.message || err).slice(0, 160)}`,
+      );
+      // Fall through — try a fresh collectTip if the token is dead.
+    }
+  }
+
+  const balanceNow = async () =>
+    Promise.resolve()
+      .then(() => payments.potBalanceSats?.(room.potId))
+      .then((v) => (Number.isFinite(v) ? v : 0))
+      .catch(() => 0);
+
+  // Leave unclaimed player shares in the pot; never starve claimers for leftover.
+  let unclaimed = 0;
+  for (const [id, sats] of room.battleClaimable || []) {
+    if (room.battleClaimedIds?.has(id)) continue;
+    unclaimed += Math.max(0, Math.round(sats) || 0);
+  }
+  const bal = await balanceNow();
+  const tipCap = Math.min(wanted, Math.max(0, bal - unclaimed));
+  if (tipCap <= 0) {
+    room.battleLeftoverCollected = true;
+    room.battleLeftoverSats = 0;
+    potLog(
+      room,
+      "warn",
+      `battle leftover ${wanted} sats unavailable in pot (balance ${bal}, unclaimed ${unclaimed})`,
+    );
+    return;
+  }
+
+  try {
+    const result = await payments.collectTip(tipCap, room.potId);
+    const tipSats = result.sats;
+    const tipCollected = result.collected === true;
+    room.battleLeftoverSats = tipSats;
+    room.battleLeftoverCollected = tipCollected;
+    room.battleLeftoverToken = tipCollected ? "" : result.token || "";
+    recordPayout({
+      room: room.name,
+      potId: room.potId,
+      winnerId: "developer",
+      winnerPubkey: null,
+      potSats: tipSats,
+      winnerSats: 0,
+      tipSats,
+      tipPercent: 100,
+      feeSats: Math.max(0, wanted - tipSats),
+      collected: tipCollected,
+      collectedAt: tipCollected ? Date.now() : null,
+      tipToken: tipCollected ? null : result.token || null,
+      mock: payments.mock,
+      kind: "battle-leftover",
+    });
+    potLog(
+      room,
+      tipCollected ? "info" : "warn",
+      `battle leftover → tip wallet · ${tipSats} sats${tipCollected ? "" : " pending"}`,
+    );
+  } catch (err) {
+    potLog(room, "error", `battle leftover collect failed: ${String(err?.message || err).slice(0, 160)}`);
   }
 }
 
@@ -1513,6 +1618,9 @@ function admitClient(ws, msg, mode) {
       battleEarnings: new Map(),
       battleClaimable: new Map(),
       battleClaimedIds: new Set(),
+      battleLeftoverSats: 0,
+      battleLeftoverCollected: true,
+      battleLeftoverToken: "",
     };
   rooms.set(roomName, room);
     if (room.isEvent) {
@@ -2122,6 +2230,9 @@ wss.on("connection", (ws) => {
       room.battleEarnings = new Map();
       room.battleClaimable = new Map();
       room.battleClaimedIds = new Set();
+      room.battleLeftoverSats = 0;
+      room.battleLeftoverCollected = true;
+      room.battleLeftoverToken = "";
       /** @type {import('../shared/battleCubes.mjs').BattleCube[] | undefined} */
       let battleCubesWire;
       if (room.isEvent && room.eventMode === "battle") {
@@ -2185,15 +2296,40 @@ wss.on("connection", (ws) => {
 
     if (msg.t === "pickupCube") {
       if (!room.isEvent || room.eventMode !== "battle" || room.phase !== "racing") return;
+      // Race still in progress — pickups stop once someone finishes (leftover seals then).
       if (room.winnerId) return;
       if (room.wreckedIds?.has(client.id)) return;
       const cubeId = Math.round(Number(msg.cubeId));
       if (!Number.isFinite(cubeId)) return;
       const cube = room.battleCubes?.get(cubeId);
+      // takenBy set atomically — never double-award the same cube.
       if (!cube || cube.takenBy) return;
-      const dx = client.pose.x - cube.x;
-      const dz = client.pose.z - cube.z;
-      if (dx * dx + dz * dz > BATTLE_PICKUP_RADIUS * BATTLE_PICKUP_RADIUS) return;
+
+      // Prefer the freshest client pose on the pickup message (pose ticks are ~30Hz
+      // and can lag a full car-length behind the visual hit). Clamp to last pose.
+      let px = client.pose.x;
+      let pz = client.pose.z;
+      const claimX = Number(msg.x);
+      const claimZ = Number(msg.z);
+      if (Number.isFinite(claimX) && Number.isFinite(claimZ)) {
+        const cx = Math.max(-20_000, Math.min(20_000, claimX));
+        const cz = Math.max(-20_000, Math.min(20_000, claimZ));
+        const ddx = cx - client.pose.x;
+        const ddz = cz - client.pose.z;
+        const slack = BATTLE_PICKUP_POSE_SLACK;
+        if (ddx * ddx + ddz * ddz <= slack * slack) {
+          px = cx;
+          pz = cz;
+          // Keep authority pose in sync so the next check isn't stale.
+          client.pose.x = cx;
+          client.pose.z = cz;
+        }
+      }
+
+      const dx = px - cube.x;
+      const dz = pz - cube.z;
+      const r = BATTLE_PICKUP_RADIUS;
+      if (dx * dx + dz * dz > r * r) return;
       cube.takenBy = client.id;
       const next = (room.battleEarnings.get(client.id) || 0) + cube.sats;
       room.battleEarnings.set(client.id, next);
@@ -2221,6 +2357,8 @@ wss.on("connection", (ws) => {
       if (room.isEvent) {
         if (room.eventMode === "battle") finalizeBattleClaimable(room);
         void (async () => {
+          // Uncollected cubes → tip wallet before claimers draw their shares.
+          if (room.eventMode === "battle") await collectBattleLeftover(room);
           // Attach the payout fee budget so checkout shows the real split.
           // Race: tip + winner sends. Battle: estimate two sends per claimer.
           const info = eventInfo(room);
@@ -2321,6 +2459,8 @@ wss.on("connection", (ws) => {
         potLog(room, "info", `battle claim started by ${client.name} · ${claimable} sats · tip ${tipPercent}%`);
         void (async () => {
           try {
+            // Retry leftover→tip if finish collect failed / tip-wallet receive pending.
+            await collectBattleLeftover(room);
             const perSendFee = Math.max(0, await payments.sendFeeSats(room.potId).catch(() => 0));
             const balanceNow = async () =>
               Promise.resolve()

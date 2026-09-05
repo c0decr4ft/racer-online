@@ -8,7 +8,10 @@
 import * as THREE from "three";
 import type { BattleCubeWire } from "./net/protocol";
 
-export const BATTLE_PICKUP_RADIUS = 5.5;
+/** Must match shared/battleCubes.mjs */
+export const BATTLE_PICKUP_RADIUS = 8.5;
+/** Must match shared/battleCubes.mjs */
+export const BATTLE_PICKUP_CLIENT_PAD = 2.5;
 
 /** Must match shared/battleCubes.mjs — battle tracks only. */
 export const BATTLE_TRACK_WIDTH_SCALE = 1.45;
@@ -29,6 +32,9 @@ export type BattleCubeVisual = {
   id: number;
   sats: number;
   tier: BattleCubeWire["tier"];
+  /** Layout XZ from the server (authoritative for pickup — mesh may bob in Y). */
+  x: number;
+  z: number;
   /** Root group (box + optional glow shell). */
   mesh: THREE.Object3D;
   taken: boolean;
@@ -135,9 +141,35 @@ export function spawnBattleCubeMeshes(
     root.add(shell);
 
     scene.add(root);
-    out.push({ id: c.id, sats: c.sats, tier: c.tier, mesh: root, taken: false });
+    out.push({ id: c.id, sats: c.sats, tier: c.tier, x: c.x, z: c.z, mesh: root, taken: false });
   }
   return out;
+}
+
+/**
+ * Squared distance from point to segment AB in XZ (for tunnel-proof sweeps).
+ * @returns squared distance
+ */
+export function distSqPointToSegmentXZ(
+  px: number,
+  pz: number,
+  ax: number,
+  az: number,
+  bx: number,
+  bz: number,
+): number {
+  const abx = bx - ax;
+  const abz = bz - az;
+  const apx = px - ax;
+  const apz = pz - az;
+  const abLen2 = abx * abx + abz * abz;
+  if (abLen2 < 1e-8) return apx * apx + apz * apz;
+  let t = (apx * abx + apz * abz) / abLen2;
+  if (t < 0) t = 0;
+  else if (t > 1) t = 1;
+  const cx = ax + abx * t - px;
+  const cz = az + abz * t - pz;
+  return cx * cx + cz * cz;
 }
 
 export function disposeBattleCubes(scene: THREE.Scene, cubes: BattleCubeVisual[]) {
