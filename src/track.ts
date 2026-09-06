@@ -89,14 +89,6 @@ const VEG_MATS = {
   cactus: makeTreeMats(0x3a6a2a, [0x3a6a2a, 0x458034, 0x2f5a24]),
   // Meadow: single canopy green — darker than meadow ground (0x8fbc4a) so groves read clearly
   sparse: makeTreeMats(0x5a3a22, [0x2f7a24]),
-  // Autumn Highlands — orange / rust / crimson canopy mix
-  autumn: makeTreeMats(0x4a3020, [0xc45a18, 0xd87820, 0xa83810, 0xe09028]),
-  // Swamp Bayou — tall cypress greens
-  cypress: makeTreeMats(0x3a2e1c, [0x2a5a38, 0x1e4a30, 0x356a42]),
-  // Rainforest Canopy — deep layered greens
-  rainforest: makeTreeMats(0x3a2818, [0x0e5a28, 0x167038, 0x0a4820, 0x1e8040]),
-  // Savanna — flat acacia canopy ochres
-  acacia: makeTreeMats(0x5a4028, [0x5a7a28, 0x6a8a30, 0x4a6820]),
 };
 
 /** Shared mats must not be disposed with a track swap. */
@@ -548,14 +540,6 @@ function vegMatsFor(biome: BiomeStyle) {
       return VEG_MATS.cactus;
     case "sparse":
       return VEG_MATS.sparse;
-    case "autumn":
-      return VEG_MATS.autumn;
-    case "cypress":
-      return VEG_MATS.cypress;
-    case "rainforest":
-      return VEG_MATS.rainforest;
-    case "acacia":
-      return VEG_MATS.acacia;
     default:
       return VEG_MATS.trees;
   }
@@ -571,19 +555,14 @@ function plantVegetation(
   if (biome.vegetation === "none") return 0;
   const mats = vegMatsFor(biome);
   const isMeadow = biome.id === "meadow";
-  const isRainforest = biome.id === "rainforest";
   // Meadow biome.density is intentionally low for props feel — outfield trees use a dense park ring
-  const vegDensity = isMeadow
-    ? Math.max(biome.density, 0.92)
-    : isRainforest
-      ? Math.max(biome.density, 0.95)
-      : biome.density;
+  const vegDensity = isMeadow ? Math.max(biome.density, 0.92) : biome.density;
   const collected = collectPlantPoses(path, roadHalf, vegDensity, clearance, {
-    forest: biome.id === "forest" || isRainforest,
+    forest: biome.id === "forest",
     meadow: isMeadow,
   });
   const clear = clearance ?? collected.clearance;
-  // Coast only: keep palms on sand (neon palms use open outfield poses)
+  // Coast only: keep palms on sand
   const poses =
     biome.vegetation === "palms" && biome.props === "water"
       ? filterPosesToCoastSand(collected.poses, path, clear)
@@ -619,25 +598,16 @@ function plantVegetation(
     return poses.length;
   }
 
-  const isPine = biome.vegetation === "pines" || biome.vegetation === "cypress";
+  const isPine = biome.vegetation === "pines";
   const isCactus = biome.vegetation === "cactus";
-  const isAcacia = biome.vegetation === "acacia";
-  const isTall = isRainforest || biome.vegetation === "cypress";
   const trunkGeo = isCactus
     ? new THREE.CylinderGeometry(0.18, 0.22, 2.4, 5)
-    : new THREE.CylinderGeometry(
-        isAcacia ? 0.16 : 0.22,
-        isAcacia ? 0.22 : 0.3,
-        isPine || isTall ? 2.2 : 1.2,
-        5,
-      );
+    : new THREE.CylinderGeometry(0.22, 0.3, isPine ? 2.2 : 1.2, 5);
   const canopyGeo = isPine
-    ? new THREE.ConeGeometry(biome.vegetation === "cypress" ? 0.85 : 1.1, isTall ? 3.1 : 2.6, 6)
+    ? new THREE.ConeGeometry(1.1, 2.6, 6)
     : isCactus
       ? new THREE.SphereGeometry(0.35, 5, 4)
-      : isAcacia
-        ? new THREE.SphereGeometry(1.6, 6, 4)
-        : new THREE.SphereGeometry(isRainforest ? 1.55 : 1.35, 6, 6);
+      : new THREE.SphereGeometry(1.35, 6, 6);
   const dummy = new THREE.Object3D();
   const canopyMats = mats.canopy;
 
@@ -680,37 +650,19 @@ function plantVegetation(
 
     for (let i = 0; i < n; i++) {
       const { x, z, scale, jitter } = list[i]!;
-      const tallScale = isTall ? 1.15 + jitter * 0.25 : 1;
-      const trunkH = isCactus || isPine || isTall ? 1.1 : isAcacia ? 0.95 : 0.6;
-      dummy.position.set(x, trunkH * scale * tallScale, z);
-      dummy.scale.set(scale, scale * tallScale, scale);
+      const trunkH = isCactus || isPine ? 1.1 : 0.6;
+      dummy.position.set(x, trunkH * scale, z);
+      dummy.scale.set(scale, scale, scale);
       dummy.rotation.set(0, jitter * Math.PI * 2, 0);
       dummy.updateMatrix();
       trunks.setMatrixAt(i, dummy.matrix);
 
       const ci = Math.floor(jitter * canopyMats.length) % canopyMats.length;
       const canopy = canopies[ci]!;
-      const cy = isPine
-        ? 2.2 * scale * tallScale
-        : isCactus
-          ? 2.5 * scale
-          : isAcacia
-            ? 2.15 * scale
-            : isTall
-              ? 2.35 * scale * tallScale
-              : 2.0 * scale;
-      const cr = isCactus
-        ? 0.9 + jitter * 0.3
-        : isAcacia
-          ? 1.15 + jitter * 0.35
-          : (1.35 * scale + jitter * 0.35) / 1.35;
+      const cy = isPine ? 2.2 * scale : isCactus ? 2.5 * scale : 2.0 * scale;
+      const cr = isCactus ? 0.9 + jitter * 0.3 : (1.35 * scale + jitter * 0.35) / 1.35;
       dummy.position.set(x, cy, z);
-      // Acacia: wide flat canopy; pines stay conical
-      dummy.scale.set(
-        isAcacia ? cr * 1.45 : cr,
-        isPine ? cr * 1.25 : isAcacia ? cr * 0.42 : cr,
-        isAcacia ? cr * 1.45 : cr,
-      );
+      dummy.scale.set(cr, isPine ? cr * 1.25 : cr, cr);
       dummy.updateMatrix();
       canopy.setMatrixAt(canopy.count++, dummy.matrix);
 
@@ -1470,303 +1422,7 @@ function filterPosesToCoastSand(
   });
 }
 
-/** Volcano Rim — basalt cones + glowing lava crack slabs. */
-function plantVolcanoProps(
-  group: THREE.Group,
-  path: THREE.CatmullRomCurve3,
-  clearance: PathClearance,
-  poses: TreePose[],
-  dummy: THREE.Object3D,
-  bounds: ReturnType<typeof pathBounds>,
-) {
-  const rockMat = new THREE.MeshStandardMaterial({
-    color: 0x2a2428,
-    roughness: 0.96,
-    metalness: 0.08,
-  });
-  const lavaMat = new THREE.MeshStandardMaterial({
-    color: 0xff5a18,
-    emissive: 0xff3a08,
-    emissiveIntensity: 1.4,
-    roughness: 0.55,
-    metalness: 0.15,
-  });
-  const rockGeo = new THREE.ConeGeometry(1.4, 3.2, 5);
-  const crackGeo = new THREE.BoxGeometry(1, 0.12, 1);
-  const rockN = Math.min(160, Math.max(36, Math.floor(poses.length * 0.2)));
-  const crackN = Math.min(90, Math.max(20, Math.floor(poses.length * 0.1)));
-  const rocks = new THREE.InstancedMesh(rockGeo, rockMat, rockN);
-  const cracks = new THREE.InstancedMesh(crackGeo, lavaMat, crackN);
-  rocks.count = 0;
-  cracks.count = 0;
-  for (let i = 0; i < poses.length && rocks.count < rockN; i++) {
-    if (hash2(i * 11, Math.round(poses[i]!.z)) < 0.55) continue;
-    const p = poses[i]!;
-    const s = 2.2 + p.jitter * 5.5;
-    if (!clearance.sceneryOk(p.x, p.z, s * 0.7)) continue;
-    dummy.position.set(p.x, s * 0.4, p.z);
-    dummy.scale.set(s * 0.7, s, s * 0.7);
-    dummy.rotation.set(0, p.jitter * 6, 0);
-    dummy.updateMatrix();
-    rocks.setMatrixAt(rocks.count++, dummy.matrix);
-  }
-  for (let i = 0; i < poses.length && cracks.count < crackN; i++) {
-    if (hash2(i * 17, Math.round(poses[i]!.x)) < 0.7) continue;
-    const p = poses[i]!;
-    const s = 3 + p.jitter * 8;
-    if (!clearance.sceneryOk(p.x, p.z, s * 0.5)) continue;
-    dummy.position.set(p.x, 0.08, p.z);
-    dummy.scale.set(s, 1, s * (0.25 + p.jitter * 0.35));
-    dummy.rotation.set(0, p.jitter * 5, 0);
-    dummy.updateMatrix();
-    cracks.setMatrixAt(cracks.count++, dummy.matrix);
-  }
-  rocks.instanceMatrix.needsUpdate = true;
-  cracks.instanceMatrix.needsUpdate = true;
-  rocks.computeBoundingSphere();
-  cracks.computeBoundingSphere();
-  group.add(rocks);
-  group.add(cracks);
-
-  // Distant ash cones on the horizon ring
-  const ringN = 16;
-  const far = new THREE.InstancedMesh(rockGeo, rockMat, ringN);
-  far.count = 0;
-  const radius = Math.max(bounds.spanX, bounds.spanZ) * 0.62 + 40;
-  for (let i = 0; i < ringN; i++) {
-    const th = (i / ringN) * Math.PI * 2 + 0.2;
-    const x = bounds.cx + Math.cos(th) * radius;
-    const z = bounds.cz + Math.sin(th) * radius;
-    const h = 18 + hash2(i, 3) * 28;
-    dummy.position.set(x, h * 0.45, z);
-    dummy.scale.set(10 + hash2(i, 5) * 8, h, 10 + hash2(i, 7) * 8);
-    dummy.rotation.set(0, th, 0);
-    dummy.updateMatrix();
-    far.setMatrixAt(far.count++, dummy.matrix);
-  }
-  far.instanceMatrix.needsUpdate = true;
-  far.computeBoundingSphere();
-  group.add(far);
-  void path;
-}
-
-/** Night Neon Strip — alternating cyan / magenta neon posts. */
-function plantNeonStrip(
-  group: THREE.Group,
-  path: THREE.CatmullRomCurve3,
-  clearance: PathClearance,
-  poses: TreePose[],
-  dummy: THREE.Object3D,
-) {
-  const postMat = new THREE.MeshStandardMaterial({
-    color: 0x1a1a28,
-    metalness: 0.7,
-    roughness: 0.35,
-  });
-  const cyanMat = makeNightLampMaterial(0.55, 7.5);
-  cyanMat.color.setHex(0x40f0e0);
-  cyanMat.emissive.setHex(0x20e0d0);
-  const magentaMat = makeNightLampMaterial(0.55, 7.5);
-  magentaMat.color.setHex(0xf040c0);
-  magentaMat.emissive.setHex(0xe020a8);
-  const postGeo = new THREE.CylinderGeometry(0.1, 0.14, 7.2, 5);
-  const lampGeo = new THREE.BoxGeometry(0.55, 0.35, 0.55);
-  const lightCount = Math.min(96, Math.max(32, Math.floor(poses.length * 0.12)));
-  const posts = new THREE.InstancedMesh(postGeo, postMat, lightCount);
-  const cyans = new THREE.InstancedMesh(lampGeo, cyanMat, Math.ceil(lightCount / 2));
-  const magentas = new THREE.InstancedMesh(lampGeo, magentaMat, Math.ceil(lightCount / 2));
-  posts.count = 0;
-  cyans.count = 0;
-  magentas.count = 0;
-  for (let i = 0; i < poses.length && posts.count < lightCount; i++) {
-    if (hash2(i * 23, Math.round(poses[i]!.z)) < 0.62) continue;
-    const p = poses[i]!;
-    if (!clearance.sceneryOk(p.x, p.z, 1.0)) continue;
-    dummy.position.set(p.x, 3.6, p.z);
-    dummy.scale.set(1, 1, 1);
-    dummy.rotation.set(0, 0, 0);
-    dummy.updateMatrix();
-    posts.setMatrixAt(posts.count++, dummy.matrix);
-    dummy.position.set(p.x, 7.1, p.z);
-    dummy.updateMatrix();
-    const cyan = posts.count % 2 === 1;
-    if (cyan) cyans.setMatrixAt(cyans.count++, dummy.matrix);
-    else magentas.setMatrixAt(magentas.count++, dummy.matrix);
-    if (posts.count % 2 === 1) {
-      const col = cyan ? 0x40f0e0 : 0xf040c0;
-      const pl = makeNightPointLight(p.x, 6.8, p.z, 1.8, 24);
-      pl.color.setHex(col);
-      group.add(pl);
-    }
-  }
-  posts.instanceMatrix.needsUpdate = true;
-  cyans.instanceMatrix.needsUpdate = true;
-  magentas.instanceMatrix.needsUpdate = true;
-  posts.computeBoundingSphere();
-  cyans.computeBoundingSphere();
-  magentas.computeBoundingSphere();
-  group.add(posts);
-  group.add(cyans);
-  group.add(magentas);
-  void path;
-}
-
-/** Industrial Docks — shipping containers + crane masts. */
-function plantDockProps(
-  group: THREE.Group,
-  path: THREE.CatmullRomCurve3,
-  clearance: PathClearance,
-  poses: TreePose[],
-  dummy: THREE.Object3D,
-  bounds: ReturnType<typeof pathBounds>,
-) {
-  const colors = [0xc04020, 0x2a6aaa, 0xd0a020, 0x3a8a50, 0x6a6e78];
-  const boxGeo = new THREE.BoxGeometry(1, 1, 1);
-  const count = Math.min(140, Math.max(40, Math.floor(poses.length * 0.18)));
-  const mats = colors.map(
-    (c) =>
-      new THREE.MeshStandardMaterial({
-        color: c,
-        roughness: 0.72,
-        metalness: 0.28,
-      }),
-  );
-  const meshes = mats.map((mat) => {
-    const m = new THREE.InstancedMesh(boxGeo, mat, count);
-    m.count = 0;
-    m.castShadow = false;
-    m.receiveShadow = true;
-    return m;
-  });
-  for (let i = 0; i < poses.length; i++) {
-    if (hash2(i * 9, Math.round(poses[i]!.x)) < 0.58) continue;
-    const p = poses[i]!;
-    const w = 4.5 + p.jitter * 3;
-    const h = 2.4 + p.jitter * 2.2;
-    const d = 2.2 + hash2(i, 4) * 1.4;
-    if (!clearance.sceneryOk(p.x, p.z, Math.max(w, d) * 0.55)) continue;
-    const mi = Math.floor(p.jitter * meshes.length) % meshes.length;
-    const mesh = meshes[mi]!;
-    if (mesh.count >= count) continue;
-    dummy.position.set(p.x, h * 0.5, p.z);
-    dummy.scale.set(w, h, d);
-    dummy.rotation.set(0, p.jitter * 6, 0);
-    dummy.updateMatrix();
-    mesh.setMatrixAt(mesh.count++, dummy.matrix);
-  }
-  for (const mesh of meshes) {
-    if (!mesh.count) continue;
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.computeBoundingSphere();
-    group.add(mesh);
-  }
-
-  // Crane masts around the outer ring
-  const steel = new THREE.MeshStandardMaterial({
-    color: 0x8a9098,
-    metalness: 0.65,
-    roughness: 0.35,
-  });
-  const mastGeo = new THREE.BoxGeometry(0.55, 1, 0.55);
-  const boomGeo = new THREE.BoxGeometry(1, 0.35, 0.35);
-  const craneN = 10;
-  const masts = new THREE.InstancedMesh(mastGeo, steel, craneN);
-  const booms = new THREE.InstancedMesh(boomGeo, steel, craneN);
-  masts.count = 0;
-  booms.count = 0;
-  const radius = Math.max(bounds.spanX, bounds.spanZ) * 0.48 + 18;
-  for (let i = 0; i < craneN; i++) {
-    const th = (i / craneN) * Math.PI * 2 + 0.4;
-    const x = bounds.cx + Math.cos(th) * radius;
-    const z = bounds.cz + Math.sin(th) * radius;
-    if (!clearance.sceneryOk(x, z, 6)) continue;
-    const h = 22 + hash2(i, 2) * 14;
-    dummy.position.set(x, h * 0.5, z);
-    dummy.scale.set(1, h, 1);
-    dummy.rotation.set(0, th, 0);
-    dummy.updateMatrix();
-    masts.setMatrixAt(masts.count++, dummy.matrix);
-    dummy.position.set(x + Math.cos(th) * 8, h * 0.85, z + Math.sin(th) * 8);
-    dummy.scale.set(16, 1, 1);
-    dummy.rotation.set(0, th, 0.08);
-    dummy.updateMatrix();
-    booms.setMatrixAt(booms.count++, dummy.matrix);
-  }
-  masts.instanceMatrix.needsUpdate = true;
-  booms.instanceMatrix.needsUpdate = true;
-  masts.computeBoundingSphere();
-  booms.computeBoundingSphere();
-  group.add(masts);
-  group.add(booms);
-  void path;
-}
-
-/** Arctic Night — ice boulders + soft aurora curtains. */
-function plantArcticProps(
-  group: THREE.Group,
-  path: THREE.CatmullRomCurve3,
-  clearance: PathClearance,
-  poses: TreePose[],
-  dummy: THREE.Object3D,
-  bounds: ReturnType<typeof pathBounds>,
-) {
-  const iceMat = new THREE.MeshStandardMaterial({
-    color: 0xd0e4f8,
-    roughness: 0.35,
-    metalness: 0.2,
-    emissive: 0x6088b0,
-    emissiveIntensity: 0.15,
-  });
-  const geo = new THREE.DodecahedronGeometry(1, 0);
-  const count = Math.min(120, Math.max(30, Math.floor(poses.length * 0.16)));
-  const ice = new THREE.InstancedMesh(geo, iceMat, count);
-  ice.count = 0;
-  for (let i = 0; i < poses.length && ice.count < count; i++) {
-    if (hash2(i * 15, Math.round(poses[i]!.z)) < 0.6) continue;
-    const p = poses[i]!;
-    const s = 2 + p.jitter * 5;
-    if (!clearance.sceneryOk(p.x, p.z, s * 0.7)) continue;
-    dummy.position.set(p.x, s * 0.45, p.z);
-    dummy.scale.set(s, s * (0.8 + p.jitter * 0.5), s);
-    dummy.rotation.set(p.jitter, p.jitter * 4, 0.2);
-    dummy.updateMatrix();
-    ice.setMatrixAt(ice.count++, dummy.matrix);
-  }
-  ice.instanceMatrix.needsUpdate = true;
-  ice.computeBoundingSphere();
-  group.add(ice);
-
-  // Aurora sheets — translucent emissive ribbons in the sky
-  const auroraColors = [0x40e0a8, 0x60a0ff, 0xa060e0];
-  for (let a = 0; a < 3; a++) {
-    const mat = new THREE.MeshStandardMaterial({
-      color: auroraColors[a]!,
-      emissive: auroraColors[a]!,
-      emissiveIntensity: 0.85,
-      transparent: true,
-      opacity: 0.28,
-      roughness: 1,
-      metalness: 0,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    });
-    const sheet = new THREE.Mesh(new THREE.PlaneGeometry(90 + a * 20, 18 + a * 4, 1, 1), mat);
-    const th = a * 0.9 + 0.4;
-    const r = Math.max(bounds.spanX, bounds.spanZ) * 0.35;
-    sheet.position.set(
-      bounds.cx + Math.cos(th) * r * 0.3,
-      42 + a * 8,
-      bounds.cz + Math.sin(th) * r * 0.3,
-    );
-    sheet.rotation.set(-0.15, th + Math.PI / 2, 0.2 * (a - 1));
-    sheet.renderOrder = 3;
-    group.add(sheet);
-  }
-  void path;
-  void clearance;
-}
-
-/** Rocks, mesas, mountains, water, city — never on ribbon or infield. */
+/** Mountains, water, canyon, city — never on ribbon or infield. */
 function plantBiomeProps(
   group: THREE.Group,
   path: THREE.CatmullRomCurve3,
@@ -1781,46 +1437,6 @@ function plantBiomeProps(
     plantCoastWater(group, path, clearance, bounds, biome.ground);
     plantCoastBeachUmbrellas(group, path, clearance);
     plantCoastBeachBalls(group, path, clearance);
-  }
-
-  if (biome.props === "rocks" || biome.props === "mesas") {
-    const rockMat = new THREE.MeshStandardMaterial({
-      color: biome.props === "mesas" ? 0xb86a32 : 0x7a8088,
-      roughness: 0.95,
-      metalness: 0.05,
-    });
-    const geo =
-      biome.props === "mesas"
-        ? new THREE.BoxGeometry(1, 1, 1)
-        : new THREE.ConeGeometry(1.2, 2.8, 5);
-    const count = Math.min(220, Math.max(40, Math.floor(poses.length * 0.22)));
-    const mesh = new THREE.InstancedMesh(geo, rockMat, count);
-    mesh.castShadow = false;
-    mesh.receiveShadow = true;
-    mesh.count = 0;
-    for (let i = 0; i < poses.length && mesh.count < count; i++) {
-      if (hash2(i * 13, Math.round(poses[i]!.x)) < 0.62) continue;
-      const p = poses[i]!;
-      const s =
-        biome.props === "mesas"
-          ? 4 + p.jitter * 10
-          : 2.5 + p.jitter * 6;
-      const h = biome.props === "mesas" ? 3 + p.jitter * 14 : 2 + p.jitter * 8;
-      const footprint = biome.props === "mesas" ? s * 0.75 : s * 0.65;
-      if (!clearance.sceneryOk(p.x, p.z, footprint)) continue;
-      dummy.position.set(p.x, biome.props === "mesas" ? h * 0.5 : h * 0.35, p.z);
-      dummy.scale.set(
-        biome.props === "mesas" ? s : s * 0.7,
-        h,
-        biome.props === "mesas" ? s * (0.7 + p.jitter * 0.5) : s * 0.7,
-      );
-      dummy.rotation.set(0, p.jitter * 6, 0);
-      dummy.updateMatrix();
-      mesh.setMatrixAt(mesh.count++, dummy.matrix);
-    }
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.computeBoundingSphere();
-    group.add(mesh);
   }
 
   // Canyon Cut — continuous cliff walls hugging both sides of the ribbon
@@ -1975,78 +1591,9 @@ function plantBiomeProps(
     );
   }
 
-  if (biome.props === "lights") {
-    const postMat = new THREE.MeshStandardMaterial({ color: 0x2a3038, metalness: 0.6, roughness: 0.4 });
-    const lampMat = makeNightLampMaterial(0.3, 5.2);
-    const postGeo = new THREE.CylinderGeometry(0.12, 0.16, 6.5, 5);
-    const lampGeo = new THREE.SphereGeometry(0.35, 6, 6);
-    const lightCount = Math.min(80, Math.max(24, Math.floor(poses.length * 0.08)));
-    const posts = new THREE.InstancedMesh(postGeo, postMat, lightCount);
-    const lamps = new THREE.InstancedMesh(lampGeo, lampMat, lightCount);
-    posts.count = 0;
-    lamps.count = 0;
-    posts.castShadow = false;
-    lamps.castShadow = false;
-    for (let i = 0; i < poses.length && posts.count < lightCount; i++) {
-      if (hash2(i * 19, Math.round(poses[i]!.z)) < 0.7) continue;
-      const p = poses[i]!;
-      if (!clearance.sceneryOk(p.x, p.z, 0.9)) continue;
-      dummy.position.set(p.x, 3.25, p.z);
-      dummy.scale.set(1, 1, 1);
-      dummy.rotation.set(0, 0, 0);
-      dummy.updateMatrix();
-      posts.setMatrixAt(posts.count++, dummy.matrix);
-      dummy.position.set(p.x, 6.55, p.z);
-      dummy.updateMatrix();
-      lamps.setMatrixAt(lamps.count++, dummy.matrix);
-      // Sparse point lights (every other pole) — enough glow without lighting budget blow-up
-      if (lamps.count % 2 === 1) {
-        group.add(makeNightPointLight(p.x, 6.2, p.z, 1.35, 20));
-      }
-    }
-    posts.instanceMatrix.needsUpdate = true;
-    lamps.instanceMatrix.needsUpdate = true;
-    posts.computeBoundingSphere();
-    lamps.computeBoundingSphere();
-    group.add(posts);
-    group.add(lamps);
-  }
-
   // City Circuit — downtown outfield + park in the infield
   if (biome.props === "city") {
     plantCity(group, path, clearance, dummy, bounds);
-  }
-
-  // Volcano Rim — dark basalt + emissive lava cracks
-  if (biome.props === "lava") {
-    plantVolcanoProps(group, path, clearance, poses, dummy, bounds);
-  }
-
-  // Swamp Bayou — murky water wrap (no beach toys)
-  if (biome.props === "swamp") {
-    plantCoastWater(
-      group,
-      path,
-      clearance,
-      bounds,
-      biome.ground,
-      biome.water ?? 0x1a3a32,
-    );
-  }
-
-  // Night Neon Strip — cyan / magenta lamp posts
-  if (biome.props === "neon") {
-    plantNeonStrip(group, path, clearance, poses, dummy);
-  }
-
-  // Industrial Docks — containers + crane masts
-  if (biome.props === "docks") {
-    plantDockProps(group, path, clearance, poses, dummy, bounds);
-  }
-
-  // Arctic Night — ice boulders + aurora sheets
-  if (biome.props === "ice") {
-    plantArcticProps(group, path, clearance, poses, dummy, bounds);
   }
 }
 
@@ -4725,88 +4272,28 @@ function plantInfieldGrove(
   if (
     biome.props === "city" ||
     biome.props === "mountains" ||
-    biome.props === "yard" ||
-    biome.props === "docks" ||
-    biome.props === "neon" ||
-    biome.props === "lava" ||
-    biome.props === "ice"
+    biome.props === "yard"
   ) {
     return;
   }
   if (biome.vegetation === "none") return;
 
   // Forest Loop — dense simple deciduous grove in the infield
-  if (biome.id === "forest" || biome.id === "rainforest" || biome.id === "autumn") {
+  if (biome.id === "forest") {
     plantForestInfieldGrove(
       group,
       path,
       clearance,
       bounds,
       sceneryScale,
-      biome.id === "autumn"
-        ? VEG_MATS.autumn
-        : biome.id === "rainforest"
-          ? VEG_MATS.rainforest
-          : VEG_MATS.trees,
+      VEG_MATS.trees,
     );
     return;
   }
 
   // Meadow Sweep — dense grove + four farmer's plots (trees cleared from each)
-  if (biome.id === "meadow" || biome.vegetation === "sparse" || biome.vegetation === "acacia") {
+  if (biome.id === "meadow" || biome.vegetation === "sparse") {
     if (sceneryScale < 0.55) return; // menu backdrop: skip heavy meadow park
-    if (biome.vegetation === "acacia") {
-      // Light savanna infield — sparse acacias only
-      const points = collectSpacedInfieldPoints(path, clearance, bounds, {
-        count: Math.round(28 * Math.max(0.25, Math.min(1, sceneryScale))),
-        minSep: 11,
-        clearFoot: 2.8,
-      });
-      if (!points.length) return;
-      const poses: TreePose[] = points.map(({ x, z, i }) => ({
-        x,
-        z,
-        scale: 0.85 + hash2(i, 7) * 0.7,
-        jitter: hash2(i, 11),
-      }));
-      // Reuse outfield planter via a tiny temporary group path — plant directly
-      const mats = VEG_MATS.acacia;
-      const trunkGeo = new THREE.CylinderGeometry(0.16, 0.22, 2.2, 5);
-      const canopyGeo = new THREE.SphereGeometry(1.6, 6, 4);
-      const trunks = new THREE.InstancedMesh(trunkGeo, mats.trunk, poses.length);
-      trunks.count = 0;
-      trunks.userData.sharedVegMat = true;
-      const canopies = mats.canopy.map((mat) => {
-        const mesh = new THREE.InstancedMesh(canopyGeo, mat, poses.length);
-        mesh.count = 0;
-        mesh.userData.sharedVegMat = true;
-        return mesh;
-      });
-      const dummy = new THREE.Object3D();
-      for (const pose of poses) {
-        dummy.position.set(pose.x, 0.95 * pose.scale, pose.z);
-        dummy.scale.set(pose.scale, pose.scale, pose.scale);
-        dummy.rotation.set(0, pose.jitter * 6, 0);
-        dummy.updateMatrix();
-        trunks.setMatrixAt(trunks.count++, dummy.matrix);
-        const ci = Math.floor(pose.jitter * canopies.length) % canopies.length;
-        const cr = 1.15 + pose.jitter * 0.35;
-        dummy.position.set(pose.x, 2.15 * pose.scale, pose.z);
-        dummy.scale.set(cr * 1.45, cr * 0.42, cr * 1.45);
-        dummy.updateMatrix();
-        canopies[ci]!.setMatrixAt(canopies[ci]!.count++, dummy.matrix);
-      }
-      trunks.instanceMatrix.needsUpdate = true;
-      trunks.computeBoundingSphere();
-      group.add(trunks);
-      for (const canopy of canopies) {
-        if (!canopy.count) continue;
-        canopy.instanceMatrix.needsUpdate = true;
-        canopy.computeBoundingSphere();
-        group.add(canopy);
-      }
-      return;
-    }
     plantMeadowInfieldGrove(group, path, clearance, bounds);
     return;
   }
@@ -4831,7 +4318,7 @@ function plantInfieldGrove(
     return;
   }
 
-  const isPine = biome.vegetation === "pines" || biome.vegetation === "cypress";
+  const isPine = biome.vegetation === "pines";
   const isCactus = biome.vegetation === "cactus";
   const mats = vegMatsFor(biome);
 
@@ -4839,7 +4326,7 @@ function plantInfieldGrove(
     ? new THREE.CylinderGeometry(0.18, 0.22, 2.4, 5)
     : new THREE.CylinderGeometry(0.22, 0.3, isPine ? 2.2 : 1.2, 5);
   const canopyGeo = isPine
-    ? new THREE.ConeGeometry(biome.vegetation === "cypress" ? 0.85 : 1.1, 2.6, 6)
+    ? new THREE.ConeGeometry(1.1, 2.6, 6)
     : isCactus
       ? new THREE.SphereGeometry(0.35, 5, 4)
       : new THREE.SphereGeometry(1.35, 6, 6);
@@ -5605,7 +5092,7 @@ export function createTrack(
   // the ground out beyond the backdrop ring or there's a see-through void band
   // under the mountains (sky where terrain should be).
   const groundPad =
-    biome.props === "mountains" || biome.props === "lava" || biome.props === "ice"
+    biome.props === "mountains"
       ? Math.min(290, Math.max(bounds.spanX, bounds.spanZ) * 0.55 + 180) + 60
       : 0;
   const ground = buildYardGround(bounds, biome.ground, grade, groundPad);

@@ -36,66 +36,6 @@
     "underpass": false
   },
   {
-    "id": "autumn-highlands",
-    "name": "Autumn Highlands",
-    "path": "map-previews/autumn-highlands.svg",
-    "underpass": false
-  },
-  {
-    "id": "volcano-rim",
-    "name": "Volcano Rim",
-    "path": "map-previews/volcano-rim.svg",
-    "underpass": true
-  },
-  {
-    "id": "swamp-bayou",
-    "name": "Swamp Bayou",
-    "path": "map-previews/swamp-bayou.svg",
-    "underpass": false
-  },
-  {
-    "id": "night-neon-strip",
-    "name": "Night Neon Strip",
-    "path": "map-previews/night-neon-strip.svg",
-    "underpass": true
-  },
-  {
-    "id": "rainforest-canopy",
-    "name": "Rainforest Canopy",
-    "path": "map-previews/rainforest-canopy.svg",
-    "underpass": false
-  },
-  {
-    "id": "industrial-docks",
-    "name": "Industrial Docks",
-    "path": "map-previews/industrial-docks.svg",
-    "underpass": false
-  },
-  {
-    "id": "savanna",
-    "name": "Savanna",
-    "path": "map-previews/savanna.svg",
-    "underpass": false
-  },
-  {
-    "id": "arctic-night",
-    "name": "Arctic Night",
-    "path": "map-previews/arctic-night.svg",
-    "underpass": false
-  },
-  {
-    "id": "cove-crossover",
-    "name": "Cove Crossover",
-    "path": "map-previews/cove-crossover.svg",
-    "underpass": true
-  },
-  {
-    "id": "prairie-ribbon",
-    "name": "Prairie Ribbon",
-    "path": "map-previews/prairie-ribbon.svg",
-    "underpass": false
-  },
-  {
     "id": "yard-drift",
     "name": "Yard Drift",
     "path": "map-previews/yard-drift.svg",

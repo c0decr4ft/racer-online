@@ -235,7 +235,7 @@ export class WeatherController {
     const preview = !!opts?.preview;
     // Vehicle headlights: true night weather only.
     const lightsOn = this.mode === "night" && (active || preview);
-    // Trackside neon / street PointLights: night weather OR biome lampDayBoost (neon / arctic).
+    // Trackside street PointLights: night weather OR biome lampDayBoost.
     const trackLampsOn =
       (active || preview) &&
       (this.mode === "night" ||

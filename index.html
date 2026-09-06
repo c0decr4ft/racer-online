@@ -107,7 +107,7 @@
       </div>
 
       <div class="version-switcher" id="version-switcher">
-        <span id="version-badge" class="version-badge" aria-label="Version 3.3">v3.3</span>
+        <span id="version-badge" class="version-badge" aria-label="Version 6.4">v6.4</span>
       </div>
 
       <div id="home-corner-btns" class="home-corner-btns">
@@ -502,9 +502,11 @@
             <p class="eyebrow">SATS RACER</p>
             <h1>MULTIPLAYER</h1>
             <p class="tagline">Create a private room or join with a password</p>
-            <button id="mp-goto-create" type="button">CREATE ROOM</button>
-            <button id="mp-goto-join" class="btn-ghost" type="button">JOIN ROOM</button>
-            <button id="mp-back-btn" class="btn-ghost" type="button">BACK</button>
+            <div class="mp-entry-actions">
+              <button id="mp-goto-create" type="button">CREATE ROOM</button>
+              <button id="mp-goto-join" class="btn-ghost" type="button">JOIN ROOM</button>
+              <button id="mp-back-btn" class="btn-ghost" type="button">BACK</button>
+            </div>
           </div>
 
           <div id="mp-create" class="mp-view hidden">
@@ -645,8 +647,10 @@
           <h1 id="map-select-title">MAP</h1>
           <p class="tagline" id="map-select-tagline">Pick a circuit</p>
           <div id="map-grid" class="map-grid" role="listbox" aria-label="Courses"></div>
-          <button id="test-drift-btn" type="button">TEST DRIFT</button>
-          <button id="map-select-back" class="btn-ghost" type="button">BACK</button>
+          <div class="map-select-actions">
+            <button id="test-drift-btn" type="button">TEST DRIFT</button>
+            <button id="map-select-back" class="btn-ghost" type="button">BACK</button>
+          </div>
         </div>
       </div>
 
