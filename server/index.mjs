@@ -186,6 +186,16 @@ const TRACK_IDS = [
   "meadow-sweep",
   "canyon-cut",
   "oval-circuit",
+  "autumn-highlands",
+  "volcano-rim",
+  "swamp-bayou",
+  "night-neon-strip",
+  "rainforest-canopy",
+  "industrial-docks",
+  "savanna",
+  "arctic-night",
+  "cove-crossover",
+  "prairie-ribbon",
 ];
 const DEFAULT_TRACK_ID = TRACK_IDS[0];
 

@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import type { BiomeAtmosphere } from "./biomes";
 import { setVehicleHeadlights } from "./car";
 
 export type WeatherMode = "dry" | "night" | "rain";
@@ -135,6 +136,8 @@ export class WeatherController {
   private rain: THREE.Points | null = null;
   private rainVel: Float32Array | null = null;
   private trackRoot: THREE.Object3D | null = null;
+  /** Biome sky / lamp overrides from the active track root. */
+  private biomeAtmo: BiomeAtmosphere | null = null;
   /** Cached street PointLights — toggled by night + distance (not full traverse each frame). */
   private nightLamps: THREE.PointLight[] = [];
   private lastHeadlightsOn: boolean | null = null;
@@ -177,6 +180,9 @@ export class WeatherController {
     this.trackRoot = root;
     this.nightLamps = [];
     this.lastNightLampActive = null;
+    const raw = root?.userData?.biomeAtmosphere;
+    this.biomeAtmo =
+      raw && typeof raw === "object" ? (raw as BiomeAtmosphere) : null;
     if (root) {
       root.traverse((obj) => {
         if (obj instanceof THREE.PointLight && obj.userData.nightLamp) {
@@ -184,8 +190,8 @@ export class WeatherController {
         }
       });
     }
-    this.tintSurfaces(PRESETS[this.mode]);
-    this.applyNightLamps(this.mode === "night");
+    // Re-apply so biome sky / lamp boost pick up the new root.
+    this.applyAtmosphere();
   }
 
   setMode(mode: WeatherMode) {
@@ -227,8 +233,14 @@ export class WeatherController {
     },
   ) {
     const preview = !!opts?.preview;
-    // Night only: on for live sessions (incl. pause) and create-room / lobby preview.
+    // Vehicle headlights: true night weather only.
     const lightsOn = this.mode === "night" && (active || preview);
+    // Trackside neon / street PointLights: night weather OR biome lampDayBoost (neon / arctic).
+    const trackLampsOn =
+      (active || preview) &&
+      (this.mode === "night" ||
+        (this.mode === "dry" &&
+          (!!this.biomeAtmo?.lampDayBoost || (this.biomeAtmo?.nightBias ?? 0) >= 0.45)));
     if (playerMesh) {
       const meshChanged = this.lastHeadlightMesh !== playerMesh;
       if (meshChanged || this.lastHeadlightsOn !== lightsOn) {
@@ -255,9 +267,9 @@ export class WeatherController {
     }
 
     // Street PointLights: only near the player (far poles keep emissive bulbs only).
-    if (lightsOn !== this.lastNightLampActive || lightsOn) {
-      this.cullNightLamps(lightsOn, playerPos);
-      this.lastNightLampActive = lightsOn;
+    if (trackLampsOn !== this.lastNightLampActive || trackLampsOn) {
+      this.cullNightLamps(trackLampsOn, playerPos);
+      this.lastNightLampActive = trackLampsOn;
     }
 
     const wantParticles = this.particlesEnabled && opts?.particles !== false;
@@ -349,7 +361,48 @@ export class WeatherController {
   }
 
   private applyAtmosphere() {
-    const p = PRESETS[this.mode];
+    const p = { ...PRESETS[this.mode] };
+    const biome = this.biomeAtmo;
+    if (biome && this.mode === "dry") {
+      const bias = Math.max(0, Math.min(1, biome.nightBias ?? (biome.lampDayBoost ? 0.72 : 0)));
+      p.clear = biome.sky;
+      p.fog = biome.fog;
+      p.hemiSky = biome.hemiSky;
+      p.hemiGround = biome.hemiGround;
+      p.sunColor = biome.sunColor;
+      if (biome.sunScale != null) p.sunIntensity *= biome.sunScale;
+      if (biome.fogNear != null) p.fogNear = biome.fogNear;
+      if (biome.fogFar != null) p.fogFar = biome.fogFar;
+      if (bias > 0) {
+        const night = PRESETS.night;
+        const mix = (a: number, b: number, t: number) => {
+          const ca = this._tintScratch.setHex(a);
+          ca.lerp(this._tintMix.setHex(b), t);
+          return ca.getHex();
+        };
+        p.clear = mix(biome.sky, night.clear, bias * 0.45);
+        p.fog = mix(biome.fog, night.fog, bias * 0.45);
+        p.sunColor = mix(biome.sunColor, night.sunColor, bias);
+        p.sunIntensity =
+          PRESETS.dry.sunIntensity * (biome.sunScale ?? 1) * (1 - bias) +
+          night.sunIntensity * bias;
+        p.hemiIntensity =
+          PRESETS.dry.hemiIntensity * (1 - bias) + night.hemiIntensity * bias;
+        p.ambient = PRESETS.dry.ambient * (1 - bias) + night.ambient * bias;
+        p.exposure = PRESETS.dry.exposure * (1 - bias * 0.22);
+      }
+    } else if (biome && this.mode !== "dry") {
+      const nudge = this.mode === "night" ? 0.35 : 0.2;
+      const mix = (a: number, b: number) => {
+        const ca = this._tintScratch.setHex(a);
+        ca.lerp(this._tintMix.setHex(b), nudge);
+        return ca.getHex();
+      };
+      p.clear = mix(p.clear, biome.sky);
+      p.fog = mix(p.fog, biome.fog);
+      p.hemiGround = mix(p.hemiGround, biome.hemiGround);
+    }
+
     this.renderer.setClearColor(p.clear, 1);
     this.renderer.toneMappingExposure = p.exposure;
     this.scene.background = new THREE.Color(p.clear);
@@ -365,7 +418,10 @@ export class WeatherController {
     this.placeSun(this._sunFollow);
 
     this.tintSurfaces(p);
-    this.applyNightLamps(this.mode === "night");
+    const lampBoost =
+      !!biome?.lampDayBoost || (biome?.nightBias ?? 0) >= 0.45;
+    const nightLampsOn = this.mode === "night" || (this.mode === "dry" && lampBoost);
+    this.applyNightLamps(nightLampsOn);
     this.ensureRain(this.mode === "rain");
   }
 

@@ -1,14 +1,15 @@
 import * as THREE from "three";
-import { biomeForTrack, type BiomeStyle } from "./biomes";
+import { biomeForTrack, atmosphereForBiome, type BiomeStyle } from "./biomes";
 import {
   DEFAULT_TRACK_ID,
   getTrackDef,
   isDriftTrack,
+  trackHasUnderpass,
   type TrackDef,
 } from "./trackDefs";
 
 export type { TrackDef };
-export { TRACKS, DEFAULT_TRACK_ID, DRIFT_TRACK_ID, getTrackDef, randomTrackId, isTrackId, isDriftTrack } from "./trackDefs";
+export { TRACKS, DEFAULT_TRACK_ID, DRIFT_TRACK_ID, getTrackDef, randomTrackId, isTrackId, isDriftTrack, trackHasUnderpass } from "./trackDefs";
 
 export type TrackData = {
   id: string;
@@ -88,6 +89,14 @@ const VEG_MATS = {
   cactus: makeTreeMats(0x3a6a2a, [0x3a6a2a, 0x458034, 0x2f5a24]),
   // Meadow: single canopy green — darker than meadow ground (0x8fbc4a) so groves read clearly
   sparse: makeTreeMats(0x5a3a22, [0x2f7a24]),
+  // Autumn Highlands — orange / rust / crimson canopy mix
+  autumn: makeTreeMats(0x4a3020, [0xc45a18, 0xd87820, 0xa83810, 0xe09028]),
+  // Swamp Bayou — tall cypress greens
+  cypress: makeTreeMats(0x3a2e1c, [0x2a5a38, 0x1e4a30, 0x356a42]),
+  // Rainforest Canopy — deep layered greens
+  rainforest: makeTreeMats(0x3a2818, [0x0e5a28, 0x167038, 0x0a4820, 0x1e8040]),
+  // Savanna — flat acacia canopy ochres
+  acacia: makeTreeMats(0x5a4028, [0x5a7a28, 0x6a8a30, 0x4a6820]),
 };
 
 /** Shared mats must not be disposed with a track swap. */
@@ -529,6 +538,29 @@ function plantPalmPoses(
   }
 }
 
+function vegMatsFor(biome: BiomeStyle) {
+  switch (biome.vegetation) {
+    case "pines":
+      return VEG_MATS.pines;
+    case "palms":
+      return VEG_MATS.palms;
+    case "cactus":
+      return VEG_MATS.cactus;
+    case "sparse":
+      return VEG_MATS.sparse;
+    case "autumn":
+      return VEG_MATS.autumn;
+    case "cypress":
+      return VEG_MATS.cypress;
+    case "rainforest":
+      return VEG_MATS.rainforest;
+    case "acacia":
+      return VEG_MATS.acacia;
+    default:
+      return VEG_MATS.trees;
+  }
+}
+
 function plantVegetation(
   group: THREE.Group,
   path: THREE.CatmullRomCurve3,
@@ -537,27 +569,23 @@ function plantVegetation(
   clearance?: PathClearance,
 ) {
   if (biome.vegetation === "none") return 0;
-  const mats =
-    biome.vegetation === "pines"
-      ? VEG_MATS.pines
-      : biome.vegetation === "palms"
-        ? VEG_MATS.palms
-        : biome.vegetation === "cactus"
-          ? VEG_MATS.cactus
-          : biome.vegetation === "sparse"
-            ? VEG_MATS.sparse
-            : VEG_MATS.trees;
+  const mats = vegMatsFor(biome);
   const isMeadow = biome.id === "meadow";
+  const isRainforest = biome.id === "rainforest";
   // Meadow biome.density is intentionally low for props feel — outfield trees use a dense park ring
-  const vegDensity = isMeadow ? Math.max(biome.density, 0.92) : biome.density;
+  const vegDensity = isMeadow
+    ? Math.max(biome.density, 0.92)
+    : isRainforest
+      ? Math.max(biome.density, 0.95)
+      : biome.density;
   const collected = collectPlantPoses(path, roadHalf, vegDensity, clearance, {
-    forest: biome.id === "forest",
+    forest: biome.id === "forest" || isRainforest,
     meadow: isMeadow,
   });
   const clear = clearance ?? collected.clearance;
-  // Coast: keep palms on sand — shoreline dips into the sea past the local beach width
+  // Coast only: keep palms on sand (neon palms use open outfield poses)
   const poses =
-    biome.vegetation === "palms"
+    biome.vegetation === "palms" && biome.props === "water"
       ? filterPosesToCoastSand(collected.poses, path, clear)
       : collected.poses;
   const { bounds } = collected;
@@ -591,16 +619,25 @@ function plantVegetation(
     return poses.length;
   }
 
-  const isPine = biome.vegetation === "pines";
+  const isPine = biome.vegetation === "pines" || biome.vegetation === "cypress";
   const isCactus = biome.vegetation === "cactus";
+  const isAcacia = biome.vegetation === "acacia";
+  const isTall = isRainforest || biome.vegetation === "cypress";
   const trunkGeo = isCactus
     ? new THREE.CylinderGeometry(0.18, 0.22, 2.4, 5)
-    : new THREE.CylinderGeometry(0.22, 0.3, isPine ? 2.2 : 1.2, 5);
+    : new THREE.CylinderGeometry(
+        isAcacia ? 0.16 : 0.22,
+        isAcacia ? 0.22 : 0.3,
+        isPine || isTall ? 2.2 : 1.2,
+        5,
+      );
   const canopyGeo = isPine
-    ? new THREE.ConeGeometry(1.1, 2.6, 6)
+    ? new THREE.ConeGeometry(biome.vegetation === "cypress" ? 0.85 : 1.1, isTall ? 3.1 : 2.6, 6)
     : isCactus
       ? new THREE.SphereGeometry(0.35, 5, 4)
-      : new THREE.SphereGeometry(1.35, 6, 6);
+      : isAcacia
+        ? new THREE.SphereGeometry(1.6, 6, 4)
+        : new THREE.SphereGeometry(isRainforest ? 1.55 : 1.35, 6, 6);
   const dummy = new THREE.Object3D();
   const canopyMats = mats.canopy;
 
@@ -643,19 +680,37 @@ function plantVegetation(
 
     for (let i = 0; i < n; i++) {
       const { x, z, scale, jitter } = list[i]!;
-      const trunkH = isCactus || isPine ? 1.1 : 0.6;
-      dummy.position.set(x, trunkH * scale, z);
-      dummy.scale.set(scale, scale, scale);
+      const tallScale = isTall ? 1.15 + jitter * 0.25 : 1;
+      const trunkH = isCactus || isPine || isTall ? 1.1 : isAcacia ? 0.95 : 0.6;
+      dummy.position.set(x, trunkH * scale * tallScale, z);
+      dummy.scale.set(scale, scale * tallScale, scale);
       dummy.rotation.set(0, jitter * Math.PI * 2, 0);
       dummy.updateMatrix();
       trunks.setMatrixAt(i, dummy.matrix);
 
       const ci = Math.floor(jitter * canopyMats.length) % canopyMats.length;
       const canopy = canopies[ci]!;
-      const cy = isPine ? 2.2 * scale : isCactus ? 2.5 * scale : 2.0 * scale;
-      const cr = isCactus ? 0.9 + jitter * 0.3 : (1.35 * scale + jitter * 0.35) / 1.35;
+      const cy = isPine
+        ? 2.2 * scale * tallScale
+        : isCactus
+          ? 2.5 * scale
+          : isAcacia
+            ? 2.15 * scale
+            : isTall
+              ? 2.35 * scale * tallScale
+              : 2.0 * scale;
+      const cr = isCactus
+        ? 0.9 + jitter * 0.3
+        : isAcacia
+          ? 1.15 + jitter * 0.35
+          : (1.35 * scale + jitter * 0.35) / 1.35;
       dummy.position.set(x, cy, z);
-      dummy.scale.set(cr, isPine ? cr * 1.25 : cr, cr);
+      // Acacia: wide flat canopy; pines stay conical
+      dummy.scale.set(
+        isAcacia ? cr * 1.45 : cr,
+        isPine ? cr * 1.25 : isAcacia ? cr * 0.42 : cr,
+        isAcacia ? cr * 1.45 : cr,
+      );
       dummy.updateMatrix();
       canopy.setMatrixAt(canopy.count++, dummy.matrix);
 
@@ -917,13 +972,14 @@ function plantCoastWater(
   clearance: PathClearance,
   bounds: ReturnType<typeof pathBounds>,
   groundColor: number,
+  waterColor = 0x1a6a9a,
 ) {
   // Fully opaque — transparent water + depthWrite was z-fighting sand and
   // drawing dark shoreline-chord seams across beach / asphalt.
   const waterMat = new THREE.MeshStandardMaterial({
-    color: 0x1a6a9a,
-    metalness: 0.35,
-    roughness: 0.22,
+    color: waterColor,
+    metalness: waterColor === 0x1a6a9a ? 0.35 : 0.18,
+    roughness: waterColor === 0x1a6a9a ? 0.22 : 0.45,
     transparent: false,
     depthWrite: true,
     polygonOffset: true,
@@ -1414,6 +1470,302 @@ function filterPosesToCoastSand(
   });
 }
 
+/** Volcano Rim — basalt cones + glowing lava crack slabs. */
+function plantVolcanoProps(
+  group: THREE.Group,
+  path: THREE.CatmullRomCurve3,
+  clearance: PathClearance,
+  poses: TreePose[],
+  dummy: THREE.Object3D,
+  bounds: ReturnType<typeof pathBounds>,
+) {
+  const rockMat = new THREE.MeshStandardMaterial({
+    color: 0x2a2428,
+    roughness: 0.96,
+    metalness: 0.08,
+  });
+  const lavaMat = new THREE.MeshStandardMaterial({
+    color: 0xff5a18,
+    emissive: 0xff3a08,
+    emissiveIntensity: 1.4,
+    roughness: 0.55,
+    metalness: 0.15,
+  });
+  const rockGeo = new THREE.ConeGeometry(1.4, 3.2, 5);
+  const crackGeo = new THREE.BoxGeometry(1, 0.12, 1);
+  const rockN = Math.min(160, Math.max(36, Math.floor(poses.length * 0.2)));
+  const crackN = Math.min(90, Math.max(20, Math.floor(poses.length * 0.1)));
+  const rocks = new THREE.InstancedMesh(rockGeo, rockMat, rockN);
+  const cracks = new THREE.InstancedMesh(crackGeo, lavaMat, crackN);
+  rocks.count = 0;
+  cracks.count = 0;
+  for (let i = 0; i < poses.length && rocks.count < rockN; i++) {
+    if (hash2(i * 11, Math.round(poses[i]!.z)) < 0.55) continue;
+    const p = poses[i]!;
+    const s = 2.2 + p.jitter * 5.5;
+    if (!clearance.sceneryOk(p.x, p.z, s * 0.7)) continue;
+    dummy.position.set(p.x, s * 0.4, p.z);
+    dummy.scale.set(s * 0.7, s, s * 0.7);
+    dummy.rotation.set(0, p.jitter * 6, 0);
+    dummy.updateMatrix();
+    rocks.setMatrixAt(rocks.count++, dummy.matrix);
+  }
+  for (let i = 0; i < poses.length && cracks.count < crackN; i++) {
+    if (hash2(i * 17, Math.round(poses[i]!.x)) < 0.7) continue;
+    const p = poses[i]!;
+    const s = 3 + p.jitter * 8;
+    if (!clearance.sceneryOk(p.x, p.z, s * 0.5)) continue;
+    dummy.position.set(p.x, 0.08, p.z);
+    dummy.scale.set(s, 1, s * (0.25 + p.jitter * 0.35));
+    dummy.rotation.set(0, p.jitter * 5, 0);
+    dummy.updateMatrix();
+    cracks.setMatrixAt(cracks.count++, dummy.matrix);
+  }
+  rocks.instanceMatrix.needsUpdate = true;
+  cracks.instanceMatrix.needsUpdate = true;
+  rocks.computeBoundingSphere();
+  cracks.computeBoundingSphere();
+  group.add(rocks);
+  group.add(cracks);
+
+  // Distant ash cones on the horizon ring
+  const ringN = 16;
+  const far = new THREE.InstancedMesh(rockGeo, rockMat, ringN);
+  far.count = 0;
+  const radius = Math.max(bounds.spanX, bounds.spanZ) * 0.62 + 40;
+  for (let i = 0; i < ringN; i++) {
+    const th = (i / ringN) * Math.PI * 2 + 0.2;
+    const x = bounds.cx + Math.cos(th) * radius;
+    const z = bounds.cz + Math.sin(th) * radius;
+    const h = 18 + hash2(i, 3) * 28;
+    dummy.position.set(x, h * 0.45, z);
+    dummy.scale.set(10 + hash2(i, 5) * 8, h, 10 + hash2(i, 7) * 8);
+    dummy.rotation.set(0, th, 0);
+    dummy.updateMatrix();
+    far.setMatrixAt(far.count++, dummy.matrix);
+  }
+  far.instanceMatrix.needsUpdate = true;
+  far.computeBoundingSphere();
+  group.add(far);
+  void path;
+}
+
+/** Night Neon Strip — alternating cyan / magenta neon posts. */
+function plantNeonStrip(
+  group: THREE.Group,
+  path: THREE.CatmullRomCurve3,
+  clearance: PathClearance,
+  poses: TreePose[],
+  dummy: THREE.Object3D,
+) {
+  const postMat = new THREE.MeshStandardMaterial({
+    color: 0x1a1a28,
+    metalness: 0.7,
+    roughness: 0.35,
+  });
+  const cyanMat = makeNightLampMaterial(0.55, 7.5);
+  cyanMat.color.setHex(0x40f0e0);
+  cyanMat.emissive.setHex(0x20e0d0);
+  const magentaMat = makeNightLampMaterial(0.55, 7.5);
+  magentaMat.color.setHex(0xf040c0);
+  magentaMat.emissive.setHex(0xe020a8);
+  const postGeo = new THREE.CylinderGeometry(0.1, 0.14, 7.2, 5);
+  const lampGeo = new THREE.BoxGeometry(0.55, 0.35, 0.55);
+  const lightCount = Math.min(96, Math.max(32, Math.floor(poses.length * 0.12)));
+  const posts = new THREE.InstancedMesh(postGeo, postMat, lightCount);
+  const cyans = new THREE.InstancedMesh(lampGeo, cyanMat, Math.ceil(lightCount / 2));
+  const magentas = new THREE.InstancedMesh(lampGeo, magentaMat, Math.ceil(lightCount / 2));
+  posts.count = 0;
+  cyans.count = 0;
+  magentas.count = 0;
+  for (let i = 0; i < poses.length && posts.count < lightCount; i++) {
+    if (hash2(i * 23, Math.round(poses[i]!.z)) < 0.62) continue;
+    const p = poses[i]!;
+    if (!clearance.sceneryOk(p.x, p.z, 1.0)) continue;
+    dummy.position.set(p.x, 3.6, p.z);
+    dummy.scale.set(1, 1, 1);
+    dummy.rotation.set(0, 0, 0);
+    dummy.updateMatrix();
+    posts.setMatrixAt(posts.count++, dummy.matrix);
+    dummy.position.set(p.x, 7.1, p.z);
+    dummy.updateMatrix();
+    const cyan = posts.count % 2 === 1;
+    if (cyan) cyans.setMatrixAt(cyans.count++, dummy.matrix);
+    else magentas.setMatrixAt(magentas.count++, dummy.matrix);
+    if (posts.count % 2 === 1) {
+      const col = cyan ? 0x40f0e0 : 0xf040c0;
+      const pl = makeNightPointLight(p.x, 6.8, p.z, 1.8, 24);
+      pl.color.setHex(col);
+      group.add(pl);
+    }
+  }
+  posts.instanceMatrix.needsUpdate = true;
+  cyans.instanceMatrix.needsUpdate = true;
+  magentas.instanceMatrix.needsUpdate = true;
+  posts.computeBoundingSphere();
+  cyans.computeBoundingSphere();
+  magentas.computeBoundingSphere();
+  group.add(posts);
+  group.add(cyans);
+  group.add(magentas);
+  void path;
+}
+
+/** Industrial Docks — shipping containers + crane masts. */
+function plantDockProps(
+  group: THREE.Group,
+  path: THREE.CatmullRomCurve3,
+  clearance: PathClearance,
+  poses: TreePose[],
+  dummy: THREE.Object3D,
+  bounds: ReturnType<typeof pathBounds>,
+) {
+  const colors = [0xc04020, 0x2a6aaa, 0xd0a020, 0x3a8a50, 0x6a6e78];
+  const boxGeo = new THREE.BoxGeometry(1, 1, 1);
+  const count = Math.min(140, Math.max(40, Math.floor(poses.length * 0.18)));
+  const mats = colors.map(
+    (c) =>
+      new THREE.MeshStandardMaterial({
+        color: c,
+        roughness: 0.72,
+        metalness: 0.28,
+      }),
+  );
+  const meshes = mats.map((mat) => {
+    const m = new THREE.InstancedMesh(boxGeo, mat, count);
+    m.count = 0;
+    m.castShadow = false;
+    m.receiveShadow = true;
+    return m;
+  });
+  for (let i = 0; i < poses.length; i++) {
+    if (hash2(i * 9, Math.round(poses[i]!.x)) < 0.58) continue;
+    const p = poses[i]!;
+    const w = 4.5 + p.jitter * 3;
+    const h = 2.4 + p.jitter * 2.2;
+    const d = 2.2 + hash2(i, 4) * 1.4;
+    if (!clearance.sceneryOk(p.x, p.z, Math.max(w, d) * 0.55)) continue;
+    const mi = Math.floor(p.jitter * meshes.length) % meshes.length;
+    const mesh = meshes[mi]!;
+    if (mesh.count >= count) continue;
+    dummy.position.set(p.x, h * 0.5, p.z);
+    dummy.scale.set(w, h, d);
+    dummy.rotation.set(0, p.jitter * 6, 0);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(mesh.count++, dummy.matrix);
+  }
+  for (const mesh of meshes) {
+    if (!mesh.count) continue;
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.computeBoundingSphere();
+    group.add(mesh);
+  }
+
+  // Crane masts around the outer ring
+  const steel = new THREE.MeshStandardMaterial({
+    color: 0x8a9098,
+    metalness: 0.65,
+    roughness: 0.35,
+  });
+  const mastGeo = new THREE.BoxGeometry(0.55, 1, 0.55);
+  const boomGeo = new THREE.BoxGeometry(1, 0.35, 0.35);
+  const craneN = 10;
+  const masts = new THREE.InstancedMesh(mastGeo, steel, craneN);
+  const booms = new THREE.InstancedMesh(boomGeo, steel, craneN);
+  masts.count = 0;
+  booms.count = 0;
+  const radius = Math.max(bounds.spanX, bounds.spanZ) * 0.48 + 18;
+  for (let i = 0; i < craneN; i++) {
+    const th = (i / craneN) * Math.PI * 2 + 0.4;
+    const x = bounds.cx + Math.cos(th) * radius;
+    const z = bounds.cz + Math.sin(th) * radius;
+    if (!clearance.sceneryOk(x, z, 6)) continue;
+    const h = 22 + hash2(i, 2) * 14;
+    dummy.position.set(x, h * 0.5, z);
+    dummy.scale.set(1, h, 1);
+    dummy.rotation.set(0, th, 0);
+    dummy.updateMatrix();
+    masts.setMatrixAt(masts.count++, dummy.matrix);
+    dummy.position.set(x + Math.cos(th) * 8, h * 0.85, z + Math.sin(th) * 8);
+    dummy.scale.set(16, 1, 1);
+    dummy.rotation.set(0, th, 0.08);
+    dummy.updateMatrix();
+    booms.setMatrixAt(booms.count++, dummy.matrix);
+  }
+  masts.instanceMatrix.needsUpdate = true;
+  booms.instanceMatrix.needsUpdate = true;
+  masts.computeBoundingSphere();
+  booms.computeBoundingSphere();
+  group.add(masts);
+  group.add(booms);
+  void path;
+}
+
+/** Arctic Night — ice boulders + soft aurora curtains. */
+function plantArcticProps(
+  group: THREE.Group,
+  path: THREE.CatmullRomCurve3,
+  clearance: PathClearance,
+  poses: TreePose[],
+  dummy: THREE.Object3D,
+  bounds: ReturnType<typeof pathBounds>,
+) {
+  const iceMat = new THREE.MeshStandardMaterial({
+    color: 0xd0e4f8,
+    roughness: 0.35,
+    metalness: 0.2,
+    emissive: 0x6088b0,
+    emissiveIntensity: 0.15,
+  });
+  const geo = new THREE.DodecahedronGeometry(1, 0);
+  const count = Math.min(120, Math.max(30, Math.floor(poses.length * 0.16)));
+  const ice = new THREE.InstancedMesh(geo, iceMat, count);
+  ice.count = 0;
+  for (let i = 0; i < poses.length && ice.count < count; i++) {
+    if (hash2(i * 15, Math.round(poses[i]!.z)) < 0.6) continue;
+    const p = poses[i]!;
+    const s = 2 + p.jitter * 5;
+    if (!clearance.sceneryOk(p.x, p.z, s * 0.7)) continue;
+    dummy.position.set(p.x, s * 0.45, p.z);
+    dummy.scale.set(s, s * (0.8 + p.jitter * 0.5), s);
+    dummy.rotation.set(p.jitter, p.jitter * 4, 0.2);
+    dummy.updateMatrix();
+    ice.setMatrixAt(ice.count++, dummy.matrix);
+  }
+  ice.instanceMatrix.needsUpdate = true;
+  ice.computeBoundingSphere();
+  group.add(ice);
+
+  // Aurora sheets — translucent emissive ribbons in the sky
+  const auroraColors = [0x40e0a8, 0x60a0ff, 0xa060e0];
+  for (let a = 0; a < 3; a++) {
+    const mat = new THREE.MeshStandardMaterial({
+      color: auroraColors[a]!,
+      emissive: auroraColors[a]!,
+      emissiveIntensity: 0.85,
+      transparent: true,
+      opacity: 0.28,
+      roughness: 1,
+      metalness: 0,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const sheet = new THREE.Mesh(new THREE.PlaneGeometry(90 + a * 20, 18 + a * 4, 1, 1), mat);
+    const th = a * 0.9 + 0.4;
+    const r = Math.max(bounds.spanX, bounds.spanZ) * 0.35;
+    sheet.position.set(
+      bounds.cx + Math.cos(th) * r * 0.3,
+      42 + a * 8,
+      bounds.cz + Math.sin(th) * r * 0.3,
+    );
+    sheet.rotation.set(-0.15, th + Math.PI / 2, 0.2 * (a - 1));
+    sheet.renderOrder = 3;
+    group.add(sheet);
+  }
+  void path;
+  void clearance;
+}
+
 /** Rocks, mesas, mountains, water, city — never on ribbon or infield. */
 function plantBiomeProps(
   group: THREE.Group,
@@ -1663,6 +2015,38 @@ function plantBiomeProps(
   // City Circuit — downtown outfield + park in the infield
   if (biome.props === "city") {
     plantCity(group, path, clearance, dummy, bounds);
+  }
+
+  // Volcano Rim — dark basalt + emissive lava cracks
+  if (biome.props === "lava") {
+    plantVolcanoProps(group, path, clearance, poses, dummy, bounds);
+  }
+
+  // Swamp Bayou — murky water wrap (no beach toys)
+  if (biome.props === "swamp") {
+    plantCoastWater(
+      group,
+      path,
+      clearance,
+      bounds,
+      biome.ground,
+      biome.water ?? 0x1a3a32,
+    );
+  }
+
+  // Night Neon Strip — cyan / magenta lamp posts
+  if (biome.props === "neon") {
+    plantNeonStrip(group, path, clearance, poses, dummy);
+  }
+
+  // Industrial Docks — containers + crane masts
+  if (biome.props === "docks") {
+    plantDockProps(group, path, clearance, poses, dummy, bounds);
+  }
+
+  // Arctic Night — ice boulders + aurora sheets
+  if (biome.props === "ice") {
+    plantArcticProps(group, path, clearance, poses, dummy, bounds);
   }
 }
 
@@ -3718,6 +4102,7 @@ function plantForestInfieldGrove(
   clearance: PathClearance,
   bounds: ReturnType<typeof pathBounds>,
   sceneryScale = 1,
+  mats = VEG_MATS.trees,
 ) {
   const countScale = Math.max(0.25, Math.min(1, sceneryScale));
   const points = collectSpacedInfieldPoints(path, clearance, bounds, {
@@ -3727,10 +4112,8 @@ function plantForestInfieldGrove(
   });
   if (!points.length) return;
 
-  const mats = VEG_MATS.trees;
   const trunkGeo = new THREE.CylinderGeometry(0.22, 0.3, 1.2, 5);
   const canopyGeo = new THREE.SphereGeometry(1.35, 6, 6);
-  const canopyMat = mats.canopy[0]!;
   const dummy = new THREE.Object3D();
 
   const n = points.length;
@@ -3738,10 +4121,13 @@ function plantForestInfieldGrove(
   trunks.count = 0;
   trunks.castShadow = false;
   trunks.userData.sharedVegMat = true;
-  const canopies = new THREE.InstancedMesh(canopyGeo, canopyMat, n);
-  canopies.count = 0;
-  canopies.castShadow = false;
-  canopies.userData.sharedVegMat = true;
+  const canopyMeshes = mats.canopy.map((mat) => {
+    const mesh = new THREE.InstancedMesh(canopyGeo, mat, n);
+    mesh.count = 0;
+    mesh.castShadow = false;
+    mesh.userData.sharedVegMat = true;
+    return mesh;
+  });
 
   for (const { x, z, i } of points) {
     const scale = 0.85 + hash2(i, 7) * 0.75;
@@ -3751,11 +4137,13 @@ function plantForestInfieldGrove(
     dummy.updateMatrix();
     trunks.setMatrixAt(trunks.count++, dummy.matrix);
 
+    const ci = Math.floor(hash2(i, 13) * canopyMeshes.length) % canopyMeshes.length;
+    const canopy = canopyMeshes[ci]!;
     const cr = scale * (1.15 + hash2(i, 17) * 0.3);
     dummy.position.set(x, 2.05 * scale, z);
     dummy.scale.set(cr, cr * 1.05, cr);
     dummy.updateMatrix();
-    canopies.setMatrixAt(canopies.count++, dummy.matrix);
+    canopy.setMatrixAt(canopy.count++, dummy.matrix);
   }
 
   if (trunks.count) {
@@ -3763,10 +4151,11 @@ function plantForestInfieldGrove(
     trunks.computeBoundingSphere();
     group.add(trunks);
   }
-  if (canopies.count) {
-    canopies.instanceMatrix.needsUpdate = true;
-    canopies.computeBoundingSphere();
-    group.add(canopies);
+  for (const canopy of canopyMeshes) {
+    if (!canopy.count) continue;
+    canopy.instanceMatrix.needsUpdate = true;
+    canopy.computeBoundingSphere();
+    group.add(canopy);
   }
 }
 
@@ -4333,18 +4722,91 @@ function plantInfieldGrove(
   sceneryScale = 1,
 ) {
   // City + Summit already plant dedicated infield scenery
-  if (biome.props === "city" || biome.props === "mountains" || biome.props === "yard") return;
+  if (
+    biome.props === "city" ||
+    biome.props === "mountains" ||
+    biome.props === "yard" ||
+    biome.props === "docks" ||
+    biome.props === "neon" ||
+    biome.props === "lava" ||
+    biome.props === "ice"
+  ) {
+    return;
+  }
   if (biome.vegetation === "none") return;
 
   // Forest Loop — dense simple deciduous grove in the infield
-  if (biome.id === "forest") {
-    plantForestInfieldGrove(group, path, clearance, bounds, sceneryScale);
+  if (biome.id === "forest" || biome.id === "rainforest" || biome.id === "autumn") {
+    plantForestInfieldGrove(
+      group,
+      path,
+      clearance,
+      bounds,
+      sceneryScale,
+      biome.id === "autumn"
+        ? VEG_MATS.autumn
+        : biome.id === "rainforest"
+          ? VEG_MATS.rainforest
+          : VEG_MATS.trees,
+    );
     return;
   }
 
   // Meadow Sweep — dense grove + four farmer's plots (trees cleared from each)
-  if (biome.id === "meadow" || biome.vegetation === "sparse") {
+  if (biome.id === "meadow" || biome.vegetation === "sparse" || biome.vegetation === "acacia") {
     if (sceneryScale < 0.55) return; // menu backdrop: skip heavy meadow park
+    if (biome.vegetation === "acacia") {
+      // Light savanna infield — sparse acacias only
+      const points = collectSpacedInfieldPoints(path, clearance, bounds, {
+        count: Math.round(28 * Math.max(0.25, Math.min(1, sceneryScale))),
+        minSep: 11,
+        clearFoot: 2.8,
+      });
+      if (!points.length) return;
+      const poses: TreePose[] = points.map(({ x, z, i }) => ({
+        x,
+        z,
+        scale: 0.85 + hash2(i, 7) * 0.7,
+        jitter: hash2(i, 11),
+      }));
+      // Reuse outfield planter via a tiny temporary group path — plant directly
+      const mats = VEG_MATS.acacia;
+      const trunkGeo = new THREE.CylinderGeometry(0.16, 0.22, 2.2, 5);
+      const canopyGeo = new THREE.SphereGeometry(1.6, 6, 4);
+      const trunks = new THREE.InstancedMesh(trunkGeo, mats.trunk, poses.length);
+      trunks.count = 0;
+      trunks.userData.sharedVegMat = true;
+      const canopies = mats.canopy.map((mat) => {
+        const mesh = new THREE.InstancedMesh(canopyGeo, mat, poses.length);
+        mesh.count = 0;
+        mesh.userData.sharedVegMat = true;
+        return mesh;
+      });
+      const dummy = new THREE.Object3D();
+      for (const pose of poses) {
+        dummy.position.set(pose.x, 0.95 * pose.scale, pose.z);
+        dummy.scale.set(pose.scale, pose.scale, pose.scale);
+        dummy.rotation.set(0, pose.jitter * 6, 0);
+        dummy.updateMatrix();
+        trunks.setMatrixAt(trunks.count++, dummy.matrix);
+        const ci = Math.floor(pose.jitter * canopies.length) % canopies.length;
+        const cr = 1.15 + pose.jitter * 0.35;
+        dummy.position.set(pose.x, 2.15 * pose.scale, pose.z);
+        dummy.scale.set(cr * 1.45, cr * 0.42, cr * 1.45);
+        dummy.updateMatrix();
+        canopies[ci]!.setMatrixAt(canopies[ci]!.count++, dummy.matrix);
+      }
+      trunks.instanceMatrix.needsUpdate = true;
+      trunks.computeBoundingSphere();
+      group.add(trunks);
+      for (const canopy of canopies) {
+        if (!canopy.count) continue;
+        canopy.instanceMatrix.needsUpdate = true;
+        canopy.computeBoundingSphere();
+        group.add(canopy);
+      }
+      return;
+    }
     plantMeadowInfieldGrove(group, path, clearance, bounds);
     return;
   }
@@ -4369,15 +4831,15 @@ function plantInfieldGrove(
     return;
   }
 
-  const isPine = biome.vegetation === "pines";
+  const isPine = biome.vegetation === "pines" || biome.vegetation === "cypress";
   const isCactus = biome.vegetation === "cactus";
-  const mats = isPine ? VEG_MATS.pines : isCactus ? VEG_MATS.cactus : VEG_MATS.trees;
+  const mats = vegMatsFor(biome);
 
   const trunkGeo = isCactus
     ? new THREE.CylinderGeometry(0.18, 0.22, 2.4, 5)
     : new THREE.CylinderGeometry(0.22, 0.3, isPine ? 2.2 : 1.2, 5);
   const canopyGeo = isPine
-    ? new THREE.ConeGeometry(1.1, 2.6, 6)
+    ? new THREE.ConeGeometry(biome.vegetation === "cypress" ? 0.85 : 1.1, 2.6, 6)
     : isCactus
       ? new THREE.SphereGeometry(0.35, 5, 4)
       : new THREE.SphereGeometry(1.35, 6, 6);
@@ -4490,31 +4952,29 @@ const DRIFT_UNDERPASS_RAMP = 22;
 /** Bridge deck sits this far above grade so the overpass reads clearly. */
 const DRIFT_BRIDGE_DECK_Y = 0.4;
 
-type DriftGrade = {
-  heightAt: (t: number) => number;
-  gradeAt: (t: number) => number;
-  inCut: (x: number, z: number) => boolean;
-  nearBridge: (t: number) => boolean;
+type CrossingSite = {
   underT: number;
   bridgeT: number;
   crossX: number;
   crossZ: number;
   underHeading: number;
   bridgeHeading: number;
+  bridgeGapHalf: number;
+  deckAlong: number;
+  deckAcross: number;
+  cutHalf: number;
+  trenchAlong: number;
+  holePoly: { x: number; z: number }[];
+};
+
+type DriftGrade = {
+  heightAt: (t: number) => number;
+  gradeAt: (t: number) => number;
+  inCut: (x: number, z: number) => boolean;
+  nearBridge: (t: number) => boolean;
+  sites: CrossingSite[];
   depth: number;
   bridgeDeckY: number;
-  /** Half-length of the upper-deck gap along the path (meters). */
-  bridgeGapHalf: number;
-  /** Overpass length along the upper path (spans the ditch). */
-  deckAlong: number;
-  /** Overpass width across the upper path (driving surface + fascia). */
-  deckAcross: number;
-  /** Ditch half-width from lower centerline to the top of the dirt bank. */
-  cutHalf: number;
-  /** Half-length of the excavated cut along the underpass (meters). */
-  trenchAlong: number;
-  /** Outer rim of the cut in world XZ — used to punch the ground hole. */
-  holePoly: { x: number; z: number }[];
 };
 
 function wrap01(t: number) {
@@ -4543,7 +5003,9 @@ function xzSegIntersect(
   return { x: ax + t * d1x, z: az + t * d1z, t, u };
 }
 
-function findPathCrossing(path: THREE.CatmullRomCurve3): { tA: number; tB: number; x: number; z: number } | null {
+function findAllPathCrossings(
+  path: THREE.CatmullRomCurve3,
+): { tA: number; tB: number; x: number; z: number }[] {
   const N = 640;
   const samples: { t: number; x: number; z: number }[] = [];
   for (let i = 0; i < N; i++) {
@@ -4552,7 +5014,7 @@ function findPathCrossing(path: THREE.CatmullRomCurve3): { tA: number; tB: numbe
     samples.push({ t, x: p.x, z: p.z });
   }
   const minGap = Math.floor(N * 0.12);
-  let best: { tA: number; tB: number; x: number; z: number; score: number } | null = null;
+  const raw: { tA: number; tB: number; x: number; z: number }[] = [];
   for (let i = 0; i < N; i++) {
     const a = samples[i]!;
     const b = samples[(i + 1) % N]!;
@@ -4562,49 +5024,30 @@ function findPathCrossing(path: THREE.CatmullRomCurve3): { tA: number; tB: numbe
       const d = samples[(j + 1) % N]!;
       const hit = xzSegIntersect(a.x, a.z, b.x, b.z, c.x, c.z, d.x, d.z);
       if (!hit) continue;
-      const dt = circularDeltaT(a.t, c.t);
-      const score = dt;
-      if (!best || score > best.score) {
-        best = { tA: a.t, tB: c.t, x: hit.x, z: hit.z, score };
-      }
+      raw.push({ tA: a.t, tB: c.t, x: hit.x, z: hit.z });
     }
   }
-  return best;
+  const clusters: { tA: number; tB: number; x: number; z: number }[] = [];
+  for (const h of raw) {
+    const near = clusters.find((c) => Math.hypot(c.x - h.x, c.z - h.z) < 14);
+    if (near) continue;
+    clusters.push(h);
+  }
+  clusters.sort((a, b) => Math.min(a.tA, a.tB) - Math.min(b.tA, b.tB));
+  return clusters;
 }
 
-function makeDriftGrade(path: THREE.CatmullRomCurve3, roadHalf: number): DriftGrade | null {
-  const cross = findPathCrossing(path);
-  if (!cross) return null;
+function buildCrossingSite(
+  path: THREE.CatmullRomCurve3,
+  roadHalf: number,
+  cross: { tA: number; tB: number; x: number; z: number },
+  heightAt: (t: number) => number,
+): CrossingSite {
   const underT = Math.min(cross.tA, cross.tB);
   const bridgeT = Math.max(cross.tA, cross.tB);
   const pathLen = path.getLength();
-  const depth = DRIFT_UNDERPASS_DEPTH;
   const halfFlat = DRIFT_UNDERPASS_FLAT;
   const ramp = DRIFT_UNDERPASS_RAMP;
-  const bridgeDeckY = DRIFT_BRIDGE_DECK_Y;
-
-  const heightAt = (t: number) => {
-    const dBridge = circularDeltaT(t, bridgeT) * pathLen;
-    const bridgeRise = halfFlat + 6;
-    if (dBridge < bridgeRise) {
-      if (dBridge <= halfFlat * 0.65) return bridgeDeckY;
-      const u = (dBridge - halfFlat * 0.65) / (bridgeRise - halfFlat * 0.65);
-      const s = u * u * (3 - 2 * u);
-      return bridgeDeckY * (1 - s);
-    }
-    const d = circularDeltaT(t, underT) * pathLen;
-    if (d <= halfFlat) return -depth;
-    if (d >= halfFlat + ramp) return 0;
-    const u = (d - halfFlat) / ramp;
-    const s = u * u * (3 - 2 * u);
-    return -depth * (1 - s);
-  };
-
-  const gradeAt = (t: number) => {
-    const dt = 0.0025;
-    return (heightAt(wrap01(t + dt)) - heightAt(t)) / (pathLen * dt);
-  };
-
   const underTan = path.getTangentAt(underT).normalize();
   const bridgeTan = path.getTangentAt(bridgeT).normalize();
   const crossSin = Math.abs(underTan.x * bridgeTan.z - underTan.z * bridgeTan.x);
@@ -4614,12 +5057,6 @@ function makeDriftGrade(path: THREE.CatmullRomCurve3, roadHalf: number): DriftGr
   const bridgeGapHalf = deckAlong * 0.5 + 0.8;
   const trenchAlong = halfFlat + ramp;
 
-  const underAx = underTan.x;
-  const underAz = underTan.z;
-  const underNx = -underTan.z;
-  const underNz = underTan.x;
-
-  // Path-following outer rim of the cut (for ground hole + prop exclusion).
   const holeLeft: { x: number; z: number }[] = [];
   const holeRight: { x: number; z: number }[] = [];
   const holeN = 48;
@@ -4640,49 +5077,112 @@ function makeDriftGrade(path: THREE.CatmullRomCurve3, roadHalf: number): DriftGr
   for (let i = 0; i < holeLeft.length; i++) holePoly.push(holeLeft[i]!);
   for (let i = holeRight.length - 1; i >= 0; i--) holePoly.push(holeRight[i]!);
 
-  const inCut = (x: number, z: number) => {
-    const dx = x - cross.x;
-    const dz = z - cross.z;
-    const along = dx * underAx + dz * underAz;
-    const lat = dx * underNx + dz * underNz;
-    if (Math.abs(along) < trenchAlong + 3 && Math.abs(lat) < cutHalf + 2.5) return true;
-    // Also block anything over the path-following hole (handles curve).
-    for (let i = 0; i < holeLeft.length; i++) {
-      const L = holeLeft[i]!;
-      const R = holeRight[i]!;
-      const mx = (L.x + R.x) * 0.5;
-      const mz = (L.z + R.z) * 0.5;
-      const hx = L.x - R.x;
-      const hz = L.z - R.z;
-      const halfW = Math.hypot(hx, hz) * 0.5 + 1.2;
-      const ddx = x - mx;
-      const ddz = z - mz;
-      if (ddx * ddx + ddz * ddz < halfW * halfW) return true;
-    }
-    return false;
-  };
-
-  const nearBridge = (t: number) => circularDeltaT(t, bridgeT) * pathLen < bridgeGapHalf + 3;
-
   return {
-    heightAt,
-    gradeAt,
-    inCut,
-    nearBridge,
     underT,
     bridgeT,
     crossX: cross.x,
     crossZ: cross.z,
     underHeading: Math.atan2(underTan.x, underTan.z),
     bridgeHeading: Math.atan2(bridgeTan.x, bridgeTan.z),
-    depth,
-    bridgeDeckY,
     bridgeGapHalf,
     deckAlong,
     deckAcross,
     cutHalf,
     trenchAlong,
     holePoly,
+  };
+}
+
+function makeDriftGrade(path: THREE.CatmullRomCurve3, roadHalf: number): DriftGrade | null {
+  const crosses = findAllPathCrossings(path);
+  if (!crosses.length) return null;
+  const pathLen = path.getLength();
+  const depth = DRIFT_UNDERPASS_DEPTH;
+  const halfFlat = DRIFT_UNDERPASS_FLAT;
+  const ramp = DRIFT_UNDERPASS_RAMP;
+  const bridgeDeckY = DRIFT_BRIDGE_DECK_Y;
+
+  // Provisional under/bridge ts for height sampling while building sites.
+  const pairs = crosses.map((c) => ({
+    underT: Math.min(c.tA, c.tB),
+    bridgeT: Math.max(c.tA, c.tB),
+  }));
+
+  const heightAt = (t: number) => {
+    let y = 0;
+    for (const pair of pairs) {
+      const dBridge = circularDeltaT(t, pair.bridgeT) * pathLen;
+      const bridgeRise = halfFlat + 6;
+      if (dBridge < bridgeRise) {
+        let by = 0;
+        if (dBridge <= halfFlat * 0.65) by = bridgeDeckY;
+        else {
+          const u = (dBridge - halfFlat * 0.65) / (bridgeRise - halfFlat * 0.65);
+          const s = u * u * (3 - 2 * u);
+          by = bridgeDeckY * (1 - s);
+        }
+        if (by > y) y = by;
+      }
+      const d = circularDeltaT(t, pair.underT) * pathLen;
+      let uy = 0;
+      if (d <= halfFlat) uy = -depth;
+      else if (d < halfFlat + ramp) {
+        const u = (d - halfFlat) / ramp;
+        const s = u * u * (3 - 2 * u);
+        uy = -depth * (1 - s);
+      }
+      if (uy < y) y = uy;
+    }
+    return y;
+  };
+
+  const gradeAt = (t: number) => {
+    const dt = 0.0025;
+    return (heightAt(wrap01(t + dt)) - heightAt(t)) / (pathLen * dt);
+  };
+
+  const sites = crosses.map((c) => buildCrossingSite(path, roadHalf, c, heightAt));
+
+  const inCut = (x: number, z: number) => {
+    for (const site of sites) {
+      const underAx = Math.sin(site.underHeading);
+      const underAz = Math.cos(site.underHeading);
+      const underNx = -Math.cos(site.underHeading);
+      const underNz = Math.sin(site.underHeading);
+      const dx = x - site.crossX;
+      const dz = z - site.crossZ;
+      const along = dx * underAx + dz * underAz;
+      const lat = dx * underNx + dz * underNz;
+      if (Math.abs(along) < site.trenchAlong + 3 && Math.abs(lat) < site.cutHalf + 2.5) return true;
+      const poly = site.holePoly;
+      if (poly.length >= 6) {
+        // Point-in-polygon (ray cast)
+        let inside = false;
+        for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+          const pi = poly[i]!;
+          const pj = poly[j]!;
+          const intersect =
+            pi.z > z !== pj.z > z &&
+            x < ((pj.x - pi.x) * (z - pi.z)) / (pj.z - pi.z + 1e-12) + pi.x;
+          if (intersect) inside = !inside;
+        }
+        if (inside) return true;
+      }
+    }
+    return false;
+  };
+
+  const nearBridge = (t: number) =>
+    sites.some((s) => circularDeltaT(t, s.bridgeT) * pathLen < s.bridgeGapHalf + 3);
+
+  return {
+    heightAt,
+    gradeAt,
+    inCut,
+    nearBridge,
+    sites,
+    depth,
+    bridgeDeckY,
   };
 }
 
@@ -4697,7 +5197,8 @@ function buildYardGround(
   const minZ = bounds.minZ - groundPad;
   const maxZ = bounds.maxZ + groundPad;
 
-  if (!grade || grade.holePoly.length < 6) {
+  const holes = grade?.sites.map((s) => s.holePoly).filter((p) => p.length >= 6) ?? [];
+  if (!holes.length) {
     const ground = new THREE.Mesh(
       new THREE.PlaneGeometry(bounds.spanX + groundPad * 2, bounds.spanZ + groundPad * 2),
       new THREE.MeshStandardMaterial({ color, roughness: 1 }),
@@ -4715,17 +5216,17 @@ function buildYardGround(
   shape.lineTo(maxX, -minZ);
   shape.closePath();
 
-  const hole = new THREE.Path();
-  const poly = grade.holePoly;
-  // Reverse so the hole winds opposite the outer path.
-  const last = poly[poly.length - 1]!;
-  hole.moveTo(last.x, -last.z);
-  for (let i = poly.length - 2; i >= 0; i--) {
-    const q = poly[i]!;
-    hole.lineTo(q.x, -q.z);
+  for (const poly of holes) {
+    const hole = new THREE.Path();
+    const last = poly[poly.length - 1]!;
+    hole.moveTo(last.x, -last.z);
+    for (let i = poly.length - 2; i >= 0; i--) {
+      const q = poly[i]!;
+      hole.lineTo(q.x, -q.z);
+    }
+    hole.closePath();
+    shape.holes.push(hole);
   }
-  hole.closePath();
-  shape.holes.push(hole);
 
   const geo = new THREE.ShapeGeometry(shape, 2);
   geo.rotateX(-Math.PI / 2);
@@ -4743,6 +5244,7 @@ function plantDriftUnderpass(
   path: THREE.CatmullRomCurve3,
   roadHalf: number,
   grade: DriftGrade,
+  site: CrossingSite,
   asphaltColor: number,
   edgeColor: number,
 ) {
@@ -4783,31 +5285,31 @@ function plantDriftUnderpass(
     metalness: 0.04,
   });
 
-  const underAx = Math.sin(grade.underHeading);
-  const underAz = Math.cos(grade.underHeading);
-  const underNx = -Math.cos(grade.underHeading);
-  const underNz = Math.sin(grade.underHeading);
-  const brNx = -Math.cos(grade.bridgeHeading);
-  const brNz = Math.sin(grade.bridgeHeading);
-  const brAx = Math.sin(grade.bridgeHeading);
-  const brAz = Math.cos(grade.bridgeHeading);
+  const underAx = Math.sin(site.underHeading);
+  const underAz = Math.cos(site.underHeading);
+  const underNx = -Math.cos(site.underHeading);
+  const underNz = Math.sin(site.underHeading);
+  const brNx = -Math.cos(site.bridgeHeading);
+  const brNz = Math.sin(site.bridgeHeading);
+  const brAx = Math.sin(site.bridgeHeading);
+  const brAz = Math.cos(site.bridgeHeading);
 
   const placeBridge = (mesh: THREE.Mesh, lat: number, y: number, along: number) => {
     mesh.position.set(
-      grade.crossX + brNx * lat + brAx * along,
+      site.crossX + brNx * lat + brAx * along,
       y,
-      grade.crossZ + brNz * lat + brAz * along,
+      site.crossZ + brNz * lat + brAz * along,
     );
-    mesh.rotation.y = grade.bridgeHeading;
+    mesh.rotation.y = site.bridgeHeading;
     group.add(mesh);
   };
 
   // ── Path-following cut: sloped banks from road height up to grade ──
   const pathLen = path.getLength();
-  const spanT = (grade.trenchAlong + 0.8) / pathLen;
+  const spanT = (site.trenchAlong + 0.8) / pathLen;
   const samples = 56;
   const innerLat = roadHalf + 0.9;
-  const outerLat = grade.cutHalf;
+  const outerLat = site.cutHalf;
   const p = new THREE.Vector3();
   const tan = new THREE.Vector3();
 
@@ -4821,7 +5323,7 @@ function plantDriftUnderpass(
   };
   const slices: Slice[] = [];
   for (let i = 0; i <= samples; i++) {
-    const t = wrap01(grade.underT - spanT + (i / samples) * spanT * 2);
+    const t = wrap01(site.underT - spanT + (i / samples) * spanT * 2);
     const y = grade.heightAt(t);
     if (y > -0.03) continue;
     path.getPointAt(t, p);
@@ -4858,7 +5360,6 @@ function plantDriftUnderpass(
     for (let i = 0; i < slices.length - 1; i++) {
       const a = slices[i]!;
       const b = slices[i + 1]!;
-      // Left bank (inner→outer), right bank, and mud floor between inners.
       pushBankQuad(
         a.ixL, a.iyL, a.izL, a.oxL, a.oyL, a.ozL,
         b.oxL, b.oyL, b.ozL, b.ixL, b.iyL, b.izL,
@@ -4867,7 +5368,6 @@ function plantDriftUnderpass(
         a.oxR, a.oyR, a.ozR, a.ixR, a.iyR, a.izR,
         b.ixR, b.iyR, b.izR, b.oxR, b.oyR, b.ozR,
       );
-      // Top lip strip so the hole edge meets sand (not a cliff lip).
       pushBankQuad(
         a.oxL, a.oyL, a.ozL,
         a.oxL + (a.oxL - a.ixL) * 0.15, a.oyL + 0.01, a.ozL + (a.ozL - a.izL) * 0.15,
@@ -4909,13 +5409,12 @@ function plantDriftUnderpass(
     group.add(floor);
   }
 
-  // ── Bridge deck over the deepest part of the cut ──
   const deckH = 0.5;
   const deckTop = grade.bridgeDeckY;
   const deckBot = deckTop - deckH;
 
   const deck = new THREE.Mesh(
-    new THREE.BoxGeometry(grade.deckAcross, deckH, grade.deckAlong),
+    new THREE.BoxGeometry(site.deckAcross, deckH, site.deckAlong),
     concrete,
   );
   placeBridge(deck, 0, (deckTop + deckBot) * 0.5, 0);
@@ -4923,16 +5422,14 @@ function plantDriftUnderpass(
   deck.receiveShadow = true;
 
   const under = new THREE.Mesh(
-    new THREE.BoxGeometry(grade.deckAcross - 0.15, 0.08, grade.deckAlong - 0.2),
+    new THREE.BoxGeometry(site.deckAcross - 0.15, 0.08, site.deckAlong - 0.2),
     soffit,
   );
   placeBridge(under, 0, deckBot - 0.04, 0);
-  // Underside is coplanar with the deck in the light view — casting it only
-  // adds depth fighting / acne under the overpass, not a useful silhouette.
   under.castShadow = false;
 
   const roadPad = new THREE.Mesh(
-    new THREE.BoxGeometry(roadHalf * 2, 0.1, grade.deckAlong + 0.4),
+    new THREE.BoxGeometry(roadHalf * 2, 0.1, site.deckAlong + 0.4),
     asphalt,
   );
   placeBridge(roadPad, 0, deckTop + 0.06, 0);
@@ -4944,25 +5441,25 @@ function plantDriftUnderpass(
       new THREE.BoxGeometry(roadHalf * 2 + 0.3, 0.1, 3.2),
       asphalt,
     );
-    placeBridge(approach, 0, deckTop * 0.5 + 0.03, end * (grade.deckAlong * 0.5 + 1.4));
+    placeBridge(approach, 0, deckTop * 0.5 + 0.03, end * (site.deckAlong * 0.5 + 1.4));
     approach.receiveShadow = true;
     approach.layers.enable(HEADLIGHT_LAYER);
   }
 
   for (const side of [-1, 1] as const) {
     const stripe = new THREE.Mesh(
-      new THREE.BoxGeometry(0.22, 0.04, grade.deckAlong + 0.3),
+      new THREE.BoxGeometry(0.22, 0.04, site.deckAlong + 0.3),
       edge,
     );
     placeBridge(stripe, side * (roadHalf - 0.12), deckTop + 0.12, 0);
     const fascia = new THREE.Mesh(
-      new THREE.BoxGeometry(0.36, 0.75, grade.deckAlong + 0.4),
+      new THREE.BoxGeometry(0.36, 0.75, site.deckAlong + 0.4),
       rust,
     );
-    placeBridge(fascia, side * (grade.deckAcross * 0.5 - 0.12), deckBot - 0.15, 0);
+    placeBridge(fascia, side * (site.deckAcross * 0.5 - 0.12), deckBot - 0.15, 0);
     fascia.castShadow = true;
     const rail = new THREE.Mesh(
-      new THREE.BoxGeometry(0.14, 0.55, grade.deckAlong + 0.15),
+      new THREE.BoxGeometry(0.14, 0.55, site.deckAlong + 0.15),
       rust,
     );
     placeBridge(rail, side * (roadHalf + 0.35), deckTop + 0.38, 0);
@@ -4971,7 +5468,7 @@ function plantDriftUnderpass(
   for (let i = 0; i < 3; i++) {
     const u = (i + 0.5) / 3 - 0.5;
     const girder = new THREE.Mesh(
-      new THREE.BoxGeometry(0.34, 0.42, grade.deckAlong - 0.6),
+      new THREE.BoxGeometry(0.34, 0.42, site.deckAlong - 0.6),
       rust,
     );
     placeBridge(girder, u * (roadHalf * 2 - 1.5), deckBot - 0.28, 0);
@@ -4980,26 +5477,25 @@ function plantDriftUnderpass(
   for (let i = 0; i < 4; i++) {
     const u = (i + 0.5) / 4 - 0.5;
     const brace = new THREE.Mesh(
-      new THREE.BoxGeometry(grade.deckAcross - 0.5, 0.2, 0.28),
+      new THREE.BoxGeometry(site.deckAcross - 0.5, 0.2, 0.28),
       rust,
     );
-    placeBridge(brace, 0, deckBot - 0.18, u * (grade.deckAlong - 1.2));
+    placeBridge(brace, 0, deckBot - 0.18, u * (site.deckAlong - 1.2));
   }
 
-  // Piers beside the underpass road, standing on the cut floor.
   const pierH = grade.depth + deckBot + 0.15;
   const pierY = -grade.depth + pierH * 0.5;
-  const pierAlong = Math.max(1.1, grade.deckAcross * 0.18);
+  const pierAlong = Math.max(1.1, site.deckAcross * 0.18);
   const pierLat = roadHalf + 1.9;
   for (const sAlong of [-1, 1] as const) {
     for (const sLat of [-1, 1] as const) {
       const pier = new THREE.Mesh(new THREE.BoxGeometry(1.1, pierH, 1.2), concrete);
       pier.position.set(
-        grade.crossX + underNx * sLat * pierLat + underAx * sAlong * pierAlong,
+        site.crossX + underNx * sLat * pierLat + underAx * sAlong * pierAlong,
         pierY,
-        grade.crossZ + underNz * sLat * pierLat + underAz * sAlong * pierAlong,
+        site.crossZ + underNz * sLat * pierLat + underAz * sAlong * pierAlong,
       );
-      pier.rotation.y = grade.underHeading;
+      pier.rotation.y = site.underHeading;
       pier.castShadow = true;
       pier.receiveShadow = true;
       group.add(pier);
@@ -5092,6 +5588,8 @@ export function createTrack(
   const sceneryScale = opts?.sceneryScale ?? 1;
   const widthScale = Math.max(0.5, opts?.widthScale ?? 1);
   const group = new THREE.Group();
+  const atmo = atmosphereForBiome(biome);
+  if (atmo) group.userData.biomeAtmosphere = atmo;
   const baseWidth = isDriftTrack(def.id) ? 16 : 14;
   const width = baseWidth * widthScale;
   const half = width / 2;
@@ -5099,7 +5597,7 @@ export function createTrack(
   const pts = pointsFromDef(def);
   const path = new THREE.CatmullRomCurve3(pts, true, "catmullrom", 0.5);
   const bounds = pathBounds(path);
-  const grade = isDriftTrack(def.id) ? makeDriftGrade(path, half) : null;
+  const grade = trackHasUnderpass(def) ? makeDriftGrade(path, half) : null;
   const yAt = grade ? grade.heightAt : undefined;
 
   // Biome ground — baseColor preserved so weather tint doesn't flatten the palette.
@@ -5107,7 +5605,7 @@ export function createTrack(
   // the ground out beyond the backdrop ring or there's a see-through void band
   // under the mountains (sky where terrain should be).
   const groundPad =
-    biome.props === "mountains"
+    biome.props === "mountains" || biome.props === "lava" || biome.props === "ice"
       ? Math.min(290, Math.max(bounds.spanX, bounds.spanZ) * 0.55 + 180) + 60
       : 0;
   const ground = buildYardGround(bounds, biome.ground, grade, groundPad);
@@ -5123,7 +5621,8 @@ export function createTrack(
     Math.min(1400, Math.ceil(pathLen / (grade ? 0.95 : 1.35))),
   );
   const skipBridge = grade
-    ? (u: number) => circularDeltaT(u, grade.bridgeT) * pathLen < grade.bridgeGapHalf
+    ? (u: number) =>
+        grade.sites.some((s) => circularDeltaT(u, s.bridgeT) * pathLen < s.bridgeGapHalf)
     : undefined;
 
   // Shoulder / runoff ribbon
@@ -5175,7 +5674,11 @@ export function createTrack(
     group.add(edges);
   }
 
-  if (grade) plantDriftUnderpass(group, path, half, grade, biome.asphalt, biome.edge);
+  if (grade) {
+    for (const site of grade.sites) {
+      plantDriftUnderpass(group, path, half, grade, site, biome.asphalt, biome.edge);
+    }
+  }
 
   // Start/finish checkered + gantry
   const startP = path.getPointAt(0);

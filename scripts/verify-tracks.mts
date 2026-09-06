@@ -17,6 +17,7 @@ const MIN_RADIUS = 13.5; // corner radii ≳13.5 so a 14m road never folds onto 
 const ADJACENT_SKIP = Math.floor(SAMPLES * 0.08); // ignore nearby samples along path (~8% of loop)
 const JOIN_TANGENT_MAX_DEG = 12;
 const KINK_TURN_DEG = 28; // sharp local heading change over a short window
+const UNDERPASS_MIN_RADIUS = 8;
 
 type Pt = { x: number; z: number };
 
@@ -157,16 +158,25 @@ function analyze(id: string, points: readonly (readonly [number, number])[]) {
   };
 }
 
+function analyzeUnderpass(id: string, points: readonly (readonly [number, number])[]) {
+  const base = analyze(id, points);
+  const ok =
+    base.crosses >= 1 &&
+    base.minR >= UNDERPASS_MIN_RADIUS &&
+    base.joinDeg <= JOIN_TANGENT_MAX_DEG;
+  return { ...base, ok };
+}
+
 const ROAD_NOTE = `road=${ROAD_WIDTH}m, minClear≥${MIN_CLEARANCE}m, minR≥${MIN_RADIUS}m, join≤${JOIN_TANGENT_MAX_DEG}°, kink≥${KINK_TURN_DEG}°`;
 console.log(`verify-tracks (${SAMPLES} samples, ${ROAD_NOTE})\n`);
 
 let fail = 0;
 for (const t of TRACKS) {
-  const r = analyze(t.id, t.points);
+  const r = t.underpass ? analyzeUnderpass(t.id, t.points) : analyze(t.id, t.points);
   const status = r.ok ? "PASS" : "FAIL";
   if (!r.ok) fail++;
   console.log(
-    `${status}  ${r.id}  len=${r.length.toFixed(0)}m  ctrl=${r.nCtrl}  ` +
+    `${status}  ${r.id}${t.underpass ? " [underpass]" : ""}  len=${r.length.toFixed(0)}m  ctrl=${r.nCtrl}  ` +
       `crosses=${r.crosses}  minClear=${r.minClear.toFixed(1)}m  ` +
       `minR=${r.minR.toFixed(1)}m  join=${r.joinDeg.toFixed(1)}°  kinks=${r.kinkCount}  ` +
       `cpGap=${r.minCpGap.toFixed(1)}–${r.maxCpGap.toFixed(1)}`,

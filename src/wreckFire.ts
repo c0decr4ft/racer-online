@@ -5,9 +5,27 @@ const SMOKE_COUNT = 48;
 const FLAME_COUNT = 12;
 
 const _world = new THREE.Vector3();
-const _flameGeo = new THREE.ConeGeometry(0.62, 2.35, 7);
-_flameGeo.translate(0, 1.15, 0);
-const _coreGeo = new THREE.SphereGeometry(0.55, 10, 8);
+const _quat = new THREE.Quaternion();
+const _euler = new THREE.Euler();
+const _flameGeo = new THREE.ConeGeometry(0.55, 2.1, 7);
+_flameGeo.translate(0, 1.05, 0);
+const _coreGeo = new THREE.SphereGeometry(0.48, 10, 8);
+
+type FireOrigin = { y: number; spread: number; z: number };
+
+function originForKind(kind: string): FireOrigin {
+  switch (kind) {
+    case "bike":
+      return { y: 0.95, spread: 0.55, z: 0.05 };
+    case "truck":
+      return { y: 2.25, spread: 1.55, z: 0.2 };
+    case "tank":
+      return { y: 1.45, spread: 1.2, z: -0.2 };
+    default:
+      // Sit on the hood / cabin — not buried in the chassis (old *0.35 offset).
+      return { y: 1.05, spread: 1.25, z: 0.35 };
+  }
+}
 
 /**
  * World-space wreck fire so every client sees the same burning car —
@@ -21,6 +39,7 @@ export class WreckFire {
   private readonly lightCore: THREE.PointLight;
   private readonly flames: THREE.Mesh[] = [];
   private readonly flameScale: number[] = [];
+  private readonly flameMats: THREE.MeshBasicMaterial[] = [];
   private readonly core: THREE.Mesh;
   private readonly life: Float32Array;
   private readonly vel: Float32Array;
@@ -30,7 +49,7 @@ export class WreckFire {
   private readonly smokeTex: THREE.CanvasTexture;
   private readonly scene: THREE.Scene;
   private readonly anchor: THREE.Object3D;
-  private readonly origin: { y: number; spread: number; z: number };
+  private readonly origin: FireOrigin;
   private readonly bike: boolean;
   private time = 0;
 
@@ -39,40 +58,47 @@ export class WreckFire {
     this.scene = scene;
     const kind = String((anchor as THREE.Object3D & { userData?: { kind?: string } }).userData?.kind ?? "car");
     this.bike = kind === "bike";
-    this.origin = this.bike ? { y: 0.7, spread: 0.55, z: 0.08 } : { y: 0.95, spread: 1.35, z: 0.18 };
+    this.origin = originForKind(kind);
 
     this.root = new THREE.Group();
     this.root.name = "wreck-fire";
     this.root.frustumCulled = false;
+    this.root.renderOrder = 4;
     this.scene.add(this.root);
 
-    const flameMat = new THREE.MeshBasicMaterial({
+    const flameBase = new THREE.MeshBasicMaterial({
       color: 0xff7a22,
       transparent: true,
       opacity: 0.95,
       depthWrite: false,
+      depthTest: false,
       blending: THREE.AdditiveBlending,
     });
     for (let i = 0; i < FLAME_COUNT; i++) {
-      const mesh = new THREE.Mesh(_flameGeo, flameMat);
+      // Per-flame materials — a shared mat made every cone the same last color.
+      const mat = flameBase.clone();
+      const mesh = new THREE.Mesh(_flameGeo, mat);
       mesh.frustumCulled = false;
       mesh.renderOrder = 5;
       this.root.add(mesh);
       this.flames.push(mesh);
-      this.flameScale.push(0.95 + Math.random() * 1.15);
+      this.flameMats.push(mat);
+      this.flameScale.push(0.85 + Math.random() * 0.95);
     }
+    flameBase.dispose();
 
     const coreMat = new THREE.MeshBasicMaterial({
       color: 0xffe08a,
       transparent: true,
-      opacity: 0.72,
+      opacity: 0.78,
       depthWrite: false,
+      depthTest: false,
       blending: THREE.AdditiveBlending,
     });
     this.core = new THREE.Mesh(_coreGeo, coreMat);
     this.core.frustumCulled = false;
     this.core.renderOrder = 4;
-    this.core.position.set(0, 0.55, 0);
+    this.core.position.set(0, 0.35, 0);
     this.root.add(this.core);
 
     this.tex = fireTexture();
@@ -89,10 +115,11 @@ export class WreckFire {
     const mat = new THREE.PointsMaterial({
       map: this.tex,
       color: 0xffc45a,
-      size: this.bike ? 0.95 : 1.55,
+      size: this.bike ? 1.05 : 1.65,
       transparent: true,
       opacity: 0.98,
       depthWrite: false,
+      depthTest: false,
       blending: THREE.AdditiveBlending,
       sizeAttenuation: true,
     });
@@ -117,6 +144,7 @@ export class WreckFire {
       transparent: true,
       opacity: 0.55,
       depthWrite: false,
+      depthTest: false,
       blending: THREE.NormalBlending,
       sizeAttenuation: true,
     });
@@ -126,11 +154,11 @@ export class WreckFire {
     this.root.add(this.smoke);
 
     this.light = new THREE.PointLight(0xff6a2e, this.bike ? 9 : 14, this.bike ? 20 : 34);
-    this.light.position.set(0, 1.6, 0);
+    this.light.position.set(0, 1.4, 0);
     this.root.add(this.light);
 
     this.lightCore = new THREE.PointLight(0xffd080, this.bike ? 4 : 7, this.bike ? 10 : 16);
-    this.lightCore.position.set(0, 0.7, 0);
+    this.lightCore.position.set(0, 0.55, 0);
     this.root.add(this.lightCore);
 
     this.syncRoot();
@@ -183,20 +211,20 @@ export class WreckFire {
       const s = this.flameScale[i]! * pulse;
       const ring = (i / FLAME_COUNT) * Math.PI * 2;
       mesh.position.set(
-        Math.sin(this.time * 3.4 + ring) * spread * 0.38 + Math.cos(ring) * spread * 0.22,
-        0.12 + (i % 4) * 0.18,
-        Math.cos(this.time * 2.7 + ring) * spread * 0.38 + Math.sin(ring) * spread * 0.22,
+        Math.sin(this.time * 3.4 + ring) * spread * 0.32 + Math.cos(ring) * spread * 0.2,
+        0.05 + (i % 4) * 0.16,
+        Math.cos(this.time * 2.7 + ring) * spread * 0.32 + Math.sin(ring) * spread * 0.2,
       );
-      mesh.scale.set(s * 0.95, s * (1.35 + Math.sin(this.time * 16 + i) * 0.28), s * 0.95);
+      mesh.scale.set(s * 0.9, s * (1.25 + Math.sin(this.time * 16 + i) * 0.28), s * 0.9);
       mesh.rotation.y = this.time * 1.1 + i;
       mesh.rotation.z = Math.sin(this.time * 7 + i) * 0.12;
-      const mat = mesh.material as THREE.MeshBasicMaterial;
+      const mat = this.flameMats[i]!;
       mat.color.setHex(i % 3 === 0 ? 0xfff0a0 : i % 3 === 1 ? 0xff8a1a : 0xff3a08);
       mat.opacity = 0.78 + Math.sin(this.time * 18 + i) * 0.12;
     }
 
     const corePulse = 0.85 + Math.sin(this.time * 14) * 0.2 + Math.random() * 0.08;
-    this.core.scale.setScalar(corePulse * (this.bike ? 0.85 : 1.25));
+    this.core.scale.setScalar(corePulse * (this.bike ? 0.85 : 1.15));
     const coreMat = this.core.material as THREE.MeshBasicMaterial;
     coreMat.opacity = 0.55 + Math.sin(this.time * 22) * 0.15;
 
@@ -216,8 +244,7 @@ export class WreckFire {
     smokeMat.dispose();
     this.tex.dispose();
     this.smokeTex.dispose();
-    const flameMat = this.flames[0]?.material as THREE.MeshBasicMaterial | undefined;
-    flameMat?.dispose();
+    for (const mat of this.flameMats) mat.dispose();
     (this.core.material as THREE.Material).dispose();
     this.light.dispose();
     this.lightCore.dispose();
@@ -226,7 +253,12 @@ export class WreckFire {
   private syncRoot() {
     this.anchor.updateMatrixWorld();
     this.anchor.getWorldPosition(_world);
-    this.root.position.set(_world.x, _world.y + this.origin.y * 0.35, _world.z);
+    // Full hood-height offset (was *0.35 — fire sat inside the opaque body).
+    this.root.position.set(_world.x, _world.y + this.origin.y, _world.z);
+    // Match yaw so the burn sits along the wreck, not world-axis only.
+    this.anchor.getWorldQuaternion(_quat);
+    _euler.setFromQuaternion(_quat, "YXZ");
+    this.root.rotation.set(0, _euler.y, 0);
   }
 
   private seedSpark(i: number, positions: Float32Array) {
@@ -234,7 +266,7 @@ export class WreckFire {
     const spread = this.origin.spread;
     positions[i3] = (Math.random() - 0.5) * spread * 1.15;
     positions[i3 + 1] = Math.random() * 0.55;
-    positions[i3 + 2] = this.origin.z + (Math.random() - 0.5) * spread * 1.15;
+    positions[i3 + 2] = this.origin.z * 0.15 + (Math.random() - 0.5) * spread * 1.15;
     this.vel[i3] = (Math.random() - 0.5) * 1.4;
     this.vel[i3 + 1] = 2.4 + Math.random() * 4.2;
     this.vel[i3 + 2] = (Math.random() - 0.5) * 1.4;
@@ -246,7 +278,7 @@ export class WreckFire {
     const spread = this.origin.spread;
     positions[i3] = (Math.random() - 0.5) * spread * 0.9;
     positions[i3 + 1] = 0.4 + Math.random() * 0.8;
-    positions[i3 + 2] = this.origin.z + (Math.random() - 0.5) * spread * 0.9;
+    positions[i3 + 2] = this.origin.z * 0.15 + (Math.random() - 0.5) * spread * 0.9;
     this.smokeVel[i3] = (Math.random() - 0.5) * 0.55;
     this.smokeVel[i3 + 1] = 0.9 + Math.random() * 1.6;
     this.smokeVel[i3 + 2] = (Math.random() - 0.5) * 0.55;
@@ -268,6 +300,7 @@ function fireTexture(): THREE.CanvasTexture {
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, 64, 64);
   const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
   tex.needsUpdate = true;
   return tex;
 }
@@ -284,6 +317,7 @@ function smokeTexture(): THREE.CanvasTexture {
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, 64, 64);
   const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
   tex.needsUpdate = true;
   return tex;
 }
