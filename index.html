@@ -512,6 +512,7 @@
             <h1>CREATE ROOM</h1>
             <p class="tagline">Lobby settings — race starts when you say go</p>
             <form id="mp-create-form" class="multiplayer-form mp-create-form" autocomplete="off">
+              <div class="mp-create-body">
               <div class="mp-fields-row">
                 <label class="mp-field">
                   <span>Racer name</span>
@@ -562,12 +563,17 @@
               </div>
               <div class="mp-field mp-track-field" id="mp-create-track-field">
                 <span>Track</span>
-                <div id="mp-create-track-grid" class="map-grid mp-track-grid" role="listbox" aria-label="Tracks"></div>
+                <div class="mp-track-scroll">
+                  <div id="mp-create-track-grid" class="map-grid mp-track-grid" role="listbox" aria-label="Tracks"></div>
+                </div>
               </div>
-              <p id="mp-create-status" class="tagline mp-status">Vehicle class and weather apply to everyone in the room</p>
-              <div class="mp-form-actions">
-                <button type="submit">CREATE &amp; ENTER LOBBY</button>
-                <button id="mp-create-back" class="btn-ghost" type="button">BACK</button>
+              </div>
+              <div class="mp-create-footer">
+                <p id="mp-create-status" class="tagline mp-status">Vehicle class and weather apply to everyone in the room</p>
+                <div class="mp-form-actions">
+                  <button type="submit">CREATE &amp; ENTER LOBBY</button>
+                  <button id="mp-create-back" class="btn-ghost" type="button">BACK</button>
+                </div>
               </div>
             </form>
           </div>

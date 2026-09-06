@@ -3353,7 +3353,6 @@ export class Game {
         remote.update(now, this.camera, remoteViewportWidth, remoteViewportHeight);
       }
     }
-    this.localWreckFire?.update(dt);
 
     const inputPeek = this.input.getState();
     // Online mode skips the second full scene render; smooth input/physics matter
@@ -3425,6 +3424,8 @@ export class Game {
             this.player.state.steerAngle = 0;
             this.player.syncCollision();
           }
+          // After mesh pose is final so the burn stays glued to the wreck.
+          this.localWreckFire?.update(dt);
           if (this.player.mesh.userData.kind === "bike") {
             this.audio.updateBikeEngine(this.player.state.speed, input.throttle);
           } else {
