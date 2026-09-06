@@ -32,13 +32,13 @@ const POINTS = JSON.parse(
 
 /**
  * How close a racer’s position must be (meters, XZ) to collect a cube.
- * Tight enough that glancing near-misses miss — you need to drive into the box —
- * while segment sweep + fresher pickup pose still catch real hits at race speed.
+ * Middle ground: tighter than the old forgiving 8.5m scoop, but reliable when
+ * you drive into the box (segment sweep + fresher pickup pose still apply).
  */
-export const BATTLE_PICKUP_RADIUS = 4.25;
+export const BATTLE_PICKUP_RADIUS = 6.0;
 
 /** Extra pad the client adds for car extents / visual box size (server stays stricter). */
-export const BATTLE_PICKUP_CLIENT_PAD = 1.0;
+export const BATTLE_PICKUP_CLIENT_PAD = 1.5;
 
 /**
  * Max distance (m) a pickup’s claimed x/z may drift from the last networked pose.
@@ -200,12 +200,13 @@ function seedToN(seed) {
 
 /**
  * Split a wrecked racer's haul into new item cubes whose sats sum exactly to
- * `haulSats`. Scattered near the crash site and a bit along the track so others
- * can scoop them (Mario Kart–style drop).
+ * `haulSats`. Redistributes along the track at the same roadside item-box
+ * pattern as the initial layout (not a crash-site pile — those often landed
+ * off asphalt / invisible). `originX/Z` phase the slot ring near the wreck.
  *
  * @param {string} trackId
  * @param {number} haulSats
- * @param {number} originX — crash / wreck X
+ * @param {number} originX — crash / wreck X (phases placement along the lap)
  * @param {number} originZ — crash / wreck Z
  * @param {string | number} [seed]
  * @param {number} [startId] — first cube id (server uses max existing + 1)
@@ -237,7 +238,7 @@ export function buildDroppedBattleCubes(
   const plan = [];
   let remaining = haul;
   let i = 0;
-  // Fewer cubes than a full pot layout — readable pile around the wreck.
+  // Fewer cubes than a full pot layout — still spreads around the lap.
   while (remaining > 0 && plan.length < 14) {
     const roll = hash01(seedN * 19 + i * 83);
     let tier = /** @type {'small' | 'medium' | 'large'} */ ("small");
@@ -258,8 +259,8 @@ export function buildDroppedBattleCubes(
     plan[plan.length - 1].sats += remaining;
   }
 
-  // Nearest track sample to the crash — anchor for along-track scatter.
-  let bestT = 0;
+  // Phase the even lap spread so slot 0 sits near the wreck (still on asphalt).
+  let phaseT = 0;
   let bestD = Infinity;
   const samples = 96;
   for (let s = 0; s < samples; s++) {
@@ -268,43 +269,30 @@ export function buildDroppedBattleCubes(
     const d = (samp.x - ox) * (samp.x - ox) + (samp.z - oz) * (samp.z - oz);
     if (d < bestD) {
       bestD = d;
-      bestT = t;
+      phaseT = t;
     }
   }
 
   const latScale = BATTLE_TRACK_WIDTH_SCALE;
+  const count = plan.length;
   /** @type {BattleCube[]} */
   const cubes = [];
-  for (let c = 0; c < plan.length; c++) {
+  for (let c = 0; c < count; c++) {
     const entry = plan[c];
-    const placeRoll = hash01(seedN + c * 47);
-    let x;
-    let z;
-    if (placeRoll < 0.55) {
-      // Near crash: ring on / beside asphalt around the wreck.
-      const ang = hash01(seedN + c * 59) * Math.PI * 2;
-      const rad = 3.5 + hash01(seedN + c * 67) * 12;
-      const near = sampleClosed(pts, bestT + (hash01(seedN + c * 73) - 0.5) * 0.04);
-      const side = hash01(seedN + c * 79) > 0.5 ? 1 : -1;
-      const lat = (1.5 + hash01(seedN + c * 89) * 3.2) * latScale;
-      // Blend ring offset with track-lateral so boxes stay readable on road.
-      x = ox + Math.cos(ang) * rad * 0.55 + near.nx * side * lat * 0.65;
-      z = oz + Math.sin(ang) * rad * 0.55 + near.nz * side * lat * 0.65;
-    } else {
-      // Along track ahead/behind the wreck (±~8% of lap).
-      const along = (hash01(seedN + c * 97) - 0.5) * 0.16;
-      let t = bestT + along;
-      t = ((t % 1) + 1) % 1;
-      const side = hash01(seedN + c * 103) > 0.5 ? 1 : -1;
-      const lat = (2.0 + hash01(seedN + c * 107) * 3.6) * latScale;
-      const sample = sampleClosed(pts, t);
-      x = sample.x + sample.nx * side * lat;
-      z = sample.z + sample.nz * side * lat;
-    }
+    // Same slot pattern as buildBattleCubes: even lap spread, roadside offset.
+    const baseT = (c + 0.5) / count;
+    const jitter = (hash01(seedN + c * 31) - 0.5) * (0.7 / Math.max(8, count));
+    let t = phaseT + baseT + jitter;
+    t = ((t % 1) + 1) % 1;
+    if (t < 0.04) t += 0.08;
+    if (t > 0.96) t -= 0.08;
+    const side = hash01(seedN + c * 53) > 0.5 ? 1 : -1;
+    const lat = (2.2 + hash01(seedN + c * 71) * 3.4) * latScale;
+    const sample = sampleClosed(pts, t);
     cubes.push({
       id: id0 + c,
-      x,
-      z,
+      x: sample.x + sample.nx * side * lat,
+      z: sample.z + sample.nz * side * lat,
       sats: entry.sats,
       tier: entry.tier,
     });
