@@ -3,6 +3,7 @@ import { verifyEvent } from "nostr-tools";
 import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
 import { payments, depositProofs, recordPayout, loadPayouts, savePayouts } from "./payments.mjs";
+import { nextBattleLeftoverAction } from "./battleLeftover.mjs";
 import { appendActivity, loadActivity, classifyActivityMsg, inferActivityKind, activityStats } from "./activityLog.mjs";
 import {
   buildBattleCubes,
@@ -1527,26 +1528,37 @@ function finalizeBattleClaimable(room) {
 /**
  * Move uncollected battle cube sats into the tip wallet (same path as claim tips).
  * Idempotent — safe from finish and again on claim if the first attempt failed.
+ *
+ * Critical: if collectTip already pulled sats into a bearer token but tip-wallet
+ * receive failed, never fall through to another pot draw, and never mark the
+ * leftover collected on tipCap<=0 (balance can fail open as 0).
  */
 async function collectBattleLeftover(room) {
   if (!room?.isEvent || room.eventMode !== "battle") return;
-  if (room.battleLeftoverCollected) return;
   const wanted = Math.max(0, Math.round(room.battleLeftoverSats) || 0);
-  if (wanted <= 0) {
+  const pendingToken = !!room.battleLeftoverToken;
+
+  // Pre-balance action when a token is already outstanding (or nothing wanted).
+  const early = nextBattleLeftoverAction({
+    collected: room.battleLeftoverCollected === true,
+    wanted,
+    pendingToken,
+    tipCap: pendingToken ? 0 : 1, // tipCap ignored when redeeming / already collected
+  });
+  if (early === "noop") return;
+  if (early === "mark-collected") {
     room.battleLeftoverCollected = true;
     return;
   }
 
-  // Retry a prior tip-wallet receive that left a bearer token.
-  if (room.battleLeftoverToken) {
+  if (early === "redeem-token") {
     try {
-      const net = await payments.receiveTipToken(room.battleLeftoverToken, wanted);
+      const net = await payments.receiveTipToken(room.battleLeftoverToken);
       const tipSats = Number.isFinite(net) && net > 0 ? net : wanted;
       room.battleLeftoverSats = tipSats;
       room.battleLeftoverCollected = true;
       room.battleLeftoverToken = "";
       potLog(room, "info", `battle leftover tip-wallet receive ok · ${tipSats} sats`);
-      return;
     } catch (err) {
       console.warn(`[event] battle leftover tip token collect failed:`, err?.message || err);
       potLog(
@@ -1554,8 +1566,9 @@ async function collectBattleLeftover(room) {
         "warn",
         `battle leftover tip token collect failed: ${String(err?.message || err).slice(0, 160)}`,
       );
-      // Fall through — try a fresh collectTip if the token is dead.
+      // Keep battleLeftoverToken; do not draw the pot again (sats already left it).
     }
+    return;
   }
 
   const balanceNow = async () =>
@@ -1572,16 +1585,21 @@ async function collectBattleLeftover(room) {
   }
   const bal = await balanceNow();
   const tipCap = Math.min(wanted, Math.max(0, bal - unclaimed));
-  if (tipCap <= 0) {
-    room.battleLeftoverCollected = true;
-    room.battleLeftoverSats = 0;
+  const action = nextBattleLeftoverAction({
+    collected: false,
+    wanted,
+    pendingToken: false,
+    tipCap,
+  });
+  if (action === "wait" || action === "noop") {
     potLog(
       room,
       "warn",
-      `battle leftover ${wanted} sats unavailable in pot (balance ${bal}, unclaimed ${unclaimed})`,
+      `battle leftover ${wanted} sats unavailable in pot (balance ${bal}, unclaimed ${unclaimed}) — will retry`,
     );
     return;
   }
+  if (action !== "collect-fresh") return;
 
   try {
     const result = await payments.collectTip(tipCap, room.potId);
