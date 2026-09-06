@@ -3,7 +3,7 @@ import { verifyEvent } from "nostr-tools";
 import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
 import { payments, depositProofs, recordPayout, loadPayouts, savePayouts } from "./payments.mjs";
-import { appendActivity, loadActivity, classifyActivityMsg, inferActivityKind } from "./activityLog.mjs";
+import { appendActivity, loadActivity, classifyActivityMsg, inferActivityKind, activityStats } from "./activityLog.mjs";
 import {
   buildBattleCubes,
   buildDroppedBattleCubes,
@@ -550,6 +550,13 @@ async function devTipsSummary() {
     });
   }
   events.sort((a, b) => Number(b.live) - Number(a.live) || String(a.name).localeCompare(String(b.name)));
+  let activity = [];
+  try {
+    activity = loadActivity(120);
+  } catch (err) {
+    console.warn("[activity] load failed:", err?.message || err);
+    activity = [];
+  }
   return {
     ok: true,
     mint: payments.mintUrl,
@@ -566,7 +573,7 @@ async function devTipsSummary() {
     tips: list,
     custody,
     events,
-    activity: loadActivity(120),
+    activity,
   };
 }
 
@@ -2941,6 +2948,12 @@ httpServer.listen(PORT, HOST, () => {
   console.log(
     `Sats Racer http://${HOST}:${PORT} (WS + /api/*${DIST_DIR ? ` + static ${STATIC_BASE || "/"}` : ""})`,
   );
+  try {
+    const stats = activityStats();
+    console.log(`[activity] ${stats.count} entries · ${stats.path}`);
+  } catch (err) {
+    console.warn("[activity] boot check failed:", err?.message || err);
+  }
   // Rebuild the board from the relays on boot (redeploys wipe the disk cache),
   // then keep merging every 15 min so instances converge.
   void syncBoardFromRelays();

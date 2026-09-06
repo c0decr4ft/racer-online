@@ -2160,6 +2160,8 @@ export class Game {
     this.el.overlay.classList.add("hidden");
     document.getElementById("dev-dash")?.classList.remove("hidden");
     this.syncMuteBtn();
+    // Paint empty-state immediately so ACTIVITY is never a blank hole while loading.
+    this.renderDevActivity([]);
     void this.renderDevDash();
   }
 
@@ -2174,6 +2176,7 @@ export class Game {
     const session = getSession();
     if (!session) {
       if (status) status.textContent = "Sign in with your dev account";
+      this.renderDevActivity([], "Sign in with the DEV account to load activity.");
       return;
     }
     if (status) status.textContent = "Loading…";
@@ -2185,12 +2188,13 @@ export class Game {
       this.renderDevSummary(summary);
       this.renderDevFeedback(feedback);
     } catch (err) {
-      if (status) {
-        status.textContent =
-          err instanceof Error && /not configured/.test(err.message)
-            ? `Server has no DEV_PUBKEY yet — set it to your pubkey: ${session.pubkey}`
-            : `Could not load tips — ${err instanceof Error ? err.message : err}`;
-      }
+      const msg =
+        err instanceof Error && /not configured/.test(err.message)
+          ? `Server has no DEV_PUBKEY yet — set it to your pubkey: ${session.pubkey}`
+          : `Could not load tips — ${err instanceof Error ? err.message : err}`;
+      if (status) status.textContent = msg;
+      // Still fill ACTIVITY so a failed auth/fetch is visible, not an empty section.
+      this.renderDevActivity([], msg);
     }
   }
 
@@ -2499,14 +2503,42 @@ export class Game {
     }
   }
 
-  private renderDevActivity(rows: DevActivityEntry[]) {
-    const list = document.getElementById("dev-activity-list");
+  /**
+   * Ensure the ACTIVITY list exists even when a stale build's HTML omitted it
+   * (tips/events still rendered; activity silently no-op'd before).
+   */
+  private ensureDevActivityList(): HTMLOListElement | null {
+    let list = document.getElementById("dev-activity-list") as HTMLOListElement | null;
+    if (list) return list;
+    const panel = document.querySelector("#dev-dash .dev-panel");
+    if (!panel) return null;
+    const title = document.createElement("p");
+    title.className = "eyebrow dev-section-title";
+    title.textContent = "ACTIVITY";
+    list = document.createElement("ol");
+    list.id = "dev-activity-list";
+    list.className = "dev-tips-list dev-activity-list";
+    list.setAttribute("aria-label", "Game and payment log");
+    const wallet = document.getElementById("dev-wallet");
+    const events = document.getElementById("dev-events-box");
+    const anchor = wallet || events?.nextSibling || null;
+    if (anchor) {
+      panel.insertBefore(title, anchor);
+      panel.insertBefore(list, anchor);
+    } else {
+      panel.append(title, list);
+    }
+    return list;
+  }
+
+  private renderDevActivity(rows: DevActivityEntry[], emptyMessage?: string) {
+    const list = this.ensureDevActivityList();
     if (!list) return;
     list.replaceChildren();
     if (rows.length === 0) {
       const li = document.createElement("li");
       li.className = "dev-tip-empty";
-      li.textContent = "No activity yet — games and payments land here.";
+      li.textContent = emptyMessage || "No activity yet — games and payments land here.";
       list.appendChild(li);
       return;
     }

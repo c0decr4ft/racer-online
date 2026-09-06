@@ -51,8 +51,10 @@ function writeAll(list) {
   cache = list.slice(-MAX_ACTIVITY);
   try {
     writeFileSync(ACTIVITY_PATH, JSON.stringify(cache, null, 2));
-  } catch {
-    /* ignore disk errors — in-memory still useful */
+  } catch (err) {
+    // Ephemeral disks (Render free) are writable but wipe on redeploy — in-memory
+    // still serves the live process. Surface failures so they show in host logs.
+    console.warn("[activity] write failed:", ACTIVITY_PATH, err?.message || err);
   }
 }
 
@@ -174,4 +176,9 @@ export function loadActivity(limit = 100) {
       ...(e.ok === true || e.ok === false ? { ok: e.ok } : {}),
       ...(e.mock === true ? { mock: true } : {}),
     }));
+}
+
+/** Disk path + current size — for boot diagnostics. */
+export function activityStats() {
+  return { path: ACTIVITY_PATH, count: readAll().length };
 }
