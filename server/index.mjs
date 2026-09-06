@@ -267,6 +267,19 @@ function roomActivity(room, kind, detail, extra = {}) {
   });
 }
 
+/** Room / WS failure that should show up red (or amber) in ACTIVITY. */
+function logRoomError(detail, extra = {}) {
+  const level = extra.level === "error" ? "error" : "warn";
+  appendActivity({
+    type: "game",
+    kind: "room-error",
+    ...extra,
+    detail,
+    level,
+    ...(level === "error" ? { ok: false } : {}),
+  });
+}
+
 function mergePotLogs(a, b) {
   const seen = new Set();
   const out = [];
@@ -398,6 +411,15 @@ async function sweepPendingTipTokens() {
       swept += 1;
     } catch (err) {
       console.warn(`[dev] tip sweep failed (${r.room}):`, err?.message || err);
+      appendActivity({
+        type: "payment",
+        kind: "payment-failed",
+        room: String(r.room || "").slice(0, 48),
+        detail: `Tip sweep failed: ${String(err?.message || err).slice(0, 160)}`,
+        level: "error",
+        tipSats: Number(r.tipSats) || undefined,
+        ok: false,
+      });
     }
   }
   if (swept > 0) savePayouts(list);
@@ -421,9 +443,16 @@ function markCollectedTipsClaimed() {
 
 /** Tip stats + history for the dev dashboard (live tips only; mock = test money). */
 async function devTipsSummary() {
-  await sweepPendingTipTokens().catch((err) =>
-    console.warn("[dev] tip sweep skipped:", err?.message || err),
-  );
+  await sweepPendingTipTokens().catch((err) => {
+    console.warn("[dev] tip sweep skipped:", err?.message || err);
+    appendActivity({
+      type: "payment",
+      kind: "payment-failed",
+      detail: `Tip sweep skipped: ${String(err?.message || err).slice(0, 160)}`,
+      level: "warn",
+      ok: false,
+    });
+  });
   const walletSats = Math.max(0, Math.round(Number(await payments.tipBalanceSats()) || 0));
   const withdrawnSats = Math.max(0, Math.round(Number(payments.withdrawnSats()) || 0));
   const pendingWithdraw = payments.pendingWithdraw();
@@ -1664,6 +1693,7 @@ function admitClient(ws, msg, mode) {
   if (mode === "create") {
     if (room && room.clients.size > 0) {
       send(ws, { t: "error", message: "room already exists — pick another name or join it" });
+      logRoomError(`room already exists · ${roomName}`, { room: roomName, player: name });
       try {
         ws.close();
       } catch {
@@ -1721,6 +1751,7 @@ function admitClient(ws, msg, mode) {
   } else {
     if (!room || room.clients.size === 0) {
       send(ws, { t: "error", message: "room not found" });
+      logRoomError(`room not found · ${roomName}`, { room: roomName, player: name });
       try {
         ws.close();
       } catch {
@@ -1730,6 +1761,7 @@ function admitClient(ws, msg, mode) {
     }
     if (room.phase !== "lobby") {
       send(ws, { t: "error", message: "race already started" });
+      logRoomError(`race already started · ${roomName}`, { room: roomName, player: name });
       try {
         ws.close();
       } catch {
@@ -1739,12 +1771,11 @@ function admitClient(ws, msg, mode) {
     }
     // Room types stay separate — event rooms join from Event Mode, normal rooms from Multiplayer
     if (room.isEvent !== !!msg.event) {
-      send(ws, {
-        t: "error",
-        message: room.isEvent
-          ? "that's an event room — join it from Event Mode"
-          : "not an event room — join it from Multiplayer",
-      });
+      const message = room.isEvent
+        ? "that's an event room — join it from Event Mode"
+        : "not an event room — join it from Multiplayer";
+      send(ws, { t: "error", message });
+      logRoomError(`${message} · ${roomName}`, { room: roomName, player: name });
       try {
         ws.close();
       } catch {
@@ -1754,6 +1785,7 @@ function admitClient(ws, msg, mode) {
     }
     if (password !== room.password) {
       send(ws, { t: "error", message: "wrong password" });
+      logRoomError(`wrong password · ${roomName}`, { room: roomName, player: name });
       try {
         ws.close();
       } catch {
@@ -1763,6 +1795,7 @@ function admitClient(ws, msg, mode) {
     }
     if (room.clients.size >= room.maxPlayers) {
       send(ws, { t: "error", message: `room full (max ${room.maxPlayers})` });
+      logRoomError(`room full · ${roomName} · max ${room.maxPlayers}`, { room: roomName, player: name });
       try {
         ws.close();
       } catch {
@@ -2262,10 +2295,28 @@ wss.on("connection", (ws) => {
   /** @type {Client | null} */
   let client = null;
 
+  ws.on("error", (err) => {
+    console.warn("[ws] socket error:", err?.message || err);
+    logRoomError(`WS error${client ? ` · ${client.name}` : ""}: ${String(err?.message || err).slice(0, 160)}`, {
+      kind: "ws-error",
+      level: "error",
+      room: client?.room,
+      player: client?.name,
+      playerId: client?.id,
+    });
+  });
+
   ws.on("message", (data) => {
+    try {
     // Hard cap: legit messages are ≤ a few KB (claimPot carries a token).
     if (data.length > 16_384) {
       send(ws, { t: "error", message: "message too large" });
+      logRoomError("WS message too large", {
+        kind: "ws-error",
+        room: client?.room,
+        player: client?.name,
+        playerId: client?.id,
+      });
       return;
     }
     let msg;
@@ -2273,6 +2324,12 @@ wss.on("connection", (ws) => {
       msg = JSON.parse(String(data));
     } catch {
       send(ws, { t: "error", message: "bad json" });
+      logRoomError("WS bad json", {
+        kind: "ws-error",
+        room: client?.room,
+        player: client?.name,
+        playerId: client?.id,
+      });
       return;
     }
 
@@ -2295,6 +2352,12 @@ wss.on("connection", (ws) => {
     const room = rooms.get(client.room);
     if (!room) {
       send(ws, { t: "error", message: "room gone" });
+      logRoomError(`room gone · ${client.room}`, {
+        room: client.room,
+        player: client.name,
+        playerId: client.id,
+        level: "error",
+      });
       return;
     }
 
@@ -2768,6 +2831,24 @@ wss.on("connection", (ws) => {
         }
       })();
       return;
+    }
+    } catch (err) {
+      console.error("[ws] uncaught handler error:", err?.message || err);
+      logRoomError(
+        `WS handler error${client ? ` · ${client.name}` : ""}: ${String(err?.message || err).slice(0, 160)}`,
+        {
+          kind: "ws-error",
+          level: "error",
+          room: client?.room,
+          player: client?.name,
+          playerId: client?.id,
+        },
+      );
+      try {
+        send(ws, { t: "error", message: "server error" });
+      } catch {
+        /* ignore */
+      }
     }
   });
 

@@ -1756,12 +1756,35 @@ body:has(#mute-btn.hidden) .hud-top {
   color: #ffc857;
 }
 
+.dev-activity-badge.is-warn {
+  color: #ffc857;
+  background: rgba(255, 200, 87, 0.12);
+}
+
+.dev-activity-badge.is-error {
+  color: #ff3b2e;
+  background: rgba(255, 59, 46, 0.18);
+  border-color: #ff3b2e;
+}
+
+.dev-activity.is-warn {
+  background: rgba(255, 200, 87, 0.07);
+  border-bottom-color: rgba(255, 200, 87, 0.28);
+}
+
 .dev-activity.is-warn .dev-tip-info {
   color: #ffd479;
 }
 
+.dev-activity.is-error {
+  background: rgba(255, 59, 46, 0.14);
+  border-bottom-color: rgba(255, 59, 46, 0.45);
+  box-shadow: inset 3px 0 0 #ff3b2e;
+}
+
 .dev-activity.is-error .dev-tip-info {
-  color: #ffb4a8;
+  color: #ff5646;
+  font-weight: 600;
 }
 
 .dev-wallet {
