@@ -4808,8 +4808,8 @@ export class Game {
 
     const px = this.player.state.position.x;
     const pz = this.player.state.position.z;
-    // Client pad: car half-length + box half-size so glancing hits still register.
-    // Server uses BATTLE_PICKUP_RADIUS alone with the fresher pose on the message.
+    // Client pad: small car/box extent so intentional hits register without
+    // scooping from a lane away. Server uses BATTLE_PICKUP_RADIUS alone.
     const hitR = BATTLE_PICKUP_RADIUS + BATTLE_PICKUP_CLIENT_PAD;
     const hitR2 = hitR * hitR;
     const nowMs = performance.now();

@@ -32,13 +32,13 @@ const POINTS = JSON.parse(
 
 /**
  * How close a racer’s position must be (meters, XZ) to collect a cube.
- * Sized for arcade cars (~2m half-length) glancing the box at race speed —
- * client also sweeps between frames; server accepts a fresher pose on pickup.
+ * Tight enough that glancing near-misses miss — you need to drive into the box —
+ * while segment sweep + fresher pickup pose still catch real hits at race speed.
  */
-export const BATTLE_PICKUP_RADIUS = 8.5;
+export const BATTLE_PICKUP_RADIUS = 4.25;
 
 /** Extra pad the client adds for car extents / visual box size (server stays stricter). */
-export const BATTLE_PICKUP_CLIENT_PAD = 2.5;
+export const BATTLE_PICKUP_CLIENT_PAD = 1.0;
 
 /**
  * Max distance (m) a pickup’s claimed x/z may drift from the last networked pose.
