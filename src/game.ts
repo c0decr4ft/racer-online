@@ -4709,6 +4709,7 @@ export class Game {
     // Append — do not clear existing untaken cubes on the map.
     const spawned = spawnBattleCubeMeshes(this.scene, info.cubes);
     this.battleCubes.push(...spawned);
+    document.getElementById("battle-earnings-block")?.classList.remove("hidden");
     if (info.fromId === this.net.id) {
       this.clearBattleRoulette();
       const earnEl = document.getElementById("battle-earnings");
@@ -4794,22 +4795,23 @@ export class Game {
   }
 
   private tickBattleCubes(nowSec: number) {
-    if (!this.battleCubes.length || this.finished || this.onlineWrecked) {
+    if (!this.battleCubes.length || this.finished) {
       this.tickBattleRoulette(performance.now());
       this.battlePrevValid = false;
       return;
     }
+    // Keep boxes bobbing even when you're wrecked (dropped haul still visible).
     animateBattleCubes(this.battleCubes, nowSec);
     this.tickBattleRoulette(performance.now());
-    if (!this.online || !this.net.event || this.net.event.mode !== "battle") {
+    if (this.onlineWrecked || !this.online || !this.net.event || this.net.event.mode !== "battle") {
       this.battlePrevValid = false;
       return;
     }
 
     const px = this.player.state.position.x;
     const pz = this.player.state.position.z;
-    // Client pad: small car/box extent so intentional hits register without
-    // scooping from a lane away. Server uses BATTLE_PICKUP_RADIUS alone.
+    // Client pad: modest car/box extent so driving into a box scoops reliably.
+    // Server uses BATTLE_PICKUP_RADIUS alone (stricter).
     const hitR = BATTLE_PICKUP_RADIUS + BATTLE_PICKUP_CLIENT_PAD;
     const hitR2 = hitR * hitR;
     const nowMs = performance.now();

@@ -10,9 +10,9 @@ import * as THREE from "three";
 import type { BattleCubeWire } from "./net/protocol";
 
 /** Must match shared/battleCubes.mjs */
-export const BATTLE_PICKUP_RADIUS = 4.25;
+export const BATTLE_PICKUP_RADIUS = 6.0;
 /** Must match shared/battleCubes.mjs */
-export const BATTLE_PICKUP_CLIENT_PAD = 1.0;
+export const BATTLE_PICKUP_CLIENT_PAD = 1.5;
 
 /** Must match shared/battleCubes.mjs — battle tracks only. */
 export const BATTLE_TRACK_WIDTH_SCALE = 1.45;
