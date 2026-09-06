@@ -2512,9 +2512,11 @@ export class Game {
     }
     for (const row of rows) {
       const li = document.createElement("li");
+      const isError = row.level === "error" || row.ok === false;
+      const isWarn = !isError && row.level === "warn";
       li.className = `dev-tip dev-activity is-${row.type}`;
-      if (row.level === "warn") li.classList.add("is-warn");
-      if (row.level === "error" || row.ok === false) li.classList.add("is-error");
+      if (isWarn) li.classList.add("is-warn");
+      if (isError) li.classList.add("is-error");
 
       const when = row.at
         ? new Date(row.at).toLocaleString(undefined, {
@@ -2526,8 +2528,16 @@ export class Game {
           })
         : "";
       const badge = document.createElement("span");
-      badge.className = `dev-activity-badge is-${row.type}`;
-      badge.textContent = row.type === "payment" ? "PAY" : "GAME";
+      if (isError) {
+        badge.className = "dev-activity-badge is-error";
+        badge.textContent = "ERR";
+      } else if (isWarn) {
+        badge.className = "dev-activity-badge is-warn";
+        badge.textContent = "WARN";
+      } else {
+        badge.className = `dev-activity-badge is-${row.type}`;
+        badge.textContent = row.type === "payment" ? "PAY" : "GAME";
+      }
 
       const info = document.createElement("span");
       info.className = "dev-tip-info";

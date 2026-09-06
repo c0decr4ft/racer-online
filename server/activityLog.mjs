@@ -78,6 +78,10 @@ export function classifyActivityMsg(msg) {
  */
 export function inferActivityKind(msg) {
   const m = String(msg || "").toLowerCase();
+  if (m.includes("ws handler") || m.includes("ws error")) return "ws-error";
+  if (m.includes("room already") || m.includes("room not found") || m.includes("room full") || m.includes("wrong password") || m.includes("room gone")) {
+    return "room-error";
+  }
   if (m.includes("created")) return "room-created";
   if (m.includes("race start") || m.includes("battle cubes")) return "race-start";
   if (m.includes("finished")) return "race-finish";
@@ -87,10 +91,20 @@ export function inferActivityKind(msg) {
   if (m.includes("battle leftover")) return "battle-leftover";
   if (m.includes("battle claim")) return "battle-claim";
   if (m.includes("claim started") || m.includes("claimed")) return "claim";
-  if (m.includes("cashu receive failed") || m.includes("buy-in request failed")) return "invoice-failed";
-  if (m.includes("failed")) return "payment-failed";
+  if (m.includes("cashu receive failed") || m.includes("buy-in request failed") || m.includes("invoice")) return "invoice-failed";
+  if (m.includes("persist") || m.includes("money at risk") || m.includes("emergency")) return "cashu-persist";
+  if (m.includes("rejected") || m.includes("failed") || m.includes("error")) return "payment-failed";
   if (m.includes("joined")) return "player-joined";
   return "note";
+}
+
+/** Infer warn/error from free-form text when callers omit level. */
+function inferActivityLevel(detail, ok) {
+  if (ok === false) return "error";
+  const m = String(detail || "").toLowerCase();
+  if (/\b(failed|error|rejected|refusing|money at risk|emergency)\b/.test(m)) return "error";
+  if (/\b(warn|retry|skipped|holding token)\b/.test(m)) return "warn";
+  return "info";
 }
 
 /**
@@ -103,7 +117,9 @@ export function appendActivity(entry) {
     if (!detail) return;
     const type = entry.type === "payment" || entry.type === "game" ? entry.type : classifyActivityMsg(detail);
     const level =
-      entry.level === "warn" || entry.level === "error" ? entry.level : entry.ok === false ? "error" : "info";
+      entry.level === "warn" || entry.level === "error"
+        ? entry.level
+        : inferActivityLevel(detail, entry.ok);
     /** @type {ActivityEntry} */
     const row = {
       at: Number(entry.at) || Date.now(),

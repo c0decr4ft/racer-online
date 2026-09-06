@@ -20,6 +20,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import { appendActivity } from "./activityLog.mjs";
 
 /** Mock is opt-in (tests/dev): RACER_PAYMENTS_MOCK=1. Everyone else gets real sats. */
 export const PAYMENTS_MOCK = process.env.RACER_PAYMENTS_MOCK === "1";
@@ -168,9 +169,9 @@ function loadStore(path) {
   const peeked = peekStore(path);
   if (!peeked) return emptyStore();
   if (!sameMint(peeked.mintUrl, CASHU_MINT_URL)) {
-    console.error(
-      `[cashu] refusing to load ${path} — file mint ${peeked.mintUrl} ≠ ${CASHU_MINT_URL} (proofs not destroyed, just ignored)`,
-    );
+    const detail = `Cashu refusing to load pot — file mint ≠ ${CASHU_MINT_URL} (proofs ignored, not destroyed)`;
+    console.error(`[cashu] refusing to load ${path} — file mint ${peeked.mintUrl} ≠ ${CASHU_MINT_URL} (proofs not destroyed, just ignored)`);
+    appendActivity({ type: "payment", kind: "cashu-persist", detail, level: "error", ok: false });
     return emptyStore();
   }
   return {
@@ -193,7 +194,9 @@ function saveStore(path, store) {
     );
     return true;
   } catch (err) {
+    const detail = `Cashu persist failed — money at risk: ${String(err?.message || err).slice(0, 160)}`;
     console.error("[cashu] failed to persist proofs — money at risk!", err?.message || err);
+    appendActivity({ type: "payment", kind: "cashu-persist", detail, level: "error", ok: false });
     return false;
   }
 }
@@ -572,9 +575,23 @@ async function cashuCreatePaymentRequest({ amountSats, memo, baseUrl, potId }) {
     const mints = decoded.mints || [];
     if (!mints.some((m) => sameMint(m, CASHU_MINT_URL))) {
       console.error("[cashu] encoded creq is missing our mint", { mints, want: CASHU_MINT_URL });
+      appendActivity({
+        type: "payment",
+        kind: "invoice-failed",
+        detail: "Cashu invoice missing our mint in encoded request",
+        level: "error",
+        ok: false,
+      });
     }
   } catch (err) {
     console.error("[cashu] could not round-trip payment request:", err?.message || err);
+    appendActivity({
+      type: "payment",
+      kind: "invoice-failed",
+      detail: `Cashu invoice round-trip failed: ${String(err?.message || err).slice(0, 160)}`,
+      level: "error",
+      ok: false,
+    });
   }
 
   // Parallel Lightning invoice: paying it mints tokens straight into the pot
@@ -596,6 +613,13 @@ async function cashuCreatePaymentRequest({ amountSats, memo, baseUrl, potId }) {
     }
   } catch (err) {
     console.warn("[cashu] Lightning mint quote failed — Cashu request still valid:", err?.message || err);
+    appendActivity({
+      type: "payment",
+      kind: "invoice-failed",
+      detail: `Lightning mint quote failed (Cashu creq still valid): ${String(err?.message || err).slice(0, 140)}`,
+      level: "warn",
+      ok: false,
+    });
   }
 
   return { paymentHash, paymentRequest, bolt11 };
@@ -633,6 +657,13 @@ async function cashuSettleIfPaid(paymentHash) {
   } catch (err) {
     q.minting = false;
     console.warn("[cashu] mint-quote redeem failed:", err?.message || err);
+    appendActivity({
+      type: "payment",
+      kind: "invoice-failed",
+      detail: `Lightning mint-quote redeem failed: ${String(err?.message || err).slice(0, 160)}`,
+      level: "warn",
+      ok: false,
+    });
     return null;
   }
 }
@@ -721,6 +752,13 @@ async function cashuReceivePayloadLocked({ paymentHash, amountSats, payload: raw
     );
     // Still return proofs so the lobby marks paid; money is in `fresh` even if disk failed.
     console.error("[cashu] marking buy-in paid despite persist failure:", err?.message || err);
+    appendActivity({
+      type: "payment",
+      kind: "cashu-persist",
+      detail: `Emergency buy-in persist failed — marking paid anyway: ${String(err?.message || err).slice(0, 140)}`,
+      level: "error",
+      ok: false,
+    });
   }
   console.log(`[cashu] buy-in received — ${proofsSum(fresh)} sats into pot (${paymentHash})`);
   return fresh;
@@ -788,6 +826,14 @@ async function cashuCollectTip(amountSats, potId) {
     return { sats, collected: true };
   } catch (err) {
     console.warn("[cashu] tip collect receive failed — holding token for retry:", err?.message || err);
+    appendActivity({
+      type: "payment",
+      kind: "payment-failed",
+      detail: `Tip collect failed — holding token for retry: ${String(err?.message || err).slice(0, 140)}`,
+      level: "warn",
+      tipSats: amountSats,
+      ok: false,
+    });
     return { sats: amountSats, collected: false, token };
   }
 }
