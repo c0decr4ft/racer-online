@@ -1728,6 +1728,42 @@ body:has(#mute-btn.hidden) .hud-top {
   color: #ffb4a8;
 }
 
+.dev-activity-list {
+  max-height: 16rem;
+  margin-bottom: 0.75rem;
+}
+
+.dev-activity {
+  align-items: flex-start;
+}
+
+.dev-activity-badge {
+  flex-shrink: 0;
+  margin-top: 0.12rem;
+  font-family: var(--font-display);
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  padding: 0.16rem 0.38rem;
+  border: 1px solid currentColor;
+}
+
+.dev-activity-badge.is-game {
+  color: #9ad4a8;
+}
+
+.dev-activity-badge.is-payment {
+  color: #ffc857;
+}
+
+.dev-activity.is-warn .dev-tip-info {
+  color: #ffd479;
+}
+
+.dev-activity.is-error .dev-tip-info {
+  color: #ffb4a8;
+}
+
 .dev-wallet {
   width: 100%;
   box-sizing: border-box;

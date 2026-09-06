@@ -63,6 +63,7 @@ import {
   type DevTipsSummary,
   type DevWalletAudit,
   type DevEventRow,
+  type DevActivityEntry,
   type DevFeedbackMessage,
 } from "./net/devTips";
 
@@ -2306,6 +2307,7 @@ export class Game {
     set("dev-claimed-sats", summary.withdrawnSats ?? summary.claimedSats);
 
     this.renderDevEvents(summary.events || []);
+    this.renderDevActivity(summary.activity || []);
     const tipAudit = document.getElementById("dev-tip-audit");
     if (tipAudit) tipAudit.textContent = this.formatWalletAudit(summary.custody?.tip, null);
 
@@ -2494,6 +2496,45 @@ export class Game {
       logCell.appendChild(details);
       logRow.appendChild(logCell);
       body.appendChild(logRow);
+    }
+  }
+
+  private renderDevActivity(rows: DevActivityEntry[]) {
+    const list = document.getElementById("dev-activity-list");
+    if (!list) return;
+    list.replaceChildren();
+    if (rows.length === 0) {
+      const li = document.createElement("li");
+      li.className = "dev-tip-empty";
+      li.textContent = "No activity yet — games and payments land here.";
+      list.appendChild(li);
+      return;
+    }
+    for (const row of rows) {
+      const li = document.createElement("li");
+      li.className = `dev-tip dev-activity is-${row.type}`;
+      if (row.level === "warn") li.classList.add("is-warn");
+      if (row.level === "error" || row.ok === false) li.classList.add("is-error");
+
+      const when = row.at
+        ? new Date(row.at).toLocaleString(undefined, {
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          })
+        : "";
+      const badge = document.createElement("span");
+      badge.className = `dev-activity-badge is-${row.type}`;
+      badge.textContent = row.type === "payment" ? "PAY" : "GAME";
+
+      const info = document.createElement("span");
+      info.className = "dev-tip-info";
+      const bits = [when, row.room, row.detail].filter(Boolean);
+      info.textContent = bits.join(" · ");
+      li.append(badge, info);
+      list.appendChild(li);
     }
   }
 
