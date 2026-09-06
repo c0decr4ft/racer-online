@@ -32,6 +32,7 @@ server/payouts.json
 server/cashu-proofs.json
 server/cashu-tips.json
 server/cashu-pots/
+server/activity.json
 
 # stray nested clone, not part of the game
 elliptic-apparel-real/

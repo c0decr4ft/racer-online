@@ -3,6 +3,7 @@ import { verifyEvent } from "nostr-tools";
 import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
 import { payments, depositProofs, recordPayout, loadPayouts, savePayouts } from "./payments.mjs";
+import { appendActivity, loadActivity, classifyActivityMsg, inferActivityKind } from "./activityLog.mjs";
 import {
   buildBattleCubes,
   buildDroppedBattleCubes,
@@ -240,6 +241,29 @@ function potLog(room, level, msg) {
   room.potLogs = [...(room.potLogs || []), entry].slice(-80);
   void payments.appendPotLog?.(room.potId, entry, { roomName: room.name }).catch((err) => {
     console.warn("[event] pot log failed:", err?.message || err);
+  });
+  // Also land in the durable developer activity feed (survives room close).
+  appendActivity({
+    at: entry.at,
+    type: classifyActivityMsg(entry.msg),
+    kind: inferActivityKind(entry.msg),
+    room: room.name,
+    detail: entry.msg,
+    level: entry.level,
+    mock: payments.mock,
+  });
+}
+
+/** Durable activity line for ordinary multiplayer rooms (no event pot file). */
+function roomActivity(room, kind, detail, extra = {}) {
+  if (!room || room.isEvent) return;
+  appendActivity({
+    type: "game",
+    kind,
+    room: room.name,
+    detail,
+    level: "info",
+    ...extra,
   });
 }
 
@@ -513,6 +537,7 @@ async function devTipsSummary() {
     tips: list,
     custody,
     events,
+    activity: loadActivity(120),
   };
 }
 
@@ -1375,6 +1400,7 @@ function resolveMapVote(room) {
     const at = Date.now() + 250;
     broadcast(room, { t: "start", at, trackId: room.trackId, kind: room.kind, weather: room.weather });
     console.log(`[next] ${room.name} → ${room.trackId} ${room.weather} (${room.clients.size}p)`);
+    roomActivity(room, "race-start", `next race · ${room.trackId} · ${room.clients.size}p`);
   }, 1800);
 }
 
@@ -1686,9 +1712,11 @@ function admitClient(ws, msg, mode) {
       battleLeftoverCollected: true,
       battleLeftoverToken: "",
     };
-  rooms.set(roomName, room);
+    rooms.set(roomName, room);
     if (room.isEvent) {
       potLog(room, "info", `created · ${room.eventMode} · buy-in ${room.buyInSats} sats`);
+    } else {
+      roomActivity(room, "room-created", `created · multiplayer · ${room.trackId} · max ${room.maxPlayers}`);
     }
   } else {
     if (!room || room.clients.size === 0) {
@@ -1789,6 +1817,21 @@ function admitClient(ws, msg, mode) {
   broadcast(room, { t: "join", player: pose }, id);
   broadcast(room, { t: "notice", text: `${name} joined` });
   broadcast(room, lobbySnapshot(room));
+  if (room.isEvent) {
+    appendActivity({
+      type: "game",
+      kind: "player-joined",
+      room: room.name,
+      detail: `${name} joined · ${room.clients.size}/${room.maxPlayers}`,
+      player: name,
+      playerId: id,
+    });
+  } else {
+    roomActivity(room, "player-joined", `${name} joined · ${room.clients.size}/${room.maxPlayers}`, {
+      player: name,
+      playerId: id,
+    });
+  }
   // Event Mode: every racer gets their own buy-in invoice
   if (room.isEvent) void createBuyInInvoice(room, client);
   console.log(
@@ -2317,6 +2360,12 @@ wss.on("connection", (ws) => {
         battleCubes: battleCubesWire,
       });
       console.log(`[start] ${room.name} by ${client.name} → ${room.trackId} ${room.kind} ${room.weather || "dry"} (${room.clients.size}p)${room.eventMode === "battle" ? " battle" : ""}`);
+      roomActivity(
+        room,
+        "race-start",
+        `race start · ${room.trackId} · ${room.kind} · ${room.clients.size}p · host ${client.name}`,
+        { player: client.name, playerId: client.id },
+      );
       return;
     }
 
@@ -2469,6 +2518,10 @@ wss.on("connection", (ws) => {
         voteEndsAt: room.voteEndsAt,
       });
       console.log(`[finish] ${room.name} won by ${client.name} in ${timeMs}ms`);
+      roomActivity(room, "race-finish", `finished · ${client.name} won · ${timeMs}ms`, {
+        player: client.name,
+        playerId: client.id,
+      });
       broadcastVoteState(room);
       setTimeout(() => resolveMapVote(room), MAP_VOTE_MS);
       return;
@@ -2733,6 +2786,10 @@ wss.on("connection", (ws) => {
     console.log(`[leave] ${client.name}`);
     if (room.clients.size === 0) {
       potLog(room, "info", "last player left — room closed (pot file kept)");
+      roomActivity(room, "room-closed", `room closed · last player ${client.name} left`, {
+        player: client.name,
+        playerId: client.id,
+      });
       rooms.delete(client.room);
     } else {
       if (room.hostId === client.id) {

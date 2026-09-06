@@ -98,6 +98,24 @@ export type DevTipsSummary = {
   marked?: number;
   custody?: DevCustody;
   events?: DevEventRow[];
+  /** Durable game + payment activity (newest first). */
+  activity?: DevActivityEntry[];
+};
+
+export type DevActivityEntry = {
+  at: number;
+  type: "game" | "payment";
+  kind: string;
+  detail: string;
+  level?: "info" | "warn" | "error";
+  room?: string;
+  player?: string;
+  playerId?: string;
+  sats?: number;
+  tipSats?: number;
+  potSats?: number;
+  ok?: boolean;
+  mock?: boolean;
 };
 
 type DevSigner = {
