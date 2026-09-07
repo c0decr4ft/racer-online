@@ -9,7 +9,12 @@ import {
   buildDroppedBattleCubes,
   BATTLE_PICKUP_RADIUS,
   BATTLE_PICKUP_POSE_SLACK,
+  resolveBattlePickupHitPose,
 } from "../shared/battleCubes.mjs";
+/** Event Battle: max plausible ground speed for pose step clamps (server s-clamp is 150). */
+const BATTLE_POSE_MAX_MPS = 180;
+/** Extra meters of hitch/lag forgiveness on top of speed×dt. */
+const BATTLE_POSE_STEP_SLACK_M = 12;
 import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { dirname, join, extname, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1280,6 +1285,8 @@ function runFieldReset(room) {
     c.pose.s = 0;
     c.pose.lap = 1;
     c.pose.g = "1";
+    // Allow the next pose to snap back to the start grid without step-clamp.
+    c.lastPoseAt = 0;
   }
   broadcast(room, { t: "fieldReset", reason: "allWrecked" });
   console.log(`[wreck] ${room.name} field reset`);
@@ -2410,6 +2417,8 @@ wss.on("connection", (ws) => {
       room.battleLeftoverSats = 0;
       room.battleLeftoverCollected = true;
       room.battleLeftoverToken = "";
+      // Allow the first racing pose to snap onto the start grid (lobby placeholder → track).
+      for (const c of room.clients.values()) c.lastPoseAt = 0;
       /** @type {import('../shared/battleCubes.mjs').BattleCube[] | undefined} */
       let battleCubesWire;
       if (room.isEvent && room.eventMode === "battle") {
@@ -2450,12 +2459,32 @@ wss.on("connection", (ws) => {
       }
       const now = Date.now();
       // Accept jitter around the 90Hz client cadence (drops ~2× tick-rate senders).
-      if (now - client.lastPoseAt < NET_TICK_MS * 0.55) return;
-      client.lastPoseAt = now;
+      if (client.lastPoseAt > 0 && now - client.lastPoseAt < NET_TICK_MS * 0.55) return;
+      const prevAt = client.lastPoseAt;
       const p = client.pose;
       // Sanity clamps — the client is untrusted; keep poses inside plausible bounds.
-      p.x = Math.max(-20_000, Math.min(20_000, +msg.x || 0));
-      p.z = Math.max(-20_000, Math.min(20_000, +msg.z || 0));
+      let nx = Math.max(-20_000, Math.min(20_000, +msg.x || 0));
+      let nz = Math.max(-20_000, Math.min(20_000, +msg.z || 0));
+      // Event Battle pays real sats from pose-gated cube pickups. Clamp step length
+      // so a modified client cannot teleport to every item box in one tick.
+      if (
+        room.isEvent &&
+        room.eventMode === "battle" &&
+        room.phase === "racing" &&
+        prevAt > 0
+      ) {
+        const dt = Math.max(0, (now - prevAt) / 1000);
+        const maxDist = BATTLE_POSE_MAX_MPS * dt + BATTLE_POSE_STEP_SLACK_M;
+        const dist = Math.hypot(nx - p.x, nz - p.z);
+        if (dist > maxDist && maxDist > 0) {
+          const scale = maxDist / dist;
+          nx = p.x + (nx - p.x) * scale;
+          nz = p.z + (nz - p.z) * scale;
+        }
+      }
+      client.lastPoseAt = now;
+      p.x = nx;
+      p.z = nz;
       p.h = Math.max(-10, Math.min(10, +msg.h || 0));
       p.s = Math.max(-150, Math.min(150, +msg.s || 0)); // ±540 km/h ceiling
       p.g = String(msg.g || "1").slice(0, 2);
@@ -2488,29 +2517,18 @@ wss.on("connection", (ws) => {
       // takenBy set atomically — never double-award the same cube.
       if (!cube || cube.takenBy) return;
 
-      // Prefer the freshest client pose on the pickup message (pose ticks are ~30Hz
-      // and can lag a full car-length behind the visual hit). Clamp to last pose.
-      let px = client.pose.x;
-      let pz = client.pose.z;
-      const claimX = Number(msg.x);
-      const claimZ = Number(msg.z);
-      if (Number.isFinite(claimX) && Number.isFinite(claimZ)) {
-        const cx = Math.max(-20_000, Math.min(20_000, claimX));
-        const cz = Math.max(-20_000, Math.min(20_000, claimZ));
-        const ddx = cx - client.pose.x;
-        const ddz = cz - client.pose.z;
-        const slack = BATTLE_PICKUP_POSE_SLACK;
-        if (ddx * ddx + ddz * ddz <= slack * slack) {
-          px = cx;
-          pz = cz;
-          // Keep authority pose in sync so the next check isn't stale.
-          client.pose.x = cx;
-          client.pose.z = cz;
-        }
-      }
-
-      const dx = px - cube.x;
-      const dz = pz - cube.z;
+      // Prefer a fresher claim x/z on the pickup message (pose ticks are ~30Hz and
+      // can lag behind the visual hit). Hit-test only — never write claim coords
+      // into the authoritative pose (that enabled cube-to-cube teleport hops).
+      const hit = resolveBattlePickupHitPose({
+        poseX: client.pose.x,
+        poseZ: client.pose.z,
+        claimX: Number(msg.x),
+        claimZ: Number(msg.z),
+        slack: BATTLE_PICKUP_POSE_SLACK,
+      });
+      const dx = hit.x - cube.x;
+      const dz = hit.z - cube.z;
       const r = BATTLE_PICKUP_RADIUS;
       if (dx * dx + dz * dz > r * r) return;
       cube.takenBy = client.id;

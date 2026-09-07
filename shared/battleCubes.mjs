@@ -42,9 +42,40 @@ export const BATTLE_PICKUP_CLIENT_PAD = 1.5;
 
 /**
  * Max distance (m) a pickup’s claimed x/z may drift from the last networked pose.
- * Covers pose-tick lag (~30Hz) + one frame of high speed without allowing teleports.
+ * Covers ~2 pose ticks at the server speed ceiling (~150 m/s × 67ms ≈ 10m) plus a
+ * small hitch pad — must stay well below typical cube spacing so a single pose
+ * cannot vacuum a roadside cluster, and so claim coords cannot hop cube-to-cube.
  */
-export const BATTLE_PICKUP_POSE_SLACK = 45;
+export const BATTLE_PICKUP_POSE_SLACK = 12;
+
+/**
+ * Resolve the XZ used for a battle cube hit-test.
+ * Claim coords may freshen the check within `slack` of the last networked pose,
+ * but callers must NOT write the result back into the authoritative pose — doing
+ * so let a client chain pickups across the track (each award teleported them to
+ * the cube, then the next cube fell inside slack).
+ *
+ * @param {{ poseX: number, poseZ: number, claimX: number, claimZ: number, slack?: number }} p
+ * @returns {{ x: number, z: number, usedClaim: boolean }}
+ */
+export function resolveBattlePickupHitPose(p) {
+  const poseX = Number(p.poseX) || 0;
+  const poseZ = Number(p.poseZ) || 0;
+  const slack = Math.max(0, Number(p.slack) || BATTLE_PICKUP_POSE_SLACK);
+  const claimX = Number(p.claimX);
+  const claimZ = Number(p.claimZ);
+  if (!Number.isFinite(claimX) || !Number.isFinite(claimZ)) {
+    return { x: poseX, z: poseZ, usedClaim: false };
+  }
+  const cx = Math.max(-20_000, Math.min(20_000, claimX));
+  const cz = Math.max(-20_000, Math.min(20_000, claimZ));
+  const ddx = cx - poseX;
+  const ddz = cz - poseZ;
+  if (ddx * ddx + ddz * ddz > slack * slack) {
+    return { x: poseX, z: poseZ, usedClaim: false };
+  }
+  return { x: cx, z: cz, usedClaim: true };
+}
 
 /**
  * Battle-only asphalt width multiplier applied when the client builds the track.
