@@ -7,6 +7,7 @@ import { appendActivity, loadActivity, classifyActivityMsg, inferActivityKind, a
 import {
   buildBattleCubes,
   buildDroppedBattleCubes,
+  lockBattleClaimShares,
   BATTLE_PICKUP_RADIUS,
   BATTLE_PICKUP_POSE_SLACK,
 } from "../shared/battleCubes.mjs";
@@ -1495,32 +1496,30 @@ function normalizeEventMode(raw) {
  * Pot invariant (see shared/battleCubes.mjs):
  *   sum(all cube sats) === potSats at race start
  *   collected + leftover === potSats at finish
- * Each racer claims their collected cube sats; uncollected cube sats (+ any pot
- * accounting gap) go to the developer tip wallet via collectBattleLeftover.
- * Roulette UI is display-only.
+ * Each *present* racer claims their collected cube sats; uncollected cube sats,
+ * hauls from players who already left, and any pot accounting gap go to the
+ * developer tip wallet via collectBattleLeftover. Roulette UI is display-only.
  */
 function finalizeBattleClaimable(room) {
-  room.battleClaimable = new Map();
-  let collected = 0;
-  for (const [id, sats] of room.battleEarnings || []) {
-    const n = Math.max(0, Math.round(sats) || 0);
-    if (n > 0) room.battleClaimable.set(id, n);
-    collected += n;
-  }
-  // Source of truth for leftover: cubes still untaken at the finish line.
-  let leftover = 0;
-  for (const cube of room.battleCubes?.values() || []) {
-    if (cube.takenBy) continue;
-    leftover += Math.max(0, Math.round(cube.sats) || 0);
-  }
-  // Seal any pot/accounting drift so the full pot is always distributed.
-  const accountingGap = Math.max(0, Math.round(room.potSats || 0) - collected - leftover);
-  leftover += accountingGap;
-  room.battleLeftoverSats = leftover;
-  room.battleLeftoverCollected = leftover <= 0;
+  const locked = lockBattleClaimShares({
+    potSats: room.potSats,
+    earnings: room.battleEarnings || [],
+    cubes: room.battleCubes?.values() || [],
+    presentIds: room.clients.keys(),
+  });
+  room.battleClaimable = locked.claimable;
+  room.battleLeftoverSats = locked.leftoverSats;
+  room.battleLeftoverCollected = locked.leftoverSats <= 0;
   room.battleLeftoverToken = "";
-  if (leftover > 0) {
-    potLog(room, "info", `battle leftover ${leftover} sats → developer tip wallet`);
+  if (locked.stranded > 0) {
+    potLog(
+      room,
+      "info",
+      `battle haul from departed racers → leftover · ${locked.stranded} sats`,
+    );
+  }
+  if (locked.leftoverSats > 0) {
+    potLog(room, "info", `battle leftover ${locked.leftoverSats} sats → developer tip wallet`);
   }
 }
 
@@ -2865,6 +2864,12 @@ wss.on("connection", (ws) => {
     if (!room) {
       client = null;
       return;
+    }
+    // Event Battle: spill unclaimed haul as cubes before removing the player.
+    // Otherwise finish locks those sats to a dead socket id (unclaimable forever)
+    // and leftover tip accounting reserves them as "unclaimed player share".
+    if (room.phase === "racing" && !room.winnerId) {
+      dropBattleHaulOnWreck(room, client);
     }
     room.clients.delete(client.id);
     room.votes.delete(client.id);
