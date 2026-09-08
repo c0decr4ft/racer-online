@@ -212,6 +212,52 @@ function seedToN(seed) {
  * @param {number} [startId] — first cube id (server uses max existing + 1)
  * @returns {BattleCube[]}
  */
+/**
+ * Lock Battle claimable shares at finish.
+ *
+ * Present racers keep their haul as claimable. Earnings belonging to players who
+ * already left mid-race cannot be claimed (socket id is gone) — those sats fold
+ * into leftover via the accounting gap so they reach the tip wallet instead of
+ * sitting forever in the pot behind a dead `battleClaimable` key.
+ *
+ * @param {{
+ *   potSats: number,
+ *   earnings: Iterable<[string, number]> | Map<string, number>,
+ *   cubes: Iterable<{ sats?: number, takenBy?: string }>,
+ *   presentIds: Set<string> | Iterable<string>,
+ * }} args
+ * @returns {{ claimable: Map<string, number>, leftoverSats: number, collected: number, stranded: number }}
+ */
+export function lockBattleClaimShares({ potSats, earnings, cubes, presentIds }) {
+  const present =
+    presentIds instanceof Set ? presentIds : new Set(presentIds || []);
+  /** @type {Map<string, number>} */
+  const claimable = new Map();
+  let collected = 0;
+  let stranded = 0;
+  for (const [id, sats] of earnings || []) {
+    const n = Math.max(0, Math.round(Number(sats) || 0));
+    if (n <= 0) continue;
+    if (present.has(id)) {
+      claimable.set(id, n);
+      collected += n;
+    } else {
+      stranded += n;
+    }
+  }
+  let leftover = 0;
+  for (const cube of cubes || []) {
+    if (cube?.takenBy) continue;
+    leftover += Math.max(0, Math.round(Number(cube?.sats) || 0));
+  }
+  const accountingGap = Math.max(
+    0,
+    Math.round(Number(potSats) || 0) - collected - leftover,
+  );
+  leftover += accountingGap;
+  return { claimable, leftoverSats: leftover, collected, stranded };
+}
+
 export function buildDroppedBattleCubes(
   trackId,
   haulSats,
