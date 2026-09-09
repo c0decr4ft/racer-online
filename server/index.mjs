@@ -1278,7 +1278,7 @@ function clearEliminations(room) {
 }
 
 /**
- * Still racing — not wrecked and not eliminated.
+ * Still driving — not wrecked and not eliminated (lap cuts / pose).
  * @param {Room} room
  * @returns {Client[]}
  */
@@ -1286,6 +1286,18 @@ function activeRacingClients(room) {
   const elim = room.eliminatedIds ?? new Set();
   const wrecked = room.wreckedIds ?? new Set();
   return [...room.clients.values()].filter((c) => !elim.has(c.id) && !wrecked.has(c.id));
+}
+
+/**
+ * Still in contention for Elimination — OUT is permanent; on-fire is temporary.
+ * Used for last-standing wins so a mass wreck can field-reset without crowning
+ * the last unburned car (and without reviving already-cut players).
+ * @param {Room} room
+ * @returns {Client[]}
+ */
+function eliminationContenders(room) {
+  const elim = room.eliminatedIds ?? new Set();
+  return [...room.clients.values()].filter((c) => !elim.has(c.id));
 }
 
 /**
@@ -1313,14 +1325,15 @@ function wireRaceMode(room) {
  */
 function checkElimination(room) {
   if (room.eventMode !== "elimination" || room.phase !== "racing" || room.winnerId) return;
-  let active = activeRacingClients(room);
-  if (active.length <= 1) {
-    if (active.length === 1) declareRaceWinner(room, active[0], raceElapsedMs(room));
+  // Permanent OUT only — wrecked survivors are still contenders until field reset.
+  const contenders = eliminationContenders(room);
+  if (contenders.length <= 1) {
+    if (contenders.length === 1) declareRaceWinner(room, contenders[0], raceElapsedMs(room));
     return;
   }
   // After completing lap K (client lap becomes K+1), cut the laggard — not on the finish wrap.
   for (let needLap = 2; needLap <= TOTAL_LAPS; needLap++) {
-    active = activeRacingClients(room);
+    const active = activeRacingClients(room);
     if (active.length <= 1) break;
     const reached = active.filter((c) => (c.pose.lap | 0) >= needLap);
     if (reached.length >= active.length - 1 && reached.length < active.length) {
@@ -1329,9 +1342,9 @@ function checkElimination(room) {
         .sort((a, b) => (a.pose.lap | 0) - (b.pose.lap | 0) || (a.id < b.id ? -1 : 1));
       const victim = laggards[0];
       if (victim) eliminateClient(room, victim);
-      active = activeRacingClients(room);
-      if (active.length === 1) {
-        declareRaceWinner(room, active[0], raceElapsedMs(room));
+      const left = eliminationContenders(room);
+      if (left.length === 1) {
+        declareRaceWinner(room, left[0], raceElapsedMs(room));
       }
       return;
     }
@@ -1354,7 +1367,7 @@ function eliminateClient(room, client) {
   if (room.eliminatedIds.has(client.id) || room.winnerId) return;
   room.eliminatedIds.add(client.id);
   client.pose.s = 0;
-  const remaining = activeRacingClients(room).length;
+  const remaining = eliminationContenders(room).length;
   broadcast(room, {
     t: "eliminated",
     id: client.id,
@@ -1754,14 +1767,22 @@ function runFieldReset(room) {
   room.allWreckResetAt = 0;
   if (room.phase !== "racing" || room.winnerId) return;
   clearWrecks(room);
-  clearEliminations(room);
+  // Elimination OUT is permanent for this race — do not revive cut players when
+  // the remaining field burns. Clearing eliminatedIds here let Event Mode pots
+  // go to someone already eliminated after an all-wreck restart.
   for (const c of room.clients.values()) {
+    if (room.eliminatedIds?.has(c.id)) {
+      c.pose.s = 0;
+      continue;
+    }
     c.pose.s = 0;
     c.pose.lap = 1;
     c.pose.g = "1";
   }
   broadcast(room, { t: "fieldReset", reason: "allWrecked" });
   console.log(`[wreck] ${room.name} field reset`);
+  // Sole survivor after reset (everyone else already OUT) → end the race.
+  checkElimination(room);
 }
 
 /** Overlap a burning wreck for 3s → ignite. @param {Room} room @param {number} dtMs */
@@ -1774,8 +1795,9 @@ function tickWreckFire(room, dtMs) {
   const r2 = wreckRadius(room) ** 2;
   /** @type {Client[]} */
   const ignite = [];
+  const elim = room.eliminatedIds ?? new Set();
   for (const alive of room.clients.values()) {
-    if (wrecked.has(alive.id)) continue;
+    if (wrecked.has(alive.id) || elim.has(alive.id)) continue;
     for (const wid of wrecked) {
       const wreck = room.clients.get(wid);
       if (!wreck) continue;
@@ -3030,11 +3052,6 @@ wss.on("connection", (ws) => {
     if (msg.t === "finish") {
       if (room.phase !== "racing" || room.winnerId) return;
       if (room.wreckedIds?.has(client.id) || room.eliminatedIds?.has(client.id)) return;
-      // Elimination: only still-active racers may claim the finish.
-      if (room.eventMode === "elimination") {
-        const active = activeRacingClients(room);
-        if (!active.some((c) => c.id === client.id)) return;
-      }
       const timeMs = Math.max(1_000, Math.min(3_600_000, Math.round(Number(msg.timeMs) || 0)));
       declareRaceWinner(room, client, timeMs);
       return;

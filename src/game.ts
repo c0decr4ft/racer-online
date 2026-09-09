@@ -4351,12 +4351,14 @@ export class Game {
     const now = performance.now();
     if (now - this.lastFieldResetAt < 1500) return;
     this.lastFieldResetAt = now;
-    this.stopSpectate();
     this.clearOnlineWreck();
-    this.localEliminated = false;
-    this.eliminatedIds.clear();
-    document.getElementById("elim-flash")?.classList.add("hidden");
-    this.elimFlashUntil = 0;
+    // Keep Elimination OUT state — server no longer clears eliminatedIds on
+    // field reset; reviving here would desync and let cut players race again.
+    const stillOut = this.localEliminated;
+    if (!stillOut) {
+      document.getElementById("elim-flash")?.classList.add("hidden");
+      this.elimFlashUntil = 0;
+    }
     this.resetWallHits();
     this.paused = false;
     this.el.pause.classList.add("hidden");
@@ -4365,16 +4367,26 @@ export class Game {
     this.el.wrongWay.classList.add("hidden");
     this.el.explodeFlash.classList.add("hidden");
     this.el.explodeFlash.textContent = "DESTROYED";
-    this.lap = 1;
-    this.bestLap = Infinity;
     this.hideAnimalHit();
     this.pauseTotal = 0;
     this.pauseBegan = 0;
+    this.input.clearDriveKeys();
+    if (stillOut) {
+      this.player.state.speed = 0;
+      this.player.state.steerAngle = 0;
+      this.syncTouchControls();
+      this.syncMuteBtn();
+      this.enterSpectate();
+      this.showToast("Field restart — you are still out");
+      return;
+    }
+    this.stopSpectate();
+    this.lap = 1;
+    this.bestLap = Infinity;
     this.raceStart = 0;
     this.lapStart = 0;
     this.crossedOnce = true;
     this.gates.reset();
-    this.input.clearDriveKeys();
     this.el.lap.innerHTML = `1<span>/${TOTAL_LAPS}</span>`;
     this.el.best.textContent = "--:--.---";
     this.el.time.textContent = formatTime(0);
