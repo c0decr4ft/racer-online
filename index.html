@@ -154,8 +154,8 @@
           type="button"
           aria-haspopup="dialog"
           aria-controls="home-instructions"
-          aria-label="Instructions"
-          title="Instructions"
+          aria-label="About"
+          title="About"
         >
           <svg class="feedback-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
             <path
@@ -257,27 +257,18 @@
       </div>
 
       <div id="home-instructions" class="feedback-compose hidden" role="dialog" aria-modal="true" aria-labelledby="home-instructions-title">
-        <div class="feedback-compose-panel controls-help-panel">
-          <p class="eyebrow" id="home-instructions-title">INSTRUCTIONS</p>
-          <p class="feedback-compose-hint">How the modes work</p>
-          <div class="controls-help-groups">
-            <section class="controls-help-group" aria-labelledby="instr-race-modes">
-              <h3 class="controls-help-group-title" id="instr-race-modes">Racing</h3>
-              <dl class="controls-help-list">
-                <div class="controls-help-row"><dt>Start Race</dt><dd>Local race vs AI on a track you pick</dd></div>
-                <div class="controls-help-row"><dt>Multiplayer</dt><dd>Private rooms — no buy-in</dd></div>
-                <div class="controls-help-row"><dt>Test Drive / Solo</dt><dd>Practice alone or empty track</dd></div>
-              </dl>
-            </section>
-            <section class="controls-help-group" aria-labelledby="instr-event">
-              <h3 class="controls-help-group-title" id="instr-event">Event Mode</h3>
-              <p class="instr-blurb">Everyone pays a buy-in in sats. Host picks <strong>Race</strong> or <strong>Battle</strong> in Create Room settings.</p>
-              <dl class="controls-help-list">
-                <div class="controls-help-row"><dt>Race</dt><dd>Classic event — finish 1st and claim the pot</dd></div>
-                <div class="controls-help-row"><dt>Battle</dt><dd>Same buy-in on wider tracks — scoop spinning ? item boxes while you race. Boxes share the pot exactly; your haul counts even if you don’t finish 1st. Uncollected leftover goes to whoever crosses the line first.</dd></div>
-              </dl>
-            </section>
-          </div>
+        <div class="feedback-compose-panel home-credit-panel">
+          <p class="eyebrow" id="home-instructions-title">ABOUT</p>
+          <p class="feedback-compose-hint home-credit-line">
+            made from
+            <a
+              class="home-credit-link"
+              href="https://github.com/c0decr4ft"
+              target="_blank"
+              rel="noopener noreferrer"
+              >c0decr4ft</a
+            >
+          </p>
           <div class="feedback-compose-actions">
             <button id="home-instructions-close" class="btn-ghost" type="button">CLOSE</button>
           </div>
