@@ -93,7 +93,7 @@ export function initControlsHelp(): void {
     btnId: "instructions-btn",
     modalId: "home-instructions",
     closeId: "home-instructions-close",
-    panelSelector: ".controls-help-panel",
+    panelSelector: ".home-credit-panel",
     onOpen: () => {
       document.getElementById("feedback-compose")?.classList.add("hidden");
       closeControlsHelp();

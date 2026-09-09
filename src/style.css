@@ -1023,17 +1023,19 @@ body:has(#mute-btn.hidden) .hud-top {
   display: none;
 }
 
-.instr-blurb {
-  margin: 0 0 0.55rem;
-  font-family: "Rajdhani", sans-serif;
-  font-size: 0.88rem;
-  line-height: 1.35;
-  color: var(--muted);
+.home-credit-panel .home-credit-line {
+  margin-bottom: 1.15rem;
 }
 
-.instr-blurb strong {
-  color: #fff;
-  font-weight: 700;
+.home-credit-link {
+  color: #ffc857;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 0.12em;
+}
+
+.home-credit-link:hover {
+  color: #ffe09a;
 }
 
 .event-battle-summary {
