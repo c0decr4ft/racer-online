@@ -136,6 +136,8 @@ export type ClientMsg =
   | { t: "pickupCube"; cubeId: number; x?: number; z?: number }
   /** Event Mode — winner (Race) or any claimable racer (Battle) claims Cashu: tip 0–100% to the dev. */
   | { t: "claimPot"; tipPercent: number }
+  /** Leave the current room (triggers lobby buy-in refund when unpaid race has not started). */
+  | { t: "leave" }
   /** Host-only. Optional weather re-asserts the room setting on play. */
   | { t: "start"; weather?: NetWeatherMode }
   | { t: "ping"; n: number };
@@ -224,6 +226,17 @@ export type ServerMsg =
       mock?: boolean;
       error?: string;
     }
+  /** Event Mode — lobby leave refund of a paid buy-in (Cashu token). */
+  | {
+      t: "buyInRefund";
+      ok: boolean;
+      token?: string;
+      sats?: number;
+      mock?: boolean;
+      error?: string;
+    }
+  /** Event Mode — pot/fee/claimable patch after finish without re-sending raceResult. */
+  | { t: "eventUpdate"; event: EventRoomInfo }
   /** One driver crashed — they burn in place. No chain-reaction grid reset. */
   | { t: "wrecked"; id: string; name: string }
   /** Every racer is on fire — reset the field and countdown. */

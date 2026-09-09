@@ -573,7 +573,16 @@ export class Game {
       onEventInvoice: (creq, amountSats, mock, buyInSats, feeSats, bolt11) =>
         this.showBuyInInvoice(creq, amountSats, mock, buyInSats, feeSats, bolt11),
       onPayoutResult: (result) => this.onPayoutResult(result),
+      onBuyInRefund: (result) => this.onBuyInRefund(result),
+      onEventUpdate: (event) => {
+        if (!event) return;
+        // Fee / claimable patch after finish — refresh checkout numbers if visible.
+        if (document.getElementById("event-checkout") && !document.getElementById("event-checkout")?.classList.contains("hidden")) {
+          this.updateEventTipBreakdown();
+        }
+      },
       onError: (message) => {
+        if (this.expectingLobby && !this.inLobby) this.expectingLobby = false;
         this.setNetStatus(message, "bad");
         this.setMpFormStatus(message);
         this.el.mpStatus.textContent = message;
@@ -582,6 +591,13 @@ export class Game {
         }
       },
       onStatus: (text) => {
+        if (
+          this.expectingLobby &&
+          !this.inLobby &&
+          /fail|Disconnect|error|already|full|wrong|not found/i.test(text)
+        ) {
+          this.expectingLobby = false;
+        }
         const bad = /fail|Disconnect|full|error|wrong|not found|already/i.test(text);
         this.setNetStatus(text, bad ? "bad" : "ok");
         if (!this.running && !this.el.multiplayer.classList.contains("hidden")) {
@@ -755,7 +771,9 @@ export class Game {
     document.getElementById("mp-goto-join")!.onclick = () => this.showMpView("join");
     document.getElementById("mp-create-back")!.onclick = () => this.cancelMpConnect("entry");
     document.getElementById("mp-join-back")!.onclick = () => this.cancelMpConnect("entry");
-    document.getElementById("mp-lobby-leave")!.onclick = () => this.leaveLobby();
+    document.getElementById("mp-lobby-leave")!.onclick = () => {
+      void this.leaveLobby();
+    };
     this.el.mpStartBtn.onclick = () => {
       if (this.net.isHost) this.net.startRace();
     };
@@ -1370,9 +1388,42 @@ export class Game {
     });
   }
 
-  private leaveLobby() {
+  private async leaveLobby() {
+    // Paid Event lobby: ask server for a Cashu refund before tearing down the socket.
+    const event = this.net.event;
+    const paid = !!event && !!this.net.id && event.paidIds.includes(this.net.id);
+    let refund: { ok: boolean; token?: string; sats?: number; error?: string } | null = null;
+    if (this.inLobby && paid && this.net.connected) {
+      this.el.mpStatus.textContent = "Refunding buy-in…";
+      refund = await this.net.leaveRoom(4_000);
+    }
     // Leave room → back to the main home menu (not a blank overlay).
     this.closeMultiplayer();
+    if (refund) this.onBuyInRefund(refund);
+  }
+
+  /** Show / copy a lobby buy-in refund token after leave. */
+  private onBuyInRefund(result: {
+    ok: boolean;
+    token?: string;
+    sats?: number;
+    mock?: boolean;
+    error?: string;
+  }) {
+    if (!result.ok) {
+      this.showToast(result.error || "Buy-in refund failed");
+      return;
+    }
+    const sats = Math.max(0, Math.round(result.sats || 0));
+    const token = String(result.token || "").trim();
+    if (!token) {
+      if (sats > 0) this.showToast(`Refunded ${sats} sats`);
+      return;
+    }
+    this.showToast(`Buy-in refund · ${sats} sats — token copied`);
+    void navigator.clipboard?.writeText(token).catch(() => {
+      /* ignore — toast still tells them it refunded */
+    });
   }
 
   private upsertLobbyPlayer(player: PlayerPose) {
@@ -1455,8 +1506,8 @@ export class Game {
         status.textContent = "PAID ✓";
         status.classList.add("is-paid");
       }
-      // Once you've paid, BACK goes away — you can't leave the lobby and lose your buy-in
-      document.getElementById("mp-lobby-leave")?.classList.toggle("hidden", minePaid);
+      // Paid players can leave — server refunds the buy-in while still in lobby.
+      document.getElementById("mp-lobby-leave")?.classList.remove("hidden");
     } else {
       document.getElementById("mp-lobby-leave")?.classList.remove("hidden");
     }
@@ -1655,9 +1706,10 @@ export class Game {
     const tipPercent = Math.max(0, Math.min(100, Number(range?.value ?? 2)));
     const label = document.getElementById("event-tip-label");
     if (label) label.textContent = `${tipPercent}%`;
-    // The dev tip is paid whole at the chosen percent; the mint fee comes out
-    // of the pot (the winner's share), never out of the tip.
-    const tipSats = Math.floor((pot * tipPercent) / 100);
+    // Match server claim math: tip is capped so the mint send fee can still be paid;
+    // fee comes out of the winner share, never out of the tip.
+    const tipWanted = Math.floor((pot * tipPercent) / 100);
+    const tipSats = Math.min(tipWanted, Math.max(0, pot - fee));
     const winnerSats = Math.max(0, pot - tipSats - fee);
     const winnerEl = document.getElementById("event-winner-sats");
     if (winnerEl) winnerEl.textContent = String(winnerSats);
@@ -4330,6 +4382,10 @@ export class Game {
   private resolveRemoteCollisions() {
     const maxSep = 0.5;
     for (const remote of this.remotes.values()) {
+      if (this.track.heightAt) {
+        const dy = Math.abs((this.player.state.position.y || 0) - (remote.mesh.position.y || 0));
+        if (dy > 1.25) continue;
+      }
       const dx = remote.mesh.position.x - this.player.state.position.x;
       const dz = remote.mesh.position.z - this.player.state.position.z;
       const dist = Math.hypot(dx, dz);
@@ -4350,6 +4406,11 @@ export class Game {
   }
 
   private bumpVehicles(a: Vehicle, b: Vehicle) {
+    // Yard Drift underpass: skip collisions when cars are on different grades.
+    if (this.track.heightAt) {
+      const dy = Math.abs((a.state.position.y || 0) - (b.state.position.y || 0));
+      if (dy > 1.25) return;
+    }
     const dx = b.state.position.x - a.state.position.x;
     const dz = b.state.position.z - a.state.position.z;
     const dist = Math.hypot(dx, dz);
