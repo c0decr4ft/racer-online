@@ -225,8 +225,18 @@ export class Game {
   online = false;
   /** Event Mode lobby flow (Lightning buy-in gate + winner's pot) vs plain multiplayer. */
   private eventMode = false;
-  /** Host-chosen Event Mode flavor — Race (default) or Battle. */
+  /** Host-chosen room flavor — Race (default), Elimination, or Battle (Event only). */
   private eventGameMode: EventGameMode = "race";
+  /** Home Start Race: Race vs Elimination (Solo / Test Drive ignore this). */
+  private homeRaceMode: "race" | "elimination" = "race";
+  /** Active race is Elimination (local AI or online). */
+  private eliminationMode = false;
+  /** Local player cut in Elimination (MP spectates; offline ends contention). */
+  private localEliminated = false;
+  /** Online: remote ids cut this race. */
+  private readonly eliminatedIds = new Set<string>();
+  /** Offline AI rivals cut this race (index into rivals). */
+  private readonly eliminatedRivalIdx = new Set<number>();
   /** Battle item boxes currently in the scene. */
   private battleCubes: BattleCubeVisual[] = [];
   /**
@@ -570,6 +580,7 @@ export class Game {
       onCubeTaken: (info) => this.onBattleCubeTaken(info),
       onCubesDropped: (info) => this.onBattleCubesDropped(info),
       onWrecked: (id, name) => this.applyOnlineWreck(id, name),
+      onEliminated: (id, name, remaining) => this.applyElimination(id, name, remaining),
       onFieldReset: () => this.applyOnlineFieldReset(),
       onRaceResult: (winnerId, winnerName, timeMs, trackOptions, voteEndsAt) =>
         this.finishRace({
@@ -683,7 +694,8 @@ export class Game {
       !this.paused &&
       !this.finished &&
       !this.exploding &&
-      !this.onlineWrecked;
+      !this.onlineWrecked &&
+      !this.localEliminated;
     this.touch.setVisible(racing);
   }
 
@@ -693,6 +705,8 @@ export class Game {
     document.getElementById("start-btn")!.onclick = () => {
       void this.bootFromMenu({ trackId: randomTrackId() });
     };
+    document.getElementById("home-mode-race")!.onclick = () => this.setHomeRaceMode("race");
+    document.getElementById("home-mode-elim")!.onclick = () => this.setHomeRaceMode("elimination");
     document.getElementById("test-drive-btn")!.onclick = () => {
       void this.unlockAndMaybeMenuMusic().then(() => this.openMapSelect());
     };
@@ -714,6 +728,7 @@ export class Game {
         });
     };
     document.getElementById("mp-event-pick-race")!.onclick = () => this.setEventGameModePick("race");
+    document.getElementById("mp-event-pick-elim")!.onclick = () => this.setEventGameModePick("elimination");
     document.getElementById("mp-event-pick-battle")!.onclick = () => this.setEventGameModePick("battle");
     document.getElementById("map-select-back")!.onclick = () => this.closeMapSelect();
     document.getElementById("test-drift-btn")!.onclick = () => {
@@ -1129,9 +1144,12 @@ export class Game {
     this.mpCreateKind = this.garage.kind === "bike" ? "bike" : "car";
     this.mpCreateWeather = "dry";
     this.mpCreateTrackId = DEFAULT_TRACK_ID;
-    // Event Mode: show buy-in + Race/Battle in create-room settings.
+    // Create-room: Race / Elimination always; Battle only for Event Mode.
     document.getElementById("mp-create-buyin-field")?.classList.toggle("hidden", !eventMode);
-    document.getElementById("mp-event-mode-pick")?.classList.toggle("hidden", !eventMode);
+    document.getElementById("mp-event-mode-pick")?.classList.remove("hidden");
+    document.getElementById("mp-event-pick-battle")?.classList.toggle("hidden", !eventMode);
+    const modeLabel = document.getElementById("mp-race-mode-label");
+    if (modeLabel) modeLabel.textContent = eventMode ? "Event type" : "Race type";
     this.syncEventGameModePickUi();
     this.syncEventBuyInLabel();
     const entryTitle = document.querySelector("#mp-entry h1");
@@ -1139,7 +1157,7 @@ export class Game {
     const entryTagline = document.querySelector("#mp-entry .tagline");
     if (entryTagline) {
       entryTagline.textContent = eventMode
-        ? "Buy-in sats · Race or Battle — set mode when you create the room"
+        ? "Buy-in sats · Race, Elimination, or Battle — set mode when you create the room"
         : "Create a private room or join with a password";
     }
     // Signed in → prefill the racer name from the Nostr profile (username, never
@@ -1345,10 +1363,27 @@ export class Game {
       pubkey: getSession()?.pubkey,
       eventBuyInSats,
       eventGameMode: this.eventMode ? this.eventGameMode : undefined,
+      raceMode:
+        !this.eventMode && this.eventGameMode === "elimination" ? "elimination" : "race",
     });
   }
 
+  private setHomeRaceMode(mode: "race" | "elimination") {
+    this.homeRaceMode = mode;
+    document.getElementById("home-mode-race")?.classList.toggle("is-active", mode === "race");
+    document.getElementById("home-mode-elim")?.classList.toggle("is-active", mode === "elimination");
+    const hint = document.getElementById("home-mode-hint");
+    if (hint) {
+      hint.textContent =
+        mode === "elimination"
+          ? "Last place each lap is out · last racer standing wins"
+          : "3 laps · beat the AI pack";
+    }
+  }
+
   private setEventGameModePick(mode: EventGameMode) {
+    // Battle is Event-only — ignore if somehow picked in plain MP.
+    if (mode === "battle" && !this.eventMode) return;
     this.eventGameMode = mode;
     this.syncEventGameModePickUi();
     this.syncEventBuyInLabel();
@@ -1356,9 +1391,20 @@ export class Game {
 
   private syncEventGameModePickUi() {
     const race = document.getElementById("mp-event-pick-race");
+    const elim = document.getElementById("mp-event-pick-elim");
     const battle = document.getElementById("mp-event-pick-battle");
     race?.classList.toggle("is-active", this.eventGameMode === "race");
+    elim?.classList.toggle("is-active", this.eventGameMode === "elimination");
     battle?.classList.toggle("is-active", this.eventGameMode === "battle");
+    const hint = document.getElementById("mp-race-mode-hint");
+    if (hint) {
+      hint.textContent =
+        this.eventGameMode === "elimination"
+          ? "Last place each lap is out · last racer standing wins"
+          : this.eventGameMode === "battle"
+            ? "Money cubes share the pot · race still crowns a winner"
+            : "First to finish 3 laps";
+    }
   }
 
   private syncEventBuyInLabel() {
@@ -1367,7 +1413,9 @@ export class Game {
     label.textContent =
       this.eventGameMode === "battle"
         ? "Buy-in per racer (real sats) · item boxes share the pot"
-        : "Buy-in per racer (real sats) · winner takes the pot";
+        : this.eventGameMode === "elimination"
+          ? "Buy-in per racer (real sats) · last racer standing takes the pot"
+          : "Buy-in per racer (real sats) · winner takes the pot";
   }
 
   private async joinMultiplayerRoom() {
@@ -1481,8 +1529,11 @@ export class Game {
     const weather =
       this.net.weather === "rain" ? "RAIN" : this.net.weather === "night" ? "NIGHT" : "DRY";
     const event = this.net.event;
+    const raceMode = this.net.raceMode || event?.mode || "race";
+    const modeTag =
+      raceMode === "elimination" ? "ELIM" : raceMode === "battle" ? "BATTLE" : "RACE";
     this.el.mpLobbyTitle.textContent = this.net.room.toUpperCase();
-    this.el.mpLobbyMeta.textContent = `${trackName} · ${vehicle} · ${weather} · ${this.lobbyPlayers.length}/${this.net.maxPlayers}`;
+    this.el.mpLobbyMeta.textContent = `${trackName} · ${modeTag} · ${vehicle} · ${weather} · ${this.lobbyPlayers.length}/${this.net.maxPlayers}`;
     this.el.mpLobbyPlayers.innerHTML = this.lobbyPlayers
       .map((p) => {
         const host = p.id === this.net.hostId ? "HOST" : "RACER";
@@ -1504,13 +1555,24 @@ export class Game {
     const buyin = document.getElementById("mp-buyin");
     if (buyin) buyin.classList.toggle("hidden", !event);
     if (event) {
-      if (event.mode === "battle" || event.mode === "race") this.eventGameMode = event.mode;
+      if (event.mode === "battle" || event.mode === "race" || event.mode === "elimination") {
+        this.eventGameMode = event.mode;
+      }
       const banner = document.getElementById("mp-buyin-banner");
       if (banner) {
         const fee = event.feeSats ?? 0;
-        const modeTag = event.mode === "battle" ? "BATTLE · " : "RACE · ";
+        const modeTag =
+          event.mode === "battle"
+            ? "BATTLE · "
+            : event.mode === "elimination"
+              ? "ELIMINATION · "
+              : "RACE · ";
         const potNote =
-          event.mode === "battle" ? " · BOXES SHARE THE POT" : "";
+          event.mode === "battle"
+            ? " · BOXES SHARE THE POT"
+            : event.mode === "elimination"
+              ? " · LAST STANDING TAKES THE POT"
+              : "";
         banner.textContent = fee
           ? `${modeTag}BUY-IN ${event.buyInSats} SATS + ${fee} SAT MINT FEE · POT ${event.buyInSats * this.lobbyPlayers.length} SATS${potNote}`
           : `${modeTag}BUY-IN ${event.buyInSats} SATS · POT ${event.buyInSats * this.lobbyPlayers.length} SATS${potNote}`;
@@ -2807,6 +2869,10 @@ export class Game {
     };
     this.net.kind = kind;
     this.net.weather = normalizeWeatherMode(info.weather);
+    if (info.raceMode) this.net.raceMode = info.raceMode;
+    if (info.raceMode === "elimination" || info.raceMode === "battle" || info.raceMode === "race") {
+      this.eventGameMode = info.raceMode;
+    }
     this.setNetStatus(`Lobby · ${info.room}`, "ok");
     this.el.overlay.classList.add("hidden");
     this.el.mpLobbyFeed.innerHTML = "";
@@ -3157,6 +3223,14 @@ export class Game {
     this.finished = false;
     this.onlineFinishPending = false;
     this.pendingFinishMs = 0;
+    this.localEliminated = false;
+    this.eliminatedIds.clear();
+    this.eliminatedRivalIdx.clear();
+    this.eliminationMode = this.online
+      ? this.net.raceMode === "elimination" || this.net.event?.mode === "elimination"
+      : !this.solo && !this.practice && this.homeRaceMode === "elimination";
+    document.getElementById("elim-flash")?.classList.add("hidden");
+    this.elimFlashUntil = 0;
     this.stopSpectate();
     this.paused = false;
     this.running = true;
@@ -3360,7 +3434,7 @@ export class Game {
     this.lastFrame = performance.now();
     this.input.clearDriveKeys();
     this.renderer.domElement.focus({ preventScroll: true });
-    if (this.onlineWrecked || this.onlineFinishPending) this.enterSpectate();
+    if (this.onlineWrecked || this.onlineFinishPending || this.localEliminated) this.enterSpectate();
   }
 
   /** Sticky track projection: global search only on first use (spawn/reset),
@@ -3483,13 +3557,13 @@ export class Game {
           // a stop and keeps streaming poses so remotes watch the same settled
           // car we see (instead of a frozen mid-corner ghost).
           let input = inputPeek;
-          if ((this.finished && this.online) || this.onlineWrecked) {
+          if ((this.finished && this.online) || this.onlineWrecked || this.localEliminated) {
             const c = this._coastInput;
             c.pause = inputPeek.pause;
             c.fire = false;
             input = c;
           }
-          if (input.reset && !this.onlineWrecked) {
+          if (input.reset && !this.onlineWrecked && !this.localEliminated) {
             this.player.reset(this.track.startPosition.clone(), this.track.startHeading);
             this.resetSticky(this.player);
             this.lastT = this.projectSticky(this.player, this.player.state.position).t;
@@ -3515,7 +3589,7 @@ export class Game {
           for (const r of this.rivals) r.godBoost = aiPower;
 
           this.player.update(dt, input);
-          if (this.onlineWrecked) {
+          if (this.onlineWrecked || this.localEliminated) {
             this.player.state.speed = 0;
             this.player.state.steerAngle = 0;
             this.player.syncCollision();
@@ -3528,7 +3602,7 @@ export class Game {
             this.audio.stopBikeEngine();
           }
           if (input.fire) this.tryFireTankShell();
-          if (this.onlineWrecked) {
+          if (this.onlineWrecked || this.localEliminated) {
             this.player.syncCollision();
           } else {
             const onWall = this.keepOnTrack(this.player);
@@ -3552,20 +3626,21 @@ export class Game {
             // Race mode: AI that complete TOTAL_LAPS finish ahead; practice never ends for them
             if (!this.practice) {
               for (const r of this.rivals) {
-                if (!r.raceDone && r.laps >= TOTAL_LAPS) r.markRaceDone();
+                if (!r.eliminated && !r.raceDone && r.laps >= TOTAL_LAPS) r.markRaceDone();
               }
             }
             this.resolveCollisions();
+            if (this.eliminationMode) this.checkOfflineElimination();
           } else if (this.online) {
             this.net.maybeSendPose(dt, {
               x: this.player.state.position.x,
               z: this.player.state.position.z,
               h: this.player.state.heading,
-              s: this.onlineWrecked ? 0 : this.player.state.speed,
+              s: this.onlineWrecked || this.localEliminated ? 0 : this.player.state.speed,
               g: this.player.gearLabel,
               lap: this.lap,
             });
-            if (!this.onlineWrecked) {
+            if (!this.onlineWrecked && !this.localEliminated) {
               this.resolveRemoteCollisions();
               this.tickWreckContact(dt);
             }
@@ -3580,7 +3655,7 @@ export class Game {
           }
 
           if (!this.exploding) {
-            if (!this.onlineWrecked && !this.finished) this.updateLaps();
+            if (!this.onlineWrecked && !this.localEliminated && !this.finished) this.updateLaps();
             this.tickBattleCubes(now * 0.001);
             this.updateHud();
             this.updateCamera(dt);
@@ -4136,6 +4211,112 @@ export class Game {
     this.showToast(`${name} is on fire`);
   }
 
+  /** Elimination Mode — last place for the lap is out. */
+  private applyElimination(id: string, name: string, remaining: number) {
+    if (!this.running && !this.online) return;
+    this.eliminatedIds.add(id);
+    this.showElimFlash(id === this.net.id ? "YOU ARE OUT" : `OUT · ${name}`, id === this.net.id);
+    this.showToast(
+      id === this.net.id
+        ? remaining > 0
+          ? `You are out — ${remaining} remain`
+          : "You are out"
+        : `OUT · ${name}${remaining > 0 ? ` · ${remaining} remain` : ""}`,
+    );
+    if (id === this.net.id) {
+      this.localEliminated = true;
+      this.player.state.speed = 0;
+      this.player.state.steerAngle = 0;
+      this.el.wrongWay.classList.add("hidden");
+      this.el.delta.textContent = "";
+      this.syncTouchControls();
+      if (this.online) {
+        this.enterSpectate();
+        if (!this.spectating) this.showToast("Spectating — waiting for results");
+      } else {
+        // Offline: end the session as eliminated (AI keep racing only until we stop).
+        this.pendingFinishMs = this.raceNow() - this.raceStart;
+        this.finishRace();
+      }
+    }
+  }
+
+  private elimFlashUntil = 0;
+
+  private showElimFlash(text: string, isYou: boolean) {
+    const el = document.getElementById("elim-flash");
+    if (!el) return;
+    el.textContent = text;
+    el.classList.toggle("is-you", isYou);
+    el.classList.remove("hidden");
+    el.style.animation = "none";
+    void el.offsetWidth;
+    el.style.animation = "";
+    this.elimFlashUntil = performance.now() + 2200;
+  }
+
+  private updateElimFlash() {
+    if (this.elimFlashUntil > 0 && performance.now() >= this.elimFlashUntil) {
+      this.elimFlashUntil = 0;
+      document.getElementById("elim-flash")?.classList.add("hidden");
+    }
+  }
+
+  /**
+   * Offline Elimination: when all but one active entrant have completed lap K,
+   * cut the laggard (same rule as the server — lap count only).
+   */
+  private checkOfflineElimination() {
+    if (!this.eliminationMode || this.online || this.practice || this.solo) return;
+    if (this.finished || this.localEliminated) return;
+
+    type Entrant = { key: string; completed: number; rivalIdx: number | null };
+    const active: Entrant[] = [];
+    if (!this.localEliminated) {
+      active.push({ key: "player", completed: Math.max(0, this.lap - 1), rivalIdx: null });
+    }
+    this.rivals.forEach((r, i) => {
+      if (this.eliminatedRivalIdx.has(i) || r.eliminated) return;
+      active.push({ key: `r${i}`, completed: r.laps, rivalIdx: i });
+    });
+    if (active.length <= 1) {
+      if (active.length === 1 && active[0]!.rivalIdx == null) {
+        // Player is last standing before the finish line.
+        this.finishRace();
+      }
+      return;
+    }
+
+    for (let need = 1; need < TOTAL_LAPS; need++) {
+      const reached = active.filter((e) => e.completed >= need);
+      if (reached.length < active.length - 1 || reached.length >= active.length) continue;
+      const laggards = active
+        .filter((e) => e.completed < need)
+        .sort((a, b) => a.completed - b.completed || a.key.localeCompare(b.key));
+      const victim = laggards[0];
+      if (!victim) return;
+      if (victim.rivalIdx == null) {
+        this.localEliminated = true;
+        this.player.state.speed = 0;
+        this.player.state.steerAngle = 0;
+        this.showElimFlash("YOU ARE OUT", true);
+        this.showToast("You are out");
+        this.pendingFinishMs = this.raceNow() - this.raceStart;
+        this.finishRace();
+      } else {
+        const rival = this.rivals[victim.rivalIdx];
+        if (!rival) return;
+        this.eliminatedRivalIdx.add(victim.rivalIdx);
+        rival.markEliminated();
+        const remain = active.length - 1;
+        this.showElimFlash(`OUT · AI ${victim.rivalIdx + 1}`, false);
+        this.showToast(`OUT · AI ${victim.rivalIdx + 1} · ${remain} remain`);
+        if (remain <= 1 && !this.localEliminated) this.finishRace();
+      }
+      return;
+    }
+  }
+
   /**
    * Local backup for fire spread: stay on a burning wreck for 3s → ignite.
    * Server does the same from poses; this catches grinding the visual wreck.
@@ -4172,6 +4353,10 @@ export class Game {
     this.lastFieldResetAt = now;
     this.stopSpectate();
     this.clearOnlineWreck();
+    this.localEliminated = false;
+    this.eliminatedIds.clear();
+    document.getElementById("elim-flash")?.classList.add("hidden");
+    this.elimFlashUntil = 0;
     this.resetWallHits();
     this.paused = false;
     this.el.pause.classList.add("hidden");
@@ -4573,6 +4758,7 @@ export class Game {
         } else {
           this.el.lap.innerHTML = `${this.lap}<span>/${TOTAL_LAPS}</span>`;
           if (this.lap === TOTAL_LAPS) this.showFinalLapFlash();
+          if (this.eliminationMode && !this.online) this.checkOfflineElimination();
         }
       } else if (!this.crossedOnce) {
         this.crossedOnce = true;
@@ -4582,6 +4768,10 @@ export class Game {
     }
 
     this.lastT = t;
+    // AI may complete a lap without the player wrapping — re-check each frame in elim.
+    if (this.eliminationMode && !this.online && !this.finished) {
+      this.checkOfflineElimination();
+    }
   }
 
   private finalLapFlashUntil = 0;
@@ -4810,9 +5000,17 @@ export class Game {
     const field = this.remotes.size + 1;
     const won = winnerId === this.net.id;
     const place = won ? 1 : Math.max(2, this.playerFinishPlace());
-    this.el.finalPlace.textContent = `${Math.min(place, field)}/${field}`;
-    this.el.finishEyebrow.textContent = won ? "RACE WINNER" : `${winnerName} WINS`;
-    this.el.finishTitle.textContent = won ? "YOU WIN" : "YOU LOST";
+    this.el.finalPlace.textContent = this.localEliminated && !won ? "OUT" : `${Math.min(place, field)}/${field}`;
+    if (won) {
+      this.el.finishEyebrow.textContent = this.eliminationMode ? "LAST STANDING" : "RACE WINNER";
+      this.el.finishTitle.textContent = "YOU WIN";
+    } else if (this.localEliminated) {
+      this.el.finishEyebrow.textContent = "ELIMINATED";
+      this.el.finishTitle.textContent = "YOU ARE OUT";
+    } else {
+      this.el.finishEyebrow.textContent = `${winnerName} WINS`;
+      this.el.finishTitle.textContent = "YOU LOST";
+    }
   }
 
   /**
@@ -5158,12 +5356,15 @@ export class Game {
       : this.solo
         ? 1
         : this.rivals.length + 1;
-    this.el.finalPlace.textContent = `${place}/${field}`;
+    this.el.finalPlace.textContent = this.localEliminated ? "OUT" : `${place}/${field}`;
     if (this.online && result) {
       this.applyOnlineResult(result.winnerId, result.winnerName);
       this.showMapVote(result.trackOptions, result.voteEndsAt);
+    } else if (this.localEliminated) {
+      this.el.finishEyebrow.textContent = "ELIMINATED";
+      this.el.finishTitle.textContent = "YOU ARE OUT";
     } else if (place === 1) {
-      this.el.finishEyebrow.textContent = "RACE WINNER";
+      this.el.finishEyebrow.textContent = this.eliminationMode ? "LAST STANDING" : "RACE WINNER";
       this.el.finishTitle.textContent = "YOU WIN";
     } else {
       this.el.finishEyebrow.textContent = "RACE COMPLETE";
@@ -5173,7 +5374,7 @@ export class Game {
     // Accomplishment pill — podium only (personal-record pills removed by request).
     const callouts = document.getElementById("finish-callouts");
     if (callouts) {
-      const show = place <= 3;
+      const show = !this.localEliminated && place <= 3;
       callouts.innerHTML = show ? `<span class="finish-callout is-podium">PODIUM FINISH</span>` : "";
       callouts.classList.toggle("hidden", !show);
     }
@@ -5202,10 +5403,18 @@ export class Game {
    * Offline: 1 + AI that already finished 3 laps. Online: live progress rank.
    */
   private playerFinishPlace(): number {
+    if (this.localEliminated) return Math.max(2, this.online ? this.remotes.size + 1 : this.rivals.length + 1);
     if (this.online) {
       const playerProgress = this.lap - 1 + this.raceProgress(this.player);
       let place = 1;
       for (const remote of this.remotes.values()) {
+        if (
+          this.eliminatedIds.has(remote.id) ||
+          remote.wrecked ||
+          this.wreckedIds.has(remote.id)
+        ) {
+          continue;
+        }
         const rt = this.projectSticky(remote, remote.mesh.position).t;
         const rp = (remote.lap ?? 1) - 1 + rt;
         if (rp > playerProgress + 0.002) place += 1;
@@ -5214,7 +5423,11 @@ export class Game {
     }
     // Finished AI count as ahead; unfinished pack is behind the player
     if (this.solo) return 1;
-    return 1 + this.rivals.filter((r) => r.raceDone).length;
+    return (
+      1 +
+      this.rivals.filter((r, i) => !r.eliminated && !this.eliminatedRivalIdx.has(i) && r.raceDone)
+        .length
+    );
   }
 
   private async checkLeaderboardQualify() {
@@ -5268,6 +5481,7 @@ export class Game {
           : this.raceNow() - this.raceStart;
     this.el.time.textContent = formatTime(clockMs);
     this.updateFinalLapFlash();
+    this.updateElimFlash();
     this.updateDelta(clockMs);
     this.updateAnimalHit();
     // Under load, skip the canvas minimap redraw (HUD text still updates).
@@ -5275,28 +5489,42 @@ export class Game {
 
     if (this.el.position) {
       // Finished AI sit at race distance; otherwise laps + track fraction.
-      // Player: completed laps = lap - 1.
+      // Player: completed laps = lap - 1. Elimination drops OUT of the count.
       if (this.solo) {
         this.el.position.textContent = "1/1";
+      } else if (this.localEliminated) {
+        this.el.position.textContent = "OUT";
       } else {
         const playerT =
           this.stickyT.get(this.player) ?? this.raceProgress(this.player);
         const playerProgress = this.lap - 1 + playerT;
         let place = 1;
         if (this.online) {
-          const total = this.remotes.size + 1;
+          let total = 1;
           for (const remote of this.remotes.values()) {
+            if (
+              this.eliminatedIds.has(remote.id) ||
+              remote.wrecked ||
+              this.wreckedIds.has(remote.id)
+            ) {
+              continue;
+            }
+            total += 1;
             const rt = this.projectSticky(remote, remote.mesh.position).t;
             const rp = (remote.lap ?? 1) - 1 + rt;
             if (rp > playerProgress + 0.002) place += 1;
           }
           this.el.position.textContent = `${place}/${total}`;
         } else {
-          for (const r of this.rivals) {
+          let total = 1;
+          for (let i = 0; i < this.rivals.length; i++) {
+            const r = this.rivals[i]!;
+            if (this.eliminatedRivalIdx.has(i) || r.eliminated) continue;
+            total += 1;
             const rp = r.raceDone ? TOTAL_LAPS + 0.001 : r.progress;
             if (rp > playerProgress + 0.002) place += 1;
           }
-          this.el.position.textContent = `${place}/${this.rivals.length + 1}`;
+          this.el.position.textContent = `${place}/${total}`;
         }
       }
     }
@@ -5453,7 +5681,13 @@ export class Game {
   private spectateCandidates(): RemotePlayer[] {
     const out: RemotePlayer[] = [];
     for (const remote of this.remotes.values()) {
-      if (remote.wrecked || this.wreckedIds.has(remote.id)) continue;
+      if (
+        remote.wrecked ||
+        this.wreckedIds.has(remote.id) ||
+        this.eliminatedIds.has(remote.id)
+      ) {
+        continue;
+      }
       out.push(remote);
     }
     return out;
@@ -5537,7 +5771,12 @@ export class Game {
   private updateCamera(dt: number) {
     if (this.spectating) {
       const remote = this.spectateTargetId ? this.remotes.get(this.spectateTargetId) : undefined;
-      if (!remote || remote.wrecked || this.wreckedIds.has(remote.id)) {
+      if (
+        !remote ||
+        remote.wrecked ||
+        this.wreckedIds.has(remote.id) ||
+        this.eliminatedIds.has(remote.id)
+      ) {
         if (!this.cycleSpectateTarget(1)) {
           this.updateCameraOnPlayer(dt);
         }

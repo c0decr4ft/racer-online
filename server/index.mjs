@@ -61,6 +61,8 @@ const MAP_VOTE_MS = 20_000;
 /** After finish, unclaimed battle shares → developer tip leftover. */
 const BATTLE_CLAIM_ABANDON_MS = 10 * 60_000;
 const MAX_PLAYERS = 6;
+/** Must match client TOTAL_LAPS — Elimination cuts last place after each completed lap before the final. */
+const TOTAL_LAPS = 3;
 const PLAYER_COLORS = [0xe4eaf2, 0xe23b2e, 0x2a66f0, 0xf0c020, 0x1dbf6a, 0xb44dff, 0xff6b9d, 0x00d4ff];
 const DIR = dirname(fileURLToPath(import.meta.url));
 /**
@@ -250,7 +252,7 @@ function normalizeSessionId(raw) {
 /** @typedef {{ paymentHash: string, paymentRequest: string, bolt11?: string, paidAt: number, netSats?: number }} BuyIn */
 /** @typedef {{ at: number, level: 'info' | 'warn' | 'error', msg: string }} PotLogEntry */
 /** @typedef {{ tipSats: number, tipCollected: boolean, tipToken: string }} BattleClaimTip */
-/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, wreckedIds: Set<string>, fireContactMs: Map<string, number>, fireContactLast: Map<string, number>, allWreckResetAt: number, clients: Map<string, Client>, isEvent: boolean, eventMode: 'race' | 'battle', buyInSats: number, buyInFeeSats: number, buyIns: Map<string, BuyIn>, potSats: number, potId: string, potClaimed: boolean, potLogs: PotLogEntry[], payoutTipSats: number, payoutTipCollected: boolean, payoutTipToken: string, battleCubes: Map<number, { id: number, x: number, z: number, sats: number, tier: string, takenBy: string }>, battleEarnings: Map<string, number>, battleClaimable: Map<string, number>, battleClaimedIds: Set<string>, battleClaimTips: Map<string, BattleClaimTip>, battleClaimDeadline: number, battleLeftoverSats: number, battleLeftoverCollected: boolean, battleLeftoverToken: string }} Room */
+/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, wreckedIds: Set<string>, eliminatedIds: Set<string>, raceStartedAt: number, fireContactMs: Map<string, number>, fireContactLast: Map<string, number>, allWreckResetAt: number, clients: Map<string, Client>, isEvent: boolean, eventMode: 'race' | 'battle' | 'elimination', buyInSats: number, buyInFeeSats: number, buyIns: Map<string, BuyIn>, potSats: number, potId: string, potClaimed: boolean, potLogs: PotLogEntry[], payoutTipSats: number, payoutTipCollected: boolean, payoutTipToken: string, battleCubes: Map<number, { id: number, x: number, z: number, sats: number, tier: string, takenBy: string }>, battleEarnings: Map<string, number>, battleClaimable: Map<string, number>, battleClaimedIds: Set<string>, battleClaimTips: Map<string, BattleClaimTip>, battleClaimDeadline: number, battleLeftoverSats: number, battleLeftoverCollected: boolean, battleLeftoverToken: string }} Room */
 
 /** Persist a debug line on the event pot (disk + in-memory) so the DEV table can show it. */
 function potLog(room, level, msg) {
@@ -1270,6 +1272,179 @@ function clearWrecks(room) {
   room.allWreckResetAt = 0;
 }
 
+/** @param {Room} room */
+function clearEliminations(room) {
+  room.eliminatedIds = new Set();
+}
+
+/**
+ * Still racing — not wrecked and not eliminated.
+ * @param {Room} room
+ * @returns {Client[]}
+ */
+function activeRacingClients(room) {
+  const elim = room.eliminatedIds ?? new Set();
+  const wrecked = room.wreckedIds ?? new Set();
+  return [...room.clients.values()].filter((c) => !elim.has(c.id) && !wrecked.has(c.id));
+}
+
+/**
+ * @param {Room} room
+ * @param {boolean} [allowBattle]
+ */
+function normalizeRaceMode(raw, allowBattle = false) {
+  const m = String(raw ?? "").toLowerCase();
+  if (m === "elimination" || m === "elim") return "elimination";
+  if (allowBattle && m === "battle") return "battle";
+  return "race";
+}
+
+/** Wire mode for lobby/UI — battle | elimination | race. */
+function wireRaceMode(room) {
+  if (room.eventMode === "battle") return "battle";
+  if (room.eventMode === "elimination") return "elimination";
+  return "race";
+}
+
+/**
+ * Last place among still-active racers is cut when all but one have reached the next lap.
+ * Continues until one remains, or survivors race the final lap to the finish line.
+ * @param {Room} room
+ */
+function checkElimination(room) {
+  if (room.eventMode !== "elimination" || room.phase !== "racing" || room.winnerId) return;
+  let active = activeRacingClients(room);
+  if (active.length <= 1) {
+    if (active.length === 1) declareRaceWinner(room, active[0], raceElapsedMs(room));
+    return;
+  }
+  // After completing lap K (client lap becomes K+1), cut the laggard — not on the finish wrap.
+  for (let needLap = 2; needLap <= TOTAL_LAPS; needLap++) {
+    active = activeRacingClients(room);
+    if (active.length <= 1) break;
+    const reached = active.filter((c) => (c.pose.lap | 0) >= needLap);
+    if (reached.length >= active.length - 1 && reached.length < active.length) {
+      const laggards = active
+        .filter((c) => (c.pose.lap | 0) < needLap)
+        .sort((a, b) => (a.pose.lap | 0) - (b.pose.lap | 0) || (a.id < b.id ? -1 : 1));
+      const victim = laggards[0];
+      if (victim) eliminateClient(room, victim);
+      active = activeRacingClients(room);
+      if (active.length === 1) {
+        declareRaceWinner(room, active[0], raceElapsedMs(room));
+      }
+      return;
+    }
+  }
+}
+
+/** @param {Room} room */
+function raceElapsedMs(room) {
+  const start = room.raceStartedAt || 0;
+  if (!start) return 60_000;
+  return Math.max(1_000, Math.min(3_600_000, Date.now() - start));
+}
+
+/**
+ * @param {Room} room
+ * @param {Client} client
+ */
+function eliminateClient(room, client) {
+  room.eliminatedIds ??= new Set();
+  if (room.eliminatedIds.has(client.id) || room.winnerId) return;
+  room.eliminatedIds.add(client.id);
+  client.pose.s = 0;
+  const remaining = activeRacingClients(room).length;
+  broadcast(room, {
+    t: "eliminated",
+    id: client.id,
+    name: client.name,
+    remaining,
+  });
+  broadcast(room, { t: "notice", text: `OUT · ${client.name}` });
+  console.log(`[elim] ${room.name} ${client.name} out · ${remaining} remain`);
+  roomActivity(room, "elimination", `OUT · ${client.name} · ${remaining} remain`, {
+    player: client.name,
+    playerId: client.id,
+  });
+}
+
+/**
+ * Shared race-end path for finish line + last-racer-standing (Elimination).
+ * @param {Room} room
+ * @param {Client} client
+ * @param {number} timeMs
+ */
+function declareRaceWinner(room, client, timeMs) {
+  if (room.phase !== "racing" || room.winnerId) return;
+  const ms = Math.max(1_000, Math.min(3_600_000, Math.round(Number(timeMs) || 0)));
+  room.winnerId = client.id;
+  room.phase = "finished";
+  if (room.isEvent) {
+    if (room.eventMode === "battle") {
+      finalizeBattleClaimable(room);
+      room.battleClaimDeadline = Date.now() + BATTLE_CLAIM_ABANDON_MS;
+    }
+    const info = eventInfo(room);
+    broadcast(room, {
+      t: "raceResult",
+      winnerId: client.id,
+      winnerName: client.name,
+      timeMs: ms,
+      trackOptions: [],
+      voteEndsAt: 0,
+      event: info,
+    });
+    void (async () => {
+      try {
+        if (room.eventMode === "battle") await collectBattleLeftover(room);
+        const perSend = Math.max(0, await payments.sendFeeSats(room.potId).catch(() => 0));
+        if (rooms.get(room.name) !== room || room.phase !== "finished") return;
+        const next = eventInfo(room);
+        if (!next) return;
+        if (room.eventMode === "battle") {
+          const claimers =
+            [...(room.battleClaimable?.values() || [])].filter((s) => s > 0).length || 1;
+          next.potFeeSats = perSend * 2 * claimers;
+        } else {
+          next.potFeeSats = perSend * 2;
+        }
+        broadcast(room, { t: "eventUpdate", event: next });
+      } catch (err) {
+        console.warn(`[event] post-finish leftover/fee:`, err?.message || err);
+      }
+    })();
+    potLog(
+      room,
+      "info",
+      room.eventMode === "battle"
+        ? `finished · ${client.name} crossed first · battle claimable locked · pot ${room.potSats} sats`
+        : `finished · ${client.name} won · accounted ${room.potSats} sats`,
+    );
+    console.log(`[event] ${room.name} won by ${client.name} — pot ${room.potSats} sats (${room.eventMode})`);
+    return;
+  }
+  room.voteOptions = shuffledVoteTracks();
+  room.votes.clear();
+  room.voteOrder = 0;
+  room.voteEndsAt = Date.now() + MAP_VOTE_MS;
+  broadcast(room, {
+    t: "raceResult",
+    winnerId: client.id,
+    winnerName: client.name,
+    timeMs: ms,
+    trackOptions: room.voteOptions,
+    voteEndsAt: room.voteEndsAt,
+  });
+  console.log(`[finish] ${room.name} won by ${client.name} in ${ms}ms`);
+  roomActivity(room, "race-finish", `finished · ${client.name} won · ${ms}ms`, {
+    player: client.name,
+    playerId: client.id,
+  });
+  broadcastVoteState(room);
+  setTimeout(() => resolveMapVote(room), MAP_VOTE_MS);
+}
+
 /** @param {Room} room @param {string} id */
 function pruneFireContact(room, id) {
   const contact = room.fireContactMs;
@@ -1480,6 +1655,7 @@ async function removeClientFromRoom(room, client, ws) {
   room.votes.delete(client.id);
   room.buyIns.delete(client.id);
   room.wreckedIds?.delete(client.id);
+  room.eliminatedIds?.delete(client.id);
   pruneFireContact(room, client.id);
   console.log(`[leave] ${client.name}`);
 
@@ -1512,7 +1688,10 @@ async function removeClientFromRoom(room, client, ws) {
         if (info) broadcast(room, { t: "eventUpdate", event: info });
       }
     }
-    if (room.phase === "racing") scheduleAllWreckReset(room);
+    if (room.phase === "racing") {
+      scheduleAllWreckReset(room);
+      checkElimination(room);
+    }
   }
 }
 
@@ -1537,16 +1716,21 @@ function markWrecked(room, client, how) {
   dropBattleHaulOnWreck(room, client);
   console.log(`[wreck] ${room.name} ${client.name} (${how})`);
   scheduleAllWreckReset(room);
+  checkElimination(room);
   return true;
 }
 
 function allClientsWrecked(room) {
   if (!room.clients.size) return false;
   room.wreckedIds ??= new Set();
+  const elim = room.eliminatedIds ?? new Set();
+  let considered = 0;
   for (const c of room.clients.values()) {
+    if (elim.has(c.id)) continue;
+    considered += 1;
     if (!room.wreckedIds.has(c.id)) return false;
   }
-  return true;
+  return considered > 0;
 }
 
 /** @param {Room} room */
@@ -1570,6 +1754,7 @@ function runFieldReset(room) {
   room.allWreckResetAt = 0;
   if (room.phase !== "racing" || room.winnerId) return;
   clearWrecks(room);
+  clearEliminations(room);
   for (const c of room.clients.values()) {
     c.pose.s = 0;
     c.pose.lap = 1;
@@ -1751,6 +1936,7 @@ function lobbySnapshot(room) {
     hostId: room.hostId,
     maxPlayers: room.maxPlayers,
     event: eventInfo(room),
+    raceMode: wireRaceMode(room),
   };
 }
 
@@ -1771,7 +1957,7 @@ function eventInfo(room) {
     paidIds,
     potSats: room.potSats,
     mock: payments.mock,
-    mode: room.eventMode === "battle" ? "battle" : "race",
+    mode: wireRaceMode(room),
     battleEarnings,
     battleClaimable,
     battleClaimedIds: [...(room.battleClaimedIds || [])],
@@ -1779,7 +1965,7 @@ function eventInfo(room) {
 }
 
 function normalizeEventMode(raw) {
-  return String(raw ?? "").toLowerCase() === "battle" ? "battle" : "race";
+  return normalizeRaceMode(raw, true);
 }
 
 /**
@@ -2018,13 +2204,17 @@ function admitClient(ws, msg, mode) {
       voteOrder: 0,
       voteEndsAt: 0,
       wreckedIds: new Set(),
+      eliminatedIds: new Set(),
+      raceStartedAt: 0,
       fireContactMs: new Map(),
       fireContactLast: new Map(),
       allWreckResetAt: 0,
       clients: new Map(),
-      // Event Mode: buy-in gate + winner-takes-the-pot (Race) or cube shares (Battle)
+      // Event Mode: buy-in gate + winner-takes-the-pot (Race/Elimination) or cube shares (Battle)
       isEvent: !!msg.event,
-      eventMode: msg.event ? normalizeEventMode(msg.event.mode) : "race",
+      eventMode: msg.event
+        ? normalizeRaceMode(msg.event.mode, true)
+        : normalizeRaceMode(msg.raceMode, false),
       buyInSats: clampBuyIn(msg.event?.buyInSats),
       buyInFeeSats: 0,
       buyIns: new Map(),
@@ -2149,6 +2339,7 @@ function admitClient(ws, msg, mode) {
     maxPlayers: room.maxPlayers,
     phase: room.phase,
     event: eventInfo(room),
+    raceMode: wireRaceMode(room),
   });
   broadcast(room, { t: "join", player: pose }, id);
   broadcast(room, { t: "notice", text: `${name} joined` });
@@ -2698,7 +2889,9 @@ wss.on("connection", (ws) => {
       room.votes.clear();
       room.voteOrder = 0;
       room.voteEndsAt = 0;
+      room.raceStartedAt = Date.now();
       clearWrecks(room);
+      clearEliminations(room);
       room.battleCubes = new Map();
       room.battleEarnings = new Map();
       room.battleClaimable = new Map();
@@ -2730,11 +2923,11 @@ wss.on("connection", (ws) => {
         weather: room.weather || "dry",
         battleCubes: battleCubesWire,
       });
-      console.log(`[start] ${room.name} by ${client.name} → ${room.trackId} ${room.kind} ${room.weather || "dry"} (${room.clients.size}p)${room.eventMode === "battle" ? " battle" : ""}`);
+      console.log(`[start] ${room.name} by ${client.name} → ${room.trackId} ${room.kind} ${room.weather || "dry"} (${room.clients.size}p)${room.eventMode !== "race" ? ` ${room.eventMode}` : ""}`);
       roomActivity(
         room,
         "race-start",
-        `race start · ${room.trackId} · ${room.kind} · ${room.clients.size}p · host ${client.name}`,
+        `race start · ${room.trackId} · ${room.kind} · ${room.eventMode} · ${room.clients.size}p · host ${client.name}`,
         { player: client.name, playerId: client.id },
       );
       return;
@@ -2744,8 +2937,8 @@ wss.on("connection", (ws) => {
       // Keep poses flowing while finished too — the finisher's car coasts to a
       // stop and remotes must see it settle, not freeze mid-corner.
       if (room.phase !== "racing" && room.phase !== "finished") return;
-      // Burning wrecks stay where they ignited — ignore further driving.
-      if (room.wreckedIds?.has(client.id)) {
+      // Burning wrecks / eliminated racers stay put — ignore further driving.
+      if (room.wreckedIds?.has(client.id) || room.eliminatedIds?.has(client.id)) {
         client.pose.s = 0;
         return;
       }
@@ -2760,6 +2953,7 @@ wss.on("connection", (ws) => {
       p.h = Math.max(-10, Math.min(10, +msg.h || 0));
       p.s = Math.max(-150, Math.min(150, +msg.s || 0)); // ±540 km/h ceiling
       p.g = String(msg.g || "1").slice(0, 2);
+      const prevLap = p.lap | 0;
       p.lap = Math.max(1, Math.min(99, msg.lap | 0));
       // Ignore client kind — room class is locked by the host at create.
       p.kind = room.kind;
@@ -2770,6 +2964,7 @@ wss.on("connection", (ws) => {
       if (Number.isFinite(Number(msg.accent)) && Number(msg.accent) > 0) {
         p.accent = Math.round(Number(msg.accent)) & 0xffffff;
       }
+      if (p.lap !== prevLap) checkElimination(room);
     }
 
     if (msg.t === "crash") {
@@ -2834,74 +3029,14 @@ wss.on("connection", (ws) => {
 
     if (msg.t === "finish") {
       if (room.phase !== "racing" || room.winnerId) return;
-      const timeMs = Math.max(1_000, Math.min(3_600_000, Math.round(Number(msg.timeMs) || 0)));
-      room.winnerId = client.id;
-      room.phase = "finished";
-      // Event Mode: one race, skip the map vote
-      if (room.isEvent) {
-        if (room.eventMode === "battle") {
-          finalizeBattleClaimable(room);
-          room.battleClaimDeadline = Date.now() + BATTLE_CLAIM_ABANDON_MS;
-        }
-        // Broadcast raceResult immediately so claim UI is not blocked on mint I/O.
-        const info = eventInfo(room);
-        broadcast(room, {
-          t: "raceResult",
-          winnerId: client.id,
-          winnerName: client.name,
-          timeMs,
-          trackOptions: [],
-          voteEndsAt: 0,
-          event: info,
-        });
-        void (async () => {
-          try {
-            if (room.eventMode === "battle") await collectBattleLeftover(room);
-            const perSend = Math.max(0, await payments.sendFeeSats(room.potId).catch(() => 0));
-            if (rooms.get(room.name) !== room || room.phase !== "finished") return;
-            const next = eventInfo(room);
-            if (!next) return;
-            if (room.eventMode === "battle") {
-              const claimers =
-                [...(room.battleClaimable?.values() || [])].filter((s) => s > 0).length || 1;
-              next.potFeeSats = perSend * 2 * claimers;
-            } else {
-              next.potFeeSats = perSend * 2;
-            }
-            broadcast(room, { t: "eventUpdate", event: next });
-          } catch (err) {
-            console.warn(`[event] post-finish leftover/fee:`, err?.message || err);
-          }
-        })();
-        potLog(
-          room,
-          "info",
-          room.eventMode === "battle"
-            ? `finished · ${client.name} crossed first · battle claimable locked · pot ${room.potSats} sats`
-            : `finished · ${client.name} won · accounted ${room.potSats} sats`,
-        );
-        console.log(`[event] ${room.name} won by ${client.name} — pot ${room.potSats} sats (${room.eventMode})`);
-        return;
+      if (room.wreckedIds?.has(client.id) || room.eliminatedIds?.has(client.id)) return;
+      // Elimination: only still-active racers may claim the finish.
+      if (room.eventMode === "elimination") {
+        const active = activeRacingClients(room);
+        if (!active.some((c) => c.id === client.id)) return;
       }
-      room.voteOptions = shuffledVoteTracks();
-      room.votes.clear();
-      room.voteOrder = 0;
-      room.voteEndsAt = Date.now() + MAP_VOTE_MS;
-      broadcast(room, {
-        t: "raceResult",
-        winnerId: client.id,
-        winnerName: client.name,
-        timeMs,
-        trackOptions: room.voteOptions,
-        voteEndsAt: room.voteEndsAt,
-      });
-      console.log(`[finish] ${room.name} won by ${client.name} in ${timeMs}ms`);
-      roomActivity(room, "race-finish", `finished · ${client.name} won · ${timeMs}ms`, {
-        player: client.name,
-        playerId: client.id,
-      });
-      broadcastVoteState(room);
-      setTimeout(() => resolveMapVote(room), MAP_VOTE_MS);
+      const timeMs = Math.max(1_000, Math.min(3_600_000, Math.round(Number(msg.timeMs) || 0)));
+      declareRaceWinner(room, client, timeMs);
       return;
     }
 

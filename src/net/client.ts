@@ -14,6 +14,7 @@ import {
   type NetWeatherMode,
   type PlayerPose,
   type PoseMotion,
+  type RaceRulesMode,
   type ServerMsg,
 } from "./protocol";
 import { applyWireWeather, normalizeWeatherMode } from "../weather";
@@ -21,6 +22,13 @@ import { configuredApiBase, configuredWsUrl, sameOriginOnline } from "./onlineCo
 import { WreckFire } from "../wreckFire";
 
 type Snapshot = { at: number; pose: PlayerPose };
+
+function normalizeWireRaceMode(raw: string | undefined | null): EventGameMode {
+  const m = String(raw ?? "").toLowerCase();
+  if (m === "battle") return "battle";
+  if (m === "elimination" || m === "elim") return "elimination";
+  return "race";
+}
 
 /**
  * Optional track adapter for dead reckoning: project world (x,z) → arclength t,
@@ -447,6 +455,7 @@ export type WelcomeInfo = {
   weather: NetWeatherMode;
   maxPlayers: number;
   phase: LobbyPhase;
+  raceMode?: EventGameMode;
 };
 
 export type NetHandlers = {
@@ -461,6 +470,7 @@ export type NetHandlers = {
     weather: NetWeatherMode;
     hostId: string;
     maxPlayers: number;
+    raceMode?: EventGameMode;
   }) => void;
   onStart: (
     at: number,
@@ -518,6 +528,8 @@ export type NetHandlers = {
   onEventUpdate?: (event: EventRoomInfo) => void;
   /** A driver crashed — they burn in place instead of resetting the field. */
   onWrecked: (id: string, name: string) => void;
+  /** Elimination Mode — last place for the lap is out. */
+  onEliminated: (id: string, name: string, remaining: number) => void;
   /** Every racer is on fire — shared grid restart. */
   onFieldReset: () => void;
   onRaceResult: (
@@ -551,8 +563,10 @@ export type RoomConnectOpts = {
   pubkey?: string;
   /** Event Mode (host, on create): buy-in per racer in sats. */
   eventBuyInSats?: number;
-  /** Event Mode (host): race (default) or battle. */
+  /** Event Mode (host): race (default), elimination, or battle. */
   eventGameMode?: EventGameMode;
+  /** Non-event host: race (default) or elimination. */
+  raceMode?: RaceRulesMode;
   /** True when joining via Event Mode — server rejects cross-type joins. */
   eventMode?: boolean;
   mode: "create" | "join";
@@ -582,6 +596,8 @@ export class NetClient {
   weather: NetWeatherMode = "dry";
   maxPlayers = 8;
   phase: LobbyPhase | "" = "";
+  /** Room race rules — race / elimination / battle. */
+  raceMode: EventGameMode = "race";
   /** Event Mode room state — null in normal rooms. */
   event: EventRoomInfo | null = null;
   /** Event Mode — this client's own buy-in (Cashu creqA + optional Lightning invoice). */
@@ -749,10 +765,21 @@ export class NetClient {
               color: opts.color,
               accent: opts.accent,
               pubkey: opts.pubkey,
+              raceMode:
+                opts.eventBuyInSats == null
+                  ? opts.raceMode === "elimination" || opts.eventGameMode === "elimination"
+                    ? ("elimination" as const)
+                    : ("race" as const)
+                  : undefined,
               event: opts.eventBuyInSats
                 ? {
                     buyInSats: opts.eventBuyInSats,
-                    mode: opts.eventGameMode === "battle" ? "battle" : "race",
+                    mode:
+                      opts.eventGameMode === "battle"
+                        ? ("battle" as const)
+                        : opts.eventGameMode === "elimination"
+                          ? ("elimination" as const)
+                          : ("race" as const),
                   }
                 : undefined,
             }
@@ -803,6 +830,7 @@ export class NetClient {
         this.maxPlayers = msg.maxPlayers;
         this.phase = msg.phase;
         this.event = msg.event ?? null;
+        this.raceMode = normalizeWireRaceMode(msg.raceMode ?? msg.event?.mode);
         this.myBuyIn = null;
         this.pending = null;
         this.roster.clear();
@@ -821,6 +849,7 @@ export class NetClient {
           weather: this.weather,
           maxPlayers: msg.maxPlayers,
           phase: msg.phase,
+          raceMode: this.raceMode,
         });
       } else if (msg.t === "join") {
         this.rememberPlayer(msg.player);
@@ -838,9 +867,10 @@ export class NetClient {
         this.weather = applyWireWeather(msg.weather, this.weather);
         this.maxPlayers = msg.maxPlayers;
         this.event = msg.event ?? null;
+        this.raceMode = normalizeWireRaceMode(msg.raceMode ?? msg.event?.mode ?? this.raceMode);
         this.roster.clear();
         this.rememberPlayers(msg.players);
-        this.handlers.onLobby({ ...msg, weather: this.weather });
+        this.handlers.onLobby({ ...msg, weather: this.weather, raceMode: this.raceMode });
       } else if (msg.t === "start") {
         this.phase = "racing";
         this.finishSent = false;
@@ -879,6 +909,8 @@ export class NetClient {
         });
       } else if (msg.t === "wrecked") {
         this.handlers.onWrecked(msg.id, msg.name);
+      } else if (msg.t === "eliminated") {
+        this.handlers.onEliminated(msg.id, msg.name, msg.remaining);
       } else if (msg.t === "fieldReset") {
         this.finishSent = false;
         this.handlers.onFieldReset();
