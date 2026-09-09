@@ -345,6 +345,65 @@ body:has(#mute-btn.hidden) .hud-top {
   display: none;
 }
 
+.spectate-hud {
+  position: absolute;
+  top: 18%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.65rem 1.25rem 0.75rem;
+  font-family: var(--font-display);
+  color: var(--text);
+  background: rgba(8, 12, 20, 0.78);
+  border: 2px solid rgba(242, 245, 250, 0.35);
+  pointer-events: none;
+  z-index: 6;
+  text-align: center;
+  min-width: min(18rem, 78vw);
+}
+
+.spectate-hud.hidden {
+  display: none;
+}
+
+.spectate-title {
+  font-weight: 900;
+  font-size: clamp(0.95rem, 2.8vw, 1.35rem);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.spectate-hint {
+  font-family: var(--font-ui);
+  font-weight: 600;
+  font-size: 0.95rem;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.spectate-next-btn {
+  pointer-events: auto;
+  margin-top: 0.2rem;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.75rem;
+  letter-spacing: 0.16em;
+  color: var(--text);
+  background: rgba(255, 59, 46, 0.2);
+  border: 1px solid var(--accent);
+  padding: 0.35rem 0.9rem;
+  cursor: pointer;
+}
+
+.spectate-next-btn:hover,
+.spectate-next-btn:focus-visible {
+  background: rgba(255, 59, 46, 0.4);
+  outline: none;
+}
+
 @keyframes explode-flash-pulse {
   from {
     opacity: 0.9;
