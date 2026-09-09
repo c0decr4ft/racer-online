@@ -88,7 +88,6 @@
         </div>
         <div id="animal-hit" class="animal-hit hidden" aria-live="assertive">COW!</div>
         <div id="final-lap-flash" class="final-lap-flash hidden" aria-live="polite">FINAL LAP</div>
-        <div id="elim-flash" class="elim-flash hidden" aria-live="assertive">OUT</div>
         <div id="countdown" class="countdown hidden" aria-live="assertive">3</div>
         <canvas id="minimap" class="minimap hidden" width="160" height="160" aria-hidden="true"></canvas>
         <div id="rearview-frame" class="rearview-frame hidden" aria-hidden="true">
@@ -435,12 +434,7 @@
           <p class="eyebrow">READY TO RACE</p>
           <h1>SATS<br /><span>RACER</span></h1>
           <p class="tagline">Cars &amp; bikes · AI rivals · sats racer rooms</p>
-
-          <div class="menu-mode-pick" role="group" aria-label="Start Race mode">
-            <button id="home-mode-race" class="garage-kind-btn is-active" type="button" data-mode="race">RACE</button>
-            <button id="home-mode-elim" class="garage-kind-btn" type="button" data-mode="elimination">ELIMINATION</button>
-          </div>
-          <p id="home-mode-hint" class="tagline menu-mode-hint">3 laps · beat the AI pack</p>
+          <p class="tagline menu-mode-hint">3 laps · beat the AI pack</p>
 
           <div class="menu-actions">
             <button id="start-btn" type="button">START RACE</button>
@@ -539,12 +533,11 @@
                   <input id="mp-create-max" type="number" min="2" max="6" value="4" />
                 </label>
               </div>
-              <div class="mp-field mp-event-mode-pick" id="mp-event-mode-pick" role="group" aria-label="Race type">
-                <span id="mp-race-mode-label">Race type</span>
-                <div class="garage-kind mp-kind" role="group" aria-label="Race, Elimination, or Battle">
+              <div class="mp-field mp-event-mode-pick hidden" id="mp-event-mode-pick" role="group" aria-label="Event type">
+                <span id="mp-race-mode-label">Event type</span>
+                <div class="garage-kind mp-kind" role="group" aria-label="Race or Battle">
                   <button id="mp-event-pick-race" class="garage-kind-btn is-active" type="button" data-mode="race">RACE</button>
-                  <button id="mp-event-pick-elim" class="garage-kind-btn" type="button" data-mode="elimination">ELIMINATION</button>
-                  <button id="mp-event-pick-battle" class="garage-kind-btn hidden" type="button" data-mode="battle">BATTLE</button>
+                  <button id="mp-event-pick-battle" class="garage-kind-btn" type="button" data-mode="battle">BATTLE</button>
                 </div>
                 <p id="mp-race-mode-hint" class="tagline mp-mode-hint">First to finish 3 laps</p>
               </div>

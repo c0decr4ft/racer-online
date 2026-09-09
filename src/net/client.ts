@@ -14,7 +14,6 @@ import {
   type NetWeatherMode,
   type PlayerPose,
   type PoseMotion,
-  type RaceRulesMode,
   type ServerMsg,
 } from "./protocol";
 import { applyWireWeather, normalizeWeatherMode } from "../weather";
@@ -26,7 +25,6 @@ type Snapshot = { at: number; pose: PlayerPose };
 function normalizeWireRaceMode(raw: string | undefined | null): EventGameMode {
   const m = String(raw ?? "").toLowerCase();
   if (m === "battle") return "battle";
-  if (m === "elimination" || m === "elim") return "elimination";
   return "race";
 }
 
@@ -528,8 +526,6 @@ export type NetHandlers = {
   onEventUpdate?: (event: EventRoomInfo) => void;
   /** A driver crashed — they burn in place instead of resetting the field. */
   onWrecked: (id: string, name: string) => void;
-  /** Elimination Mode — last place for the lap is out. */
-  onEliminated: (id: string, name: string, remaining: number) => void;
   /** Every racer is on fire — shared grid restart. */
   onFieldReset: () => void;
   onRaceResult: (
@@ -563,10 +559,8 @@ export type RoomConnectOpts = {
   pubkey?: string;
   /** Event Mode (host, on create): buy-in per racer in sats. */
   eventBuyInSats?: number;
-  /** Event Mode (host): race (default), elimination, or battle. */
+  /** Event Mode (host): race (default) or battle. */
   eventGameMode?: EventGameMode;
-  /** Non-event host: race (default) or elimination. */
-  raceMode?: RaceRulesMode;
   /** True when joining via Event Mode — server rejects cross-type joins. */
   eventMode?: boolean;
   mode: "create" | "join";
@@ -596,7 +590,7 @@ export class NetClient {
   weather: NetWeatherMode = "dry";
   maxPlayers = 8;
   phase: LobbyPhase | "" = "";
-  /** Room race rules — race / elimination / battle. */
+  /** Room race rules — race / battle. */
   raceMode: EventGameMode = "race";
   /** Event Mode room state — null in normal rooms. */
   event: EventRoomInfo | null = null;
@@ -765,21 +759,10 @@ export class NetClient {
               color: opts.color,
               accent: opts.accent,
               pubkey: opts.pubkey,
-              raceMode:
-                opts.eventBuyInSats == null
-                  ? opts.raceMode === "elimination" || opts.eventGameMode === "elimination"
-                    ? ("elimination" as const)
-                    : ("race" as const)
-                  : undefined,
               event: opts.eventBuyInSats
                 ? {
                     buyInSats: opts.eventBuyInSats,
-                    mode:
-                      opts.eventGameMode === "battle"
-                        ? ("battle" as const)
-                        : opts.eventGameMode === "elimination"
-                          ? ("elimination" as const)
-                          : ("race" as const),
+                    mode: opts.eventGameMode === "battle" ? ("battle" as const) : ("race" as const),
                   }
                 : undefined,
             }
@@ -909,8 +892,6 @@ export class NetClient {
         });
       } else if (msg.t === "wrecked") {
         this.handlers.onWrecked(msg.id, msg.name);
-      } else if (msg.t === "eliminated") {
-        this.handlers.onEliminated(msg.id, msg.name, msg.remaining);
       } else if (msg.t === "fieldReset") {
         this.finishSent = false;
         this.handlers.onFieldReset();

@@ -532,33 +532,6 @@ body:has(#mute-btn.hidden) .hud-top {
   display: none;
 }
 
-/* Elimination — last-place cut callout */
-.elim-flash {
-  position: absolute;
-  top: 26%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  font-family: var(--font-display);
-  font-weight: 900;
-  font-size: clamp(1.4rem, 5.5vw, 2.4rem);
-  letter-spacing: 0.18em;
-  color: #f2f2f2;
-  text-shadow:
-    0 0 22px rgba(226, 59, 46, 0.55),
-    0 3px 0 rgba(0, 0, 0, 0.45);
-  pointer-events: none;
-  z-index: 7;
-  animation: best-flash-in 0.35s ease-out both;
-}
-
-.elim-flash.hidden {
-  display: none;
-}
-
-.elim-flash.is-you {
-  color: var(--accent);
-}
-
 /* Finish-screen accomplishment pills */
 .finish-callouts {
   display: flex;
@@ -2156,7 +2129,6 @@ input:focus-visible,
   .overlay-inner,
   .toast,
   .final-lap-flash,
-  .elim-flash,
   .countdown {
     animation: none !important;
   }
@@ -3342,22 +3314,6 @@ input:focus-visible,
   align-items: stretch;
   width: min(100%, 20rem);
   margin: 0 auto 0.5rem;
-}
-
-.menu-mode-pick {
-  display: flex;
-  gap: 0.45rem;
-  justify-content: center;
-  width: min(100%, 20rem);
-  margin: 0.35rem auto 0.25rem;
-}
-
-.menu-mode-pick .garage-kind-btn {
-  flex: 1;
-  min-width: 0;
-  font-size: 0.72rem;
-  letter-spacing: 0.12em;
-  padding: 0.45rem 0.35rem;
 }
 
 .menu-mode-hint {
