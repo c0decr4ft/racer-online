@@ -22,8 +22,16 @@ export type NetVehicleKind = "car" | "bike";
 export type NetWeatherMode = "dry" | "night" | "rain";
 export type LobbyPhase = "lobby" | "racing" | "finished" | "starting";
 
-/** Event Mode flavor — Race = finish for the pot; Battle = money cubes + race. */
-export type EventGameMode = "race" | "battle";
+/**
+ * Room race flavor.
+ * - Race = first to finish TOTAL_LAPS
+ * - Elimination = last place each lap is out (Race-only rules; no Battle cubes)
+ * - Battle = money cubes + race (Event Mode only)
+ */
+export type EventGameMode = "race" | "battle" | "elimination";
+
+/** Non-event multiplayer create setting (Battle is Event-only). */
+export type RaceRulesMode = "race" | "elimination";
 
 /** Collectible Battle item box broadcast at race start (values sum to the pot). */
 export type BattleCubeWire = {
@@ -102,6 +110,8 @@ export type ClientMsg =
       pubkey?: string;
       /** Event Mode — buy-in per racer in sats; host cannot start until all paid. */
       event?: { buyInSats: number; mode?: EventGameMode };
+      /** Non-event rooms — Race (default) or Elimination. Ignored when `event` is set. */
+      raceMode?: RaceRulesMode;
     }
   | {
       t: "join";
@@ -156,6 +166,8 @@ export type ServerMsg =
       maxPlayers: number;
       phase: LobbyPhase;
       event?: EventRoomInfo | null;
+      /** Room race rules — race / elimination / battle. */
+      raceMode?: EventGameMode;
     }
   | { t: "join"; player: PlayerPose }
   | { t: "leave"; id: string; hostId?: string }
@@ -169,6 +181,7 @@ export type ServerMsg =
       hostId: string;
       maxPlayers: number;
       event?: EventRoomInfo | null;
+      raceMode?: EventGameMode;
     }
   | { t: "state"; players: PlayerPose[]; at?: number }
   | {
@@ -239,6 +252,8 @@ export type ServerMsg =
   | { t: "eventUpdate"; event: EventRoomInfo }
   /** One driver crashed — they burn in place. No chain-reaction grid reset. */
   | { t: "wrecked"; id: string; name: string }
+  /** Elimination Mode — last place for the lap is out. */
+  | { t: "eliminated"; id: string; name: string; remaining: number }
   /** Every racer is on fire — reset the field and countdown. */
   | { t: "fieldReset"; reason: "allWrecked" }
   | {

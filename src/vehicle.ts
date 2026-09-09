@@ -310,6 +310,8 @@ export class RivalAI {
   laps = 0;
   /** True after completing the race distance (race mode only). */
   raceDone = false;
+  /** Elimination Mode — cut from contention; coasts like a finisher. */
+  eliminated = false;
   /** Crushed/shot by a dev vehicle — hidden + inert until this wall-clock ms. */
   disabledUntil = 0;
   /** External power multiplier (launch ramp, dev GOD MODE) — scales driveMul. */
@@ -384,10 +386,17 @@ export class RivalAI {
     this.stuckTimer = 0;
     this.raceAge = 0;
     this.raceDone = false;
+    this.eliminated = false;
   }
 
   /** Mark as finished — coasts out of the way; no more lap scoring. */
   markRaceDone() {
+    this.raceDone = true;
+  }
+
+  /** Elimination Mode — out of the race; reuse finished coasting. */
+  markEliminated() {
+    this.eliminated = true;
     this.raceDone = true;
   }
 
@@ -433,7 +442,7 @@ export class RivalAI {
         : projectOnTrackNear(path, pos, prevT).t;
     this.lastT = bestT;
 
-    if (prevT != null && !this.raceDone) {
+    if (prevT != null && !this.raceDone && !this.eliminated) {
       this.gates.update(prevT, bestT);
       if (prevT > 0.85 && bestT < 0.15 && this.gates.readyForFinish) {
         this.laps += 1;
@@ -441,8 +450,8 @@ export class RivalAI {
       }
     }
 
-    // Finished race cars: soft coast along their line so they clear the pack
-    if (this.raceDone) {
+    // Finished / eliminated: soft coast along their line so they clear the pack
+    if (this.raceDone || this.eliminated) {
       this.coastFinished(dt, line, bestT);
       return;
     }
