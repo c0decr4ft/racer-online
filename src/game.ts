@@ -343,6 +343,10 @@ export class Game {
     minimap: document.getElementById("minimap") as HTMLCanvasElement,
     wallHits: document.getElementById("wall-hits")!,
     explodeFlash: document.getElementById("explode-flash")!,
+    spectateHud: document.getElementById("spectate-hud")!,
+    spectateTitle: document.getElementById("spectate-title")!,
+    spectateHint: document.getElementById("spectate-hint")!,
+    spectateNextBtn: document.getElementById("spectate-next-btn") as HTMLButtonElement,
     animalHit: document.getElementById("animal-hit")!,
     mapSelect: document.getElementById("map-select")!,
     mapGrid: document.getElementById("map-grid")!,
@@ -424,6 +428,15 @@ export class Game {
   private wreckContactS = 0;
   private readonly wreckedIds = new Set<string>();
   private lastFieldResetAt = 0;
+  /**
+   * Multiplayer spectator: chase-cam another living remote after finish/wreck.
+   * Local-only — remotes already stream meshes; no server spectate flag needed.
+   */
+  private spectating = false;
+  private spectateTargetId: string | null = null;
+  private spectateJumpHeld = false;
+  /** Local finish reported online — waiting for raceResult before finish overlay. */
+  private onlineFinishPending = false;
   /** Dev dashboard GOD MODE — AI power (+ city speed); local only, never syncs. */
   private godMode = false;
   private explodeRestartAt = 0;
@@ -732,6 +745,10 @@ export class Game {
     document.getElementById("pause-home-btn")!.onclick = () => this.goHome();
     document.getElementById("finish-home-btn")!.onclick = () => this.goHome();
     this.el.pauseBtn.onclick = () => this.pause();
+    this.el.spectateNextBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (this.spectating) this.cycleSpectateTarget(1);
+    };
 
     document.getElementById("home-board-btn")!.onclick = () => {
       void this.unlockAndMaybeMenuMusic().then(() => this.openLeaderboard());
@@ -2080,6 +2097,8 @@ export class Game {
     this.inLobby = false;
     this.expectingLobby = false;
     this.lobbyPlayers = [];
+    this.onlineFinishPending = false;
+    this.stopSpectate();
     this.clearBattleCubes();
     this.net.disconnect();
     this.clearRemotes();
@@ -2890,6 +2909,9 @@ export class Game {
     this.resetSticky(r);
     r.dispose(this.scene);
     this.remotes.delete(id);
+    if (this.spectating && this.spectateTargetId === id) {
+      if (!this.cycleSpectateTarget(1)) this.exitSpectate();
+    }
   }
 
   private clearRemotes() {
@@ -2898,6 +2920,7 @@ export class Game {
       remote.dispose(this.scene);
     }
     this.remotes.clear();
+    if (this.spectating) this.stopSpectate();
   }
 
   private setAiVisible(visible: boolean) {
@@ -3132,6 +3155,9 @@ export class Game {
     this.el.finishTitle.textContent = "FINISH";
     this.el.finalPlace.textContent = this.solo ? "1/1" : "1/6";
     this.finished = false;
+    this.onlineFinishPending = false;
+    this.pendingFinishMs = 0;
+    this.stopSpectate();
     this.paused = false;
     this.running = true;
     this.syncTouchControls();
@@ -3296,14 +3322,22 @@ export class Game {
   }
 
   pause() {
-    if (!this.running || this.finished || this.paused || this.exploding || this.onlineWrecked) return;
+    if (!this.running || this.finished || this.paused || this.exploding) return;
+    if (this.spectating) {
+      this.exitSpectate();
+      return;
+    }
     this.paused = true;
     this.pauseBegan = performance.now();
     this.input.clearDriveKeys();
     this.audio.mute();
     this.audio.stopRaceAudio();
     const pauseTag = this.el.pause.querySelector(".tagline");
-    if (pauseTag) pauseTag.textContent = "Race frozen · press Esc to resume";
+    if (pauseTag) {
+      pauseTag.textContent = this.onlineWrecked
+        ? "Out of the race · home to leave"
+        : "Race frozen · press Esc to resume";
+    }
     this.el.pause.classList.remove("hidden");
     this.el.pauseBtn.classList.add("hidden");
     this.syncTouchControls();
@@ -3317,8 +3351,8 @@ export class Game {
     if (this.countingDown) this.countdownStepAt += pausedFor;
     this.paused = false;
     this.audio.unmute();
-    // Drive audio only after GO (gridHeld covers 3-2-1)
-    if (!this.gridHeld) this.startRaceDriveAudio();
+    // Drive audio only after GO (gridHeld covers 3-2-1); wrecked racers stay silent.
+    if (!this.gridHeld && !this.onlineWrecked && !this.finished) this.startRaceDriveAudio();
     this.el.pause.classList.add("hidden");
     this.el.pauseBtn.classList.remove("hidden");
     this.syncTouchControls();
@@ -3326,6 +3360,7 @@ export class Game {
     this.lastFrame = performance.now();
     this.input.clearDriveKeys();
     this.renderer.domElement.focus({ preventScroll: true });
+    if (this.onlineWrecked || this.onlineFinishPending) this.enterSpectate();
   }
 
   /** Sticky track projection: global search only on first use (spawn/reset),
@@ -3412,8 +3447,17 @@ export class Game {
     // Rearview is a second full scene pass — keep off for race FPS.
     this.wantRearview = false;
     if (inputPeek.pause) {
-      if (this.paused) this.resume();
-      else if (this.running && !this.finished && !this.exploding && !this.onlineWrecked) this.pause();
+      if (this.spectating) this.exitSpectate();
+      else if (this.paused) this.resume();
+      else if (this.running && !this.finished && !this.exploding) this.pause();
+    }
+    // Space / pad A cycles spectate targets (edge-triggered).
+    if (this.spectating) {
+      const jump = inputPeek.jump;
+      if (jump && !this.spectateJumpHeld) this.cycleSpectateTarget(1);
+      this.spectateJumpHeld = jump;
+    } else {
+      this.spectateJumpHeld = false;
     }
 
     if (this.running && !this.paused && (!this.finished || this.online)) {
@@ -3536,7 +3580,7 @@ export class Game {
           }
 
           if (!this.exploding) {
-            if (!this.onlineWrecked) this.updateLaps();
+            if (!this.onlineWrecked && !this.finished) this.updateLaps();
             this.tickBattleCubes(now * 0.001);
             this.updateHud();
             this.updateCamera(dt);
@@ -3567,10 +3611,17 @@ export class Game {
 
     if (this.weather) {
       // Keep night headlights on while paused (not only while unpaused "racing").
-      const sessionLive = this.running && !this.finished;
+      const sessionLive = this.running && (!this.finished || this.onlineFinishPending || this.spectating);
       const preview = this.mpWeatherPreview && !sessionLive;
-      const pos = this.player?.state.position ?? this.track.startPosition;
-      const heading = this.player?.state.heading ?? this.track.startHeading;
+      let pos = this.player?.state.position ?? this.track.startPosition;
+      let heading = this.player?.state.heading ?? this.track.startHeading;
+      if (this.spectating && this.spectateTargetId) {
+        const remote = this.remotes.get(this.spectateTargetId);
+        if (remote) {
+          pos = remote.mesh.position;
+          heading = remote.mesh.rotation.y;
+        }
+      }
       // AI + remotes: emissive lamps only (player SpotLights come from createVehicle opts)
       const lamps = this._lampMeshes;
       lamps.length = 0;
@@ -3612,7 +3663,8 @@ export class Game {
     // once before the main pass every live frame — skipping frames lagged
     // behind the car (rear trail / pop). Soft PCF + resolution unchanged.
     // Home/pause/finish: casters are still — skip rebuilds after a warmup.
-    const liveShadows = this.running && !this.paused && !this.finished;
+    const liveShadows =
+      this.running && !this.paused && (!this.finished || this.onlineFinishPending || this.spectating);
     this.renderer.shadowMap.needsUpdate = liveShadows || this.shadowNeedsWarmup;
     if (this.shadowNeedsWarmup) this.shadowNeedsWarmup = false;
     this.renderer.render(this.scene, this.camera);
@@ -4055,6 +4107,7 @@ export class Game {
     this.clearEngineSmoke();
     this.localWreckFire ??= new WreckFire(this.player.mesh, this.scene);
     if (_toast) this.showToast(_toast);
+    this.enterSpectate();
   }
 
   private clearOnlineWreck() {
@@ -4117,6 +4170,7 @@ export class Game {
     const now = performance.now();
     if (now - this.lastFieldResetAt < 1500) return;
     this.lastFieldResetAt = now;
+    this.stopSpectate();
     this.clearOnlineWreck();
     this.resetWallHits();
     this.paused = false;
@@ -4989,19 +5043,36 @@ export class Game {
     trackOptions: string[];
     voteEndsAt: number;
   }) {
+    // Already finished locally (crossed line or deferred) — apply server result.
     if (this.finished) {
       if (this.online && result) {
-        this.applyOnlineResult(result.winnerId, result.winnerName);
-        this.showMapVote(result.trackOptions, result.voteEndsAt);
-        // The winner lands here: they finished locally first, so the Event Mode
-        // checkout must be (re)applied when the server's raceResult arrives.
-        this.applyEventResult(result.winnerId);
+        this.presentOnlineFinish(result);
       }
       return;
     }
+
+    // Multiplayer local finish: keep the session live, spectate, wait for raceResult.
+    if (this.online && !result) {
+      this.finished = true;
+      this.onlineFinishPending = true;
+      this.paused = false;
+      this.clearCountdown();
+      this.pendingFinishMs = this.raceNow() - this.raceStart;
+      this.net.reportFinish(this.pendingFinishMs, this.bestLap);
+      this.el.wrongWay.classList.add("hidden");
+      this.el.delta.textContent = "";
+      this.enterSpectate();
+      if (!this.spectating) {
+        this.showToast("Finished — waiting for results");
+      }
+      return;
+    }
+
     this.finished = true;
+    this.onlineFinishPending = false;
     this.running = false;
     this.paused = false;
+    this.stopSpectate();
     this.clearCountdown();
     this.clearExplode(true);
     this.clearOnlineWreck();
@@ -5019,10 +5090,63 @@ export class Game {
     this.el.minimap.classList.add("hidden");
     this.syncTouchControls();
     this.syncMuteBtn();
-    this.pendingFinishMs = this.raceNow() - this.raceStart;
-    if (this.online && !result) {
-      this.net.reportFinish(this.pendingFinishMs, this.bestLap);
+    if (this.pendingFinishMs <= 0) {
+      this.pendingFinishMs = this.raceNow() - this.raceStart;
     }
+    this.showFinishOverlay(result);
+  }
+
+  /** raceResult arrived (or finish UI after deferred local finish). */
+  private presentOnlineFinish(result: {
+    winnerId: string;
+    winnerName: string;
+    officialTimeMs: number;
+    trackOptions: string[];
+    voteEndsAt: number;
+  }) {
+    const deferred = this.onlineFinishPending || this.el.finish.classList.contains("hidden");
+    this.onlineFinishPending = false;
+    this.stopSpectate();
+    this.running = false;
+    this.paused = false;
+    this.clearCountdown();
+    this.clearExplode(true);
+    this.clearOnlineWreck();
+    this.battlePickupPending.clear();
+    this.battlePrevValid = false;
+    for (const c of this.battleCubes) c.taken = true;
+    this.audio.mute();
+    this.audio.stopRaceAudio();
+    this.el.wrongWay.classList.add("hidden");
+    this.el.explodeFlash.classList.add("hidden");
+    this.hideAnimalHit();
+    this.el.pause.classList.add("hidden");
+    this.el.pauseBtn.classList.add("hidden");
+    this.el.minimap.classList.add("hidden");
+    this.syncTouchControls();
+    this.syncMuteBtn();
+    if (this.pendingFinishMs <= 0) {
+      this.pendingFinishMs =
+        result.winnerId === this.net.id
+          ? result.officialTimeMs
+          : this.raceNow() - this.raceStart;
+    }
+    if (deferred) {
+      this.showFinishOverlay(result);
+    } else {
+      this.applyOnlineResult(result.winnerId, result.winnerName);
+      this.showMapVote(result.trackOptions, result.voteEndsAt);
+      this.applyEventResult(result.winnerId);
+    }
+  }
+
+  private showFinishOverlay(result?: {
+    winnerId: string;
+    winnerName: string;
+    officialTimeMs: number;
+    trackOptions: string[];
+    voteEndsAt: number;
+  }) {
     this.el.finalTime.textContent = formatTime(this.pendingFinishMs);
     this.el.finalBest.textContent = formatTime(this.bestLap);
     this.el.nameEntry.classList.add("hidden");
@@ -5221,7 +5345,7 @@ export class Game {
   private updateMinimap() {
     const canvas = this.el.minimap;
     if (!canvas) return;
-    if (!this.running || this.finished) {
+    if (!this.running || (this.finished && !this.onlineFinishPending && !this.spectating)) {
       canvas.classList.add("hidden");
       return;
     }
@@ -5322,7 +5446,131 @@ export class Game {
     this.camera.lookAt(this.camLook);
   }
 
+  /**
+   * Living remotes for chase-cam spectate (not on fire / eliminated).
+   * Local mesh follow only — no server spectate flag.
+   */
+  private spectateCandidates(): RemotePlayer[] {
+    const out: RemotePlayer[] = [];
+    for (const remote of this.remotes.values()) {
+      if (remote.wrecked || this.wreckedIds.has(remote.id)) continue;
+      out.push(remote);
+    }
+    return out;
+  }
+
+  private enterSpectate() {
+    if (!this.online || this.practice || this.solo) return;
+    const targets = this.spectateCandidates();
+    if (targets.length === 0) {
+      this.stopSpectate();
+      return;
+    }
+    this.spectating = true;
+    this.spectateJumpHeld = false;
+    // Prefer keeping the current target if still valid.
+    if (!targets.some((r) => r.id === this.spectateTargetId)) {
+      this.spectateTargetId = targets[0]!.id;
+    }
+    this.refreshSpectateHud();
+    this.el.spectateHud.classList.remove("hidden");
+    this.snapSpectateCamera();
+  }
+
+  /** Soft exit — back to own car camera; race still over for this player. */
+  private exitSpectate() {
+    if (!this.spectating) return;
+    this.spectating = false;
+    this.spectateTargetId = null;
+    this.spectateJumpHeld = false;
+    this.el.spectateHud.classList.add("hidden");
+    this.snapCamera();
+  }
+
+  /** Hard clear used on home / next race / finish overlay. */
+  private stopSpectate() {
+    this.spectating = false;
+    this.spectateTargetId = null;
+    this.spectateJumpHeld = false;
+    this.el.spectateHud.classList.add("hidden");
+  }
+
+  private refreshSpectateHud() {
+    const remote = this.spectateTargetId ? this.remotes.get(this.spectateTargetId) : undefined;
+    const name = remote?.name ?? "—";
+    this.el.spectateTitle.textContent = `SPECTATING · ${name}`;
+    const n = this.spectateCandidates().length;
+    this.el.spectateHint.textContent =
+      n > 1 ? "Space / Next · Esc exit" : "Esc exit";
+    this.el.spectateNextBtn.classList.toggle("hidden", n <= 1);
+  }
+
+  /** @returns false if no living targets remain. */
+  private cycleSpectateTarget(dir: 1 | -1): boolean {
+    const targets = this.spectateCandidates();
+    if (targets.length === 0) {
+      this.exitSpectate();
+      return false;
+    }
+    let idx = targets.findIndex((r) => r.id === this.spectateTargetId);
+    if (idx < 0) idx = 0;
+    else idx = (idx + dir + targets.length) % targets.length;
+    this.spectateTargetId = targets[idx]!.id;
+    this.refreshSpectateHud();
+    this.snapSpectateCamera();
+    return true;
+  }
+
+  private snapSpectateCamera() {
+    const remote = this.spectateTargetId ? this.remotes.get(this.spectateTargetId) : undefined;
+    if (!remote) return;
+    const x = remote.mesh.position.x;
+    const y = remote.mesh.position.y;
+    const z = remote.mesh.position.z;
+    const heading = remote.mesh.rotation.y;
+    this.camPos.set(x - Math.sin(heading) * 12, 4.5 + y, z - Math.cos(heading) * 12);
+    this.camLook.set(x + Math.sin(heading) * 8, 1.2 + y, z + Math.cos(heading) * 8);
+    this.camera.position.copy(this.camPos);
+    this.camera.lookAt(this.camLook);
+  }
+
   private updateCamera(dt: number) {
+    if (this.spectating) {
+      const remote = this.spectateTargetId ? this.remotes.get(this.spectateTargetId) : undefined;
+      if (!remote || remote.wrecked || this.wreckedIds.has(remote.id)) {
+        if (!this.cycleSpectateTarget(1)) {
+          this.updateCameraOnPlayer(dt);
+        }
+        return;
+      }
+      const x = remote.mesh.position.x;
+      const y = remote.mesh.position.y;
+      const z = remote.mesh.position.z;
+      const heading = remote.mesh.rotation.y;
+      // Match player chase feel — slight speed bias omitted (remote s not always fresh).
+      const back = 14;
+      const height = 5.0 + y;
+      this._camIdeal.set(
+        x - Math.sin(heading) * back,
+        height,
+        z - Math.cos(heading) * back,
+      );
+      const k = dt <= 0 ? 1 : 1 - Math.exp(-6 * dt);
+      this.camPos.lerp(this._camIdeal, k);
+      this.camera.position.copy(this.camPos);
+      this._camLookTarget.set(
+        x + Math.sin(heading) * 10,
+        1.4 + y,
+        z + Math.cos(heading) * 10,
+      );
+      this.camLook.lerp(this._camLookTarget, dt <= 0 ? 1 : 1 - Math.exp(-8 * dt));
+      this.camera.lookAt(this.camLook);
+      return;
+    }
+    this.updateCameraOnPlayer(dt);
+  }
+
+  private updateCameraOnPlayer(dt: number) {
     const s = this.player.state;
     const gy = s.position.y;
     const back = 12 + Math.min(Math.abs(s.speed) * 0.07, 6);

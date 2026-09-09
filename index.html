@@ -81,6 +81,11 @@
 
         <div id="wrong-way" class="wrong-way hidden" aria-live="assertive">WRONG WAY</div>
         <div id="explode-flash" class="explode-flash hidden" aria-live="assertive">DESTROYED</div>
+        <div id="spectate-hud" class="spectate-hud hidden" aria-live="polite">
+          <div id="spectate-title" class="spectate-title">SPECTATING</div>
+          <div id="spectate-hint" class="spectate-hint">Space / Next · Esc exit</div>
+          <button id="spectate-next-btn" class="spectate-next-btn" type="button">NEXT</button>
+        </div>
         <div id="animal-hit" class="animal-hit hidden" aria-live="assertive">COW!</div>
         <div id="final-lap-flash" class="final-lap-flash hidden" aria-live="polite">FINAL LAP</div>
         <div id="countdown" class="countdown hidden" aria-live="assertive">3</div>
@@ -228,8 +233,9 @@
             <section class="controls-help-group" aria-labelledby="controls-help-race">
               <h3 class="controls-help-group-title" id="controls-help-race">Pause &amp; reset</h3>
               <dl class="controls-help-list">
-                <div class="controls-help-row"><dt>Esc / P</dt><dd>Pause</dd></div>
+                <div class="controls-help-row"><dt>Esc / P</dt><dd>Pause · exit spectate</dd></div>
                 <div class="controls-help-row"><dt>Backspace</dt><dd>Reset car</dd></div>
+                <div class="controls-help-row"><dt>Space / Next</dt><dd>Cycle spectate target (MP)</dd></div>
               </dl>
             </section>
             <section class="controls-help-group" aria-labelledby="controls-help-pad">
