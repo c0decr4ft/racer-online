@@ -10,7 +10,7 @@ import {
   BATTLE_PICKUP_RADIUS,
   BATTLE_PICKUP_POSE_SLACK,
 } from "../shared/battleCubes.mjs";
-import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, copyFileSync } from "node:fs";
 import { dirname, join, extname, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -63,9 +63,29 @@ const BATTLE_CLAIM_ABANDON_MS = 10 * 60_000;
 const MAX_PLAYERS = 6;
 const PLAYER_COLORS = [0xe4eaf2, 0xe23b2e, 0x2a66f0, 0xf0c020, 0x1dbf6a, 0xb44dff, 0xff6b9d, 0x00d4ff];
 const DIR = dirname(fileURLToPath(import.meta.url));
+/**
+ * Durable game-server data (feedback, and ideally tips/activity on the same mount).
+ * Render free disks wipe on every deploy — set DATA_DIR to a persistent disk path
+ * (e.g. /var/data) so feedback survives GAME_VERSION bumps / redeploys. Not keyed
+ * by game version: one inbox for all client builds.
+ */
+const DATA_DIR = (() => {
+  const raw = (process.env.DATA_DIR || "").trim();
+  return raw || DIR;
+})();
 const LEADERBOARD_PATH = join(DIR, "leaderboard.json");
 const PRESENCE_PATH = join(DIR, "presence.json");
-const FEEDBACK_PATH = join(DIR, "feedback.json");
+const FEEDBACK_PATH = join(DATA_DIR, "feedback.json");
+const FEEDBACK_LEGACY_PATH = join(DIR, "feedback.json");
+/**
+ * Stable public JSONBlob mirror (same URL as the client). Soft backup across
+ * ephemeral-disk redeploys — jsonblob TTLs are short (~24h), so prefer DATA_DIR
+ * on a Render persistent disk. Do not recreate this blob; PUT the existing URL.
+ */
+const FEEDBACK_BLOB_URL = (
+  process.env.FEEDBACK_BLOB_URL ||
+  "https://jsonblob.com/api/jsonBlob/019fbe1c-6eab-7997-bff4-46ce4bfc7d97"
+).trim();
 /** Where player feedback is emailed (FormSubmit relay — free, no SMTP creds needed). */
 const FEEDBACK_EMAIL = (process.env.FEEDBACK_EMAIL || "c0decr4ft.fr@gmail.com").trim();
 /**
@@ -932,39 +952,126 @@ function normalizeFeedbackMessage(raw) {
   return msg;
 }
 
-function loadFeedback() {
-  try {
-    if (!existsSync(FEEDBACK_PATH)) return { messages: [] };
-    const raw = JSON.parse(readFileSync(FEEDBACK_PATH, "utf8"));
-    const list = Array.isArray(raw?.messages) ? raw.messages : [];
-    const seen = new Set();
-    const messages = [];
-    for (const row of list) {
-      const msg = normalizeFeedbackMessage(row);
-      if (!msg || seen.has(msg.id)) continue;
-      seen.add(msg.id);
-      messages.push(msg);
-    }
-    messages.sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
-    return { messages: messages.slice(0, MAX_FEEDBACK) };
-  } catch {
-    return { messages: [] };
-  }
-}
-
-/** @param {{ messages: object[] }} store */
-function saveFeedback(store) {
+/** Normalize a raw feedback store (disk or blob) into sorted unique messages. */
+function normalizeFeedbackStore(raw) {
+  const list = Array.isArray(raw?.messages) ? raw.messages : Array.isArray(raw) ? raw : [];
   const seen = new Set();
   const messages = [];
-  for (const row of store.messages || []) {
+  for (const row of list) {
     const msg = normalizeFeedbackMessage(row);
     if (!msg || seen.has(msg.id)) continue;
     seen.add(msg.id);
     messages.push(msg);
   }
   messages.sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
-  const body = { messages: messages.slice(0, MAX_FEEDBACK) };
-  writeFileSync(FEEDBACK_PATH, JSON.stringify(body, null, 2));
+  return { messages: messages.slice(0, MAX_FEEDBACK) };
+}
+
+/** Union two stores by id — keep readAt if either side has it. */
+function mergeFeedbackStores(a, b) {
+  const byId = new Map();
+  for (const row of [...(a?.messages || []), ...(b?.messages || [])]) {
+    const msg = normalizeFeedbackMessage(row);
+    if (!msg) continue;
+    const prev = byId.get(msg.id);
+    if (!prev) {
+      byId.set(msg.id, msg);
+      continue;
+    }
+    const readAt = [prev.readAt, msg.readAt].find((n) => Number.isFinite(Number(n)));
+    const newer = msg.createdAt >= prev.createdAt ? msg : prev;
+    if (readAt !== undefined) newer.readAt = Math.round(Number(readAt));
+    byId.set(msg.id, newer);
+  }
+  const messages = [...byId.values()].sort(
+    (x, y) => y.createdAt - x.createdAt || x.id.localeCompare(y.id),
+  );
+  return { messages: messages.slice(0, MAX_FEEDBACK) };
+}
+
+/** One-time: copy legacy server/feedback.json into DATA_DIR when mounting a disk. */
+function migrateFeedbackToDataDir() {
+  if (FEEDBACK_PATH === FEEDBACK_LEGACY_PATH) return;
+  if (existsSync(FEEDBACK_PATH) || !existsSync(FEEDBACK_LEGACY_PATH)) return;
+  try {
+    mkdirSync(DATA_DIR, { recursive: true });
+    copyFileSync(FEEDBACK_LEGACY_PATH, FEEDBACK_PATH);
+    console.log(`[feedback] migrated ${FEEDBACK_LEGACY_PATH} → ${FEEDBACK_PATH}`);
+  } catch (err) {
+    console.warn(`[feedback] migrate failed:`, err?.message || err);
+  }
+}
+
+function loadFeedback() {
+  migrateFeedbackToDataDir();
+  try {
+    if (!existsSync(FEEDBACK_PATH)) return { messages: [] };
+    return normalizeFeedbackStore(JSON.parse(readFileSync(FEEDBACK_PATH, "utf8")));
+  } catch {
+    return { messages: [] };
+  }
+}
+
+/** Best-effort mirror to the stable JSONBlob URL (survives empty-disk redeploys briefly). */
+async function mirrorFeedbackBlob(store) {
+  if (!FEEDBACK_BLOB_URL) return;
+  try {
+    const body = normalizeFeedbackStore(store);
+    const res = await fetch(FEEDBACK_BLOB_URL, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!res.ok) console.warn(`[feedback] blob mirror HTTP ${res.status}`);
+  } catch (err) {
+    console.warn(`[feedback] blob mirror failed:`, err?.message || err);
+  }
+}
+
+/**
+ * After redeploy, local disk is often empty — pull the public blob and merge.
+ * Also merges when DATA_DIR already has messages so blob-only rows are kept.
+ */
+async function hydrateFeedbackFromBlob() {
+  if (!FEEDBACK_BLOB_URL) return;
+  try {
+    const res = await fetch(FEEDBACK_BLOB_URL, {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!res.ok) {
+      console.warn(`[feedback] blob hydrate HTTP ${res.status}`);
+      return;
+    }
+    const remote = normalizeFeedbackStore(await res.json());
+    if (!remote.messages.length) return;
+    const local = loadFeedback();
+    const merged = mergeFeedbackStores(local, remote);
+    if (JSON.stringify(merged) === JSON.stringify(local)) return;
+    saveFeedback(merged, { mirror: false });
+    console.log(
+      `[feedback] hydrated from blob — ${local.messages.length} → ${merged.messages.length} messages @ ${FEEDBACK_PATH}`,
+    );
+  } catch (err) {
+    console.warn(`[feedback] blob hydrate failed:`, err?.message || err);
+  }
+}
+
+/**
+ * @param {{ messages: object[] }} store
+ * @param {{ mirror?: boolean }} [opts]
+ */
+function saveFeedback(store, opts = {}) {
+  const body = normalizeFeedbackStore(store);
+  try {
+    if (DATA_DIR !== DIR) mkdirSync(DATA_DIR, { recursive: true });
+    writeFileSync(FEEDBACK_PATH, JSON.stringify(body, null, 2));
+  } catch (err) {
+    console.warn(`[feedback] write failed:`, FEEDBACK_PATH, err?.message || err);
+  }
+  if (opts.mirror !== false) void mirrorFeedbackBlob(body);
   return body;
 }
 
@@ -3215,6 +3322,16 @@ httpServer.listen(PORT, HOST, () => {
   } catch (err) {
     console.warn("[activity] boot check failed:", err?.message || err);
   }
+  const fb = loadFeedback();
+  console.log(`[feedback] ${fb.messages.length} messages · ${FEEDBACK_PATH}`);
+  if (DATA_DIR === DIR && ON_RENDER) {
+    console.warn(
+      "[feedback] DATA_DIR unset — Render free disk wipes feedback.json on every deploy. " +
+        "Attach a persistent disk and set DATA_DIR (e.g. /var/data), or rely on the short-lived JSONBlob mirror.",
+    );
+  }
+  // Soft restore after ephemeral-disk redeploys (merge with existing file).
+  void hydrateFeedbackFromBlob();
   // Rebuild the board from the relays on boot (redeploys wipe the disk cache),
   // then keep merging every 15 min so instances converge.
   void syncBoardFromRelays();

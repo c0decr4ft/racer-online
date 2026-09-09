@@ -191,6 +191,7 @@ export function withdrawDevTips(signer: DevSigner, amountSats?: number): Promise
 }
 
 /* ── Dev feedback inbox ─────────────────────────────────────────── */
+/* Reads the durable server store (`feedback.json` / DATA_DIR) — not GAME_VERSION. */
 
 export type DevFeedbackMessage = {
   id: string;

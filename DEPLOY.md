@@ -100,10 +100,35 @@ Formula for any race:
   for anything beyond pocket change, attach a persistent disk (paid plan) or move
   to a VPS (Oracle free tier / Hetzner).
 
-## Player feedback → your email
+## Player feedback (durable inbox + email)
 
-In-game feedback posts to `/api/feedback` (stored in `server/feedback.json`, gitignored)
-and is forwarded to your inbox. **Use Resend** — reliable, server-side, free tier
+In-game feedback posts to **`/api/feedback`** on the **game server** (same process as
+payments / tips). The DEV dashboard reads the same store via **`/api/dev/feedback`**.
+
+**Not keyed by `GAME_VERSION`.** Bumping the client version or shipping `/v6.6/` static
+builds does **not** clear the inbox — all builds share one server file.
+
+### Where it lives
+
+| Store | Path / URL | Survives version bump? | Survives Render redeploy? |
+| --- | --- | --- | --- |
+| **Primary** | `$DATA_DIR/feedback.json` (default: `server/feedback.json`, gitignored) | Yes | **Only if** that path is on a **persistent disk** |
+| Soft mirror | Stable JSONBlob URL (server hydrates on boot + mirrors on save) | Yes | Briefly (~24h TTL — do **not** recreate the blob) |
+| Email | Resend / FormSubmit | Yes (your mail) | N/A |
+
+Render **free** disks are **ephemeral**: every deploy wipes `server/*.json`. Tips and
+activity have the same problem. To keep feedback across deploys:
+
+1. Upgrade to a plan that allows disks → **Dashboard → Disks** → mount e.g. `/var/data`
+2. Set env **`DATA_DIR=/var/data`** (and put tips/activity there too if you move those paths)
+3. Redeploy once — the server migrates `server/feedback.json` → `$DATA_DIR/feedback.json` if needed
+
+Without a persistent disk, the JSONBlob mirror can restore recent messages after a wipe,
+but it is **not** long-term durable. Prefer the disk mount for anything you care about.
+
+### Email (Resend)
+
+Feedback is also forwarded to your inbox. **Use Resend** — reliable, server-side, free tier
 (100 emails/day):
 
 1. Sign up at [resend.com](https://resend.com) (GitHub login works) → **API Keys** →

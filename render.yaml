@@ -35,3 +35,9 @@ services:
       # FormSubmit relay (needs one-time email activation).
       - key: RESEND_API_KEY
         sync: false
+      # Optional: persistent disk mount path for feedback.json (and other durable
+      # server data). Free Render disks wipe on every deploy — without DATA_DIR on
+      # a paid persistent volume, feedback relies on a short-lived JSONBlob mirror.
+      # Example after attaching a disk at /var/data:
+      # - key: DATA_DIR
+      #   value: /var/data
