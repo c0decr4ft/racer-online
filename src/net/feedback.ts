@@ -1,10 +1,16 @@
 /**
- * Player feedback — prefers the durable Render/game server (`/api/feedback`),
- * then JSONBlob, then local cache.
+ * Player feedback — durable on the game server (`/api/feedback` → feedback.json),
+ * not keyed by GAME_VERSION. Client version bumps do not change the inbox.
+ *
+ * Fallback chain when the server is unreachable: shared JSONBlob mirror, then
+ * localStorage. JSONBlob TTLs are short (~24h); the server file (ideally on a
+ * Render persistent disk via DATA_DIR) is the real store. DEV inbox reads
+ * `/api/dev/feedback` from that same file.
  */
 
 import { apiUrl } from "./apiBase";
 
+/** Stable mirror URL — same blob the server hydrates/mirrors; do not recreate. */
 const PUBLIC_BLOB_URL =
   "https://jsonblob.com/api/jsonBlob/019fbe1c-6eab-7997-bff4-46ce4bfc7d97";
 
@@ -114,13 +120,21 @@ async function putBlobStore(store: FeedbackStore): Promise<FeedbackStore> {
   }
 }
 
+/**
+ * Public GET only exposes a count (inbox is private). Returns null unless the
+ * body includes a messages array (POST responses / older servers).
+ */
 async function fetchServerFeedback(): Promise<FeedbackStore | null> {
   const url = apiUrl("/feedback");
   if (!url) return null;
   try {
     const res = await fetch(url, { cache: "no-store", headers: { Accept: "application/json" } });
     if (!res.ok) return null;
-    return normalizeStore(await res.json());
+    const data = await res.json();
+    if (!data || typeof data !== "object" || !Array.isArray((data as { messages?: unknown }).messages)) {
+      return null;
+    }
+    return normalizeStore(data);
   } catch {
     return null;
   }
@@ -143,6 +157,7 @@ async function postServerFeedback(msg: FeedbackMessage): Promise<{ store: Feedba
   }
 }
 
+/** Version-agnostic local cache — never include GAME_VERSION in the key. */
 const LOCAL_KEY = "racer-feedback-local-v1";
 
 function readLocal(): FeedbackMessage[] {
@@ -189,10 +204,11 @@ export async function submitFeedback(text: string, name?: string): Promise<Feedb
     return fetchFeedback();
   }
 
+  // Prefer durable game-server file (same store the DEV inbox reads).
   const fromServer = await postServerFeedback(msg);
   if (fromServer) {
     writeLocal(fromServer.store.messages);
-    // Best-effort mirror to public blob
+    // Best-effort mirror — server also mirrors; this covers older deploys.
     void putBlobStore(fromServer.store).catch(() => undefined);
     return { messages: fromServer.store.messages, source: "server", emailed: fromServer.emailed };
   }
