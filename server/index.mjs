@@ -58,6 +58,8 @@ const ALL_WRECK_RESET_DELAY_MS = 1_600;
 /** Binary state frame type — must match src/net/protocol.ts STATE_BIN_TYPE. */
 const STATE_BIN_TYPE = 1;
 const MAP_VOTE_MS = 20_000;
+/** After finish, unclaimed battle shares → developer tip leftover. */
+const BATTLE_CLAIM_ABANDON_MS = 10 * 60_000;
 const MAX_PLAYERS = 6;
 const PLAYER_COLORS = [0xe4eaf2, 0xe23b2e, 0x2a66f0, 0xf0c020, 0x1dbf6a, 0xb44dff, 0xff6b9d, 0x00d4ff];
 const DIR = dirname(fileURLToPath(import.meta.url));
@@ -227,7 +229,8 @@ function normalizeSessionId(raw) {
 /** @typedef {{ trackId: string, order: number }} TrackVote */
 /** @typedef {{ paymentHash: string, paymentRequest: string, bolt11?: string, paidAt: number, netSats?: number }} BuyIn */
 /** @typedef {{ at: number, level: 'info' | 'warn' | 'error', msg: string }} PotLogEntry */
-/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, wreckedIds: Set<string>, fireContactMs: Map<string, number>, fireContactLast: Map<string, number>, allWreckResetAt: number, clients: Map<string, Client>, isEvent: boolean, eventMode: 'race' | 'battle', buyInSats: number, buyInFeeSats: number, buyIns: Map<string, BuyIn>, potSats: number, potId: string, potClaimed: boolean, potLogs: PotLogEntry[], battleCubes: Map<number, { id: number, x: number, z: number, sats: number, tier: string, takenBy: string }>, battleEarnings: Map<string, number>, battleClaimable: Map<string, number>, battleClaimedIds: Set<string>, battleLeftoverSats: number, battleLeftoverCollected: boolean, battleLeftoverToken: string }} Room */
+/** @typedef {{ tipSats: number, tipCollected: boolean, tipToken: string }} BattleClaimTip */
+/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, wreckedIds: Set<string>, fireContactMs: Map<string, number>, fireContactLast: Map<string, number>, allWreckResetAt: number, clients: Map<string, Client>, isEvent: boolean, eventMode: 'race' | 'battle', buyInSats: number, buyInFeeSats: number, buyIns: Map<string, BuyIn>, potSats: number, potId: string, potClaimed: boolean, potLogs: PotLogEntry[], payoutTipSats: number, payoutTipCollected: boolean, payoutTipToken: string, battleCubes: Map<number, { id: number, x: number, z: number, sats: number, tier: string, takenBy: string }>, battleEarnings: Map<string, number>, battleClaimable: Map<string, number>, battleClaimedIds: Set<string>, battleClaimTips: Map<string, BattleClaimTip>, battleClaimDeadline: number, battleLeftoverSats: number, battleLeftoverCollected: boolean, battleLeftoverToken: string }} Room */
 
 /** Persist a debug line on the event pot (disk + in-memory) so the DEV table can show it. */
 function potLog(room, level, msg) {
@@ -1135,7 +1138,11 @@ function tryServeStatic(urlPath, res) {
 
 /** @param {import('ws').WebSocket} ws @param {object} msg */
 function send(ws, msg) {
-  if (ws.readyState === 1) ws.send(JSON.stringify(msg));
+  if (ws.readyState === 1) {
+    ws.send(JSON.stringify(msg));
+    return true;
+  }
+  return false;
 }
 
 /** @param {Room} room */
@@ -1220,6 +1227,186 @@ function dropBattleHaulOnWreck(room, client) {
   broadcast(room, { t: "notice", text: `${client.name} dropped ${haul} sats` });
   potLog(room, "info", `battle haul drop · ${client.name} · ${haul} sats → ${cubes.length} cubes`);
   console.log(`[battle] ${room.name} ${client.name} dropped ${haul} sats (${cubes.length} cubes)`);
+}
+
+/**
+ * Move an unclaimed battle share into leftover → tip wallet.
+ * Used on disconnect after finish and on claim-deadline expiry.
+ * @param {Room} room
+ * @param {string} clientId
+ * @param {string} reason
+ */
+function abandonBattleClaimShare(room, clientId, reason) {
+  if (!room?.isEvent || room.eventMode !== "battle") return 0;
+  if (room.phase !== "finished") return 0;
+  if (room.battleClaimedIds?.has(clientId)) return 0;
+  const sats = Math.max(0, Math.round(room.battleClaimable?.get(clientId) || 0));
+  if (sats <= 0) {
+    room.battleClaimable?.delete(clientId);
+    room.battleClaimTips?.delete(clientId);
+    return 0;
+  }
+  room.battleClaimable.delete(clientId);
+  room.battleClaimTips?.delete(clientId);
+  room.battleLeftoverSats = Math.max(0, Math.round(room.battleLeftoverSats || 0)) + sats;
+  room.battleLeftoverCollected = false;
+  potLog(room, "info", `battle share abandoned · ${clientId} · ${sats} sats → tip (${reason})`);
+  console.log(`[battle] ${room.name} abandoned ${sats} sats from ${clientId} (${reason})`);
+  return sats;
+}
+
+/** Sweep every unclaimed battle share into leftover (room empty / deadline). */
+function abandonAllUnclaimedBattleShares(room, reason) {
+  if (!room?.isEvent || room.eventMode !== "battle" || room.phase !== "finished") return 0;
+  let total = 0;
+  for (const id of [...(room.battleClaimable?.keys() || [])]) {
+    total += abandonBattleClaimShare(room, id, reason);
+  }
+  return total;
+}
+
+/**
+ * Refund a paid lobby buy-in as a Cashu token to the leaving player.
+ * Prefer refund over stranding sats when the race has not started.
+ * @param {Room} room
+ * @param {Client} client
+ * @param {import('ws').WebSocket} ws
+ * @param {BuyIn} buyIn
+ */
+async function refundLobbyBuyIn(room, client, ws, buyIn) {
+  const wanted = Math.max(0, Math.round(buyIn.netSats ?? room.buyInSats) || 0);
+  if (wanted <= 0) {
+    send(ws, { t: "buyInRefund", ok: true, sats: 0, mock: payments.mock });
+    return;
+  }
+  try {
+    const perSendFee = Math.max(0, await payments.sendFeeSats(room.potId).catch(() => 0));
+    const bal = await Promise.resolve()
+      .then(() => payments.potBalanceSats?.(room.potId))
+      .then((v) => (Number.isFinite(v) ? v : 0))
+      .catch(() => 0);
+    const refundSats = Math.max(0, Math.min(wanted, bal - perSendFee));
+    if (refundSats <= 0) {
+      potLog(room, "error", `buy-in refund failed for ${client.name}: pot empty (${bal})`);
+      send(ws, {
+        t: "buyInRefund",
+        ok: false,
+        error: "could not refund — pot empty",
+        mock: payments.mock,
+      });
+      return;
+    }
+    const { token } = await payments.sendToken(refundSats, {
+      includeFees: true,
+      potId: room.potId,
+    });
+    potLog(room, "info", `buy-in refund · ${client.name} · ${refundSats} sats`);
+    console.log(`[event] ${room.name} refunded ${refundSats} sats to ${client.name}`);
+    const delivered = send(ws, {
+      t: "buyInRefund",
+      ok: true,
+      token,
+      sats: refundSats,
+      mock: payments.mock,
+    });
+    if (!delivered) {
+      console.error(
+        `[event] EMERGENCY buy-in refund token for ${client.name} (ws closed) — redeem once:`,
+        token,
+      );
+      potLog(
+        room,
+        "warn",
+        `buy-in refund token undelivered · ${client.name} · ${refundSats} sats (see server log)`,
+      );
+      appendActivity({
+        type: "payment",
+        kind: "payment-failed",
+        detail: `Buy-in refund undelivered · ${room.name} · ${client.name} · ${refundSats} sats — check server log`,
+        level: "error",
+        ok: false,
+        room: room.name,
+        player: client.name,
+      });
+    }
+  } catch (err) {
+    potLog(
+      room,
+      "error",
+      `buy-in refund failed for ${client.name}: ${String(err?.message || err).slice(0, 160)}`,
+    );
+    send(ws, {
+      t: "buyInRefund",
+      ok: false,
+      error: String(err?.message || err).slice(0, 140),
+      mock: payments.mock,
+    });
+  }
+}
+
+/**
+ * Remove a client from their room — refunds, battle haul drop, abandoned claims.
+ * Safe to call from explicit `leave` or socket close (idempotent via clients.delete).
+ * @param {Room} room
+ * @param {Client} client
+ * @param {import('ws').WebSocket} ws
+ */
+async function removeClientFromRoom(room, client, ws) {
+  if (!room.clients.has(client.id)) return;
+
+  const buyIn = room.buyIns.get(client.id);
+  const refundPaidLobby =
+    room.isEvent && room.phase === "lobby" && !!buyIn?.paidAt && (buyIn.netSats ?? room.buyInSats) > 0;
+
+  // Mid-race battle: spill haul as cubes so sats aren't locked to a ghost.
+  if (room.isEvent && room.eventMode === "battle" && room.phase === "racing" && !room.winnerId) {
+    dropBattleHaulOnWreck(room, client);
+  }
+
+  // Post-finish battle: unclaimed share → developer leftover (not stranded).
+  if (room.isEvent && room.eventMode === "battle" && room.phase === "finished") {
+    const abandoned = abandonBattleClaimShare(room, client.id, "disconnect");
+    if (abandoned > 0) void collectBattleLeftover(room);
+  }
+
+  room.clients.delete(client.id);
+  room.votes.delete(client.id);
+  room.buyIns.delete(client.id);
+  room.wreckedIds?.delete(client.id);
+  pruneFireContact(room, client.id);
+  console.log(`[leave] ${client.name}`);
+
+  if (refundPaidLobby && buyIn) {
+    await refundLobbyBuyIn(room, client, ws, buyIn);
+  }
+
+  if (room.clients.size === 0) {
+    if (room.isEvent && room.eventMode === "battle" && room.phase === "finished") {
+      abandonAllUnclaimedBattleShares(room, "room-empty");
+      await collectBattleLeftover(room).catch(() => {});
+    }
+    potLog(room, "info", "last player left — room closed (pot file kept)");
+    roomActivity(room, "room-closed", `room closed · last player ${client.name} left`, {
+      player: client.name,
+      playerId: client.id,
+    });
+    rooms.delete(client.room);
+  } else {
+    if (room.hostId === client.id) {
+      room.hostId = room.clients.keys().next().value;
+    }
+    broadcast(room, { t: "leave", id: client.id, hostId: room.hostId });
+    broadcast(room, { t: "notice", text: `${client.name} left` });
+    if (room.phase === "lobby") broadcast(room, lobbySnapshot(room));
+    if (room.phase === "finished") {
+      broadcastVoteState(room);
+      if (room.isEvent) {
+        const info = eventInfo(room);
+        if (info) broadcast(room, { t: "eventUpdate", event: info });
+      }
+    }
+    if (room.phase === "racing") scheduleAllWreckReset(room);
+  }
 }
 
 /**
@@ -1745,6 +1932,8 @@ function admitClient(ws, msg, mode) {
       battleEarnings: new Map(),
       battleClaimable: new Map(),
       battleClaimedIds: new Set(),
+      battleClaimTips: new Map(),
+      battleClaimDeadline: 0,
       battleLeftoverSats: 0,
       battleLeftoverCollected: true,
       battleLeftoverToken: "",
@@ -2407,9 +2596,14 @@ wss.on("connection", (ws) => {
       room.battleEarnings = new Map();
       room.battleClaimable = new Map();
       room.battleClaimedIds = new Set();
+      room.battleClaimTips = new Map();
+      room.battleClaimDeadline = 0;
       room.battleLeftoverSats = 0;
       room.battleLeftoverCollected = true;
       room.battleLeftoverToken = "";
+      room.payoutTipSats = 0;
+      room.payoutTipCollected = false;
+      room.payoutTipToken = "";
       /** @type {import('../shared/battleCubes.mjs').BattleCube[] | undefined} */
       let battleCubesWire;
       if (room.isEvent && room.eventMode === "battle") {
@@ -2538,32 +2732,39 @@ wss.on("connection", (ws) => {
       room.phase = "finished";
       // Event Mode: one race, skip the map vote
       if (room.isEvent) {
-        if (room.eventMode === "battle") finalizeBattleClaimable(room);
+        if (room.eventMode === "battle") {
+          finalizeBattleClaimable(room);
+          room.battleClaimDeadline = Date.now() + BATTLE_CLAIM_ABANDON_MS;
+        }
+        // Broadcast raceResult immediately so claim UI is not blocked on mint I/O.
+        const info = eventInfo(room);
+        broadcast(room, {
+          t: "raceResult",
+          winnerId: client.id,
+          winnerName: client.name,
+          timeMs,
+          trackOptions: [],
+          voteEndsAt: 0,
+          event: info,
+        });
         void (async () => {
-          // Uncollected cubes → tip wallet before claimers draw their shares.
-          if (room.eventMode === "battle") await collectBattleLeftover(room);
-          // Attach the payout fee budget so checkout shows the real split.
-          // Race: tip + winner sends. Battle: estimate two sends per claimer.
-          const info = eventInfo(room);
-          if (info) {
+          try {
+            if (room.eventMode === "battle") await collectBattleLeftover(room);
             const perSend = Math.max(0, await payments.sendFeeSats(room.potId).catch(() => 0));
+            if (rooms.get(room.name) !== room || room.phase !== "finished") return;
+            const next = eventInfo(room);
+            if (!next) return;
             if (room.eventMode === "battle") {
-              const claimers = [...(room.battleClaimable?.values() || [])].filter((s) => s > 0).length || 1;
-              info.potFeeSats = perSend * 2 * claimers;
+              const claimers =
+                [...(room.battleClaimable?.values() || [])].filter((s) => s > 0).length || 1;
+              next.potFeeSats = perSend * 2 * claimers;
             } else {
-              info.potFeeSats = perSend * 2;
+              next.potFeeSats = perSend * 2;
             }
+            broadcast(room, { t: "eventUpdate", event: next });
+          } catch (err) {
+            console.warn(`[event] post-finish leftover/fee:`, err?.message || err);
           }
-          if (rooms.get(room.name) !== room) return;
-          broadcast(room, {
-            t: "raceResult",
-            winnerId: client.id,
-            winnerName: client.name,
-            timeMs,
-            trackOptions: [],
-            voteEndsAt: 0,
-            event: info,
-          });
         })();
         potLog(
           room,
@@ -2606,6 +2807,20 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    if (msg.t === "leave") {
+      // Explicit leave — refund / haul drop before the socket closes.
+      const leaving = client;
+      client = null;
+      void removeClientFromRoom(room, leaving, ws).finally(() => {
+        try {
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+      });
+      return;
+    }
+
     if (msg.t === "submitToken") {
       // Manual fallback: player pastes a cashuA token instead of scanning the request.
       if (!room.isEvent || room.phase !== "lobby" || payments.mock) return;
@@ -2643,6 +2858,7 @@ wss.on("connection", (ws) => {
           return;
         }
         room.battleClaimedIds.add(client.id);
+        room.battleClaimTips ??= new Map();
         potLog(room, "info", `battle claim started by ${client.name} · ${claimable} sats · tip ${tipPercent}%`);
         void (async () => {
           try {
@@ -2658,25 +2874,65 @@ wss.on("connection", (ws) => {
             const bal = await balanceNow();
             // Cap this share so concurrent claimers can't overdraw the pot.
             const shareCap = Math.min(claimable, bal);
-            const tipWanted = Math.floor((shareCap * tipPercent) / 100);
-            const tipCap = Math.min(tipWanted, Math.max(0, shareCap - perSendFee));
+            // Mirror race claim tip accounting — persist tip state so retries
+            // never double-tip or drop a pending tip bearer token.
+            /** @type {BattleClaimTip} */
+            let tipState = room.battleClaimTips.get(client.id) || {
+              tipSats: 0,
+              tipCollected: false,
+              tipToken: "",
+            };
+            let tipSats = tipState.tipSats || 0;
+            let tipCollected = tipState.tipCollected === true;
 
-            let tipSats = 0;
-            let tipCollected = true;
-            let tipToken = "";
-            if (tipCap > 0) {
-              const result = await payments.collectTip(tipCap, room.potId);
-              tipSats = result.sats;
-              tipCollected = result.collected === true;
-              tipToken = result.token || "";
-              if (!tipCollected) {
-                potLog(room, "warn", `battle tip ${tipSats} swapped but tip-wallet receive failed`);
+            if (!tipCollected && tipState.tipToken) {
+              try {
+                const net = await payments.receiveTipToken(tipState.tipToken, tipSats);
+                tipSats = Number.isFinite(net) && net > 0 ? net : tipSats;
+                tipCollected = true;
+                tipState = { tipSats, tipCollected: true, tipToken: "" };
+                room.battleClaimTips.set(client.id, tipState);
+              } catch (err) {
+                console.warn(`[event] battle tip token collect failed:`, err?.message || err);
+                potLog(
+                  room,
+                  "warn",
+                  `battle tip token collect failed: ${String(err?.message || err).slice(0, 160)}`,
+                );
               }
             }
 
+            if (!tipCollected && !tipState.tipToken) {
+              const tipWanted = Math.floor((shareCap * tipPercent) / 100);
+              const tipCap = Math.min(tipWanted, Math.max(0, shareCap - perSendFee));
+              if (tipCap > 0) {
+                const result = await payments.collectTip(tipCap, room.potId);
+                tipSats = result.sats;
+                tipCollected = result.collected === true;
+                tipState = {
+                  tipSats,
+                  tipCollected,
+                  tipToken: tipCollected ? "" : result.token || "",
+                };
+                room.battleClaimTips.set(client.id, tipState);
+                if (!tipCollected) {
+                  potLog(room, "warn", `battle tip ${tipSats} swapped but tip-wallet receive failed`);
+                }
+              } else {
+                tipSats = 0;
+                tipCollected = true;
+                tipState = { tipSats: 0, tipCollected: true, tipToken: "" };
+                room.battleClaimTips.set(client.id, tipState);
+              }
+            } else {
+              tipSats = tipState.tipSats || 0;
+              tipCollected = tipState.tipCollected === true;
+            }
+
             const remaining = await balanceNow();
-            // Player share: their remaining slice after tip, never more than shareCap - tip.
-            const maxPlayer = Math.max(0, shareCap - tipSats);
+            // Tip already left the pot (collected or held as tipToken). Cap by
+            // original claimable − tip so retries never double-subtract tipSats.
+            const maxPlayer = Math.max(0, claimable - tipSats);
             const winnerSats = Math.max(0, Math.min(maxPlayer, remaining - perSendFee));
             if (winnerSats <= 0 && tipSats <= 0) throw new Error("share too small to pay out");
             let winnerToken = "";
@@ -2685,22 +2941,25 @@ wss.on("connection", (ws) => {
               winnerToken = sent.token;
             }
 
-            const feeSats = Math.max(0, shareCap - winnerSats - tipSats);
+            const feeSats = Math.max(0, claimable - winnerSats - tipSats);
             recordPayout({
               room: room.name,
               potId: room.potId,
               winnerId: client.id,
               winnerPubkey: client.pose.pubkey || null,
-              potSats: shareCap,
+              potSats: claimable,
               winnerSats,
               tipSats,
               tipPercent,
               feeSats,
               collected: tipCollected,
               collectedAt: tipCollected ? Date.now() : null,
-              tipToken: tipCollected ? null : tipToken || null,
+              tipToken: tipCollected ? null : tipState.tipToken || null,
               mock: payments.mock,
             });
+            // Claim completed — tip leftover (if any) stays on disk via recordPayout.
+            room.battleClaimTips.delete(client.id);
+            room.battleClaimable.delete(client.id);
             send(ws, {
               t: "payoutResult",
               ok: true,
@@ -2715,12 +2974,15 @@ wss.on("connection", (ws) => {
               t: "notice",
               text: `${client.name} claimed ${winnerSats} sats from battle`,
             });
+            const info = eventInfo(room);
+            if (info) broadcast(room, { t: "eventUpdate", event: info });
             potLog(
               room,
               tipCollected ? "info" : "warn",
               `battle claimed · ${client.name} ${winnerSats} · tip ${tipSats}${tipCollected ? "" : " pending"} · fee ${feeSats}`,
             );
           } catch (err) {
+            // Unlock claim retry; tip state stays so we never double-tip.
             room.battleClaimedIds.delete(client.id);
             potLog(room, "error", `battle claim failed: ${String(err?.message || err).slice(0, 160)}`);
             send(ws, { t: "payoutResult", ok: false, error: String(err?.message || err).slice(0, 140) });
@@ -2866,32 +3128,9 @@ wss.on("connection", (ws) => {
       client = null;
       return;
     }
-    room.clients.delete(client.id);
-    room.votes.delete(client.id);
-    room.buyIns.delete(client.id); // event: drop their buy-in record (v1 — paid buy-ins are not refunded)
-    room.wreckedIds?.delete(client.id);
-    pruneFireContact(room, client.id);
-    console.log(`[leave] ${client.name}`);
-    if (room.clients.size === 0) {
-      potLog(room, "info", "last player left — room closed (pot file kept)");
-      roomActivity(room, "room-closed", `room closed · last player ${client.name} left`, {
-        player: client.name,
-        playerId: client.id,
-      });
-      rooms.delete(client.room);
-    } else {
-      if (room.hostId === client.id) {
-        room.hostId = room.clients.keys().next().value;
-      }
-      broadcast(room, { t: "leave", id: client.id, hostId: room.hostId });
-      broadcast(room, { t: "notice", text: `${client.name} left` });
-      if (room.phase === "lobby") broadcast(room, lobbySnapshot(room));
-      if (room.phase === "finished") {
-        broadcastVoteState(room);
-      }
-      if (room.phase === "racing") scheduleAllWreckReset(room);
-    }
+    const leaving = client;
     client = null;
+    void removeClientFromRoom(room, leaving, ws);
   });
 });
 
@@ -2932,6 +3171,28 @@ setInterval(() => {
     }
   }
 }, 2_000);
+
+// Battle: unclaimed shares past the claim deadline → developer tip leftover.
+setInterval(() => {
+  const now = Date.now();
+  for (const room of rooms.values()) {
+    if (!room.isEvent || room.eventMode !== "battle" || room.phase !== "finished") continue;
+    if (!room.battleClaimDeadline || now < room.battleClaimDeadline) continue;
+    const n = abandonAllUnclaimedBattleShares(room, "claim-timeout");
+    room.battleClaimDeadline = 0;
+    if (n > 0) {
+      void collectBattleLeftover(room).then(() => {
+        if (rooms.get(room.name) !== room) return;
+        const info = eventInfo(room);
+        if (info) broadcast(room, { t: "eventUpdate", event: info });
+        broadcast(room, {
+          t: "notice",
+          text: "Unclaimed battle shares went to the developer tip",
+        });
+      });
+    }
+  }
+}, 15_000);
 
 // Drop stale presence sessions periodically so GET stays fresh without heartbeats.
 setInterval(() => {

@@ -506,6 +506,16 @@ export type NetHandlers = {
     mock?: boolean;
     error?: string;
   }) => void;
+  /** Event Mode — lobby buy-in refund after leave (Cashu token). */
+  onBuyInRefund?: (result: {
+    ok: boolean;
+    token?: string;
+    sats?: number;
+    mock?: boolean;
+    error?: string;
+  }) => void;
+  /** Event Mode — pot/fee/claimable patch without a new raceResult. */
+  onEventUpdate?: (event: EventRoomInfo) => void;
   /** A driver crashed — they burn in place instead of resetting the field. */
   onWrecked: (id: string, name: string) => void;
   /** Every racer is on fire — shared grid restart. */
@@ -587,6 +597,17 @@ export class NetClient {
   /** Lobby/race ping loop — keeps a live latency reading even outside races. */
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private finishSent = false;
+  /** Resolves an in-flight leave→buyInRefund wait (lobby paid leave). */
+  private refundWait: {
+    resolve: (result: {
+      ok: boolean;
+      token?: string;
+      sats?: number;
+      mock?: boolean;
+      error?: string;
+    } | null) => void;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
 
   constructor(handlers: NetHandlers) {
     this.handlers = handlers;
@@ -910,6 +931,24 @@ export class NetClient {
           mock: msg.mock,
           error: msg.error,
         });
+      } else if (msg.t === "buyInRefund") {
+        const result = {
+          ok: msg.ok,
+          token: msg.token,
+          sats: msg.sats,
+          mock: msg.mock,
+          error: msg.error,
+        };
+        if (this.refundWait) {
+          clearTimeout(this.refundWait.timer);
+          const wait = this.refundWait;
+          this.refundWait = null;
+          wait.resolve(result);
+        }
+        this.handlers.onBuyInRefund?.(result);
+      } else if (msg.t === "eventUpdate") {
+        if (msg.event) this.event = msg.event;
+        this.handlers.onEventUpdate?.(msg.event);
       } else if (msg.t === "pong") {
         this.latency = Math.max(0, performance.now() - msg.n);
       } else if (msg.t === "error") {
@@ -966,6 +1005,11 @@ export class NetClient {
   disconnect() {
     this.connGen++;
     this.stopPingLoop();
+    if (this.refundWait) {
+      clearTimeout(this.refundWait.timer);
+      this.refundWait.resolve(null);
+      this.refundWait = null;
+    }
     const ws = this.ws;
     this.ws = null;
     this.connected = false;
@@ -1070,6 +1114,41 @@ export class NetClient {
         tipPercent: Math.max(0, Math.min(100, Math.round(tipPercent))),
       }),
     );
+  }
+
+  /**
+   * Ask the server to leave (and refund a paid lobby buy-in). Resolves with the
+   * refund payload when one arrives, or null on timeout / unpaid leave.
+   */
+  leaveRoom(timeoutMs = 4_000): Promise<{
+    ok: boolean;
+    token?: string;
+    sats?: number;
+    mock?: boolean;
+    error?: string;
+  } | null> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.myId) {
+      return Promise.resolve(null);
+    }
+    if (this.refundWait) {
+      clearTimeout(this.refundWait.timer);
+      this.refundWait.resolve(null);
+      this.refundWait = null;
+    }
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        if (this.refundWait?.resolve === resolve) this.refundWait = null;
+        resolve(null);
+      }, Math.max(500, timeoutMs));
+      this.refundWait = { resolve, timer };
+      try {
+        this.ws!.send(JSON.stringify({ t: "leave" }));
+      } catch {
+        clearTimeout(timer);
+        this.refundWait = null;
+        resolve(null);
+      }
+    });
   }
 
   /** Call from render loop; sends at ~30Hz on a wall clock (frame dt accumulators clump on stalls). */
