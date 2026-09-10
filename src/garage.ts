@@ -1,6 +1,6 @@
 /** Player garage — vehicle kind + paint saved locally. */
 
-export type VehicleKind = "car" | "bike" | "truck" | "tank";
+export type VehicleKind = "car" | "bike" | "truck" | "tank" | "bird";
 
 export type GarageLoadout = {
   kind: VehicleKind;
@@ -33,9 +33,14 @@ function clampColor(n: number): number {
 
 export function normalizeKind(raw: unknown): VehicleKind {
   const kind = String(raw ?? "").toLowerCase();
-  // Monster truck + tank are dev-profile garage extras (UI-gated in game.ts).
-  if (kind === "bike" || kind === "truck" || kind === "tank") return kind;
+  // Monster truck / tank / bird are dev-profile garage extras (UI-gated in game.ts).
+  if (kind === "bike" || kind === "truck" || kind === "tank" || kind === "bird") return kind;
   return "car";
+}
+
+/** Dev-only garage rides — never race online; UI-gated to DEV_PUBKEY. */
+export function isDevGarageKind(kind: VehicleKind): boolean {
+  return kind === "truck" || kind === "tank" || kind === "bird";
 }
 
 export function loadGarage(): GarageLoadout {

@@ -33,6 +33,7 @@ const BLOCKED_KEYS = new Set([
   "ArrowLeft",
   "ArrowRight",
   "Space",
+  "KeyC",
   "ShiftLeft",
   "ShiftRight",
   "CapsLock",
@@ -59,8 +60,10 @@ export type InputState = {
   shiftDelta: -1 | 0 | 1;
   /** One-shot fire (dev tank cannon). Consumed once per frame. */
   fire: boolean;
-  /** Space / pad A — sports / on-foot jump when a mode reads it. */
+  /** Space / pad A — sports jump, or bird ascend. */
   jump: boolean;
+  /** KeyC — bird descend (dev free-fly). */
+  descend: boolean;
 };
 
 export class Input {
@@ -93,6 +96,7 @@ export class Input {
     shiftDelta: 0,
     fire: false,
     jump: false,
+    descend: false,
   };
 
   constructor() {
@@ -255,6 +259,7 @@ export class Input {
     s.shiftDelta = shiftDelta;
     s.fire = fire;
     s.jump = this.keys.has("Space");
+    s.descend = this.keys.has("KeyC");
     return s;
   }
 }

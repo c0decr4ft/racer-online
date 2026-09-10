@@ -943,6 +943,61 @@ export function createTank(
   return tank;
 }
 
+/**
+ * Dev free-fly scout — low-poly bird for inspecting tracks without changing them.
+ * Body faces +Z (same convention as cars); wings flap via userData.wings.
+ */
+export function createBird(
+  bodyColor = 0xe4eaf2,
+  _raceNumber = 7,
+  accentColor = 0xff3b2e,
+  _opts?: CreateVehicleOpts,
+): THREE.Group {
+  const bird = new THREE.Group();
+  const body = paintMat(bodyColor, { metal: 0.12, rough: 0.55, emit: 0.08 });
+  const dark = mat(0x1a1f28, { metal: 0.2, rough: 0.7 });
+  const beak = paintMat(accentColor, { metal: 0.25, rough: 0.45, emit: 0.12 });
+  const wingMat = paintMat(bodyColor, { metal: 0.1, rough: 0.6, emit: 0.06 });
+
+  // Torso + chest
+  box(bird, 0.42, 0.36, 0.85, body, 0, 0.55, 0.05);
+  box(bird, 0.36, 0.28, 0.4, body, 0, 0.5, 0.42);
+  // Head
+  box(bird, 0.28, 0.26, 0.32, body, 0, 0.72, 0.72);
+  box(bird, 0.18, 0.1, 0.28, beak, 0, 0.62, 0.95);
+  // Eyes
+  box(bird, 0.06, 0.06, 0.04, dark, -0.1, 0.78, 0.84);
+  box(bird, 0.06, 0.06, 0.04, dark, 0.1, 0.78, 0.84);
+  // Tail
+  box(bird, 0.22, 0.06, 0.45, body, 0, 0.58, -0.55);
+  box(bird, 0.08, 0.04, 0.35, beak, -0.12, 0.62, -0.7);
+  box(bird, 0.08, 0.04, 0.35, beak, 0.12, 0.62, -0.7);
+
+  const leftWing = new THREE.Group();
+  leftWing.name = "wing-left";
+  leftWing.position.set(-0.2, 0.58, 0.1);
+  box(leftWing, 0.95, 0.05, 0.42, wingMat, -0.45, 0, 0);
+  box(leftWing, 0.35, 0.04, 0.28, dark, -0.85, 0.01, -0.05);
+  bird.add(leftWing);
+
+  const rightWing = new THREE.Group();
+  rightWing.name = "wing-right";
+  rightWing.position.set(0.2, 0.58, 0.1);
+  box(rightWing, 0.95, 0.05, 0.42, wingMat, 0.45, 0, 0);
+  box(rightWing, 0.35, 0.04, 0.28, dark, 0.85, 0.01, -0.05);
+  bird.add(rightWing);
+
+  // Legs (tucked)
+  box(bird, 0.05, 0.22, 0.05, dark, -0.1, 0.28, 0.05);
+  box(bird, 0.05, 0.22, 0.05, dark, 0.1, 0.28, 0.05);
+
+  bird.userData.kind = "bird";
+  bird.userData.wings = [leftWing, rightWing];
+  bird.userData.steerCount = 0;
+  paintable(bird, body, beak);
+  return bird;
+}
+
 export function createVehicle(
   kind: VehicleKind,
   bodyColor = 0xd0d7e0,
@@ -953,6 +1008,7 @@ export function createVehicle(
   if (kind === "bike") return createBike(bodyColor, raceNumber, accentColor, opts);
   if (kind === "truck") return createMonsterTruck(bodyColor, raceNumber, accentColor, opts);
   if (kind === "tank") return createTank(bodyColor, raceNumber, accentColor, opts);
+  if (kind === "bird") return createBird(bodyColor, raceNumber, accentColor, opts);
   return createCar(bodyColor, raceNumber, accentColor, opts);
 }
 

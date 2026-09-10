@@ -114,9 +114,14 @@ export class Vehicle {
     shiftDelta: 0,
     fire: false,
     jump: false,
+    descend: false,
   };
 
   update(dt: number, input: InputState) {
+    if (this.mesh.userData.kind === "bird") {
+      this.updateBirdFly(dt, input);
+      return;
+    }
     const s = this.state;
     this.shiftTimer = Math.max(0, this.shiftTimer - dt);
 
@@ -149,6 +154,7 @@ export class Vehicle {
       p.shiftDelta = input.shiftDelta;
       p.fire = input.fire;
       p.jump = input.jump;
+      p.descend = input.descend;
       if (this.animalHitPenalty > 0) {
         this.animalHitPenalty = Math.max(0, this.animalHitPenalty - dt);
         p.throttle = input.throttle * 0.12;
@@ -163,6 +169,50 @@ export class Vehicle {
 
     this.syncMesh(dt);
     this.animateWheels(dt);
+  }
+
+  /**
+   * Dev bird free-fly — WASD move/turn, Space up, C down. No track physics.
+   * Shift holds for a faster scout pass.
+   */
+  private updateBirdFly(dt: number, input: InputState) {
+    const s = this.state;
+    const boost = input.handbrake > 0.5 ? 2.4 : 1;
+    const moveSpeed = 28 * boost;
+    const turnSpeed = 2.1 * boost;
+    const vertSpeed = 18 * boost;
+
+    s.heading += input.steer * turnSpeed * dt;
+    const forward = input.throttle - input.brake;
+    const sin = Math.sin(s.heading);
+    const cos = Math.cos(s.heading);
+    s.position.x += sin * forward * moveSpeed * dt;
+    s.position.z += cos * forward * moveSpeed * dt;
+    // A/D already used for yaw via steer; no strafe — keeps look/move simple.
+    if (input.jump) s.position.y += vertSpeed * dt;
+    if (input.descend) s.position.y -= vertSpeed * dt;
+    s.position.y = Math.max(1.2, Math.min(220, s.position.y));
+
+    s.speed = forward * moveSpeed;
+    s.steerAngle = input.steer * 0.35;
+    s.gear = "N";
+    s.driftSlip = 0;
+    s.groundPitch = 0;
+
+    this.syncMesh(dt);
+    this.animateBirdWings(dt, Math.abs(forward) + (input.jump || input.descend ? 1 : 0));
+  }
+
+  private birdWingPhase = 0;
+
+  private animateBirdWings(dt: number, effort: number) {
+    const wings = this.mesh.userData.wings as THREE.Object3D[] | undefined;
+    if (!wings?.length) return;
+    const rate = 8 + effort * 10;
+    this.birdWingPhase += dt * rate;
+    const flap = Math.sin(this.birdWingPhase) * (0.35 + effort * 0.25);
+    if (wings[0]) wings[0].rotation.z = flap;
+    if (wings[1]) wings[1].rotation.z = -flap;
   }
 
   private leanSmooth = 0;
@@ -348,6 +398,7 @@ export class RivalAI {
     shiftDelta: 0,
     fire: false,
     jump: false,
+    descend: false,
   };
   private readonly _shiftOpts = {
     maxKappa: 0,

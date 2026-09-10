@@ -74,6 +74,7 @@ import { setFeedbackBtnVisible } from "./feedbackCompose";
 import {
   GARAGE_SWATCHES,
   hexColor,
+  isDevGarageKind,
   loadGarage,
   parseHexColor,
   saveGarage,
@@ -223,6 +224,7 @@ export class Game {
     pause: false,
     fire: false,
     jump: false,
+    descend: false,
   };
   private readonly _pathScratch = new THREE.Vector3();
 
@@ -797,6 +799,7 @@ export class Game {
     document.getElementById("garage-kind-bike")!.onclick = () => this.setGarageKind("bike");
     document.getElementById("garage-kind-truck")!.onclick = () => this.setGarageKind("truck");
     document.getElementById("garage-kind-tank")!.onclick = () => this.setGarageKind("tank");
+    document.getElementById("garage-kind-bird")!.onclick = () => this.setGarageKind("bird");
     this.el.garagePrimary.addEventListener("input", () => {
       this.setGarageChannel("primary", parseHexColor(this.el.garagePrimary.value, this.garage.primary));
     });
@@ -999,6 +1002,7 @@ export class Game {
     document.getElementById("garage-kind-bike")?.classList.toggle("is-active", this.garage.kind === "bike");
     document.getElementById("garage-kind-truck")?.classList.toggle("is-active", this.garage.kind === "truck");
     document.getElementById("garage-kind-tank")?.classList.toggle("is-active", this.garage.kind === "tank");
+    document.getElementById("garage-kind-bird")?.classList.toggle("is-active", this.garage.kind === "bird");
     this.el.garagePrimary.value = hexColor(this.garage.primary);
     this.el.garageAccent.value = hexColor(this.garage.accent);
     this.syncGarageSwatches();
@@ -1009,6 +1013,7 @@ export class Game {
         bike: "Bike selected — all AI rivals become bikes",
         truck: "Monster truck selected — AI rivals stay in cars",
         tank: "Tank selected — AI rivals stay in cars",
+        bird: "Bird mode — WASD move · Space up · C down · Shift boost (scout tool)",
       };
       hint.textContent = hints[this.garage.kind];
     }
@@ -2065,6 +2070,11 @@ export class Game {
   /** Animate wildlife + hits. Player and offline AI rivals both take slowdown. */
   private updateWildlife(dt: number) {
     if (!this.wildlife || !this.player) return;
+    // Bird scout ignores wildlife collisions — you're inspecting, not racing.
+    if (this.player.mesh.userData.kind === "bird") {
+      this.wildlife.update(dt, [], undefined, { halfRate: this.perf.wildlifeHalfRate });
+      return;
+    }
     const pack = this._wildlifePack;
     pack.length = 0;
     pack.push(this.player);
@@ -2252,13 +2262,14 @@ export class Game {
   }
 
   /**
-   * Monster truck + tank are dev-profile-only. Hides their garage buttons and
+   * Monster truck / tank / bird are dev-profile-only. Hides their garage buttons and
    * falls back to CAR if a non-dev session somehow has one stored.
    */
   private syncGarageDevKinds(allowed: boolean) {
     document.getElementById("garage-kind-truck")?.classList.toggle("hidden", !allowed);
     document.getElementById("garage-kind-tank")?.classList.toggle("hidden", !allowed);
-    if (!allowed && (this.garage.kind === "truck" || this.garage.kind === "tank")) {
+    document.getElementById("garage-kind-bird")?.classList.toggle("hidden", !allowed);
+    if (!allowed && isDevGarageKind(this.garage.kind)) {
       this.garage.kind = "car";
     }
     if (!this.el.garage.classList.contains("hidden")) this.syncGarageUi();
@@ -3198,9 +3209,9 @@ export class Game {
     this.rivals = CAR_PALETTE.rivals.map((color, i) => {
       const slot = GRID[i + 1] ?? GRID[GRID.length - 1];
       const accent = CAR_PALETTE.rivalAccents[i] ?? 0xf0f4f8;
-      // AI matches the player's class — except dev extras (truck/tank) race
-      // against normal cars.
-      const rivalKind: VehicleKind = kind === "truck" || kind === "tank" ? "car" : kind;
+      // AI matches the player's class — except dev extras (truck/tank/bird) race
+      // against normal cars (bird runs solo anyway).
+      const rivalKind: VehicleKind = isDevGarageKind(kind) ? "car" : kind;
       // No SpotLight beams on AI — keeps MeshStandard fragment cost low
       const mesh = createVehicle(rivalKind, color, 11 + i * 3, accent);
       this.scene.add(mesh);
@@ -3225,6 +3236,11 @@ export class Game {
   } = {}) {
     this.practice = !!opts.practice;
     this.solo = !!opts.solo && !this.online;
+    // Bird is a scout tool — empty track, no finish, no wall explode.
+    if (!this.online && this.garage.kind === "bird") {
+      this.practice = true;
+      this.solo = true;
+    }
     const nextId = opts.trackId ?? this.trackId ?? DEFAULT_TRACK_ID;
     // Battle Event Mode only: thicker asphalt for item-box racing. Race / casual stay 1×.
     const battleWide =
@@ -3283,8 +3299,8 @@ export class Game {
     this.weather.setParticlesEnabled(true);
     const raceWeather = this.online
       ? normalizeWeatherMode(opts.weather ?? this.net.weather)
-      : // Dev extras (monster truck / tank) always race in daylight
-        this.garage.kind === "truck" || this.garage.kind === "tank" || isDriftTrack(this.trackId)
+      : // Dev extras always scout/race in daylight
+        isDevGarageKind(this.garage.kind) || isDriftTrack(this.trackId)
         ? "dry"
         : pickWeather();
     if (this.online) this.net.weather = raceWeather;
@@ -3302,6 +3318,10 @@ export class Game {
           : GRID[0]!;
       const { pos: spawn, heading } = this.spawnPose(gridSlot.t, gridSlot.offset);
       this.player.reset(spawn, heading);
+      if (this.player.mesh.userData.kind === "bird") {
+        this.player.state.position.y = 14;
+        this.player.syncCollision();
+      }
       this.resetSticky(this.player);
       this.lastT = this.projectSticky(this.player, this.player.state.position).t;
     }
@@ -3604,6 +3624,10 @@ export class Game {
           }
           if (input.reset && !this.onlineWrecked) {
             this.player.reset(this.track.startPosition.clone(), this.track.startHeading);
+            if (this.player.mesh.userData.kind === "bird") {
+              this.player.state.position.y = 14;
+              this.player.syncCollision();
+            }
             this.resetSticky(this.player);
             this.lastT = this.projectSticky(this.player, this.player.state.position).t;
             this.gates.reset();
@@ -3641,11 +3665,15 @@ export class Game {
             this.audio.stopBikeEngine();
           }
           if (input.fire) this.tryFireTankShell();
+          const isBird = this.player.mesh.userData.kind === "bird";
           if (this.onlineWrecked) {
             this.player.syncCollision();
-          } else {
+          } else if (!isBird) {
             const onWall = this.keepOnTrack(this.player);
             this.notePlayerWallHit(onWall, dt);
+          } else {
+            // Free-fly scout — no walls, sticky t still updates for HUD/minimap.
+            this.projectSticky(this.player, this.player.state.position);
           }
 
           if (!this.online && !this.solo) {
@@ -5715,8 +5743,11 @@ export class Game {
   private updateCameraOnPlayer(dt: number) {
     const s = this.player.state;
     const gy = s.position.y;
-    const back = 12 + Math.min(Math.abs(s.speed) * 0.07, 6);
-    const height = 4.4 + Math.min(Math.abs(s.speed) * 0.028, 1.8) + gy;
+    const bird = this.player.mesh.userData.kind === "bird";
+    const back = bird ? 16 : 12 + Math.min(Math.abs(s.speed) * 0.07, 6);
+    const height = bird
+      ? 6.5 + gy
+      : 4.4 + Math.min(Math.abs(s.speed) * 0.028, 1.8) + gy;
     this._camIdeal.set(
       s.position.x - Math.sin(s.heading) * back,
       height,
@@ -5727,9 +5758,9 @@ export class Game {
     this.camera.position.copy(this.camPos);
 
     this._camLookTarget.set(
-      s.position.x + Math.sin(s.heading) * 10,
-      1.4 + gy,
-      s.position.z + Math.cos(s.heading) * 10,
+      s.position.x + Math.sin(s.heading) * (bird ? 14 : 10),
+      (bird ? 0.4 : 1.4) + gy,
+      s.position.z + Math.cos(s.heading) * (bird ? 14 : 10),
     );
     this.camLook.lerp(this._camLookTarget, dt <= 0 ? 1 : 1 - Math.exp(-8 * dt));
     this.camera.lookAt(this.camLook);
