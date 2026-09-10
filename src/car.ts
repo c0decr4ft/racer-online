@@ -944,6 +944,137 @@ export function createTank(
 }
 
 /**
+ * Dev garage extra — open-wheel F1 silhouette (front wing, halo, sidepods, rear wing).
+ * Same physics as the GT car; wheels sit outboard so they read as open-wheel.
+ */
+export function createF1(
+  bodyColor = 0xd0d7e0,
+  raceNumber = 7,
+  accentColor = 0xff3b2e,
+  opts?: CreateVehicleOpts,
+): THREE.Group {
+  const f1 = new THREE.Group();
+  const body = paintMat(bodyColor, { metal: 0.32, rough: 0.34, emit: 0.12 });
+  const dark = mat(0x12161c, { metal: 0.55, rough: 0.42 });
+  const carbon = mat(0x1c222b, { metal: 0.42, rough: 0.52 });
+  const glass = mat(0x0a1520, { metal: 0.2, rough: 0.05 });
+  const head = mat(0xf7fafc, { metal: 0.15, rough: 0.25, emissive: 0xf7fafc, emit: 0.9 });
+  const tail = mat(0xff2418, { metal: 0.25, rough: 0.35, emissive: 0xff2418, emit: 0.7 });
+  const chrome = mat(0xb0b8c2, { metal: 1, rough: 0.14 });
+  const accent = paintMat(accentColor, { metal: 0.32, rough: 0.4, emit: 0.16 });
+
+  // Floor + bargeboards — skinny chassis between the open wheels
+  box(f1, 1.15, 0.1, 4.35, carbon, 0, 0.18, 0.05);
+  box(f1, 0.95, 0.22, 3.6, body, 0, 0.36, 0.05);
+  box(f1, 0.08, 0.28, 2.4, dark, -0.58, 0.38, 0.2);
+  box(f1, 0.08, 0.28, 2.4, dark, 0.58, 0.38, 0.2);
+
+  // Nose cone + tip
+  box(f1, 0.42, 0.2, 1.15, body, 0, 0.42, 1.95).name = "panel-hood";
+  box(f1, 0.28, 0.14, 0.55, body, 0, 0.38, 2.55);
+  box(f1, 0.16, 0.1, 0.28, dark, 0, 0.34, 2.85);
+  box(f1, 0.1, 0.05, 0.05, accent, 0, 0.34, 2.98);
+
+  // Front wing — mainplane + flaps + endplates
+  box(f1, 1.95, 0.05, 0.42, carbon, 0, 0.22, 2.72);
+  box(f1, 1.7, 0.04, 0.22, dark, 0, 0.28, 2.58);
+  box(f1, 1.55, 0.035, 0.14, accent, 0, 0.32, 2.48);
+  for (const s of [-1, 1] as const) {
+    box(f1, 0.06, 0.42, 0.55, carbon, s * 0.98, 0.38, 2.7);
+    box(f1, 0.04, 0.18, 0.4, accent, s * 1.02, 0.48, 2.7);
+    // Wing pylons to nose
+    box(f1, 0.05, 0.22, 0.08, dark, s * 0.18, 0.32, 2.45);
+  }
+
+  // Sidepods + cooling inlets
+  for (const s of [-1, 1] as const) {
+    box(f1, 0.55, 0.38, 1.85, body, s * 0.72, 0.48, -0.15);
+    box(f1, 0.42, 0.28, 0.55, dark, s * 0.72, 0.52, 0.85);
+    box(f1, 0.12, 0.22, 0.08, chrome, s * 0.95, 0.5, 0.95);
+    box(f1, 0.08, 0.12, 1.4, accent, s * 0.98, 0.62, -0.2);
+  }
+
+  // Halo + cockpit (open top)
+  box(f1, 0.72, 0.28, 0.95, body, 0, 0.58, 0.35);
+  box(f1, 0.62, 0.12, 0.7, dark, 0, 0.72, 0.3);
+  box(f1, 0.55, 0.04, 0.5, glass, 0, 0.78, 0.55, 0.35).name = "glass-front";
+  // Halo ring
+  box(f1, 0.08, 0.42, 0.08, chrome, -0.28, 0.95, 0.55);
+  box(f1, 0.08, 0.42, 0.08, chrome, 0.28, 0.95, 0.55);
+  box(f1, 0.64, 0.07, 0.08, chrome, 0, 1.14, 0.55);
+  box(f1, 0.08, 0.08, 0.55, chrome, 0, 1.14, 0.22);
+  // Mirrors
+  box(f1, 0.14, 0.05, 0.08, dark, -0.55, 0.88, 0.7);
+  box(f1, 0.14, 0.05, 0.08, dark, 0.55, 0.88, 0.7);
+
+  // Engine cover + airbox
+  box(f1, 0.55, 0.32, 1.15, body, 0, 0.72, -0.55);
+  box(f1, 0.28, 0.42, 0.55, body, 0, 0.95, -0.35);
+  box(f1, 0.22, 0.12, 0.35, dark, 0, 1.18, -0.25);
+  box(f1, 0.1, 0.22, 2.2, accent, 0, 0.55, 0.1);
+
+  // Rear deck + diffuser
+  box(f1, 0.85, 0.2, 0.85, body, 0, 0.42, -1.55).name = "panel-tail";
+  box(f1, 1.05, 0.08, 0.65, carbon, 0, 0.2, -1.85);
+  for (let i = -2; i <= 2; i++) {
+    box(f1, 0.03, 0.16, 0.45, dark, i * 0.18, 0.22, -1.95);
+  }
+
+  // Rear wing — high mainplane + DRS flap + endplates
+  for (const s of [-1, 1] as const) {
+    box(f1, 0.05, 0.55, 0.12, dark, s * 0.22, 0.7, -1.95);
+    box(f1, 0.06, 0.72, 0.55, carbon, s * 0.85, 1.05, -2.05);
+    box(f1, 0.04, 0.2, 0.4, accent, s * 0.9, 1.25, -2.05);
+  }
+  box(f1, 1.75, 0.05, 0.42, carbon, 0, 1.28, -2.05);
+  box(f1, 1.55, 0.04, 0.28, dark, 0, 1.36, -1.95);
+  box(f1, 1.4, 0.035, 0.12, accent, 0, 1.42, -1.88);
+
+  // Tail lights on wing pylons + tiny nose lamps
+  box(f1, 0.12, 0.08, 0.04, tail, -0.35, 0.55, -2.0);
+  box(f1, 0.12, 0.08, 0.04, tail, 0.35, 0.55, -2.0);
+  box(f1, 0.1, 0.06, 0.04, head, -0.22, 0.4, 2.7);
+  box(f1, 0.1, 0.06, 0.04, head, 0.22, 0.4, 2.7);
+
+  // Number plate on sidepod
+  const numMat = mat(0xffffff, { metal: 0.1, rough: 0.55 });
+  box(f1, 0.02, 0.28, 0.42, numMat, -0.98, 0.55, 0.15);
+  const n = Math.max(1, Math.min(99, raceNumber));
+  const tens = Math.floor(n / 10);
+  const ones = n % 10;
+  if (tens > 0) box(f1, 0.03, 0.18, 0.06, dark, -0.99, 0.55, 0.05);
+  for (let i = 0; i < Math.min(ones, 5); i++) {
+    box(f1, 0.03, 0.03, 0.05, dark, -0.99, 0.48 + i * 0.04, 0.22);
+  }
+
+  // Open wheels — track wider than the body so tires sit fully clear
+  const r = 0.36;
+  attachWheels(
+    f1,
+    [
+      [-1.15, r, 1.55],
+      [1.15, r, 1.55],
+      [-1.2, r, -1.45],
+      [1.2, r, -1.45],
+    ],
+    r,
+    0.38,
+    10,
+  );
+  paintable(f1, body, accent);
+  f1.userData.kind = "f1";
+  f1.userData.headLightMaterials = [head];
+  f1.userData.tailLightMaterials = [tail];
+  if (opts?.headlights) {
+    attachHeadBeams(f1, [
+      { x: -0.22, y: 0.4, z: 2.7 },
+      { x: 0.22, y: 0.4, z: 2.7 },
+    ]);
+  }
+  return f1;
+}
+
+/**
  * Dev free-fly scout — low-poly bird for inspecting tracks without changing them.
  * Body faces +Z (same convention as cars); wings flap via userData.wings.
  */
@@ -1008,6 +1139,7 @@ export function createVehicle(
   if (kind === "bike") return createBike(bodyColor, raceNumber, accentColor, opts);
   if (kind === "truck") return createMonsterTruck(bodyColor, raceNumber, accentColor, opts);
   if (kind === "tank") return createTank(bodyColor, raceNumber, accentColor, opts);
+  if (kind === "f1") return createF1(bodyColor, raceNumber, accentColor, opts);
   if (kind === "bird") return createBird(bodyColor, raceNumber, accentColor, opts);
   return createCar(bodyColor, raceNumber, accentColor, opts);
 }

@@ -800,6 +800,7 @@ export class Game {
     document.getElementById("garage-kind-bike")!.onclick = () => this.setGarageKind("bike");
     document.getElementById("garage-kind-truck")!.onclick = () => this.setGarageKind("truck");
     document.getElementById("garage-kind-tank")!.onclick = () => this.setGarageKind("tank");
+    document.getElementById("garage-kind-f1")!.onclick = () => this.setGarageKind("f1");
     document.getElementById("garage-kind-bird")!.onclick = () => this.setGarageKind("bird");
     this.el.garagePrimary.addEventListener("input", () => {
       this.setGarageChannel("primary", parseHexColor(this.el.garagePrimary.value, this.garage.primary));
@@ -1003,6 +1004,7 @@ export class Game {
     document.getElementById("garage-kind-bike")?.classList.toggle("is-active", this.garage.kind === "bike");
     document.getElementById("garage-kind-truck")?.classList.toggle("is-active", this.garage.kind === "truck");
     document.getElementById("garage-kind-tank")?.classList.toggle("is-active", this.garage.kind === "tank");
+    document.getElementById("garage-kind-f1")?.classList.toggle("is-active", this.garage.kind === "f1");
     document.getElementById("garage-kind-bird")?.classList.toggle("is-active", this.garage.kind === "bird");
     this.el.garagePrimary.value = hexColor(this.garage.primary);
     this.el.garageAccent.value = hexColor(this.garage.accent);
@@ -1014,6 +1016,7 @@ export class Game {
         bike: "Bike selected — same speed as cars, AI rivals become bikes",
         truck: "Monster truck selected — AI rivals stay in cars",
         tank: "Tank selected — AI rivals stay in cars",
+        f1: "F1 selected — open-wheel, AI rivals stay in cars",
         bird: "Bird mode — WASD · Space up · C down · V look down · Shift boost",
       };
       hint.textContent = hints[this.garage.kind];
@@ -2263,12 +2266,13 @@ export class Game {
   }
 
   /**
-   * Monster truck / tank / bird are dev-profile-only. Hides their garage buttons and
+   * Monster truck / tank / f1 / bird are dev-profile-only. Hides their garage buttons and
    * falls back to CAR if a non-dev session somehow has one stored.
    */
   private syncGarageDevKinds(allowed: boolean) {
     document.getElementById("garage-kind-truck")?.classList.toggle("hidden", !allowed);
     document.getElementById("garage-kind-tank")?.classList.toggle("hidden", !allowed);
+    document.getElementById("garage-kind-f1")?.classList.toggle("hidden", !allowed);
     document.getElementById("garage-kind-bird")?.classList.toggle("hidden", !allowed);
     if (!allowed && isDevGarageKind(this.garage.kind)) {
       this.garage.kind = "car";
@@ -4067,6 +4071,7 @@ export class Game {
     if (kind === "bike") return { x: 0, y: 0.72, z: 0.04 };
     if (kind === "truck") return { x: 0, y: 2.12, z: 1.18 };
     if (kind === "tank") return { x: 0, y: 1.28, z: -1.15 };
+    if (kind === "f1") return { x: 0, y: 0.95, z: -0.35 };
     return { x: 0, y: 0.9, z: 1.12 };
   }
 

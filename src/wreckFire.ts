@@ -21,6 +21,8 @@ function originForKind(kind: string): FireOrigin {
       return { y: 2.25, spread: 1.55, z: 0.2 };
     case "tank":
       return { y: 1.45, spread: 1.2, z: -0.2 };
+    case "f1":
+      return { y: 0.85, spread: 0.95, z: -0.2 };
     default:
       // Sit on the hood / cabin — not buried in the chassis (old *0.35 offset).
       return { y: 1.05, spread: 1.25, z: 0.35 };
