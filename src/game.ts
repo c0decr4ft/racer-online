@@ -89,6 +89,12 @@ import {
   type WeatherMode,
 } from "./weather";
 import { WildlifeHerd } from "./wildlife";
+import {
+  probeBootPerfTier,
+  settingsForTier,
+  type PerfSettings,
+  type PerfTier,
+} from "./perfQuality";
 
 function formatTime(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "--:--.---";
@@ -200,6 +206,11 @@ export class Game {
   private highFpsSince = 0;
   /** Sustained slow frames → skip minimap / rain particles (never skip shadow maps). */
   private perfThrottle = false;
+  /** Boot-detected GPU floor — FPS can only push quality down from here. */
+  private bootTier: PerfTier = "high";
+  private qualityTier: PerfTier = "high";
+  private perf: PerfSettings = settingsForTier("high");
+  private sunLight: THREE.DirectionalLight | null = null;
   /** Reused coasting input when finished/wrecked online — avoid per-frame object alloc. */
   private readonly _coastInput: InputState = {
     throttle: 0,
@@ -495,10 +506,14 @@ export class Game {
   private viewport = viewportSize();
 
   constructor(canvas: HTMLCanvasElement) {
+    this.bootTier = probeBootPerfTier();
+    this.qualityTier = this.bootTier;
+    this.perf = settingsForTier(this.qualityTier);
+
     // Cap DPR for stable FPS on retina displays
     this.renderer = new THREE.WebGLRenderer({
       canvas,
-      antialias: true,
+      antialias: this.perf.antialias,
       powerPreference: "high-performance",
     });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1));
@@ -507,7 +522,9 @@ export class Game {
     this.renderer.setClearColor(0x87a0bc, 1);
     this.renderer.shadowMap.enabled = true;
     // Soft PCF — blurred contact shadows instead of blocky texel cubes.
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = this.perf.softShadows
+      ? THREE.PCFSoftShadowMap
+      : THREE.BasicShadowMap;
     // Rebuild once per frame before the main pass so the rearview inset does
     // not re-render the shadow map.
     this.renderer.shadowMap.autoUpdate = false;
@@ -515,12 +532,12 @@ export class Game {
     this.renderer.toneMappingExposure = 1.2;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
 
-    this.camera = new THREE.PerspectiveCamera(55, boot.w / boot.h, 0.1, 700);
-    this.rearCamera = new THREE.PerspectiveCamera(70, 1.6, 0.2, 400);
+    this.camera = new THREE.PerspectiveCamera(55, boot.w / boot.h, 0.1, this.perf.cameraFar);
+    this.rearCamera = new THREE.PerspectiveCamera(70, 1.6, 0.2, Math.min(400, this.perf.cameraFar));
     // SpotLights share HEADLIGHT_LAYER; cameras must include it to collect them.
     enableHeadlightCameras(this.camera, this.rearCamera);
     this.scene.background = new THREE.Color(0x87a0bc);
-    this.scene.fog = new THREE.Fog(0x87a0bc, 160, 520);
+    this.scene.fog = new THREE.Fog(0x87a0bc, 160, Math.min(520, this.perf.cameraFar + 40));
 
     // Resident flash light — never add/remove (shader recompile freezes on weak GPUs).
     this.explodeFlashLight = new THREE.PointLight(0xff7a3a, 0, 28);
@@ -2058,11 +2075,16 @@ export class Game {
         pack.push(r.vehicle);
       }
     }
-    this.wildlife.update(dt, pack, (info) => {
-      this.audio.playBoom();
-      // Banner for the local player's hits only.
-      if (info.target === this.player) this.showAnimalHit(info.name);
-    });
+    this.wildlife.update(
+      dt,
+      pack,
+      (info) => {
+        this.audio.playBoom();
+        // Banner for the local player's hits only.
+        if (info.target === this.player) this.showAnimalHit(info.name);
+      },
+      { halfRate: this.perf.wildlifeHalfRate },
+    );
   }
 
   private showAnimalHit(name: string) {
@@ -2974,19 +2996,22 @@ export class Game {
     sun.position.set(40, 80, 20);
     sun.castShadow = true;
     // Higher res + soft radius → smudged oval shadow, not little darkness cubes.
-    sun.shadow.mapSize.set(2048, 2048);
-    sun.shadow.radius = 4.5;
+    // Size/filter follow internal quality tier (weak GPUs start lower).
+    sun.shadow.mapSize.set(this.perf.shadowMapSize, this.perf.shadowMapSize);
+    sun.shadow.radius = this.perf.softShadows ? 4.5 : 1;
     sun.shadow.bias = -0.00015;
     sun.shadow.normalBias = 0.035;
     // Ortho frustum follows the player in world space (weather.placeSun).
     // Slightly roomy so fast motion stays covered without aggressive recenters.
+    const fr = this.perf.shadowFrustum;
     sun.shadow.camera.near = 1;
     sun.shadow.camera.far = 220;
-    sun.shadow.camera.left = -70;
-    sun.shadow.camera.right = 70;
-    sun.shadow.camera.top = 70;
-    sun.shadow.camera.bottom = -70;
+    sun.shadow.camera.left = -fr;
+    sun.shadow.camera.right = fr;
+    sun.shadow.camera.top = fr;
+    sun.shadow.camera.bottom = -fr;
     sun.shadow.camera.updateProjectionMatrix();
+    this.sunLight = sun;
     this.scene.add(hemi);
     this.scene.add(ambient);
     this.scene.add(sun);
@@ -2994,6 +3019,54 @@ export class Game {
     this.weather = new WeatherController(this.renderer, this.scene, { hemi, ambient, sun });
     this.weather.setTrackRoot(this.track.group);
     this.weather.setMode("dry");
+    this.applyPerfSettings(this.qualityTier, { force: true });
+  }
+
+  /**
+   * Apply internal GPU dials — shadow map size/filter, night light budget, draw distance.
+   * Does not change gameplay or palette; only work the GPU does per frame.
+   */
+  private applyPerfSettings(tier: PerfTier, opts?: { force?: boolean }) {
+    if (!opts?.force && tier === this.qualityTier) return;
+    this.qualityTier = tier;
+    this.perf = settingsForTier(tier);
+    this.perfThrottle = tier !== "high";
+
+    this.renderer.shadowMap.type = this.perf.softShadows
+      ? THREE.PCFSoftShadowMap
+      : THREE.BasicShadowMap;
+
+    const sun = this.sunLight;
+    if (sun) {
+      const size = this.perf.shadowMapSize;
+      if (sun.shadow.mapSize.x !== size || sun.shadow.mapSize.y !== size) {
+        sun.shadow.map?.dispose();
+        // Force rebuild at the new resolution on next shadow pass.
+        (sun.shadow as { map: THREE.WebGLRenderTarget | null }).map = null;
+        sun.shadow.mapSize.set(size, size);
+      }
+      sun.shadow.radius = this.perf.softShadows ? 4.5 : 1;
+      const fr = this.perf.shadowFrustum;
+      sun.shadow.camera.left = -fr;
+      sun.shadow.camera.right = fr;
+      sun.shadow.camera.top = fr;
+      sun.shadow.camera.bottom = -fr;
+      sun.shadow.camera.updateProjectionMatrix();
+    }
+
+    this.camera.far = this.perf.cameraFar;
+    this.camera.updateProjectionMatrix();
+    this.rearCamera.far = Math.min(400, this.perf.cameraFar);
+    this.rearCamera.updateProjectionMatrix();
+
+    this.weather?.setLightBudget({
+      nightLampRange: this.perf.nightLampRange,
+      maxNightLamps: this.perf.maxNightLamps,
+      headlightBeams: this.perf.headlightBeams,
+    });
+
+    if (!this.perf.engineSmoke) this.clearEngineSmoke();
+    this.shadowNeedsWarmup = true;
   }
 
   private spawnPose(t: number, offset: number) {
@@ -3407,36 +3480,40 @@ export class Game {
     return performance.now() - this.pauseTotal - extra;
   }
 
-  /** FPS scaler: >21ms EMA for 1.5s drops minimap/rain; <16ms for 4s restores. Shadows stay every frame. */
+  /** FPS scaler: sustained hitch → drop a quality tier; sustained smooth → climb toward boot floor. */
   private updatePerfThrottle(now: number) {
     if (!this.running || this.paused || this.finished) {
-      if (this.perfThrottle) {
-        this.perfThrottle = false;
-        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-        this.shadowNeedsWarmup = true;
-      }
       this.lowFpsSince = 0;
       this.highFpsSince = 0;
+      // Leave quality where it is — menu already uses a lighter path.
       return;
     }
-    if (!this.perfThrottle) {
-      if (this.fpsEmaMs > 21) {
-        if (!this.lowFpsSince) this.lowFpsSince = now;
-        if (now - this.lowFpsSince > 1500) {
-          this.perfThrottle = true;
-          // Soft PCF is expensive on old integrated GPUs — basic maps keep racing playable.
-          this.renderer.shadowMap.type = THREE.BasicShadowMap;
-          this.shadowNeedsWarmup = true;
-        }
-      } else {
-        this.lowFpsSince = 0;
+
+    // Drop quickly when frames are bad (old Linux iGPUs often start already mid/low).
+    if (this.fpsEmaMs > 24) {
+      this.highFpsSince = 0;
+      if (!this.lowFpsSince) this.lowFpsSince = now;
+      if (now - this.lowFpsSince > 900) {
+        this.lowFpsSince = now;
+        if (this.qualityTier === "high") this.applyPerfSettings("mid");
+        else if (this.qualityTier === "mid") this.applyPerfSettings("low");
       }
-    } else if (this.fpsEmaMs < 16) {
+      return;
+    }
+    this.lowFpsSince = 0;
+
+    // Climb back only toward the boot-detected floor (never above what the GPU claimed).
+    if (this.fpsEmaMs < 17 && this.qualityTier !== this.bootTier) {
       if (!this.highFpsSince) this.highFpsSince = now;
-      if (now - this.highFpsSince > 4000) {
-        this.perfThrottle = false;
-        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-        this.shadowNeedsWarmup = true;
+      if (now - this.highFpsSince > 5000) {
+        this.highFpsSince = now;
+        let next: PerfTier = this.qualityTier;
+        if (this.qualityTier === "low") {
+          next = this.bootTier === "low" ? "low" : "mid";
+        } else if (this.qualityTier === "mid") {
+          next = this.bootTier;
+        }
+        if (next !== this.qualityTier) this.applyPerfSettings(next);
       }
     } else {
       this.highFpsSince = 0;
@@ -4054,6 +4131,10 @@ export class Game {
   }
 
   private tickEngineSmoke(dt: number) {
+    if (!this.perf.engineSmoke) {
+      if (this.engineSmoke) this.engineSmoke.visible = false;
+      return;
+    }
     const smoking = this.wallHits === ENGINE_SMOKE_HITS && !this.practice && !this.exploding && !this.onlineWrecked;
     if (!smoking) {
       if (this.engineSmoke) this.engineSmoke.visible = false;

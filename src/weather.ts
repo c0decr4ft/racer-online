@@ -148,7 +148,9 @@ export class WeatherController {
   private static readonly RAIN_COUNT = 320;
   private static readonly RAIN_SPREAD = 48;
   /** Only street PointLights near the camera contribute (emissive bulbs stay on). */
-  private static readonly NIGHT_LAMP_RANGE_SQ = 85 * 85;
+  private nightLampRangeSq = 85 * 85;
+  private maxNightLamps = 18;
+  private headlightBeams = true;
   private readonly _tintScratch = new THREE.Color();
   private readonly _tintMix = new THREE.Color();
   /** Continuous follow aim (lerped); quantized only when writing the light. */
@@ -214,6 +216,25 @@ export class WeatherController {
     if (this.mode === "rain") this.ensureRain(true);
   }
 
+  /** Internal quality dials — range/cap only; emissive poles stay lit. */
+  setLightBudget(opts: {
+    nightLampRange?: number;
+    maxNightLamps?: number;
+    headlightBeams?: boolean;
+  }) {
+    if (opts.nightLampRange != null) {
+      const r = Math.max(20, opts.nightLampRange);
+      this.nightLampRangeSq = r * r;
+    }
+    if (opts.maxNightLamps != null) {
+      this.maxNightLamps = Math.max(1, Math.floor(opts.maxNightLamps));
+    }
+    if (opts.headlightBeams != null) {
+      this.headlightBeams = opts.headlightBeams;
+      this.lastHeadlightsOn = null; // force re-apply with new beam policy
+    }
+  }
+
   /**
    * Rain particles + night headlights.
    * Player gets SpotLight beams; `lampMeshes` (AI/remotes) get emissive lamps only.
@@ -244,7 +265,7 @@ export class WeatherController {
     if (playerMesh) {
       const meshChanged = this.lastHeadlightMesh !== playerMesh;
       if (meshChanged || this.lastHeadlightsOn !== lightsOn) {
-        setVehicleHeadlights(playerMesh, lightsOn);
+        setVehicleHeadlights(playerMesh, lightsOn, { beams: this.headlightBeams });
         this.lastHeadlightsOn = lightsOn;
         this.lastHeadlightMesh = playerMesh;
       }
@@ -330,25 +351,39 @@ export class WeatherController {
 
   /** Enable only nearby night PointLights so NUM_POINT_LIGHTS stays small in-shader. */
   private cullNightLamps(on: boolean, playerPos: THREE.Vector3) {
-    const rangeSq = WeatherController.NIGHT_LAMP_RANGE_SQ;
+    const rangeSq = this.nightLampRangeSq;
     const px = playerPos.x;
     const pz = playerPos.z;
-    for (const lamp of this.nightLamps) {
-      if (!on) {
+    if (!on) {
+      for (const lamp of this.nightLamps) {
         if (lamp.visible || lamp.intensity !== 0) {
           lamp.intensity = 0;
           lamp.visible = false;
         }
-        continue;
       }
+      return;
+    }
+
+    // Rank by distance², turn on the nearest N only — keeps shader light count bounded.
+    const scored: { lamp: THREE.PointLight; d2: number }[] = [];
+    for (const lamp of this.nightLamps) {
       const dx = lamp.position.x - px;
       const dz = lamp.position.z - pz;
-      const near = dx * dx + dz * dz <= rangeSq;
-      const intensity =
-        typeof lamp.userData.nightIntensity === "number"
-          ? (lamp.userData.nightIntensity as number)
-          : 1.6;
-      if (near) {
+      const d2 = dx * dx + dz * dz;
+      if (d2 <= rangeSq) scored.push({ lamp, d2 });
+      else if (lamp.visible || lamp.intensity !== 0) {
+        lamp.intensity = 0;
+        lamp.visible = false;
+      }
+    }
+    scored.sort((a, b) => a.d2 - b.d2);
+    const keep = new Set(scored.slice(0, this.maxNightLamps).map((s) => s.lamp));
+    for (const { lamp } of scored) {
+      if (keep.has(lamp)) {
+        const intensity =
+          typeof lamp.userData.nightIntensity === "number"
+            ? (lamp.userData.nightIntensity as number)
+            : 1.6;
         if (!lamp.visible || lamp.intensity !== intensity) {
           lamp.intensity = intensity;
           lamp.visible = true;

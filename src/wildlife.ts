@@ -819,6 +819,7 @@ export class WildlifeHerd {
    * recompiles Three.js shaders and freezes old laptops for hundreds of ms.
    */
   private readonly burstLight: THREE.PointLight;
+  private _meshFrame = 0;
 
   private constructor(path: THREE.CatmullRomCurve3, spec: HerdSpec) {
     this.spec = spec;
@@ -881,12 +882,16 @@ export class WildlifeHerd {
     dt: number,
     vehicles: AnimalHitTarget[],
     onHit?: (info: AnimalHitInfo) => void,
+    opts?: { halfRate?: boolean },
   ) {
     this.updateBursts(dt);
     if (this.activeCrossingCount() < MAX_CROSSINGS) {
       this.crossCooldown -= dt;
       if (this.crossCooldown <= 0) this.tryStartCrossing();
     }
+
+    // Even frames still run sim + hits; odd frames skip mesh posing under load.
+    const skipMesh = !!opts?.halfRate && ((this._meshFrame++ & 1) === 1);
 
     for (let i = 0; i < this.animals.length; i++) {
       const animal = this.animals[i]!;
@@ -896,7 +901,7 @@ export class WildlifeHerd {
         continue;
       }
       this.stepAnimal(animal, dt);
-      this.syncMesh(animal, dt);
+      if (!skipMesh) this.syncMesh(animal, dt);
 
       if (
         animal.mode === "approach" ||
