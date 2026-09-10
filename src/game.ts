@@ -3209,8 +3209,7 @@ export class Game {
     this.rivals = CAR_PALETTE.rivals.map((color, i) => {
       const slot = GRID[i + 1] ?? GRID[GRID.length - 1];
       const accent = CAR_PALETTE.rivalAccents[i] ?? 0xf0f4f8;
-      // AI matches the player's class — except dev extras (truck/tank/bird) race
-      // against normal cars (bird runs solo anyway).
+      // AI matches the player's class — except dev extras (truck/tank/bird) use car rivals.
       const rivalKind: VehicleKind = isDevGarageKind(kind) ? "car" : kind;
       // No SpotLight beams on AI — keeps MeshStandard fragment cost low
       const mesh = createVehicle(rivalKind, color, 11 + i * 3, accent);
@@ -3236,10 +3235,10 @@ export class Game {
   } = {}) {
     this.practice = !!opts.practice;
     this.solo = !!opts.solo && !this.online;
-    // Bird is a scout tool — empty track, no finish, no wall explode.
+    // Bird is a scout tool — practice (no finish/walls explode), keep AI cars visible.
     if (!this.online && this.garage.kind === "bird") {
       this.practice = true;
-      this.solo = true;
+      this.solo = false;
     }
     const nextId = opts.trackId ?? this.trackId ?? DEFAULT_TRACK_ID;
     // Battle Event Mode only: thicker asphalt for item-box racing. Race / casual stay 1×.
@@ -3359,7 +3358,13 @@ export class Game {
     this.audio.stopRaceAudio();
     this.audio.unmute();
     this.syncMuteBtn();
-    this.beginCountdown();
+    if (this.garage.kind === "bird" && !this.online) {
+      // Scout tool — skip 3-2-1, start flying immediately with AI already rolling.
+      this.clearCountdown();
+      this.releaseGrid();
+    } else {
+      this.beginCountdown();
+    }
   }
 
   private beginCountdown() {
@@ -3672,7 +3677,8 @@ export class Game {
             const onWall = this.keepOnTrack(this.player);
             this.notePlayerWallHit(onWall, dt);
           } else {
-            // Free-fly scout — no walls, sticky t still updates for HUD/minimap.
+            // Free-fly scout — no track walls; clamp at map ground edge.
+            this.clampBirdToWorld();
             this.projectSticky(this.player, this.player.state.position);
           }
 
@@ -4666,9 +4672,46 @@ export class Game {
   }
 
   private updateWrongWay(align: number, speed: number) {
+    // Bird scout never shows WRONG WAY — you're free-flying, not racing the line.
+    if (this.player?.mesh.userData.kind === "bird") {
+      this.el.wrongWay.classList.add("hidden");
+      return;
+    }
     // Wrong way when moving meaningfully against race direction
     const wrong = Math.abs(speed) > 4 && align < -0.25;
     this.el.wrongWay.classList.toggle("hidden", !wrong);
+  }
+
+  /** Invisible wall at the ground AABB — stops the bird before empty sky. */
+  private clampBirdToWorld() {
+    const b = this.track.worldBounds;
+    if (!b || !this.player) return;
+    const p = this.player.state.position;
+    // Slight inset so the camera doesn't hang over the void.
+    const inset = 2;
+    const minX = b.minX + inset;
+    const maxX = b.maxX - inset;
+    const minZ = b.minZ + inset;
+    const maxZ = b.maxZ - inset;
+    let hit = false;
+    if (p.x < minX) {
+      p.x = minX;
+      hit = true;
+    } else if (p.x > maxX) {
+      p.x = maxX;
+      hit = true;
+    }
+    if (p.z < minZ) {
+      p.z = minZ;
+      hit = true;
+    } else if (p.z > maxZ) {
+      p.z = maxZ;
+      hit = true;
+    }
+    if (hit) {
+      this.player.state.speed = 0;
+      this.player.syncCollision();
+    }
   }
 
   private updateLaps() {
