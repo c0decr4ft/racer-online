@@ -1563,22 +1563,29 @@ function plantBiomeProps(
     const hillGeo = createFoothillGeometry();
     const boulderGeo = new THREE.DodecahedronGeometry(1, 0);
 
-    const backdropN = 28;
-    const midN = 18;
-    const peaks = new THREE.InstancedMesh(peakGeos[0]!, rockFar, backdropN);
-    // Manual instances with mixed geos aren't supported on one InstancedMesh —
-    // use one geo and vary scale/yaw instead (still reads as distinct peaks).
-    const snowCaps = new THREE.InstancedMesh(capGeos[0]!, snowMat, backdropN);
-    const mids = new THREE.InstancedMesh(hillGeo, rockMid, midN);
-    const nearPeaks = new THREE.InstancedMesh(peakGeos[1]!, rockNear, 14);
+    // Dense multi-ring skyline — clustered peaks read as ranges, not lonely triangles.
+    const farN = 56;
+    const farFillN = 48;
+    const midPeakN = 40;
+    const nearPeakN = 36;
+    const midRidgeN = 28;
+    const peakBudget = farN + farFillN + midPeakN + nearPeakN;
+    const peaks = new THREE.InstancedMesh(peakGeos[0]!, rockFar, peakBudget);
+    const peaksB = new THREE.InstancedMesh(peakGeos[1]!, rockMid, midPeakN + nearPeakN);
+    const peaksC = new THREE.InstancedMesh(peakGeos[2]!, rockNear, nearPeakN + farFillN);
+    const snowCaps = new THREE.InstancedMesh(capGeos[0]!, snowMat, peakBudget);
+    const snowCapsB = new THREE.InstancedMesh(capGeos[1]!, snowMat, midPeakN + nearPeakN);
+    const mids = new THREE.InstancedMesh(hillGeo, rockMid, midRidgeN);
     const boulderCount = Math.min(70, Math.max(20, Math.floor(poses.length * 0.1)));
     const boulders = new THREE.InstancedMesh(boulderGeo, rockMid, boulderCount);
     peaks.count = 0;
+    peaksB.count = 0;
+    peaksC.count = 0;
     snowCaps.count = 0;
+    snowCapsB.count = 0;
     mids.count = 0;
-    nearPeaks.count = 0;
     boulders.count = 0;
-    for (const mesh of [peaks, snowCaps, mids, nearPeaks, boulders]) {
+    for (const mesh of [peaks, peaksB, peaksC, snowCaps, snowCapsB, mids, boulders]) {
       mesh.castShadow = false;
       mesh.receiveShadow = false;
       mesh.frustumCulled = true;
@@ -1586,55 +1593,115 @@ function plantBiomeProps(
 
     const cx = bounds.cx;
     const cz = bounds.cz;
-    const backdropR = Math.min(290, Math.max(bounds.spanX, bounds.spanZ) * 0.55 + 180);
-    const midR = Math.min(230, Math.max(bounds.spanX, bounds.spanZ) * 0.5 + 120);
-    const nearR = Math.min(200, Math.max(bounds.spanX, bounds.spanZ) * 0.42 + 95);
+    const farR = Math.min(300, Math.max(bounds.spanX, bounds.spanZ) * 0.58 + 185);
+    const farFillR = Math.min(270, Math.max(bounds.spanX, bounds.spanZ) * 0.52 + 155);
+    const midR = Math.min(235, Math.max(bounds.spanX, bounds.spanZ) * 0.48 + 125);
+    const nearR = Math.min(205, Math.max(bounds.spanX, bounds.spanZ) * 0.4 + 100);
+    const ridgeR = Math.min(220, Math.max(bounds.spanX, bounds.spanZ) * 0.45 + 115);
 
-    for (let i = 0; i < backdropN; i++) {
-      const a = (i / backdropN) * Math.PI * 2 + hash2(i, 2) * 0.08;
-      const x = cx + Math.cos(a) * (backdropR + (hash2(i, 4) - 0.5) * 18);
-      const z = cz + Math.sin(a) * (backdropR + (hash2(i, 6) - 0.5) * 18);
-      const base = 22 + hash2(i, 8) * 14;
-      const h = 48 + hash2(i, 11) * 42;
-      const yaw = hash2(i, 13) * Math.PI * 2;
-
-      dummy.position.set(x, -2.5, z);
-      dummy.scale.set(base, h, base * (0.85 + hash2(i, 15) * 0.3));
+    const plantPeak = (
+      mesh: THREE.InstancedMesh,
+      caps: THREE.InstancedMesh,
+      i: number,
+      x: number,
+      z: number,
+      base: number,
+      h: number,
+      yaw: number,
+      yOff: number,
+      withSnow: boolean,
+    ) => {
+      if (mesh.count >= mesh.instanceMatrix.count) return;
+      dummy.position.set(x, yOff, z);
+      dummy.scale.set(base, h, base * (0.82 + hash2(i, 15) * 0.35));
       dummy.rotation.set(0, yaw, 0);
       dummy.updateMatrix();
-      peaks.setMatrixAt(peaks.count++, dummy.matrix);
-
-      // Snow sits on the tip — same transform, smaller & lifted
-      const capH = h * (0.22 + hash2(i, 17) * 0.08);
-      const capR = base * (0.28 + hash2(i, 19) * 0.1);
-      dummy.position.set(x, -2.5 + h * 0.72, z);
-      dummy.scale.set(capR, capH, capR * (0.9 + hash2(i, 21) * 0.2));
-      dummy.rotation.set(0, yaw + 0.4, 0);
+      mesh.setMatrixAt(mesh.count++, dummy.matrix);
+      if (!withSnow || caps.count >= caps.instanceMatrix.count) return;
+      const capH = h * (0.2 + hash2(i, 17) * 0.1);
+      const capR = base * (0.26 + hash2(i, 19) * 0.12);
+      dummy.position.set(x, yOff + h * 0.7, z);
+      dummy.scale.set(capR, capH, capR * (0.88 + hash2(i, 21) * 0.22));
+      dummy.rotation.set(0, yaw + 0.35, 0);
       dummy.updateMatrix();
-      snowCaps.setMatrixAt(snowCaps.count++, dummy.matrix);
-    }
+      caps.setMatrixAt(caps.count++, dummy.matrix);
+    };
 
-    // Mid foothill ridges (still far from the ribbon)
-    for (let i = 0; i < midN; i++) {
-      const a = ((i + 0.5) / midN) * Math.PI * 2;
-      const x = cx + Math.cos(a) * midR;
-      const z = cz + Math.sin(a) * midR;
-      const along = 40 + hash2(i, 17) * 18;
-      const thick = 12 + hash2(i, 19) * 8;
-      const h = 18 + hash2(i, 23) * 16;
-      const yaw = a + Math.PI / 2;
-      if (!clearance.sceneryOk(x, z, Math.max(24, along * 0.5 + 6))) continue;
-      const foothillFootprint = Math.max(along, thick) * 0.5 + 4;
-      let hitsTree = false;
+    const hitsTreeNear = (x: number, z: number, r: number) => {
+      const r2 = r * r;
       for (const p of poses) {
         const dx = p.x - x;
         const dz = p.z - z;
-        if (dx * dx + dz * dz < foothillFootprint * foothillFootprint) {
-          hitsTree = true;
-          break;
-        }
+        if (dx * dx + dz * dz < r2) return true;
       }
-      if (hitsTree) continue;
+      return false;
+    };
+
+    // Far ring — primary giants, 2 per slot (main + shoulder) for a continuous wall
+    for (let i = 0; i < farN; i++) {
+      const a = (i / farN) * Math.PI * 2 + hash2(i, 2) * 0.05;
+      const radial = farR + (hash2(i, 4) - 0.5) * 22;
+      const x = cx + Math.cos(a) * radial;
+      const z = cz + Math.sin(a) * radial;
+      const base = 20 + hash2(i, 8) * 16;
+      const h = 44 + hash2(i, 11) * 48;
+      const yaw = hash2(i, 13) * Math.PI * 2;
+      plantPeak(peaks, snowCaps, i, x, z, base, h, yaw, -2.5, true);
+
+      // Shoulder peak tucked beside it
+      const a2 = a + 0.045 + (hash2(i, 25) - 0.5) * 0.03;
+      const radial2 = radial - 8 - hash2(i, 27) * 14;
+      const x2 = cx + Math.cos(a2) * radial2;
+      const z2 = cz + Math.sin(a2) * radial2;
+      plantPeak(
+        peaks,
+        snowCaps,
+        i + 200,
+        x2,
+        z2,
+        base * (0.55 + hash2(i, 29) * 0.25),
+        h * (0.55 + hash2(i, 31) * 0.3),
+        yaw + 1.1,
+        -2.2,
+        hash2(i, 33) > 0.35,
+      );
+    }
+
+    // Far-fill ring — packs gaps between giants
+    for (let i = 0; i < farFillN; i++) {
+      const a = ((i + 0.5) / farFillN) * Math.PI * 2 + hash2(i, 40) * 0.04;
+      const radial = farFillR + (hash2(i, 42) - 0.5) * 28;
+      const x = cx + Math.cos(a) * radial;
+      const z = cz + Math.sin(a) * radial;
+      const base = 14 + hash2(i, 44) * 12;
+      const h = 28 + hash2(i, 46) * 34;
+      plantPeak(peaksC, snowCaps, i + 400, x, z, base, h, hash2(i, 48) * Math.PI * 2, -2.0, true);
+    }
+
+    // Mid peaks
+    for (let i = 0; i < midPeakN; i++) {
+      const a = (i / midPeakN) * Math.PI * 2 + 0.11 + hash2(i, 50) * 0.06;
+      const radial = midR + (hash2(i, 52) - 0.5) * 20;
+      const x = cx + Math.cos(a) * radial;
+      const z = cz + Math.sin(a) * radial;
+      const base = 12 + hash2(i, 54) * 10;
+      if (!clearance.sceneryOk(x, z, base * 0.65 + 10)) continue;
+      if (hitsTreeNear(x, z, base + 8)) continue;
+      const h = 24 + hash2(i, 56) * 26;
+      plantPeak(peaksB, snowCapsB, i + 600, x, z, base, h, hash2(i, 58) * Math.PI * 2, -1.8, true);
+    }
+
+    // Mid foothill ridges (still far from the ribbon)
+    for (let i = 0; i < midRidgeN; i++) {
+      const a = ((i + 0.35) / midRidgeN) * Math.PI * 2;
+      const x = cx + Math.cos(a) * ridgeR;
+      const z = cz + Math.sin(a) * ridgeR;
+      const along = 36 + hash2(i, 17) * 22;
+      const thick = 11 + hash2(i, 19) * 9;
+      const h = 16 + hash2(i, 23) * 18;
+      const yaw = a + Math.PI / 2;
+      if (!clearance.sceneryOk(x, z, Math.max(22, along * 0.5 + 6))) continue;
+      if (hitsTreeNear(x, z, Math.max(along, thick) * 0.5 + 4)) continue;
 
       dummy.position.set(x, -2.5, z);
       dummy.scale.set(along, h, thick);
@@ -1643,29 +1710,49 @@ function plantBiomeProps(
       mids.setMatrixAt(mids.count++, dummy.matrix);
     }
 
-    // Closer secondary peaks (still outside runoff) — fills gaps between far giants
-    for (let i = 0; i < 14; i++) {
-      const a = (i / 14) * Math.PI * 2 + 0.2;
-      const x = cx + Math.cos(a) * (nearR + (hash2(i, 31) - 0.5) * 12);
-      const z = cz + Math.sin(a) * (nearR + (hash2(i, 33) - 0.5) * 12);
-      const base = 14 + hash2(i, 35) * 8;
+    // Near secondary peaks — fills the middle distance
+    for (let i = 0; i < nearPeakN; i++) {
+      const a = (i / nearPeakN) * Math.PI * 2 + 0.19 + hash2(i, 60) * 0.05;
+      const radial = nearR + (hash2(i, 62) - 0.5) * 16;
+      const x = cx + Math.cos(a) * radial;
+      const z = cz + Math.sin(a) * radial;
+      const base = 10 + hash2(i, 35) * 9;
       if (!clearance.sceneryOk(x, z, base * 0.7 + 8)) continue;
-      let hitsTree = false;
-      for (const p of poses) {
-        const dx = p.x - x;
-        const dz = p.z - z;
-        if (dx * dx + dz * dz < (base + 6) * (base + 6)) {
-          hitsTree = true;
-          break;
+      if (hitsTreeNear(x, z, base + 6)) continue;
+      const h = 18 + hash2(i, 37) * 20;
+      plantPeak(
+        peaksC,
+        snowCapsB,
+        i + 800,
+        x,
+        z,
+        base,
+        h,
+        hash2(i, 41) * Math.PI * 2,
+        -1.6,
+        hash2(i, 64) > 0.4,
+      );
+
+      // Extra satellite mound beside many near peaks
+      if (hash2(i, 66) > 0.4) {
+        const a3 = a + 0.05 * (hash2(i, 68) > 0.5 ? 1 : -1);
+        const x3 = cx + Math.cos(a3) * (radial - 6);
+        const z3 = cz + Math.sin(a3) * (radial - 6);
+        if (clearance.sceneryOk(x3, z3, base * 0.5 + 6) && !hitsTreeNear(x3, z3, base + 4)) {
+          plantPeak(
+            peaksB,
+            snowCapsB,
+            i + 900,
+            x3,
+            z3,
+            base * 0.55,
+            h * 0.6,
+            hash2(i, 70) * Math.PI * 2,
+            -1.5,
+            false,
+          );
         }
       }
-      if (hitsTree) continue;
-      const h = 22 + hash2(i, 37) * 18;
-      dummy.position.set(x, -1.8, z);
-      dummy.scale.set(base, h, base * (0.8 + hash2(i, 39) * 0.35));
-      dummy.rotation.set(0, hash2(i, 41) * Math.PI * 2, 0);
-      dummy.updateMatrix();
-      nearPeaks.setMatrixAt(nearPeaks.count++, dummy.matrix);
     }
 
     // Small rocks only near the course (not mountain walls)
@@ -1681,16 +1768,13 @@ function plantBiomeProps(
       boulders.setMatrixAt(boulders.count++, dummy.matrix);
     }
 
-    for (const mesh of [peaks, snowCaps, mids, nearPeaks, boulders]) {
+    for (const mesh of [peaks, peaksB, peaksC, snowCaps, snowCapsB, mids, boulders]) {
       if (!mesh.count) continue;
       mesh.instanceMatrix.needsUpdate = true;
       mesh.computeBoundingSphere();
       group.add(mesh);
     }
 
-    // Dispose unused variant geos (instances use [0]/[1] only)
-    peakGeos[2]?.dispose();
-    capGeos[1]?.dispose();
     capGeos[2]?.dispose();
 
     // Pine grove + small rocks in the infield center (clear of asphalt / runoff)
