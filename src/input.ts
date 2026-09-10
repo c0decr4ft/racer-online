@@ -34,6 +34,7 @@ const BLOCKED_KEYS = new Set([
   "ArrowRight",
   "Space",
   "KeyC",
+  "KeyV",
   "ShiftLeft",
   "ShiftRight",
   "CapsLock",
@@ -64,6 +65,8 @@ export type InputState = {
   jump: boolean;
   /** KeyC — bird descend (dev free-fly). */
   descend: boolean;
+  /** KeyV — bird look straight down (dev free-fly). */
+  lookDown: boolean;
 };
 
 export class Input {
@@ -97,6 +100,7 @@ export class Input {
     fire: false,
     jump: false,
     descend: false,
+    lookDown: false,
   };
 
   constructor() {
@@ -260,6 +264,7 @@ export class Input {
     s.fire = fire;
     s.jump = this.keys.has("Space");
     s.descend = this.keys.has("KeyC");
+    s.lookDown = this.keys.has("KeyV");
     return s;
   }
 }

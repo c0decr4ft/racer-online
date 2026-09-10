@@ -225,6 +225,7 @@ export class Game {
     fire: false,
     jump: false,
     descend: false,
+    lookDown: false,
   };
   private readonly _pathScratch = new THREE.Vector3();
 
@@ -1013,7 +1014,7 @@ export class Game {
         bike: "Bike selected — all AI rivals become bikes",
         truck: "Monster truck selected — AI rivals stay in cars",
         tank: "Tank selected — AI rivals stay in cars",
-        bird: "Bird mode — WASD move · Space up · C down · Shift boost (scout tool)",
+        bird: "Bird mode — WASD · Space up · C down · V look down · Shift boost",
       };
       hint.textContent = hints[this.garage.kind];
     }
@@ -3580,6 +3581,8 @@ export class Game {
     }
 
     const inputPeek = this.input.getState();
+    this.birdLookDown =
+      this.player?.mesh.userData.kind === "bird" && inputPeek.lookDown;
     // Online mode skips the second full scene render; smooth input/physics matter
     // more than the rearview inset and this roughly halves race rendering work.
     // Rearview is a second full scene pass — keep off for race FPS.
@@ -5747,6 +5750,8 @@ export class Game {
     this.camera.lookAt(this.camLook);
   }
 
+  private birdLookDown = false;
+
   private updateCamera(dt: number) {
     if (this.spectating) {
       const remote = this.spectateTargetId ? this.remotes.get(this.spectateTargetId) : undefined;
@@ -5787,6 +5792,20 @@ export class Game {
     const s = this.player.state;
     const gy = s.position.y;
     const bird = this.player.mesh.userData.kind === "bird";
+
+    // Hold V in bird mode — straight-down survey view over the bird.
+    if (bird && this.birdLookDown) {
+      const height = 42 + gy;
+      this._camIdeal.set(s.position.x, height, s.position.z);
+      const k = dt <= 0 ? 1 : 1 - Math.exp(-8 * dt);
+      this.camPos.lerp(this._camIdeal, k);
+      this.camera.position.copy(this.camPos);
+      this._camLookTarget.set(s.position.x, gy, s.position.z);
+      this.camLook.lerp(this._camLookTarget, dt <= 0 ? 1 : 1 - Math.exp(-10 * dt));
+      this.camera.lookAt(this.camLook);
+      return;
+    }
+
     const back = bird ? 16 : 12 + Math.min(Math.abs(s.speed) * 0.07, 6);
     const height = bird
       ? 6.5 + gy

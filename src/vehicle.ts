@@ -115,6 +115,7 @@ export class Vehicle {
     fire: false,
     jump: false,
     descend: false,
+    lookDown: false,
   };
 
   update(dt: number, input: InputState) {
@@ -155,6 +156,7 @@ export class Vehicle {
       p.fire = input.fire;
       p.jump = input.jump;
       p.descend = input.descend;
+      p.lookDown = input.lookDown;
       if (this.animalHitPenalty > 0) {
         this.animalHitPenalty = Math.max(0, this.animalHitPenalty - dt);
         p.throttle = input.throttle * 0.12;
@@ -399,6 +401,7 @@ export class RivalAI {
     fire: false,
     jump: false,
     descend: false,
+    lookDown: false,
   };
   private readonly _shiftOpts = {
     maxKappa: 0,
