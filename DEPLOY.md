@@ -113,7 +113,7 @@ builds does **not** clear the inbox — all builds share one server file.
 | Store | Path / URL | Survives version bump? | Survives Render redeploy? |
 | --- | --- | --- | --- |
 | **Primary** | `$DATA_DIR/feedback.json` (default: `server/feedback.json`, gitignored) | Yes | **Only if** that path is on a **persistent disk** |
-| Soft mirror | Stable JSONBlob URL (server hydrates on boot + mirrors on save) | Yes | Briefly (~24h TTL — do **not** recreate the blob) |
+| Soft mirror | Signed Nostr replaceable event (`d=racer-online:feedback` on nos.lol / primal) | Yes | Yes (relay-backed; hydrates on boot) |
 | Email | Resend / FormSubmit | Yes (your mail) | N/A |
 
 Render **free** disks are **ephemeral**: every deploy wipes `server/*.json`. Tips and
@@ -123,8 +123,8 @@ activity have the same problem. To keep feedback across deploys:
 2. Set env **`DATA_DIR=/var/data`** (and put tips/activity there too if you move those paths)
 3. Redeploy once — the server migrates `server/feedback.json` → `$DATA_DIR/feedback.json` if needed
 
-Without a persistent disk, the JSONBlob mirror can restore recent messages after a wipe,
-but it is **not** long-term durable. Prefer the disk mount for anything you care about.
+Without a persistent disk, the Nostr mirror restores the inbox after a wipe (same idea as
+the leaderboard relay rebuild). Prefer the disk mount for anything you care about long-term.
 
 ### Email (Resend)
 

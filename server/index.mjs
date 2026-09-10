@@ -1,5 +1,5 @@
 import { WebSocketServer } from "ws";
-import { verifyEvent } from "nostr-tools";
+import { verifyEvent, finalizeEvent } from "nostr-tools";
 import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
 import { payments, depositProofs, recordPayout, loadPayouts, savePayouts } from "./payments.mjs";
@@ -78,14 +78,25 @@ const PRESENCE_PATH = join(DIR, "presence.json");
 const FEEDBACK_PATH = join(DATA_DIR, "feedback.json");
 const FEEDBACK_LEGACY_PATH = join(DIR, "feedback.json");
 /**
- * Stable public JSONBlob mirror (same URL as the client). Soft backup across
- * ephemeral-disk redeploys — jsonblob TTLs are short (~24h), so prefer DATA_DIR
- * on a Render persistent disk. Do not recreate this blob; PUT the existing URL.
+ * Durable feedback mirror across Render free-disk redeploys.
+ * JSONBlob died (Cloudflare 404) — same pattern as the leaderboard: a signed
+ * replaceable Nostr event on public relays. Prefer DATA_DIR on a persistent
+ * disk when you can; relays are the soft backup.
+ *
+ * Override with FEEDBACK_NOSTR_NSEC (64-char hex). Default key is dedicated to
+ * this mirror (write URL was already public on the old blob).
  */
-const FEEDBACK_BLOB_URL = (
-  process.env.FEEDBACK_BLOB_URL ||
-  "https://jsonblob.com/api/jsonBlob/019fbe1c-6eab-7997-bff4-46ce4bfc7d97"
-).trim();
+const FEEDBACK_EVENT_KIND = 30078;
+const FEEDBACK_D_TAG = "racer-online:feedback";
+const FEEDBACK_T_TAG = "racer-online-feedback";
+const FEEDBACK_NOSTR_NSEC_HEX = (
+  process.env.FEEDBACK_NOSTR_NSEC ||
+  "2c9e8cbeee3f50bdd1cfe386babc361a7b68a76f2ce4aae111deef78f2df761d"
+).trim().toLowerCase();
+const FEEDBACK_NOSTR_SK = (() => {
+  if (!/^[0-9a-f]{64}$/.test(FEEDBACK_NOSTR_NSEC_HEX)) return null;
+  return Uint8Array.from(Buffer.from(FEEDBACK_NOSTR_NSEC_HEX, "hex"));
+})();
 /** Where player feedback is emailed (FormSubmit relay — free, no SMTP creds needed). */
 const FEEDBACK_EMAIL = (process.env.FEEDBACK_EMAIL || "c0decr4ft.fr@gmail.com").trim();
 /**
@@ -1012,50 +1023,84 @@ function loadFeedback() {
   }
 }
 
-/** Best-effort mirror to the stable JSONBlob URL (survives empty-disk redeploys briefly). */
+/** Best-effort mirror to public Nostr relays (survives empty-disk redeploys). */
 async function mirrorFeedbackBlob(store) {
-  if (!FEEDBACK_BLOB_URL) return;
+  if (!FEEDBACK_NOSTR_SK) return;
   try {
     const body = normalizeFeedbackStore(store);
-    const res = await fetch(FEEDBACK_BLOB_URL, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(8_000),
-    });
-    if (!res.ok) console.warn(`[feedback] blob mirror HTTP ${res.status}`);
+    const { SimplePool } = await import("nostr-tools");
+    const template = {
+      kind: FEEDBACK_EVENT_KIND,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [
+        ["d", FEEDBACK_D_TAG],
+        ["t", FEEDBACK_T_TAG],
+      ],
+      content: JSON.stringify(body),
+    };
+    const event = finalizeEvent(template, FEEDBACK_NOSTR_SK);
+    const pool = new SimplePool();
+    try {
+      await Promise.any(pool.publish(SCORE_RELAYS, event));
+    } finally {
+      pool.close(SCORE_RELAYS);
+    }
   } catch (err) {
-    console.warn(`[feedback] blob mirror failed:`, err?.message || err);
+    console.warn(`[feedback] nostr mirror failed:`, err?.message || err);
   }
 }
 
 /**
- * After redeploy, local disk is often empty — pull the public blob and merge.
- * Also merges when DATA_DIR already has messages so blob-only rows are kept.
+ * After redeploy, local disk is often empty — pull the Nostr replaceable event
+ * and merge. Union-by-id so a stale/empty remote cannot wipe fresher local rows.
  */
 async function hydrateFeedbackFromBlob() {
-  if (!FEEDBACK_BLOB_URL) return;
+  if (!FEEDBACK_NOSTR_SK) return;
   try {
-    const res = await fetch(FEEDBACK_BLOB_URL, {
-      cache: "no-store",
-      headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(8_000),
-    });
-    if (!res.ok) {
-      console.warn(`[feedback] blob hydrate HTTP ${res.status}`);
+    const { SimplePool, getPublicKey } = await import("nostr-tools");
+    const pubkey = getPublicKey(FEEDBACK_NOSTR_SK);
+    const pool = new SimplePool();
+    let events = [];
+    try {
+      events = await pool.querySync(SCORE_RELAYS, {
+        kinds: [FEEDBACK_EVENT_KIND],
+        authors: [pubkey],
+        "#d": [FEEDBACK_D_TAG],
+        limit: 5,
+      });
+    } finally {
+      pool.close(SCORE_RELAYS);
+    }
+    if (!events.length) {
+      console.log("[feedback] nostr hydrate — no mirror event yet");
       return;
     }
-    const remote = normalizeFeedbackStore(await res.json());
+    events.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+    let remote = { messages: [] };
+    for (const ev of events) {
+      try {
+        if (!verifyEvent(ev)) continue;
+        remote = normalizeFeedbackStore(JSON.parse(ev.content || "{}"));
+        break;
+      } catch {
+        /* try next */
+      }
+    }
     if (!remote.messages.length) return;
     const local = loadFeedback();
     const merged = mergeFeedbackStores(local, remote);
-    if (JSON.stringify(merged) === JSON.stringify(local)) return;
+    if (JSON.stringify(merged) === JSON.stringify(local)) {
+      console.log(
+        `[feedback] nostr hydrate — already have ${local.messages.length} messages`,
+      );
+      return;
+    }
     saveFeedback(merged, { mirror: false });
     console.log(
-      `[feedback] hydrated from blob — ${local.messages.length} → ${merged.messages.length} messages @ ${FEEDBACK_PATH}`,
+      `[feedback] hydrated from nostr — ${local.messages.length} → ${merged.messages.length} messages @ ${FEEDBACK_PATH}`,
     );
   } catch (err) {
-    console.warn(`[feedback] blob hydrate failed:`, err?.message || err);
+    console.warn(`[feedback] nostr hydrate failed:`, err?.message || err);
   }
 }
 
@@ -3358,7 +3403,7 @@ httpServer.listen(PORT, HOST, () => {
   if (DATA_DIR === DIR && ON_RENDER) {
     console.warn(
       "[feedback] DATA_DIR unset — Render free disk wipes feedback.json on every deploy. " +
-        "Attach a persistent disk and set DATA_DIR (e.g. /var/data), or rely on the short-lived JSONBlob mirror.",
+        "Attach a persistent disk and set DATA_DIR (e.g. /var/data), or rely on the Nostr relay mirror.",
     );
   }
   // Soft restore after ephemeral-disk redeploys (merge with existing file).
