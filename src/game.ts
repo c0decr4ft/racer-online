@@ -522,6 +522,11 @@ export class Game {
     this.scene.background = new THREE.Color(0x87a0bc);
     this.scene.fog = new THREE.Fog(0x87a0bc, 160, 520);
 
+    // Resident flash light — never add/remove (shader recompile freezes on weak GPUs).
+    this.explodeFlashLight = new THREE.PointLight(0xff7a3a, 0, 28);
+    this.explodeFlashLight.visible = false;
+    this.scene.add(this.explodeFlashLight);
+
     this.input.onPadConnected = () =>
       this.showToast("Controller connected — stick steers, RT gas, LT brake, B drifts (cars)");
 
@@ -3405,7 +3410,11 @@ export class Game {
   /** FPS scaler: >21ms EMA for 1.5s drops minimap/rain; <16ms for 4s restores. Shadows stay every frame. */
   private updatePerfThrottle(now: number) {
     if (!this.running || this.paused || this.finished) {
-      this.perfThrottle = false;
+      if (this.perfThrottle) {
+        this.perfThrottle = false;
+        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        this.shadowNeedsWarmup = true;
+      }
       this.lowFpsSince = 0;
       this.highFpsSince = 0;
       return;
@@ -3413,13 +3422,22 @@ export class Game {
     if (!this.perfThrottle) {
       if (this.fpsEmaMs > 21) {
         if (!this.lowFpsSince) this.lowFpsSince = now;
-        if (now - this.lowFpsSince > 1500) this.perfThrottle = true;
+        if (now - this.lowFpsSince > 1500) {
+          this.perfThrottle = true;
+          // Soft PCF is expensive on old integrated GPUs — basic maps keep racing playable.
+          this.renderer.shadowMap.type = THREE.BasicShadowMap;
+          this.shadowNeedsWarmup = true;
+        }
       } else {
         this.lowFpsSince = 0;
       }
     } else if (this.fpsEmaMs < 16) {
       if (!this.highFpsSince) this.highFpsSince = now;
-      if (now - this.highFpsSince > 4000) this.perfThrottle = false;
+      if (now - this.highFpsSince > 4000) {
+        this.perfThrottle = false;
+        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        this.shadowNeedsWarmup = true;
+      }
     } else {
       this.highFpsSince = 0;
     }
@@ -4225,11 +4243,13 @@ export class Game {
     this.clearExplodeParticles();
     const origin = this.player.state.position;
     const colors = [0xff6a2e, 0xffc857, 0xff3b2e, 0xffeeaa, 0x888888];
-    for (let i = 0; i < 36; i++) {
+    const count = this.perfThrottle ? 12 : 24;
+    for (let i = 0; i < count; i++) {
       const mat = new THREE.MeshBasicMaterial({
         color: colors[i % colors.length]!,
         transparent: true,
         opacity: 1,
+        depthWrite: false,
       });
       const mesh = new THREE.Mesh(this._explodeGeo, mat);
       mesh.position.set(
@@ -4246,10 +4266,11 @@ export class Game {
       this.scene.add(mesh);
       this.explodeParts.push({ mesh, vel, life: 0.55 + Math.random() * 0.55 });
     }
-    const light = new THREE.PointLight(0xff7a3a, 8, 28);
-    light.position.set(origin.x, 2.2, origin.z);
-    this.scene.add(light);
-    this.explodeFlashLight = light;
+    if (this.explodeFlashLight) {
+      this.explodeFlashLight.position.set(origin.x, 2.2, origin.z);
+      this.explodeFlashLight.intensity = this.perfThrottle ? 4 : 8;
+      this.explodeFlashLight.visible = true;
+    }
   }
 
   private updateExplode(dt: number) {
@@ -4268,8 +4289,12 @@ export class Game {
         this.explodeParts.splice(i, 1);
       }
     }
-    if (this.explodeFlashLight) {
+    if (this.explodeFlashLight?.visible) {
       this.explodeFlashLight.intensity = Math.max(0, this.explodeFlashLight.intensity - dt * 10);
+      if (this.explodeFlashLight.intensity <= 0.05) {
+        this.explodeFlashLight.intensity = 0;
+        this.explodeFlashLight.visible = false;
+      }
     }
   }
 
@@ -4280,8 +4305,8 @@ export class Game {
     }
     this.explodeParts.length = 0;
     if (this.explodeFlashLight) {
-      this.scene.remove(this.explodeFlashLight);
-      this.explodeFlashLight = null;
+      this.explodeFlashLight.intensity = 0;
+      this.explodeFlashLight.visible = false;
     }
   }
 
@@ -4321,11 +4346,13 @@ export class Game {
   /** Smaller burst for crushed/shot AI cars — particles only, no flash light. */
   private spawnRivalExplodeFx(origin: THREE.Vector3) {
     const colors = [0xff6a2e, 0xffc857, 0xff3b2e, 0xffeeaa, 0x888888];
-    for (let i = 0; i < 22; i++) {
+    const count = this.perfThrottle ? 8 : 14;
+    for (let i = 0; i < count; i++) {
       const mat = new THREE.MeshBasicMaterial({
         color: colors[i % colors.length]!,
         transparent: true,
         opacity: 1,
+        depthWrite: false,
       });
       const mesh = new THREE.Mesh(this._explodeGeo, mat);
       mesh.position.set(

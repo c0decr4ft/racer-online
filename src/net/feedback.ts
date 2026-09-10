@@ -2,17 +2,12 @@
  * Player feedback — durable on the game server (`/api/feedback` → feedback.json),
  * not keyed by GAME_VERSION. Client version bumps do not change the inbox.
  *
- * Fallback chain when the server is unreachable: shared JSONBlob mirror, then
- * localStorage. JSONBlob TTLs are short (~24h); the server file (ideally on a
- * Render persistent disk via DATA_DIR) is the real store. DEV inbox reads
- * `/api/dev/feedback` from that same file.
+ * When the server is unreachable, messages stay in localStorage only (DEV inbox
+ * is server-side). The server also mirrors the inbox to public Nostr relays so
+ * Render free-disk redeploys can hydrate on boot.
  */
 
 import { apiUrl } from "./apiBase";
-
-/** Stable mirror URL — same blob the server hydrates/mirrors; do not recreate. */
-const PUBLIC_BLOB_URL =
-  "https://jsonblob.com/api/jsonBlob/019fbe1c-6eab-7997-bff4-46ce4bfc7d97";
 
 const MAX_MESSAGES = 80;
 export const FEEDBACK_TEXT_MAX = 500;
@@ -27,7 +22,7 @@ export type FeedbackMessage = {
 
 export type FeedbackSnapshot = {
   messages: FeedbackMessage[];
-  source: "server" | "online" | "local";
+  source: "server" | "local";
   /** True when the server also forwarded the message to the dev's email inbox. */
   emailed?: boolean;
 };
@@ -91,33 +86,6 @@ function normalizeStore(data: unknown): FeedbackStore {
   messages.sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
   store.messages = messages.slice(0, MAX_MESSAGES);
   return store;
-}
-
-async function fetchBlobStore(): Promise<FeedbackStore> {
-  const res = await fetch(PUBLIC_BLOB_URL, {
-    cache: "no-store",
-    headers: { Accept: "application/json" },
-  });
-  if (!res.ok) throw new Error(String(res.status));
-  return normalizeStore(await res.json());
-}
-
-async function putBlobStore(store: FeedbackStore): Promise<FeedbackStore> {
-  const body = normalizeStore(store);
-  const res = await fetch(PUBLIC_BLOB_URL, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(String(res.status));
-  try {
-    return normalizeStore(await res.json());
-  } catch {
-    return body;
-  }
 }
 
 /**
@@ -184,13 +152,7 @@ export async function fetchFeedback(): Promise<FeedbackSnapshot> {
     writeLocal(fromServer.messages);
     return { messages: fromServer.messages, source: "server" };
   }
-  try {
-    const store = await fetchBlobStore();
-    writeLocal(store.messages);
-    return { messages: store.messages, source: "online" };
-  } catch {
-    return { messages: readLocal(), source: "local" };
-  }
+  return { messages: readLocal(), source: "local" };
 }
 
 export async function submitFeedback(text: string, name?: string): Promise<FeedbackSnapshot> {
@@ -208,22 +170,10 @@ export async function submitFeedback(text: string, name?: string): Promise<Feedb
   const fromServer = await postServerFeedback(msg);
   if (fromServer) {
     writeLocal(fromServer.store.messages);
-    // Best-effort mirror — server also mirrors; this covers older deploys.
-    void putBlobStore(fromServer.store).catch(() => undefined);
     return { messages: fromServer.store.messages, source: "server", emailed: fromServer.emailed };
   }
 
-  try {
-    let store = await fetchBlobStore();
-    store.messages = [msg, ...store.messages];
-    store = await putBlobStore(store);
-    writeLocal(store.messages);
-    return { messages: store.messages, source: "online" };
-  } catch {
-    const merged = normalizeStore({ messages: [msg, ...readLocal()] }).messages;
-    writeLocal(merged);
-    return { messages: merged, source: "local" };
-  }
+  const merged = normalizeStore({ messages: [msg, ...readLocal()] }).messages;
+  writeLocal(merged);
+  return { messages: merged, source: "local" };
 }
-
-export const FEEDBACK_BLOB_URL = PUBLIC_BLOB_URL;

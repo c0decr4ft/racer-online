@@ -9,6 +9,24 @@
   --glow: rgba(255, 59, 46, 0.35);
   --font-display: "Orbitron", sans-serif;
   --font-ui: "Rajdhani", sans-serif;
+  color-scheme: dark;
+}
+
+/* Windows High Contrast / forced-colors often remaps red accents to system blue.
+   Keep brand red + primary buttons explicit. */
+@media (forced-colors: active) {
+  .brand span,
+  .eyebrow,
+  .overlay h1 span {
+    forced-color-adjust: none;
+    color: #ff3b2e !important;
+  }
+  button:not(.btn-ghost):not(.board-icon-btn):not(.garage-kind-btn):not(.map-thumb):not(.mute-btn) {
+    forced-color-adjust: none;
+    border-color: #ff3b2e !important;
+    background: #ff3b2e !important;
+    color: #fff !important;
+  }
 }
 
 /* Mobile gate — full-screen DESKTOP ONLY cover (shown by index.html inline script) */
@@ -147,7 +165,8 @@ body:has(#mute-btn.hidden) .hud-top {
 }
 
 .brand span {
-  color: var(--accent);
+  color: #ff3b2e;
+  color: var(--accent, #ff3b2e);
   margin-left: 0.35rem;
 }
 
@@ -3517,7 +3536,8 @@ input:focus-visible,
   font-family: var(--font-display);
   letter-spacing: 0.35em;
   font-size: 0.72rem;
-  color: var(--accent);
+  color: #ff3b2e;
+  color: var(--accent, #ff3b2e);
   margin-bottom: 1rem;
 }
 
@@ -3532,7 +3552,8 @@ input:focus-visible,
 }
 
 .overlay h1 span {
-  color: var(--accent);
+  color: #ff3b2e;
+  color: var(--accent, #ff3b2e);
 }
 
 .tagline {
@@ -3551,16 +3572,21 @@ input:focus-visible,
 button {
   pointer-events: auto;
   appearance: none;
-  border: 1px solid var(--accent);
-  background: linear-gradient(180deg, var(--accent), #c51f18);
-  color: white;
+  -webkit-appearance: none;
+  border: 1px solid #ff3b2e;
+  border: 1px solid var(--accent, #ff3b2e);
+  /* Hex first: some older Windows browsers drop the whole decl if var() is in a gradient. */
+  background: linear-gradient(180deg, #ff3b2e, #c51f18);
+  background: linear-gradient(180deg, var(--accent, #ff3b2e), #c51f18);
+  color: #fff;
   font-family: var(--font-display);
   font-weight: 700;
   letter-spacing: 0.28em;
   font-size: 0.85rem;
   padding: 0.95rem 2.2rem;
   cursor: pointer;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset, 0 12px 40px var(--glow);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset, 0 12px 40px rgba(255, 59, 46, 0.35);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset, 0 12px 40px var(--glow, rgba(255, 59, 46, 0.35));
   transition: transform 0.15s ease, filter 0.15s ease;
 }
 

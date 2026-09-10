@@ -811,12 +811,31 @@ export class WildlifeHerd {
   private crossCooldown = CROSS_GAP_MIN + Math.random() * (CROSS_GAP_MAX - CROSS_GAP_MIN);
   private readonly bursts: BurstPart[] = [];
   private readonly burstGeo = new THREE.BoxGeometry(0.16, 0.16, 0.16);
-  private burstLight: THREE.PointLight | null = null;
+  /** Shared materials — never create/dispose per hit (GC hitch on weak GPUs). */
+  private readonly burstMats: THREE.MeshBasicMaterial[];
+  private readonly burstPool: THREE.Mesh[] = [];
+  /**
+   * Always in the scene at intensity 0. Adding/removing PointLights mid-race
+   * recompiles Three.js shaders and freezes old laptops for hundreds of ms.
+   */
+  private readonly burstLight: THREE.PointLight;
 
   private constructor(path: THREE.CatmullRomCurve3, spec: HerdSpec) {
     this.spec = spec;
     this.group.name = spec.groupName;
     this.q = buildPathQuery(path);
+    this.burstMats = spec.burstColors.map(
+      (c) =>
+        new THREE.MeshBasicMaterial({
+          color: c,
+          transparent: true,
+          opacity: 1,
+          depthWrite: false,
+        }),
+    );
+    this.burstLight = new THREE.PointLight(0xff7a3a, 0, 16);
+    this.burstLight.visible = false;
+    this.group.add(this.burstLight);
     const far = spec.outfieldFar ?? OUTFIELD_FAR;
     const near = spec.outfieldNear ?? ZONE_CLEAR;
     const spawns = collectSpawns(this.q, spec.habitat, WANDER_COUNT, far, near);
@@ -893,11 +912,19 @@ export class WildlifeHerd {
 
   dispose() {
     this.clearBursts();
+    this.burstLight.intensity = 0;
+    this.burstLight.visible = false;
     this.burstGeo.dispose();
+    for (const m of this.burstMats) m.dispose();
+    for (const mesh of this.burstPool) {
+      (mesh.material as THREE.MeshBasicMaterial).dispose();
+    }
+    this.burstPool.length = 0;
     this.group.removeFromParent();
     this.group.traverse((obj) => {
       const mesh = obj as THREE.Mesh;
       if (!mesh.isMesh) return;
+      if (mesh.geometry === this.burstGeo) return;
       mesh.geometry?.dispose();
       const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
       for (const m of list) m?.dispose();
@@ -1266,14 +1293,19 @@ export class WildlifeHerd {
     animal.mesh.visible = false;
     animal.respawnIn = RESPAWN_DELAY;
 
-    const colors = this.spec.burstColors;
-    for (let i = 0; i < 16; i++) {
-      const m = new THREE.MeshBasicMaterial({
-        color: colors[i % colors.length]!,
-        transparent: true,
-        opacity: 1,
-      });
-      const mesh = new THREE.Mesh(this.burstGeo, m);
+    // Cap concurrent debris — old GPUs hitch hard on many transparent meshes.
+    const n = Math.min(8, 16 - this.bursts.length);
+    for (let i = 0; i < n; i++) {
+      const base = this.burstMats[i % this.burstMats.length]!;
+      let mesh = this.burstPool.pop();
+      if (!mesh) {
+        // Own material per mesh so opacity fades don't clobber siblings.
+        mesh = new THREE.Mesh(this.burstGeo, base.clone());
+      }
+      const mat = mesh.material as THREE.MeshBasicMaterial;
+      mat.color.copy(base.color);
+      mat.opacity = 1;
+      mesh.visible = true;
       mesh.position.set(
         ox + (Math.random() - 0.5) * 0.7,
         0.4 + Math.random() * 0.5,
@@ -1289,14 +1321,10 @@ export class WildlifeHerd {
       this.group.add(mesh);
       this.bursts.push({ mesh, vel, life: 0.35 + Math.random() * 0.4 });
     }
-    if (this.burstLight) {
-      this.group.remove(this.burstLight);
-      this.burstLight = null;
-    }
-    const light = new THREE.PointLight(0xff7a3a, 4.5, 16);
-    light.position.set(ox, 1.6, oz);
-    this.group.add(light);
-    this.burstLight = light;
+    // Reuse the resident light — never add/remove (avoids shader recompile freezes).
+    this.burstLight.position.set(ox, 1.6, oz);
+    this.burstLight.intensity = 3.2;
+    this.burstLight.visible = true;
   }
 
   private respawnAnimal(animal: Animal) {
@@ -1346,18 +1374,16 @@ export class WildlifeHerd {
       mat.opacity = Math.max(0, p.life * 2.2);
       if (p.life <= 0) {
         this.group.remove(p.mesh);
-        mat.dispose();
+        p.mesh.visible = false;
+        this.burstPool.push(p.mesh);
         this.bursts.splice(i, 1);
       }
     }
-    if (this.burstLight) {
-      this.burstLight.intensity = Math.max(
-        0,
-        this.burstLight.intensity - dt * 8,
-      );
+    if (this.burstLight.visible) {
+      this.burstLight.intensity = Math.max(0, this.burstLight.intensity - dt * 8);
       if (this.burstLight.intensity <= 0.05) {
-        this.group.remove(this.burstLight);
-        this.burstLight = null;
+        this.burstLight.intensity = 0;
+        this.burstLight.visible = false;
       }
     }
   }
@@ -1365,13 +1391,12 @@ export class WildlifeHerd {
   private clearBursts() {
     for (const p of this.bursts) {
       this.group.remove(p.mesh);
-      (p.mesh.material as THREE.MeshBasicMaterial).dispose();
+      p.mesh.visible = false;
+      this.burstPool.push(p.mesh);
     }
     this.bursts.length = 0;
-    if (this.burstLight) {
-      this.group.remove(this.burstLight);
-      this.burstLight = null;
-    }
+    this.burstLight.intensity = 0;
+    this.burstLight.visible = false;
   }
 }
 
