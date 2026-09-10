@@ -142,12 +142,11 @@ export class Vehicle {
     }
 
     let physicsInput = input;
-    const isBike = this.mesh.userData.kind === "bike";
-    if (isBike || this.animalHitPenalty > 0) {
+    if (this.animalHitPenalty > 0) {
       const p = this._physInput;
       p.throttle = input.throttle;
       p.brake = input.brake;
-      p.handbrake = isBike ? 0 : input.handbrake;
+      p.handbrake = input.handbrake;
       p.steer = input.steer;
       p.reset = input.reset;
       p.pause = input.pause;
@@ -157,12 +156,10 @@ export class Vehicle {
       p.jump = input.jump;
       p.descend = input.descend;
       p.lookDown = input.lookDown;
-      if (this.animalHitPenalty > 0) {
-        this.animalHitPenalty = Math.max(0, this.animalHitPenalty - dt);
-        p.throttle = input.throttle * 0.12;
-        p.brake = Math.max(input.brake, 0.18);
-        p.handbrake = 0;
-      }
+      this.animalHitPenalty = Math.max(0, this.animalHitPenalty - dt);
+      p.throttle = input.throttle * 0.12;
+      p.brake = Math.max(input.brake, 0.18);
+      p.handbrake = 0;
       physicsInput = p;
     }
 
