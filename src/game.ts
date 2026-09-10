@@ -1010,8 +1010,8 @@ export class Game {
     const hint = document.getElementById("garage-hint");
     if (hint) {
       const hints: Record<VehicleKind, string> = {
-        car: "Car selected — all AI rivals become cars",
-        bike: "Bike selected — all AI rivals become bikes",
+        car: "Car selected — same speed as bikes, AI rivals become cars",
+        bike: "Bike selected — same speed as cars, AI rivals become bikes",
         truck: "Monster truck selected — AI rivals stay in cars",
         tank: "Tank selected — AI rivals stay in cars",
         bird: "Bird mode — WASD · Space up · C down · V look down · Shift boost",
@@ -3425,13 +3425,30 @@ export class Game {
     }
   }
 
-  /** Cars get the drive track; bikes only get the motorcycle engine sample. */
+  /** Procedural car/bike engines (same speed curve; timbre differs). */
   private startRaceDriveAudio() {
-    if (this.player?.mesh.userData.kind === "bike") {
-      this.audio.stopDriveMusic();
-    } else {
-      this.audio.playDriveMusic();
+    this.audio.stopMenuMusic();
+    // Engine starts on the first updateDriveEngine frame after GO.
+  }
+
+  /** Shared car/bike engine + gear-shift cue (bird is silent). */
+  private tickDriveAudio(throttle: number) {
+    if (!this.player || this.onlineWrecked || this.finished) {
+      this.audio.stopDriveEngine();
+      return;
     }
+    const kind = this.player.mesh.userData.kind as string;
+    if (kind === "bird") {
+      this.audio.stopDriveEngine();
+      return;
+    }
+    const engineKind = kind === "bike" ? "bike" : "car";
+    this.audio.updateDriveEngine(
+      engineKind,
+      this.player.state.speed,
+      throttle,
+      this.player.state.gear,
+    );
   }
 
   private get countingDown() {
@@ -3667,11 +3684,7 @@ export class Game {
           }
           // After mesh pose is final so the burn stays glued to the wreck.
           this.localWreckFire?.update(dt);
-          if (this.player.mesh.userData.kind === "bike") {
-            this.audio.updateBikeEngine(this.player.state.speed, input.throttle);
-          } else {
-            this.audio.stopBikeEngine();
-          }
+          this.tickDriveAudio(input.throttle);
           if (input.fire) this.tryFireTankShell();
           const isBird = this.player.mesh.userData.kind === "bird";
           if (this.onlineWrecked) {

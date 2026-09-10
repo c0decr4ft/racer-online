@@ -1,21 +1,25 @@
 /**
- * Web Audio — countdown beeps / explode boom + looping menu/drive music + bike engine.
- * Unlocks on first user gesture (Start / BOARD / overlay click).
- * Speaker toggle mutes everything via a top-level gain (persisted in localStorage).
+ * Web Audio — countdown / explode / menu music + procedural car & bike engines.
+ * Unlocks on first user gesture. Speaker mute persists in localStorage.
  *
- * Explode SFX: public/audio/explode.mp3 — Freesound “explosion-42132” (freesound_community).
- * Bike engine: public/audio/bike-engine.mp3 — kimsa motorcycle sample (looped, pitched by speed).
+ * Engines are synthesized (no loop samples) so car and bike share the same
+ * speed→RPM mapping; only timbre differs. Gear shifts play a short mechanical cue.
+ *
+ * Explode SFX: public/audio/explode.mp3 — Freesound “explosion-42132”.
+ * Menu music: public/audio/menu.mp3.
  */
 
-type MusicMode = "off" | "menu" | "drive";
+import type { Gear } from "./input";
+import { GEAR_STATS } from "./physics/vehicleTuning";
+
+type MusicMode = "off" | "menu";
+type EngineKind = "car" | "bike";
 
 const MENU_VOL = 0.28;
-const DRIVE_VOL = 0.34;
 const SFX_MASTER_VOL = 0.55;
-/** Sampled wall-explode crash (separate from synthesized animal-hit boom). */
 const EXPLODE_VOL = 0.72;
-/** Bike engine loop — sits under drive music, rises with speed. */
-const BIKE_ENGINE_VOL = 0.42;
+const CAR_ENGINE_VOL = 0.38;
+const BIKE_ENGINE_VOL = 0.36;
 const USER_MUTE_KEY = "racer-online-muted";
 
 export class GameAudio {
@@ -23,7 +27,7 @@ export class GameAudio {
   /** Top-level bus — speaker mute sets this to 0 (all SFX + music). */
   private output: GainNode | null = null;
   private master: GainNode | null = null;
-  /** Separate bus so pause/finish SFX mute doesn't stop menu/drive routing. */
+  /** Separate bus so pause/finish SFX mute doesn't stop menu routing. */
   private musicGain: GainNode | null = null;
 
   private unlocked = false;
@@ -33,17 +37,25 @@ export class GameAudio {
   private userMuted = false;
 
   private menuBuffer: AudioBuffer | null = null;
-  private driveBuffer: AudioBuffer | null = null;
   private explodeBuffer: AudioBuffer | null = null;
-  private bikeBuffer: AudioBuffer | null = null;
   private menuSource: AudioBufferSourceNode | null = null;
-  private driveSource: AudioBufferSourceNode | null = null;
-  private bikeSource: AudioBufferSourceNode | null = null;
-  private bikeGain: GainNode | null = null;
   private musicMode: MusicMode = "off";
   private wantedMusic: MusicMode = "off";
   private loadPromise: Promise<void> | null = null;
   private musicSeq = 0;
+
+  /** Procedural drive engine (car or bike). */
+  private engineKind: EngineKind | null = null;
+  private engineGain: GainNode | null = null;
+  private engineFilter: BiquadFilterNode | null = null;
+  private engineOscA: OscillatorNode | null = null;
+  private engineOscB: OscillatorNode | null = null;
+  private engineOscC: OscillatorNode | null = null;
+  private engineNoise: AudioBufferSourceNode | null = null;
+  private engineNoiseGain: GainNode | null = null;
+  private engineNoiseFilter: BiquadFilterNode | null = null;
+  private lastGear: Gear | null = null;
+  private noiseBuf: AudioBuffer | null = null;
 
   constructor() {
     try {
@@ -92,14 +104,13 @@ export class GameAudio {
   mute(): void {
     this.muted = true;
     this.setMasterGain(0, 0.08);
-    this.stopBikeEngine();
+    this.stopDriveEngine();
   }
 
   /** Unmute SFX while driving / countdown (after unlock). */
   unmute(): void {
     this.muted = false;
     if (!this.unlocked || !this.master || !this.ctx) return;
-    // Snap up so the first countdown beep isn't swallowed by a slow ramp
     const now = this.ctx.currentTime;
     this.master.gain.cancelScheduledValues(now);
     this.master.gain.setValueAtTime(SFX_MASTER_VOL, now);
@@ -116,96 +127,254 @@ export class GameAudio {
     }
   }
 
-  /** Looping race / Test Drive music (after GO). Cars only — bikes use the engine sample. */
+  /** @deprecated Cars use procedural engines now — kept as a no-op for call sites. */
   playDriveMusic(): void {
-    this.stopBikeEngine();
-    void this.setMusic("drive");
+    this.stopMenuMusic();
   }
 
   stopDriveMusic(): void {
-    if (this.wantedMusic === "drive" || this.musicMode === "drive") {
-      void this.setMusic("off");
-    }
+    /* drive music removed — engines are procedural */
   }
 
-  /** Stop whichever music track is playing (menu or drive). Does not stop the bike engine. */
+  /** Stop menu music. Does not stop the drive engine. */
   stopMusic(): void {
     void this.setMusic("off");
   }
 
-  /** Kill drive music + bike engine (pause / finish / explode / home). */
+  /** Kill drive engine + menu (pause / finish / explode / home). */
   stopRaceAudio(): void {
-    this.stopDriveMusic();
-    this.stopBikeEngine();
+    this.stopDriveEngine();
   }
 
-  /**
-   * Start / keep the motorcycle engine loop while racing on a bike.
-   * Call every frame with current speed (m/s) and throttle 0–1.
-   * Stops the car drive track so only the bike sample is audible.
-   */
+  /** @deprecated Use updateDriveEngine — alias kept for older call sites. */
   updateBikeEngine(speedMs: number, throttle: number): void {
-    if (!this.ready || !this.bikeBuffer || !this.ctx || !this.master) {
-      this.stopBikeEngine();
-      return;
-    }
-    // Bikes never share the car drive loop
-    if (this.wantedMusic === "drive" || this.musicMode === "drive") {
-      this.stopDriveMusic();
-    }
-    if (!this.bikeSource || !this.bikeGain) {
-      this.startBikeEngine();
-      if (!this.bikeSource || !this.bikeGain) return;
-    }
-    const kmh = Math.max(0, speedMs) * 3.6;
-    // Idle ~0.75×, cruise ~1.0×, top end ~1.45× — sample stays recognizable
-    const rate = 0.72 + Math.min(1, kmh / 180) * 0.55 + Math.max(0, throttle) * 0.12;
-    const vol =
-      BIKE_ENGINE_VOL *
-      (0.22 + Math.min(1, kmh / 140) * 0.58 + Math.max(0, throttle) * 0.2);
-    const now = this.ctx.currentTime;
-    this.bikeSource.playbackRate.setTargetAtTime(rate, now, 0.08);
-    this.bikeGain.gain.setTargetAtTime(Math.max(0.0001, vol), now, 0.06);
+    this.updateDriveEngine("bike", speedMs, throttle, 1);
   }
 
   stopBikeEngine(): void {
-    if (this.bikeSource) {
+    this.stopDriveEngine();
+  }
+
+  /**
+   * Procedural car/bike engine — same speed→RPM curve for both; timbre differs.
+   * Plays a shift clunk when `gear` changes.
+   */
+  updateDriveEngine(
+    kind: EngineKind,
+    speedMs: number,
+    throttle: number,
+    gear: Gear,
+  ): void {
+    if (!this.ready || !this.ctx || !this.master) {
+      this.stopDriveEngine();
+      return;
+    }
+    this.stopMenuMusic();
+
+    if (this.lastGear != null && gear !== this.lastGear && gear !== "N") {
+      this.playGearShift(kind);
+    }
+    this.lastGear = gear;
+
+    if (!this.engineGain || this.engineKind !== kind) {
+      this.startDriveEngine(kind);
+      if (!this.engineGain) return;
+    }
+
+    const kmh = Math.max(0, speedMs) * 3.6;
+    const th = Math.max(0, Math.min(1, throttle));
+    const gearMax =
+      gear === "N" || gear === "R"
+        ? gear === "R"
+          ? GEAR_STATS.R.max * 3.6
+          : 40
+        : GEAR_STATS[gear].max * 3.6;
+    // Shared RPM feel — identical mapping for car and bike.
+    const inGear = Math.max(0, Math.min(1.05, kmh / Math.max(8, gearMax)));
+    const idle = kmh < 2 ? 1 : 0;
+    const rpm = idle * 0.22 + inGear * 0.78 + th * 0.12;
+
+    const now = this.ctx.currentTime;
+    const isBike = kind === "bike";
+    // Bike: higher buzz. Car: deeper growl. Same rpm drives both.
+    const base = isBike ? 88 : 48;
+    const span = isBike ? 210 : 145;
+    const f0 = base + rpm * span;
+    const f1 = f0 * (isBike ? 2.05 : 1.55);
+    const f2 = f0 * (isBike ? 3.1 : 2.35);
+
+    this.engineOscA?.frequency.setTargetAtTime(f0, now, 0.05);
+    this.engineOscB?.frequency.setTargetAtTime(f1, now, 0.05);
+    this.engineOscC?.frequency.setTargetAtTime(f2, now, 0.06);
+
+    const cutoff = (isBike ? 900 : 520) + rpm * (isBike ? 2800 : 1600) + th * 400;
+    this.engineFilter?.frequency.setTargetAtTime(cutoff, now, 0.07);
+    this.engineNoiseFilter?.frequency.setTargetAtTime(
+      (isBike ? 1400 : 700) + rpm * (isBike ? 2200 : 1100),
+      now,
+      0.08,
+    );
+
+    const peak = isBike ? BIKE_ENGINE_VOL : CAR_ENGINE_VOL;
+    const vol =
+      peak *
+      (0.14 + Math.min(1, kmh / 160) * 0.55 + th * 0.28 + (gear === "N" ? 0.08 : 0));
+    this.engineGain.gain.setTargetAtTime(Math.max(0.0001, vol), now, 0.06);
+    if (this.engineNoiseGain) {
+      this.engineNoiseGain.gain.setTargetAtTime(
+        Math.max(0.0001, vol * (isBike ? 0.22 : 0.35) * (0.35 + th * 0.65)),
+        now,
+        0.08,
+      );
+    }
+  }
+
+  stopDriveEngine(): void {
+    for (const osc of [this.engineOscA, this.engineOscB, this.engineOscC]) {
+      if (!osc) continue;
       try {
-        this.bikeSource.stop();
+        osc.stop();
       } catch {
         /* already stopped */
       }
       try {
-        this.bikeSource.disconnect();
+        osc.disconnect();
       } catch {
         /* already disconnected */
       }
-      this.bikeSource = null;
     }
-    if (this.bikeGain) {
+    this.engineOscA = null;
+    this.engineOscB = null;
+    this.engineOscC = null;
+    if (this.engineNoise) {
       try {
-        this.bikeGain.disconnect();
+        this.engineNoise.stop();
+      } catch {
+        /* already stopped */
+      }
+      try {
+        this.engineNoise.disconnect();
       } catch {
         /* already disconnected */
       }
-      this.bikeGain = null;
+      this.engineNoise = null;
     }
+    for (const node of [
+      this.engineNoiseGain,
+      this.engineNoiseFilter,
+      this.engineFilter,
+      this.engineGain,
+    ]) {
+      if (!node) continue;
+      try {
+        node.disconnect();
+      } catch {
+        /* already disconnected */
+      }
+    }
+    this.engineNoiseGain = null;
+    this.engineNoiseFilter = null;
+    this.engineFilter = null;
+    this.engineGain = null;
+    this.engineKind = null;
+    this.lastGear = null;
   }
 
-  private startBikeEngine(): void {
-    if (!this.ready || !this.bikeBuffer || !this.ctx || !this.master) return;
-    if (this.bikeSource) return;
-    const gain = this.ctx.createGain();
+  private startDriveEngine(kind: EngineKind): void {
+    if (!this.ready || !this.ctx || !this.master) return;
+    this.stopDriveEngine();
+    const ctx = this.ctx;
+    const gain = ctx.createGain();
     gain.gain.value = 0.0001;
     gain.connect(this.master);
-    const src = this.ctx.createBufferSource();
-    src.buffer = this.bikeBuffer;
-    src.loop = true;
-    src.playbackRate.value = 0.75;
-    src.connect(gain);
-    src.start(0);
-    this.bikeGain = gain;
-    this.bikeSource = src;
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.Q.value = kind === "bike" ? 0.9 : 1.2;
+    filter.frequency.value = kind === "bike" ? 1200 : 600;
+    filter.connect(gain);
+
+    const mkOsc = (type: OscillatorType, detune: number) => {
+      const osc = ctx.createOscillator();
+      osc.type = type;
+      osc.detune.value = detune;
+      osc.frequency.value = kind === "bike" ? 90 : 50;
+      const g = ctx.createGain();
+      g.gain.value = type === "sawtooth" ? 0.28 : type === "square" ? 0.12 : 0.18;
+      osc.connect(g);
+      g.connect(filter);
+      osc.start();
+      return osc;
+    };
+
+    this.engineOscA = mkOsc("sawtooth", 0);
+    this.engineOscB = mkOsc(kind === "bike" ? "square" : "triangle", 7);
+    this.engineOscC = mkOsc(kind === "bike" ? "sawtooth" : "sine", -11);
+
+    // Exhaust / intake noise bed
+    const nFilter = ctx.createBiquadFilter();
+    nFilter.type = "bandpass";
+    nFilter.frequency.value = kind === "bike" ? 1600 : 800;
+    nFilter.Q.value = 0.7;
+    const nGain = ctx.createGain();
+    nGain.gain.value = 0.0001;
+    nFilter.connect(nGain);
+    nGain.connect(gain);
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.ensureNoiseBuffer(1.2);
+    noise.loop = true;
+    noise.connect(nFilter);
+    noise.start();
+
+    this.engineNoise = noise;
+    this.engineNoiseFilter = nFilter;
+    this.engineNoiseGain = nGain;
+    this.engineFilter = filter;
+    this.engineGain = gain;
+    this.engineKind = kind;
+  }
+
+  /** Mechanical shift — short clutch scrape + engagement click. */
+  playGearShift(kind: EngineKind = "car"): void {
+    if (!this.ready || !this.ctx || !this.master) return;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    const isBike = kind === "bike";
+
+    // Clutch / chain scrape
+    const nSrc = ctx.createBufferSource();
+    nSrc.buffer = this.ensureNoiseBuffer(0.08);
+    const nF = ctx.createBiquadFilter();
+    nF.type = "bandpass";
+    nF.frequency.value = isBike ? 2400 : 900;
+    nF.Q.value = 1.4;
+    const nG = ctx.createGain();
+    nG.gain.setValueAtTime(0.0001, now);
+    nG.gain.exponentialRampToValueAtTime(isBike ? 0.22 : 0.28, now + 0.004);
+    nG.gain.exponentialRampToValueAtTime(0.0001, now + (isBike ? 0.07 : 0.09));
+    nSrc.connect(nF);
+    nF.connect(nG);
+    nG.connect(this.master);
+    nSrc.start(now);
+    nSrc.stop(now + 0.12);
+
+    // Engagement tick (two stacked tones)
+    const click = (freq: number, when: number, peak: number, dur: number) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = "square";
+      osc.frequency.setValueAtTime(freq, when);
+      osc.frequency.exponentialRampToValueAtTime(freq * 0.55, when + dur);
+      g.gain.setValueAtTime(0.0001, when);
+      g.gain.exponentialRampToValueAtTime(peak, when + 0.003);
+      g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+      osc.connect(g);
+      g.connect(this.master!);
+      osc.start(when);
+      osc.stop(when + dur + 0.02);
+    };
+    click(isBike ? 520 : 180, now + 0.02, isBike ? 0.14 : 0.18, 0.05);
+    click(isBike ? 780 : 260, now + 0.035, isBike ? 0.1 : 0.12, 0.04);
   }
 
   /**
@@ -218,8 +387,7 @@ export class GameAudio {
     const now = ctx.currentTime;
     const isGo = label === "GO";
 
-    // Prep: same mid pitch; GO: higher + longer (classic start fanfare)
-    const freq = isGo ? 1046.5 : 659.25; // C6 vs E5
+    const freq = isGo ? 1046.5 : 659.25;
     const dur = isGo ? 0.48 : 0.11;
 
     const osc = ctx.createOscillator();
@@ -227,11 +395,9 @@ export class GameAudio {
     osc.type = "square";
     osc.frequency.setValueAtTime(freq, now);
 
-    // Crisp electronic envelope — no weird sweeps on the numbers
     gain.gain.setValueAtTime(0.0001, now);
     gain.gain.exponentialRampToValueAtTime(isGo ? 0.2 : 0.18, now + 0.008);
     if (isGo) {
-      // Hold then fade — longer distinctive start cue
       gain.gain.setValueAtTime(0.2, now + 0.28);
       gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
     } else {
@@ -243,7 +409,6 @@ export class GameAudio {
     osc.start(now);
     osc.stop(now + dur + 0.02);
 
-    // GO: second oscillator a fifth up for a simple fanfare (still beep-like)
     if (isGo) {
       const osc2 = ctx.createOscillator();
       const gain2 = ctx.createGain();
@@ -336,7 +501,6 @@ export class GameAudio {
 
     if (mode === this.musicMode) {
       if (mode === "menu" && this.menuSource) return;
-      if (mode === "drive" && this.driveSource) return;
       if (mode === "off") return;
     }
 
@@ -345,39 +509,35 @@ export class GameAudio {
 
     if (mode === "off" || !this.musicGain) return;
 
-    const buffer = mode === "menu" ? this.menuBuffer : this.driveBuffer;
+    const buffer = this.menuBuffer;
     if (!buffer) return;
 
     const src = this.ctx!.createBufferSource();
     src.buffer = buffer;
     src.loop = true;
     src.connect(this.musicGain);
-    const vol = mode === "menu" ? MENU_VOL : DRIVE_VOL;
     const now = this.ctx!.currentTime;
     this.musicGain.gain.cancelScheduledValues(now);
     this.musicGain.gain.setValueAtTime(0.0001, now);
-    this.musicGain.gain.exponentialRampToValueAtTime(vol, now + 0.12);
+    this.musicGain.gain.exponentialRampToValueAtTime(MENU_VOL, now + 0.12);
     src.start(0);
-    if (mode === "menu") this.menuSource = src;
-    else this.driveSource = src;
+    this.menuSource = src;
   }
 
   private stopMusicSources(): void {
-    for (const src of [this.menuSource, this.driveSource]) {
-      if (!src) continue;
+    if (this.menuSource) {
       try {
-        src.stop();
+        this.menuSource.stop();
       } catch {
         /* already stopped */
       }
       try {
-        src.disconnect();
+        this.menuSource.disconnect();
       } catch {
         /* already disconnected */
       }
     }
     this.menuSource = null;
-    this.driveSource = null;
     this.musicMode = "off";
     if (this.musicGain && this.ctx) {
       const now = this.ctx.currentTime;
@@ -390,7 +550,7 @@ export class GameAudio {
     if (!this.loadPromise) {
       this.loadPromise = this.loadTracks().catch((err) => {
         this.loadPromise = null;
-        console.warn("Failed to load music tracks", err);
+        console.warn("Failed to load audio tracks", err);
       });
     }
     return this.loadPromise;
@@ -398,22 +558,15 @@ export class GameAudio {
 
   private async loadTracks(): Promise<void> {
     const base = import.meta.env.BASE_URL;
-    const [menu, drive, explode, bike] = await Promise.all([
+    const [menu, explode] = await Promise.all([
       this.fetchBuffer(`${base}audio/menu.mp3`),
-      this.fetchBuffer(`${base}audio/drive.mp3`),
       this.fetchBuffer(`${base}audio/explode.mp3`).catch((err) => {
         console.warn("Failed to load explode SFX", err);
         return null;
       }),
-      this.fetchBuffer(`${base}audio/bike-engine.mp3`).catch((err) => {
-        console.warn("Failed to load bike engine SFX", err);
-        return null;
-      }),
     ]);
     this.menuBuffer = menu;
-    this.driveBuffer = drive;
     this.explodeBuffer = explode;
-    this.bikeBuffer = bike;
   }
 
   private async fetchBuffer(url: string): Promise<AudioBuffer> {
@@ -432,17 +585,14 @@ export class GameAudio {
           .webkitAudioContext;
       this.ctx = new Ctx();
 
-      // output (user mute) → destination
       this.output = this.ctx.createGain();
       this.output.gain.value = this.userMuted ? 0 : 1;
       this.output.connect(this.ctx.destination);
 
-      // SFX master → output
       this.master = this.ctx.createGain();
       this.master.gain.value = 0;
       this.master.connect(this.output);
 
-      // Music → output (independent of pause SFX mute)
       this.musicGain = this.ctx.createGain();
       this.musicGain.gain.value = 0;
       this.musicGain.connect(this.output);
@@ -455,12 +605,14 @@ export class GameAudio {
     this.master.gain.setTargetAtTime(value, this.ctx.currentTime, tau);
   }
 
-  private makeNoiseBuffer(seconds: number): AudioBuffer {
+  private ensureNoiseBuffer(seconds: number): AudioBuffer {
+    if (this.noiseBuf && this.noiseBuf.duration >= seconds - 0.01) return this.noiseBuf;
     const ctx = this.ctx!;
     const len = Math.floor(ctx.sampleRate * seconds);
     const buf = ctx.createBuffer(1, len, ctx.sampleRate);
     const data = buf.getChannelData(0);
     for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    this.noiseBuf = buf;
     return buf;
   }
 
@@ -469,7 +621,7 @@ export class GameAudio {
     const ctx = this.ctx;
     const now = ctx.currentTime;
     const src = ctx.createBufferSource();
-    src.buffer = this.makeNoiseBuffer(0.12);
+    src.buffer = this.ensureNoiseBuffer(0.12);
     const filter = ctx.createBiquadFilter();
     filter.type = "lowpass";
     filter.frequency.value = cutoff;
