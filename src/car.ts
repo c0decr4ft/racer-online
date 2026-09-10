@@ -254,14 +254,20 @@ export function disposeVehicleGroup(root: THREE.Object3D) {
 }
 
 /** Toggle lamp glow + beams (night driving). Safe on AI/remotes (emissive only). */
-export function setVehicleHeadlights(root: THREE.Group | undefined, on: boolean) {
+export function setVehicleHeadlights(
+  root: THREE.Group | undefined,
+  on: boolean,
+  opts?: { beams?: boolean },
+) {
   if (!root) return;
   root.userData.headlightsOn = on;
+  const allowBeams = opts?.beams !== false;
   const beams = root.userData.headBeams as THREE.SpotLight[] | undefined;
   if (beams) {
     for (const b of beams) {
-      b.intensity = on ? HEAD_BEAM_INTENSITY : 0;
-      b.visible = on;
+      const lit = on && allowBeams;
+      b.intensity = lit ? HEAD_BEAM_INTENSITY : 0;
+      b.visible = lit;
     }
   }
   const heads = root.userData.headLightMaterials as THREE.MeshStandardMaterial[] | undefined;
