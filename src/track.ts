@@ -700,8 +700,95 @@ function plantVegetation(
 }
 
 /**
+ * Volumetric alpine peak — irregular radial taper so it reads as a mountain
+ * from the track (not a flat range slab / snow blob).
+ * Unit height ≈ 1, base radius ≈ 1.
+ */
+function createVolumetricPeakGeometry(
+  sides = 9,
+  levels = 6,
+  seed = 0,
+): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const push = (
+    ax: number,
+    ay: number,
+    az: number,
+    bx: number,
+    by: number,
+    bz: number,
+    cx: number,
+    cy: number,
+    cz: number,
+  ) => {
+    positions.push(ax, ay, az, bx, by, bz, cx, cy, cz);
+  };
+
+  type Ring = { y: number; pts: { x: number; z: number }[] };
+  const rings: Ring[] = [];
+  for (let li = 0; li <= levels; li++) {
+    const t = li / levels; // 0 base → 1 tip
+    const y = t;
+    // Flare then taper — wide shoulders, sharp summit
+    const radius = Math.pow(1 - t, 1.15) * (0.92 + hash2(seed, li + 3) * 0.18);
+    const pts: { x: number; z: number }[] = [];
+    for (let s = 0; s < sides; s++) {
+      const a = (s / sides) * Math.PI * 2;
+      const jag =
+        0.82 +
+        hash2(seed * 17 + s, li * 9 + 5) * 0.28 +
+        hash2(s * 3 + li, seed + 11) * 0.12;
+      const r = Math.max(0.02, radius * jag);
+      pts.push({ x: Math.cos(a) * r, z: Math.sin(a) * r });
+    }
+    rings.push({ y, pts });
+  }
+
+  for (let li = 0; li < rings.length - 1; li++) {
+    const lo = rings[li]!;
+    const hi = rings[li + 1]!;
+    for (let s = 0; s < sides; s++) {
+      const s1 = (s + 1) % sides;
+      const a0 = lo.pts[s]!;
+      const a1 = lo.pts[s1]!;
+      const b0 = hi.pts[s]!;
+      const b1 = hi.pts[s1]!;
+      push(a0.x, lo.y, a0.z, a1.x, lo.y, a1.z, b1.x, hi.y, b1.z);
+      push(a0.x, lo.y, a0.z, b1.x, hi.y, b1.z, b0.x, hi.y, b0.z);
+    }
+  }
+  // Tip fan
+  const tip = rings[rings.length - 1]!;
+  const prev = rings[rings.length - 2]!;
+  for (let s = 0; s < sides; s++) {
+    const s1 = (s + 1) % sides;
+    const p0 = prev.pts[s]!;
+    const p1 = prev.pts[s1]!;
+    push(p0.x, prev.y, p0.z, p1.x, prev.y, p1.z, 0, tip.y, 0);
+  }
+  // Flat base (down-facing) so underside doesn't open
+  const base = rings[0]!;
+  for (let s = 0; s < sides; s++) {
+    const s1 = (s + 1) % sides;
+    const p0 = base.pts[s]!;
+    const p1 = base.pts[s1]!;
+    push(0, 0, 0, p1.x, 0, p1.z, p0.x, 0, p0.z);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/** Snow cap — top third of a peak, slightly flared so it seats on rock. */
+function createSnowCapGeometry(seed = 0): THREE.BufferGeometry {
+  return createVolumetricPeakGeometry(8, 4, seed + 40);
+}
+
+/**
  * Extruded mountain-range chunk: jagged skyline along X, thickness along Z.
- * Reads as a ridge wall, not a standalone cone/hat.
+ * Kept for foothill bands only.
  */
 function createRangeChunkGeometry(
   profile: readonly (readonly [number, number])[],
@@ -737,23 +824,6 @@ function createRangeChunkGeometry(
   geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
   geo.computeVertexNormals();
   return geo;
-}
-
-/** Tall multi-peak range segment (unit X ≈ ±1, peak Y ≈ 1). */
-function createMountainRangeGeometry(): THREE.BufferGeometry {
-  return createRangeChunkGeometry([
-    [-1.0, 0.08],
-    [-0.82, 0.32],
-    [-0.62, 0.22],
-    [-0.4, 0.72],
-    [-0.22, 0.48],
-    [-0.05, 0.95],
-    [0.18, 0.55],
-    [0.38, 0.82],
-    [0.58, 0.4],
-    [0.78, 0.62],
-    [1.0, 0.12],
-  ], 0.62);
 }
 
 /** Lower foothill band — wide and squat. */
@@ -1446,51 +1516,69 @@ function plantBiomeProps(
     plantCanyonWalls(group, path, clearance, dummy, bounds);
   }
 
-  // Summit Pass — horizon backdrop ring (never beside the track)
+  // Summit Pass — volumetric peaks on a horizon ring (readable from the circuit)
   if (biome.props === "mountains") {
     const rockFar = new THREE.MeshStandardMaterial({
-      color: 0x7a8694,
-      roughness: 0.95,
-      metalness: 0.03,
-      flatShading: true,
-      // Soft fill so the skyline reads under night fog
-      emissive: 0x2a3440,
-      emissiveIntensity: 0.08,
-    });
-    const rockMid = new THREE.MeshStandardMaterial({
-      color: 0x8a949e,
-      roughness: 0.93,
+      color: 0x6e7a88,
+      roughness: 0.92,
       metalness: 0.04,
       flatShading: true,
-      emissive: 0x303844,
-      emissiveIntensity: 0.06,
+      emissive: 0x243040,
+      emissiveIntensity: 0.07,
+    });
+    const rockMid = new THREE.MeshStandardMaterial({
+      color: 0x7f8a96,
+      roughness: 0.9,
+      metalness: 0.04,
+      flatShading: true,
+      emissive: 0x2c3644,
+      emissiveIntensity: 0.05,
+    });
+    const rockNear = new THREE.MeshStandardMaterial({
+      color: 0x8a949e,
+      roughness: 0.88,
+      metalness: 0.05,
+      flatShading: true,
     });
     const snowMat = new THREE.MeshStandardMaterial({
-      color: 0xf2f6fa,
-      roughness: 0.7,
+      color: 0xf4f7fb,
+      roughness: 0.78,
       metalness: 0.02,
       flatShading: true,
-      emissive: 0xa8b4c4,
-      emissiveIntensity: 0.2,
+      emissive: 0xb8c4d4,
+      emissiveIntensity: 0.12,
     });
-    const rangeGeo = createMountainRangeGeometry();
+
+    // A few peak variants so the ring doesn't look stamped.
+    const peakGeos = [
+      createVolumetricPeakGeometry(9, 6, 1),
+      createVolumetricPeakGeometry(10, 7, 2),
+      createVolumetricPeakGeometry(8, 6, 3),
+    ];
+    const capGeos = [
+      createSnowCapGeometry(1),
+      createSnowCapGeometry(2),
+      createSnowCapGeometry(3),
+    ];
     const hillGeo = createFoothillGeometry();
     const boulderGeo = new THREE.DodecahedronGeometry(1, 0);
 
-    // Continuous skyline around the circuit center
-    const backdropN = 32;
-    const midN = 20;
-    const snowN = backdropN;
-    const ranges = new THREE.InstancedMesh(rangeGeo, rockFar, backdropN);
+    const backdropN = 28;
+    const midN = 18;
+    const peaks = new THREE.InstancedMesh(peakGeos[0]!, rockFar, backdropN);
+    // Manual instances with mixed geos aren't supported on one InstancedMesh —
+    // use one geo and vary scale/yaw instead (still reads as distinct peaks).
+    const snowCaps = new THREE.InstancedMesh(capGeos[0]!, snowMat, backdropN);
     const mids = new THREE.InstancedMesh(hillGeo, rockMid, midN);
-    const snow = new THREE.InstancedMesh(rangeGeo, snowMat, snowN);
+    const nearPeaks = new THREE.InstancedMesh(peakGeos[1]!, rockNear, 14);
     const boulderCount = Math.min(70, Math.max(20, Math.floor(poses.length * 0.1)));
     const boulders = new THREE.InstancedMesh(boulderGeo, rockMid, boulderCount);
-    ranges.count = 0;
+    peaks.count = 0;
+    snowCaps.count = 0;
     mids.count = 0;
-    snow.count = 0;
+    nearPeaks.count = 0;
     boulders.count = 0;
-    for (const mesh of [ranges, mids, snow, boulders]) {
+    for (const mesh of [peaks, snowCaps, mids, nearPeaks, boulders]) {
       mesh.castShadow = false;
       mesh.receiveShadow = false;
       mesh.frustumCulled = true;
@@ -1498,33 +1586,35 @@ function plantBiomeProps(
 
     const cx = bounds.cx;
     const cz = bounds.cz;
-    // Sit past the course — horizon ring (capped so night fog still shows them)
     const backdropR = Math.min(290, Math.max(bounds.spanX, bounds.spanZ) * 0.55 + 180);
     const midR = Math.min(230, Math.max(bounds.spanX, bounds.spanZ) * 0.5 + 120);
+    const nearR = Math.min(200, Math.max(bounds.spanX, bounds.spanZ) * 0.42 + 95);
 
     for (let i = 0; i < backdropN; i++) {
-      const a = (i / backdropN) * Math.PI * 2;
-      const x = cx + Math.cos(a) * backdropR;
-      const z = cz + Math.sin(a) * backdropR;
-      const along = 55 + hash2(i, 5) * 25;
-      const thick = 18 + hash2(i, 7) * 10;
-      const h = 45 + hash2(i, 11) * 35;
-      // Face the circuit: local X runs along the ring, local Z points inward
-      const yaw = a + Math.PI / 2;
+      const a = (i / backdropN) * Math.PI * 2 + hash2(i, 2) * 0.08;
+      const x = cx + Math.cos(a) * (backdropR + (hash2(i, 4) - 0.5) * 18);
+      const z = cz + Math.sin(a) * (backdropR + (hash2(i, 6) - 0.5) * 18);
+      const base = 22 + hash2(i, 8) * 14;
+      const h = 48 + hash2(i, 11) * 42;
+      const yaw = hash2(i, 13) * Math.PI * 2;
 
-      dummy.position.set(x, -4, z);
-      dummy.scale.set(along, h, thick);
-      dummy.rotation.set(0, yaw + (hash2(i, 13) - 0.5) * 0.08, 0);
+      dummy.position.set(x, -2.5, z);
+      dummy.scale.set(base, h, base * (0.85 + hash2(i, 15) * 0.3));
+      dummy.rotation.set(0, yaw, 0);
       dummy.updateMatrix();
-      ranges.setMatrixAt(ranges.count++, dummy.matrix);
+      peaks.setMatrixAt(peaks.count++, dummy.matrix);
 
-      dummy.position.set(x, h * 0.5, z);
-      dummy.scale.set(along * 0.48, h * 0.28, thick * 0.48);
+      // Snow sits on the tip — same transform, smaller & lifted
+      const capH = h * (0.22 + hash2(i, 17) * 0.08);
+      const capR = base * (0.28 + hash2(i, 19) * 0.1);
+      dummy.position.set(x, -2.5 + h * 0.72, z);
+      dummy.scale.set(capR, capH, capR * (0.9 + hash2(i, 21) * 0.2));
+      dummy.rotation.set(0, yaw + 0.4, 0);
       dummy.updateMatrix();
-      snow.setMatrixAt(snow.count++, dummy.matrix);
+      snowCaps.setMatrixAt(snowCaps.count++, dummy.matrix);
     }
 
-    // Slightly nearer mid-horizon band (still far from the ribbon)
+    // Mid foothill ridges (still far from the ribbon)
     for (let i = 0; i < midN; i++) {
       const a = ((i + 0.5) / midN) * Math.PI * 2;
       const x = cx + Math.cos(a) * midR;
@@ -1533,9 +1623,7 @@ function plantBiomeProps(
       const thick = 12 + hash2(i, 19) * 8;
       const h = 18 + hash2(i, 23) * 16;
       const yaw = a + Math.PI / 2;
-      // Clearance must cover the whole foothill body, not just its center
       if (!clearance.sceneryOk(x, z, Math.max(24, along * 0.5 + 6))) continue;
-      // …and never plant a foothill on top of a pine (trees sinking into mountains)
       const foothillFootprint = Math.max(along, thick) * 0.5 + 4;
       let hitsTree = false;
       for (const p of poses) {
@@ -1555,6 +1643,31 @@ function plantBiomeProps(
       mids.setMatrixAt(mids.count++, dummy.matrix);
     }
 
+    // Closer secondary peaks (still outside runoff) — fills gaps between far giants
+    for (let i = 0; i < 14; i++) {
+      const a = (i / 14) * Math.PI * 2 + 0.2;
+      const x = cx + Math.cos(a) * (nearR + (hash2(i, 31) - 0.5) * 12);
+      const z = cz + Math.sin(a) * (nearR + (hash2(i, 33) - 0.5) * 12);
+      const base = 14 + hash2(i, 35) * 8;
+      if (!clearance.sceneryOk(x, z, base * 0.7 + 8)) continue;
+      let hitsTree = false;
+      for (const p of poses) {
+        const dx = p.x - x;
+        const dz = p.z - z;
+        if (dx * dx + dz * dz < (base + 6) * (base + 6)) {
+          hitsTree = true;
+          break;
+        }
+      }
+      if (hitsTree) continue;
+      const h = 22 + hash2(i, 37) * 18;
+      dummy.position.set(x, -1.8, z);
+      dummy.scale.set(base, h, base * (0.8 + hash2(i, 39) * 0.35));
+      dummy.rotation.set(0, hash2(i, 41) * Math.PI * 2, 0);
+      dummy.updateMatrix();
+      nearPeaks.setMatrixAt(nearPeaks.count++, dummy.matrix);
+    }
+
     // Small rocks only near the course (not mountain walls)
     for (let i = 0; i < poses.length && boulders.count < boulderCount; i++) {
       if (hash2(i * 13, Math.round(poses[i]!.x)) < 0.65) continue;
@@ -1568,12 +1681,17 @@ function plantBiomeProps(
       boulders.setMatrixAt(boulders.count++, dummy.matrix);
     }
 
-    for (const mesh of [ranges, mids, snow, boulders]) {
+    for (const mesh of [peaks, snowCaps, mids, nearPeaks, boulders]) {
       if (!mesh.count) continue;
       mesh.instanceMatrix.needsUpdate = true;
       mesh.computeBoundingSphere();
       group.add(mesh);
     }
+
+    // Dispose unused variant geos (instances use [0]/[1] only)
+    peakGeos[2]?.dispose();
+    capGeos[1]?.dispose();
+    capGeos[2]?.dispose();
 
     // Pine grove + small rocks in the infield center (clear of asphalt / runoff)
     const alpineInfieldTrees = plantAlpineInfieldTrees(
