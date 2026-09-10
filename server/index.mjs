@@ -1919,6 +1919,29 @@ function normalizeEventMode(raw) {
 }
 
 /**
+ * Race-mode claimPot winner draw. Caps payout to the accounted pot (room.potSats
+ * minus tip already taken), never the raw Cashu wallet balance.
+ *
+ * Why: lobby buy-in refunds are async. If a paid player leaves and refund is
+ * slow/fails, their sats can still sit in cashu-pots/<id>.json after the host
+ * starts with a smaller room.potSats. Paying `remaining - fee` would steal those
+ * stranded buy-ins. Surplus stays in the pot file for refund retry / DEV rescue.
+ *
+ * @param {number} potSats
+ * @param {number} tipSats
+ * @param {number} remaining
+ * @param {number} perSendFee
+ */
+function raceClaimWinnerSats(potSats, tipSats, remaining, perSendFee) {
+  const accounted = Math.max(0, Math.round(Number(potSats) || 0));
+  const tip = Math.max(0, Math.round(Number(tipSats) || 0));
+  const bal = Math.max(0, Math.round(Number(remaining) || 0));
+  const fee = Math.max(0, Math.round(Number(perSendFee) || 0));
+  const maxFromAccount = Math.max(0, accounted - tip);
+  return Math.max(0, Math.min(maxFromAccount, Math.max(0, bal - fee)));
+}
+
+/**
  * Lock Battle claimable shares after someone finishes 1st (full race — typically
  * 3 laps). Called only from the finish handler once `winnerId` is set, never mid-race.
  *
@@ -3230,9 +3253,13 @@ wss.on("connection", (ws) => {
             }
           }
 
-          // 2) Winner gets everything left in THIS event's pot, minus send fee.
+          // 2) Winner gets the accounted race pot minus tip and send fee — NOT the
+          //    raw wallet balance. Lobby leave refunds are async; a failed or
+          //    in-flight refund can leave another player's buy-in sats in the
+          //    pot file after race start. Draining `remaining` would hand those
+          //    stranded sats to the winner. Cap to room.potSats (set at start).
           const remaining = await balanceNow();
-          const winnerSats = Math.max(0, remaining - perSendFee);
+          const winnerSats = raceClaimWinnerSats(room.potSats, tipSats, remaining, perSendFee);
           if (winnerSats <= 0 && tipSats <= 0) throw new Error("pot too small to pay out");
           let winnerToken = "";
           if (winnerSats > 0) {
