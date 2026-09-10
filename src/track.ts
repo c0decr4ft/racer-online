@@ -19,6 +19,8 @@ export type TrackData = {
   startPosition: THREE.Vector3;
   startHeading: number;
   width: number;
+  /** Ground AABB (XZ) — bird scout clamps here so you can't fly into empty sky. */
+  worldBounds: { minX: number; maxX: number; minZ: number; maxZ: number };
   /** Centerline height along t — set on drift parks for the underpass grade. */
   heightAt?: (t: number) => number;
   /** dy/ds along the centerline (for visual pitch). */
@@ -5241,6 +5243,12 @@ export function createTrack(
     startPosition: startP.clone().addScaledVector(startN, -2.8),
     startHeading: heading,
     width,
+    worldBounds: {
+      minX: bounds.minX - groundPad,
+      maxX: bounds.maxX + groundPad,
+      minZ: bounds.minZ - groundPad,
+      maxZ: bounds.maxZ + groundPad,
+    },
     heightAt: grade?.heightAt,
     gradeAt: grade?.gradeAt,
   };
