@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
 import { payments, depositProofs, recordPayout, loadPayouts, savePayouts } from "./payments.mjs";
 import { appendActivity, loadActivity, classifyActivityMsg, inferActivityKind, activityStats } from "./activityLog.mjs";
+import { reconcileBattleLeftoverAfterAttempt } from "./battleLeftoverReconcile.mjs";
 import {
   buildBattleCubes,
   buildDroppedBattleCubes,
@@ -1954,15 +1955,43 @@ function finalizeBattleClaimable(room) {
   }
 }
 
+/** Serialize leftover collect per room — concurrent finish/claim/abandon must not double-draw. */
+/** @type {WeakMap<object, Promise<void>>} */
+const battleLeftoverGates = new WeakMap();
+
 /**
  * Move uncollected battle cube sats into the tip wallet (same path as claim tips).
  * Idempotent — safe from finish and again on claim if the first attempt failed.
+ *
+ * Critical: never replace `battleLeftoverSats` with this attempt's tip amount after
+ * an await. Disconnect/deadline can abandon claim shares into leftover during mint
+ * I/O; overwriting would mark those sats collected while they remain in the pot.
  */
 async function collectBattleLeftover(room) {
   if (!room?.isEvent || room.eventMode !== "battle") return;
+  const prev = battleLeftoverGates.get(room) || Promise.resolve();
+  /** @type {() => void} */
+  let release = () => {};
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  battleLeftoverGates.set(
+    room,
+    prev.then(() => gate).catch(() => gate),
+  );
+  await prev.catch(() => {});
+  try {
+    await collectBattleLeftoverLocked(room);
+  } finally {
+    release();
+  }
+}
+
+/** @param {Room} room */
+async function collectBattleLeftoverLocked(room) {
   if (room.battleLeftoverCollected) return;
-  const wanted = Math.max(0, Math.round(room.battleLeftoverSats) || 0);
-  if (wanted <= 0) {
+  const wantedAtStart = Math.max(0, Math.round(room.battleLeftoverSats) || 0);
+  if (wantedAtStart <= 0) {
     room.battleLeftoverCollected = true;
     return;
   }
@@ -1970,10 +1999,16 @@ async function collectBattleLeftover(room) {
   // Retry a prior tip-wallet receive that left a bearer token.
   if (room.battleLeftoverToken) {
     try {
-      const net = await payments.receiveTipToken(room.battleLeftoverToken, wanted);
-      const tipSats = Number.isFinite(net) && net > 0 ? net : wanted;
-      room.battleLeftoverSats = tipSats;
-      room.battleLeftoverCollected = true;
+      const net = await payments.receiveTipToken(room.battleLeftoverToken, wantedAtStart);
+      const tipSats = Number.isFinite(net) && net > 0 ? net : wantedAtStart;
+      const next = reconcileBattleLeftoverAfterAttempt({
+        leftoverSatsNow: room.battleLeftoverSats,
+        wantedAtStart,
+        applied: tipSats,
+        tipCollected: true,
+      });
+      room.battleLeftoverSats = next.leftoverSats;
+      room.battleLeftoverCollected = next.collected;
       room.battleLeftoverToken = "";
       potLog(room, "info", `battle leftover tip-wallet receive ok · ${tipSats} sats`);
       return;
@@ -1984,7 +2019,8 @@ async function collectBattleLeftover(room) {
         "warn",
         `battle leftover tip token collect failed: ${String(err?.message || err).slice(0, 160)}`,
       );
-      // Fall through — try a fresh collectTip if the token is dead.
+      // Keep battleLeftoverToken — sats already left the pot; do not draw again.
+      return;
     }
   }
 
@@ -2001,24 +2037,41 @@ async function collectBattleLeftover(room) {
     unclaimed += Math.max(0, Math.round(sats) || 0);
   }
   const bal = await balanceNow();
+  // Re-read after balance await — abandon may have grown leftover / shrunk claimable.
+  const wanted = Math.max(0, Math.round(room.battleLeftoverSats) || 0);
+  if (wanted <= 0) {
+    room.battleLeftoverCollected = true;
+    return;
+  }
+  unclaimed = 0;
+  for (const [id, sats] of room.battleClaimable || []) {
+    if (room.battleClaimedIds?.has(id)) continue;
+    unclaimed += Math.max(0, Math.round(sats) || 0);
+  }
   const tipCap = Math.min(wanted, Math.max(0, bal - unclaimed));
   if (tipCap <= 0) {
-    room.battleLeftoverCollected = true;
-    room.battleLeftoverSats = 0;
+    // Do not seal — balance can fail open as 0; retry on later claim/deadline.
     potLog(
       room,
       "warn",
-      `battle leftover ${wanted} sats unavailable in pot (balance ${bal}, unclaimed ${unclaimed})`,
+      `battle leftover ${wanted} sats unavailable in pot (balance ${bal}, unclaimed ${unclaimed}) — will retry`,
     );
     return;
   }
 
+  const snapshotWanted = wanted;
   try {
     const result = await payments.collectTip(tipCap, room.potId);
     const tipSats = result.sats;
     const tipCollected = result.collected === true;
-    room.battleLeftoverSats = tipSats;
-    room.battleLeftoverCollected = tipCollected;
+    const next = reconcileBattleLeftoverAfterAttempt({
+      leftoverSatsNow: room.battleLeftoverSats,
+      wantedAtStart: snapshotWanted,
+      applied: tipCap,
+      tipCollected,
+    });
+    room.battleLeftoverSats = next.leftoverSats;
+    room.battleLeftoverCollected = next.collected;
     room.battleLeftoverToken = tipCollected ? "" : result.token || "";
     recordPayout({
       room: room.name,
@@ -2029,7 +2082,7 @@ async function collectBattleLeftover(room) {
       winnerSats: 0,
       tipSats,
       tipPercent: 100,
-      feeSats: Math.max(0, wanted - tipSats),
+      feeSats: Math.max(0, snapshotWanted - tipSats),
       collected: tipCollected,
       collectedAt: tipCollected ? Date.now() : null,
       tipToken: tipCollected ? null : result.token || null,
@@ -2039,7 +2092,9 @@ async function collectBattleLeftover(room) {
     potLog(
       room,
       tipCollected ? "info" : "warn",
-      `battle leftover → tip wallet · ${tipSats} sats${tipCollected ? "" : " pending"}`,
+      `battle leftover → tip wallet · ${tipSats} sats${tipCollected ? "" : " pending"}${
+        next.leftoverSats > 0 ? ` · ${next.leftoverSats} still owed` : ""
+      }`,
     );
   } catch (err) {
     potLog(room, "error", `battle leftover collect failed: ${String(err?.message || err).slice(0, 160)}`);
