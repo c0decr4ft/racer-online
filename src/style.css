@@ -2271,6 +2271,200 @@ input:focus-visible,
   letter-spacing: 0.03em;
 }
 
+.controls-help-actions {
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.controls-help-actions #controls-tutorial-btn {
+  flex: 1;
+}
+
+/* —— In-race tutorial coach —— */
+.tutorial-coach {
+  position: fixed;
+  left: 50%;
+  bottom: 6.5rem;
+  z-index: 35;
+  transform: translateX(-50%);
+  pointer-events: none;
+  width: min(26rem, calc(100vw - 2rem));
+}
+
+.tutorial-coach.hidden {
+  display: none;
+}
+
+.tutorial-coach-panel {
+  pointer-events: auto;
+  padding: 0.95rem 1.15rem 0.85rem;
+  border: 1px solid rgba(255, 200, 87, 0.35);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(12, 16, 24, 0.92), rgba(8, 10, 16, 0.88));
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  text-align: center;
+}
+
+.tutorial-coach-eyebrow {
+  margin: 0 0 0.2rem;
+  color: #ffc857;
+  font-family: "Rajdhani", sans-serif;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+}
+
+.tutorial-coach-title {
+  margin: 0;
+  color: #f4f7fb;
+  font-family: "Orbitron", sans-serif;
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.tutorial-coach-body {
+  margin: 0.35rem 0 0.65rem;
+  color: #c5ced8;
+  font-family: "Rajdhani", sans-serif;
+  font-size: 1.05rem;
+  line-height: 1.35;
+}
+
+.tutorial-coach-arrow {
+  margin: 0 auto 0.25rem;
+  color: #ffc857;
+  font-size: 1.1rem;
+  line-height: 1;
+  animation: tutorial-arrow-bounce 0.9s ease-in-out infinite;
+}
+
+.tutorial-coach-arrow.hidden {
+  display: none;
+}
+
+@keyframes tutorial-arrow-bounce {
+  0%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.85;
+  }
+  50% {
+    transform: translateY(5px);
+    opacity: 1;
+  }
+}
+
+.tutorial-coach-keys {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.45rem;
+  margin-bottom: 0.65rem;
+}
+
+.tutorial-coach-keys.hidden {
+  display: none;
+}
+
+.tutorial-key {
+  min-width: 2.2rem;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #e8eef6;
+  font-family: "Orbitron", sans-serif;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.tutorial-key.is-active {
+  border-color: rgba(255, 200, 87, 0.85);
+  background: rgba(255, 200, 87, 0.18);
+  color: #ffc857;
+  box-shadow: 0 0 0 1px rgba(255, 200, 87, 0.25);
+  animation: tutorial-key-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes tutorial-key-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.06);
+  }
+}
+
+.tutorial-coach-fill {
+  height: 3px;
+  margin: 0 0 0.55rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.tutorial-coach-fill > span {
+  display: block;
+  height: 100%;
+  width: calc(var(--tutorial-fill, 0) * 100%);
+  border-radius: inherit;
+  background: linear-gradient(90deg, #ffc857, #ff8a3d);
+  transition: width 0.12s linear;
+}
+
+.tutorial-coach-progress {
+  display: flex;
+  justify-content: center;
+  gap: 0.35rem;
+  margin-bottom: 0.45rem;
+}
+
+.tutorial-dot {
+  width: 0.42rem;
+  height: 0.42rem;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.tutorial-dot.is-done {
+  background: #7dcea0;
+}
+
+.tutorial-dot.is-current {
+  background: #ffc857;
+  box-shadow: 0 0 0 3px rgba(255, 200, 87, 0.2);
+}
+
+.tutorial-skip-btn {
+  font-size: 0.78rem !important;
+  letter-spacing: 0.12em;
+  opacity: 0.75;
+}
+
+.tutorial-coach-pointer {
+  position: fixed;
+  z-index: 36;
+  transform: translate(-50%, 0);
+  color: #ffc857;
+  font-size: 1.35rem;
+  line-height: 1;
+  pointer-events: none;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.65);
+  animation: tutorial-arrow-bounce 0.9s ease-in-out infinite;
+}
+
+.tutorial-coach-pointer.hidden {
+  display: none;
+}
+
+.tutorial-point-target {
+  outline: 2px solid #ffc857;
+  outline-offset: 4px;
+  box-shadow: 0 0 0 6px rgba(255, 200, 87, 0.18);
+}
+
 .mute-btn {
   position: fixed;
   top: 1.35rem;

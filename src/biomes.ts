@@ -150,6 +150,7 @@ export const TRACK_BIOMES: Record<string, BiomeId> = {
   "canyon-cut": "canyon",
   "oval-circuit": "urban",
   "yard-drift": "yard",
+  "learner-loop": "meadow",
 };
 
 export function biomeForTrack(trackIdOrBiome: string): BiomeStyle {
