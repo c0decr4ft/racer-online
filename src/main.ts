@@ -24,7 +24,6 @@ if (!mobileBlocked) {
 
   initVersionBadge();
   initFeedbackCompose();
-  initControlsHelp();
   initNostrUi();
   startPresenceHeartbeat();
   // Reconnect a persisted Nostr login (NIP-07 pubkey / NIP-46 nbunksec) in the background.
@@ -32,6 +31,9 @@ if (!mobileBlocked) {
 
   const game = new Game(canvas);
   Object.assign(window, { __game: game, __physicsBackend: vehiclePhysicsBackend() });
+  initControlsHelp({
+    onStartTutorial: () => game.startTutorial(),
+  });
   const api = configuredApiBase();
   const ws = configuredWsUrl();
   console.info(

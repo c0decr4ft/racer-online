@@ -89,6 +89,19 @@
         <div id="animal-hit" class="animal-hit hidden" aria-live="assertive">COW!</div>
         <div id="final-lap-flash" class="final-lap-flash hidden" aria-live="polite">FINAL LAP</div>
         <div id="countdown" class="countdown hidden" aria-live="assertive">3</div>
+        <div id="tutorial-coach" class="tutorial-coach hidden" aria-live="polite">
+          <div class="tutorial-coach-panel">
+            <p class="tutorial-coach-eyebrow">TUTORIAL</p>
+            <p id="tutorial-coach-title" class="tutorial-coach-title">Learner Loop</p>
+            <p id="tutorial-coach-body" class="tutorial-coach-body">Follow the prompts.</p>
+            <div id="tutorial-coach-arrow" class="tutorial-coach-arrow" aria-hidden="true">▼</div>
+            <div id="tutorial-coach-keys" class="tutorial-coach-keys" aria-hidden="true"></div>
+            <div class="tutorial-coach-fill" aria-hidden="true"><span></span></div>
+            <div id="tutorial-coach-progress" class="tutorial-coach-progress" aria-hidden="true"></div>
+            <button id="tutorial-skip-btn" class="btn-ghost tutorial-skip-btn" type="button">SKIP</button>
+          </div>
+        </div>
+        <div id="tutorial-coach-pointer" class="tutorial-coach-pointer hidden" aria-hidden="true">▲</div>
         <canvas id="minimap" class="minimap hidden" width="160" height="160" aria-hidden="true"></canvas>
         <div id="rearview-frame" class="rearview-frame hidden" aria-hidden="true">
           <span class="rearview-label">REAR</span>
@@ -209,7 +222,7 @@
       <div id="controls-help" class="feedback-compose hidden" role="dialog" aria-modal="true" aria-labelledby="controls-help-title">
         <div class="feedback-compose-panel controls-help-panel">
           <p class="eyebrow" id="controls-help-title">CONTROLS</p>
-          <p class="feedback-compose-hint">How to drive</p>
+          <p class="feedback-compose-hint">How to drive — or start the guided tutorial</p>
           <div class="controls-help-groups">
             <section class="controls-help-group" aria-labelledby="controls-help-driving">
               <h3 class="controls-help-group-title" id="controls-help-driving">Driving</h3>
@@ -256,7 +269,8 @@
               </dl>
             </section>
           </div>
-          <div class="feedback-compose-actions">
+          <div class="feedback-compose-actions controls-help-actions">
+            <button id="controls-tutorial-btn" type="button">START TUTORIAL</button>
             <button id="controls-help-close" class="btn-ghost" type="button">CLOSE</button>
           </div>
         </div>

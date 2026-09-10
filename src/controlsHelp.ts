@@ -76,8 +76,9 @@ function wireModal(opts: {
 
 /**
  * Wire bottom-left controls + instructions buttons → help overlays.
+ * Optional `onStartTutorial` hooks the START TUTORIAL button in Controls.
  */
-export function initControlsHelp(): void {
+export function initControlsHelp(opts?: { onStartTutorial?: () => void }): void {
   wireModal({
     btnId: "controls-btn",
     modalId: "controls-help",
@@ -99,4 +100,13 @@ export function initControlsHelp(): void {
       closeControlsHelp();
     },
   });
+
+  const tutorialBtn = document.getElementById("controls-tutorial-btn");
+  if (tutorialBtn instanceof HTMLButtonElement && opts?.onStartTutorial) {
+    tutorialBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeControlsHelp();
+      opts.onStartTutorial?.();
+    });
+  }
 }
