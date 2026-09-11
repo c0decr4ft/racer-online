@@ -1754,7 +1754,10 @@ export class Game {
     const claim = document.getElementById("event-claim-btn") as HTMLButtonElement | null;
     if (claim) {
       claim.textContent = isBattle ? "CLAIM SHARE" : "CLAIM POT";
-      claim.disabled = displayPot <= 0 || alreadyClaimed;
+      // Battle: keep CLAIM enabled after an undelivered success so a second click
+      // can idempotently resend the bearer token (server keeps custody).
+      const tokenShown = !document.getElementById("event-token-box")?.classList.contains("hidden");
+      claim.disabled = displayPot <= 0 || (alreadyClaimed && tokenShown);
     }
     this.updateEventTipBreakdown();
   }
@@ -1828,6 +1831,20 @@ export class Game {
     document.getElementById("event-token-box")?.classList.add("hidden");
     this.clearPayoutTokenQr();
     this.net.claimPot(tipPercent);
+    // If the WS drops the success frame, the button used to stay disabled forever
+    // with no token. Re-enable so a second click can idempotently resend.
+    window.setTimeout(() => {
+      const box = document.getElementById("event-token-box");
+      const tokenShown = Boolean(box && !box.classList.contains("hidden"));
+      const btn = document.getElementById("event-claim-btn") as HTMLButtonElement | null;
+      if (!tokenShown && btn?.disabled) {
+        btn.disabled = false;
+        const st = document.getElementById("event-payout-status");
+        if (st && /Sending your sats/i.test(st.textContent || "")) {
+          st.textContent = "No payout yet — tap CLAIM again to retry";
+        }
+      }
+    }, 12_000);
   }
 
   private onPayoutResult(result: {
@@ -1867,8 +1884,11 @@ export class Game {
         this.clearPayoutTokenQr();
       }
     } else {
-      status.classList.add("nostr-error");
-      status.textContent = `Payout failed — ${result.error || "unknown error"}`;
+      const pending = /in progress/i.test(result.error || "");
+      status.classList.toggle("nostr-error", !pending);
+      status.textContent = pending
+        ? "Claim still running — wait a moment, then tap CLAIM again if needed"
+        : `Payout failed — ${result.error || "unknown error"}`;
       if (claim) claim.disabled = false;
       this.clearPayoutTokenQr();
     }
@@ -5114,16 +5134,15 @@ export class Game {
       Math.round(eventRoom.battleClaimable?.[myId] ?? eventRoom.battleEarnings?.[myId] ?? 0),
     );
     const alreadyClaimed = !!eventRoom.battleClaimedIds?.includes(myId);
-    const canClaim = isBattle ? claimable > 0 && !alreadyClaimed : winnerId === myId;
+    // Keep checkout open after claim so a dropped payoutResult can be resent.
+    const canClaim = isBattle ? claimable > 0 || alreadyClaimed : winnerId === myId;
     document.getElementById("event-checkout")?.classList.toggle("hidden", !canClaim);
     const lost = document.getElementById("event-lost-note");
     if (lost) {
       if (isBattle) {
         lost.textContent =
-          claimable > 0
-            ? alreadyClaimed
-              ? "Share claimed"
-              : ""
+          claimable > 0 || alreadyClaimed
+            ? ""
             : "No cubes collected — uncollected sats go to the developer";
         lost.classList.toggle("hidden", canClaim);
       } else {
