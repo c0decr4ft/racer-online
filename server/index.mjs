@@ -261,7 +261,8 @@ function normalizeSessionId(raw) {
 /** @typedef {{ paymentHash: string, paymentRequest: string, bolt11?: string, paidAt: number, netSats?: number }} BuyIn */
 /** @typedef {{ at: number, level: 'info' | 'warn' | 'error', msg: string }} PotLogEntry */
 /** @typedef {{ tipSats: number, tipCollected: boolean, tipToken: string }} BattleClaimTip */
-/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, wreckedIds: Set<string>, raceStartedAt: number, fireContactMs: Map<string, number>, fireContactLast: Map<string, number>, allWreckResetAt: number, clients: Map<string, Client>, isEvent: boolean, eventMode: 'race' | 'battle', buyInSats: number, buyInFeeSats: number, buyIns: Map<string, BuyIn>, potSats: number, potId: string, potClaimed: boolean, potLogs: PotLogEntry[], payoutTipSats: number, payoutTipCollected: boolean, payoutTipToken: string, battleCubes: Map<number, { id: number, x: number, z: number, sats: number, tier: string, takenBy: string }>, battleEarnings: Map<string, number>, battleClaimable: Map<string, number>, battleClaimedIds: Set<string>, battleClaimTips: Map<string, BattleClaimTip>, battleClaimDeadline: number, battleLeftoverSats: number, battleLeftoverCollected: boolean, battleLeftoverToken: string }} Room */
+/** @typedef {{ complete: boolean, token: string, winnerSats: number, tipSats: number, tipCollected: boolean, feeSats: number }} BattleClaimPayout */
+/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, wreckedIds: Set<string>, raceStartedAt: number, fireContactMs: Map<string, number>, fireContactLast: Map<string, number>, allWreckResetAt: number, clients: Map<string, Client>, isEvent: boolean, eventMode: 'race' | 'battle', buyInSats: number, buyInFeeSats: number, buyIns: Map<string, BuyIn>, potSats: number, potId: string, potClaimed: boolean, potLogs: PotLogEntry[], payoutTipSats: number, payoutTipCollected: boolean, payoutTipToken: string, battleCubes: Map<number, { id: number, x: number, z: number, sats: number, tier: string, takenBy: string }>, battleEarnings: Map<string, number>, battleClaimable: Map<string, number>, battleClaimedIds: Set<string>, battleClaimTips: Map<string, BattleClaimTip>, battleClaimPayouts: Map<string, BattleClaimPayout>, battleClaimDeadline: number, battleLeftoverSats: number, battleLeftoverCollected: boolean, battleLeftoverToken: string }} Room */
 
 /** Persist a debug line on the event pot (disk + in-memory) so the DEV table can show it. */
 function potLog(room, level, msg) {
@@ -2179,6 +2180,7 @@ function admitClient(ws, msg, mode) {
       battleClaimable: new Map(),
       battleClaimedIds: new Set(),
       battleClaimTips: new Map(),
+      battleClaimPayouts: new Map(),
       battleClaimDeadline: 0,
       battleLeftoverSats: 0,
       battleLeftoverCollected: true,
@@ -2845,6 +2847,7 @@ wss.on("connection", (ws) => {
       room.battleClaimable = new Map();
       room.battleClaimedIds = new Set();
       room.battleClaimTips = new Map();
+      room.battleClaimPayouts = new Map();
       room.battleClaimDeadline = 0;
       room.battleLeftoverSats = 0;
       room.battleLeftoverCollected = true;
@@ -3031,13 +3034,30 @@ wss.on("connection", (ws) => {
       const isBattle = room.eventMode === "battle";
 
       if (isBattle) {
+        room.battleClaimPayouts ??= new Map();
+        // Idempotent resend: a dropped payoutResult used to strand the claimer with
+        // "already claimed" and no bearer token (sats left the pot, UI stuck).
+        if (room.battleClaimedIds?.has(client.id)) {
+          const prior = room.battleClaimPayouts.get(client.id);
+          if (prior?.complete) {
+            send(ws, {
+              t: "payoutResult",
+              ok: true,
+              token: prior.token || "",
+              winnerSats: prior.winnerSats || 0,
+              tipSats: prior.tipSats || 0,
+              tipCollected: prior.tipCollected === true,
+              feeSats: prior.feeSats || 0,
+              mock: payments.mock,
+            });
+            return;
+          }
+          send(ws, { t: "payoutResult", ok: false, error: "claim in progress — wait a moment" });
+          return;
+        }
         const claimable = Math.max(0, Math.round(room.battleClaimable?.get(client.id) || 0));
         if (claimable <= 0) {
           send(ws, { t: "payoutResult", ok: false, error: "nothing to claim — collect cubes next time" });
-          return;
-        }
-        if (room.battleClaimedIds?.has(client.id)) {
-          send(ws, { t: "payoutResult", ok: false, error: "already claimed" });
           return;
         }
         room.battleClaimedIds.add(client.id);
@@ -3125,6 +3145,14 @@ wss.on("connection", (ws) => {
             }
 
             const feeSats = Math.max(0, claimable - winnerSats - tipSats);
+            room.battleClaimPayouts.set(client.id, {
+              complete: true,
+              token: winnerToken,
+              winnerSats,
+              tipSats,
+              tipCollected,
+              feeSats,
+            });
             recordPayout({
               room: room.name,
               potId: room.potId,
@@ -3138,6 +3166,8 @@ wss.on("connection", (ws) => {
               collected: tipCollected,
               collectedAt: tipCollected ? Date.now() : null,
               tipToken: tipCollected ? null : tipState.tipToken || null,
+              // Winner token kept so a dropped WS frame can be resent on reclaim.
+              winnerToken: winnerToken || null,
               mock: payments.mock,
             });
             // Claim completed — tip leftover (if any) stays on disk via recordPayout.
@@ -3167,6 +3197,7 @@ wss.on("connection", (ws) => {
           } catch (err) {
             // Unlock claim retry; tip state stays so we never double-tip.
             room.battleClaimedIds.delete(client.id);
+            room.battleClaimPayouts.delete(client.id);
             potLog(room, "error", `battle claim failed: ${String(err?.message || err).slice(0, 160)}`);
             send(ws, { t: "payoutResult", ok: false, error: String(err?.message || err).slice(0, 140) });
           }
