@@ -3,6 +3,10 @@ import { verifyEvent, finalizeEvent } from "nostr-tools";
 import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
 import { payments, depositProofs, recordPayout, loadPayouts, savePayouts } from "./payments.mjs";
+import {
+  canDeliverBuyInRefund,
+  planUndeliveredBuyInRefundCustody,
+} from "./buyInRefund.mjs";
 import { appendActivity, loadActivity, classifyActivityMsg, inferActivityKind, activityStats } from "./activityLog.mjs";
 import { planAbandonedBattleShare } from "./battleAbandonTip.mjs";
 import {
@@ -437,6 +441,16 @@ async function sweepPendingTipTokens() {
   for (const r of list) {
     if (!r || r.mock || r.collected || r.claimedAt || !r.tipToken || !(Number(r.tipSats) > 0)) continue;
     try {
+      // Undelivered lobby buy-in refunds belong back in the pot — never tip wallet.
+      if (r.kind === "buy-in-refund-undelivered" && r.potId) {
+        const fresh = await payments.receiveToken({ amountSats: 1, token: r.tipToken });
+        await depositProofs(fresh, r.potId);
+        r.collected = true;
+        r.collectedAt = Date.now();
+        delete r.tipToken;
+        swept += 1;
+        continue;
+      }
       const net = await payments.receiveTipToken(r.tipToken, Number(r.tipSats));
       r.collected = true;
       r.collectedAt = Date.now();
@@ -1481,6 +1495,25 @@ async function refundLobbyBuyIn(room, client, ws, buyIn) {
     return;
   }
   try {
+    // Disconnect runs this with a closed socket — never mint a bearer nobody can
+    // receive (old path only console.error'd the token → silent fund burn).
+    if (!canDeliverBuyInRefund(ws.readyState)) {
+      potLog(
+        room,
+        "warn",
+        `buy-in refund kept in pot · ${client.name} · ${wanted} sats (socket closed — no bearer minted)`,
+      );
+      appendActivity({
+        type: "payment",
+        kind: "payment-failed",
+        detail: `Buy-in refund kept in pot · ${room.name} · ${client.name} · ${wanted} sats (socket closed)`,
+        level: "warn",
+        ok: false,
+        room: room.name,
+        player: client.name,
+      });
+      return;
+    }
     const perSendFee = Math.max(0, await payments.sendFeeSats(room.potId).catch(() => 0));
     const bal = await Promise.resolve()
       .then(() => payments.potBalanceSats?.(room.potId))
@@ -1511,24 +1544,64 @@ async function refundLobbyBuyIn(room, client, ws, buyIn) {
       mock: payments.mock,
     });
     if (!delivered) {
-      console.error(
-        `[event] EMERGENCY buy-in refund token for ${client.name} (ws closed) — redeem once:`,
-        token,
-      );
-      potLog(
-        room,
-        "warn",
-        `buy-in refund token undelivered · ${client.name} · ${refundSats} sats (see server log)`,
-      );
-      appendActivity({
-        type: "payment",
-        kind: "payment-failed",
-        detail: `Buy-in refund undelivered · ${room.name} · ${client.name} · ${refundSats} sats — check server log`,
-        level: "error",
-        ok: false,
-        room: room.name,
-        player: client.name,
-      });
+      // Mint raced the close — put secrets back into the pot file when possible.
+      try {
+        const fresh = await payments.receiveToken({ amountSats: 1, token });
+        await depositProofs(fresh, room.potId);
+        potLog(
+          room,
+          "warn",
+          `buy-in refund redeposited · ${client.name} · ${refundSats} sats (ws closed after mint)`,
+        );
+        appendActivity({
+          type: "payment",
+          kind: "payment-failed",
+          detail: `Buy-in refund redeposited · ${room.name} · ${client.name} · ${refundSats} sats`,
+          level: "warn",
+          ok: false,
+          room: room.name,
+          player: client.name,
+        });
+      } catch (err) {
+        const custody = planUndeliveredBuyInRefundCustody({ token, refundSats });
+        if (custody.custody) {
+          recordPayout({
+            room: room.name,
+            potId: room.potId,
+            winnerId: client.id,
+            winnerPubkey: client.pose.pubkey || null,
+            potSats: custody.tipSats,
+            winnerSats: 0,
+            tipSats: custody.tipSats,
+            tipPercent: 0,
+            feeSats: 0,
+            collected: false,
+            collectedAt: null,
+            tipToken: custody.tipToken,
+            mock: payments.mock,
+            kind: "buy-in-refund-undelivered",
+          });
+          void sweepPendingTipTokens().catch(() => {});
+        }
+        console.error(
+          `[event] EMERGENCY buy-in refund token for ${client.name} (ws closed, redeposit failed) — redeem once:`,
+          token,
+        );
+        potLog(
+          room,
+          "warn",
+          `buy-in refund token undelivered · ${client.name} · ${refundSats} sats · ${String(err?.message || err).slice(0, 120)}`,
+        );
+        appendActivity({
+          type: "payment",
+          kind: "payment-failed",
+          detail: `Buy-in refund undelivered · ${room.name} · ${client.name} · ${refundSats} sats — custody/sweep`,
+          level: "error",
+          ok: false,
+          room: room.name,
+          player: client.name,
+        });
+      }
     }
   } catch (err) {
     potLog(
