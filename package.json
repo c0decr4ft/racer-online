@@ -16,7 +16,8 @@
     "start:prod": "node server/index.mjs",
     "start:local": "npm run dev:online",
     "test:full": "node scripts/full-suite.mjs",
-    "test:feedback-hydrate": "node scripts/verify-feedback-hydrate.mjs"
+    "test:feedback-hydrate": "node scripts/verify-feedback-hydrate.mjs",
+    "test:battle-abandon-tip": "node scripts/verify-battle-abandon-tip.mjs"
   },
   "devDependencies": {
     "@types/qrcode": "^1.5.6",

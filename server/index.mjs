@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
 import { payments, depositProofs, recordPayout, loadPayouts, savePayouts } from "./payments.mjs";
 import { appendActivity, loadActivity, classifyActivityMsg, inferActivityKind, activityStats } from "./activityLog.mjs";
+import { planAbandonedBattleShare } from "./battleAbandonTip.mjs";
 import {
   buildBattleCubes,
   buildDroppedBattleCubes,
@@ -1406,6 +1407,7 @@ function abandonBattleClaimShare(room, clientId, reason) {
   if (room.phase !== "finished") return 0;
   if (room.battleClaimedIds?.has(clientId)) return 0;
   const sats = Math.max(0, Math.round(room.battleClaimable?.get(clientId) || 0));
+  const tipState = room.battleClaimTips?.get(clientId) || null;
   if (sats <= 0) {
     room.battleClaimable?.delete(clientId);
     room.battleClaimTips?.delete(clientId);
@@ -1413,11 +1415,45 @@ function abandonBattleClaimShare(room, clientId, reason) {
   }
   room.battleClaimable.delete(clientId);
   room.battleClaimTips?.delete(clientId);
-  room.battleLeftoverSats = Math.max(0, Math.round(room.battleLeftoverSats || 0)) + sats;
+  // Tip may already have left the pot during a failed claimPot — fold only the
+  // remainder and custody any pending tip bearer token (never drop it).
+  const plan = planAbandonedBattleShare({ claimableSats: sats, tipState });
+  if (plan.pendingTipToken) {
+    recordPayout({
+      room: room.name,
+      potId: room.potId,
+      winnerId: "developer",
+      winnerPubkey: null,
+      potSats: plan.pendingTipSats,
+      winnerSats: 0,
+      tipSats: plan.pendingTipSats,
+      tipPercent: 100,
+      feeSats: 0,
+      collected: false,
+      collectedAt: null,
+      tipToken: plan.pendingTipToken,
+      mock: payments.mock,
+      kind: "battle-abandoned-claim-tip",
+    });
+    potLog(
+      room,
+      "warn",
+      `battle abandoned tip token custody · ${clientId} · ${plan.pendingTipSats} sats (${reason})`,
+    );
+  }
+  room.battleLeftoverSats =
+    Math.max(0, Math.round(room.battleLeftoverSats || 0)) + plan.leftoverAdd;
   room.battleLeftoverCollected = false;
-  potLog(room, "info", `battle share abandoned · ${clientId} · ${sats} sats → tip (${reason})`);
-  console.log(`[battle] ${room.name} abandoned ${sats} sats from ${clientId} (${reason})`);
-  return sats;
+  potLog(
+    room,
+    "info",
+    `battle share abandoned · ${clientId} · ${plan.leftoverAdd} sats → tip (${reason})` +
+      (plan.pendingTipSats ? ` · ${plan.pendingTipSats} tip already out of pot` : ""),
+  );
+  console.log(
+    `[battle] ${room.name} abandoned ${plan.leftoverAdd} sats from ${clientId} (${reason})`,
+  );
+  return plan.leftoverAdd + plan.pendingTipSats;
 }
 
 /** Sweep every unclaimed battle share into leftover (room empty / deadline). */
@@ -1531,7 +1567,11 @@ async function removeClientFromRoom(room, client, ws) {
   // Post-finish battle: unclaimed share → developer leftover (not stranded).
   if (room.isEvent && room.eventMode === "battle" && room.phase === "finished") {
     const abandoned = abandonBattleClaimShare(room, client.id, "disconnect");
-    if (abandoned > 0) void collectBattleLeftover(room);
+    if (abandoned > 0) {
+      void collectBattleLeftover(room)
+        .then(() => sweepPendingTipTokens())
+        .catch(() => {});
+    }
   }
 
   room.clients.delete(client.id);
@@ -1549,6 +1589,7 @@ async function removeClientFromRoom(room, client, ws) {
     if (room.isEvent && room.eventMode === "battle" && room.phase === "finished") {
       abandonAllUnclaimedBattleShares(room, "room-empty");
       await collectBattleLeftover(room).catch(() => {});
+      await sweepPendingTipTokens().catch(() => {});
     }
     potLog(room, "info", "last player left — room closed (pot file kept)");
     roomActivity(room, "room-closed", `room closed · last player ${client.name} left`, {
@@ -3289,15 +3330,17 @@ setInterval(() => {
     const n = abandonAllUnclaimedBattleShares(room, "claim-timeout");
     room.battleClaimDeadline = 0;
     if (n > 0) {
-      void collectBattleLeftover(room).then(() => {
-        if (rooms.get(room.name) !== room) return;
-        const info = eventInfo(room);
-        if (info) broadcast(room, { t: "eventUpdate", event: info });
-        broadcast(room, {
-          t: "notice",
-          text: "Unclaimed battle shares went to the developer tip",
+      void collectBattleLeftover(room)
+        .then(() => sweepPendingTipTokens())
+        .then(() => {
+          if (rooms.get(room.name) !== room) return;
+          const info = eventInfo(room);
+          if (info) broadcast(room, { t: "eventUpdate", event: info });
+          broadcast(room, {
+            t: "notice",
+            text: "Unclaimed battle shares went to the developer tip",
+          });
         });
-      });
     }
   }
 }, 15_000);
