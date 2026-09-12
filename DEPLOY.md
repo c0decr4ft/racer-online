@@ -126,6 +126,11 @@ activity have the same problem. To keep feedback across deploys:
 Without a persistent disk, the Nostr mirror restores the inbox after a wipe (same idea as
 the leaderboard relay rebuild). Prefer the disk mount for anything you care about long-term.
 
+**`FEEDBACK_NOSTR_NSEC` (required for the mirror):** set a secret 64-char hex in the host
+env (`openssl rand -hex 32`). Do **not** commit a default — anyone with that key can
+publish replaceable kind `30078` (`d=racer-online:feedback`) and poison boot hydrate.
+If unset, mirror/hydrate stay off and only `DATA_DIR` / email keep the inbox.
+
 ### Email (Resend)
 
 Feedback is also forwarded to your inbox. **Use Resend** — reliable, server-side, free tier

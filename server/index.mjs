@@ -3,13 +3,23 @@ import { verifyEvent, finalizeEvent } from "nostr-tools";
 import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
 import { payments, depositProofs, recordPayout, loadPayouts, savePayouts } from "./payments.mjs";
+import {
+  canDeliverBuyInRefund,
+  planUndeliveredBuyInRefundCustody,
+} from "./buyInRefund.mjs";
 import { appendActivity, loadActivity, classifyActivityMsg, inferActivityKind, activityStats } from "./activityLog.mjs";
+import { planAbandonedBattleShare } from "./battleAbandonTip.mjs";
 import {
   buildBattleCubes,
   buildDroppedBattleCubes,
   BATTLE_PICKUP_RADIUS,
   BATTLE_PICKUP_POSE_SLACK,
 } from "../shared/battleCubes.mjs";
+import {
+  normalizeFeedbackMessage,
+  normalizeFeedbackStore,
+  mergeFeedbackStoresPreferLocal,
+} from "./feedbackStore.mjs";
 import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, copyFileSync } from "node:fs";
 import { dirname, join, extname, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -83,16 +93,13 @@ const FEEDBACK_LEGACY_PATH = join(DIR, "feedback.json");
  * replaceable Nostr event on public relays. Prefer DATA_DIR on a persistent
  * disk when you can; relays are the soft backup.
  *
- * Override with FEEDBACK_NOSTR_NSEC (64-char hex). Default key is dedicated to
- * this mirror (write URL was already public on the old blob).
+ * Requires FEEDBACK_NOSTR_NSEC (64-char hex secret). Never commit a default —
+ * a public nsec lets anyone publish kind 30078 and poison boot hydrate.
  */
 const FEEDBACK_EVENT_KIND = 30078;
 const FEEDBACK_D_TAG = "racer-online:feedback";
 const FEEDBACK_T_TAG = "racer-online-feedback";
-const FEEDBACK_NOSTR_NSEC_HEX = (
-  process.env.FEEDBACK_NOSTR_NSEC ||
-  "2c9e8cbeee3f50bdd1cfe386babc361a7b68a76f2ce4aae111deef78f2df761d"
-).trim().toLowerCase();
+const FEEDBACK_NOSTR_NSEC_HEX = (process.env.FEEDBACK_NOSTR_NSEC || "").trim().toLowerCase();
 const FEEDBACK_NOSTR_SK = (() => {
   if (!/^[0-9a-f]{64}$/.test(FEEDBACK_NOSTR_NSEC_HEX)) return null;
   return Uint8Array.from(Buffer.from(FEEDBACK_NOSTR_NSEC_HEX, "hex"));
@@ -203,9 +210,6 @@ async function sendFeedbackEmail(msg) {
   }
 }
 const MAX_BOARD = 10;
-const MAX_FEEDBACK = 80;
-const FEEDBACK_TEXT_MAX = 500;
-const FEEDBACK_NAME_MAX = 24;
 const NAME_MAX = 15;
 const PRESENCE_STALE_MS = 75_000;
 const PRESENCE_KEEP_HOURS = 14 * 24;
@@ -437,6 +441,16 @@ async function sweepPendingTipTokens() {
   for (const r of list) {
     if (!r || r.mock || r.collected || r.claimedAt || !r.tipToken || !(Number(r.tipSats) > 0)) continue;
     try {
+      // Undelivered lobby buy-in refunds belong back in the pot — never tip wallet.
+      if (r.kind === "buy-in-refund-undelivered" && r.potId) {
+        const fresh = await payments.receiveToken({ amountSats: 1, token: r.tipToken });
+        await depositProofs(fresh, r.potId);
+        r.collected = true;
+        r.collectedAt = Date.now();
+        delete r.tipToken;
+        swept += 1;
+        continue;
+      }
       const net = await payments.receiveTipToken(r.tipToken, Number(r.tipSats));
       r.collected = true;
       r.collectedAt = Date.now();
@@ -924,82 +938,6 @@ function savePresence(store) {
   return body;
 }
 
-function sanitizeFeedbackText(raw) {
-  return String(raw ?? "")
-    .normalize("NFKC")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, FEEDBACK_TEXT_MAX);
-}
-
-function sanitizeFeedbackName(raw) {
-  if (raw == null) return undefined;
-  const cleaned = String(raw)
-    .normalize("NFKC")
-    .replace(/[^\p{L}\p{N} _\-.]/gu, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, FEEDBACK_NAME_MAX)
-    .trim();
-  return cleaned || undefined;
-}
-
-function normalizeFeedbackMessage(raw) {
-  if (!raw || typeof raw !== "object") return null;
-  const text = sanitizeFeedbackText(raw.text);
-  if (!text) return null;
-  const createdAt =
-    typeof raw.createdAt === "number" && Number.isFinite(raw.createdAt)
-      ? Math.round(raw.createdAt)
-      : Date.now();
-  const id = String(raw.id ?? "").trim() || `fb-${Date.now().toString(36)}`;
-  const name = sanitizeFeedbackName(raw.name);
-  const readAt =
-    typeof raw.readAt === "number" && Number.isFinite(raw.readAt) && raw.readAt > 0
-      ? Math.round(raw.readAt)
-      : undefined;
-  const msg = name ? { id, text, createdAt, name } : { id, text, createdAt };
-  if (readAt !== undefined) msg.readAt = readAt;
-  return msg;
-}
-
-/** Normalize a raw feedback store (disk or blob) into sorted unique messages. */
-function normalizeFeedbackStore(raw) {
-  const list = Array.isArray(raw?.messages) ? raw.messages : Array.isArray(raw) ? raw : [];
-  const seen = new Set();
-  const messages = [];
-  for (const row of list) {
-    const msg = normalizeFeedbackMessage(row);
-    if (!msg || seen.has(msg.id)) continue;
-    seen.add(msg.id);
-    messages.push(msg);
-  }
-  messages.sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
-  return { messages: messages.slice(0, MAX_FEEDBACK) };
-}
-
-/** Union two stores by id — keep readAt if either side has it. */
-function mergeFeedbackStores(a, b) {
-  const byId = new Map();
-  for (const row of [...(a?.messages || []), ...(b?.messages || [])]) {
-    const msg = normalizeFeedbackMessage(row);
-    if (!msg) continue;
-    const prev = byId.get(msg.id);
-    if (!prev) {
-      byId.set(msg.id, msg);
-      continue;
-    }
-    const readAt = [prev.readAt, msg.readAt].find((n) => Number.isFinite(Number(n)));
-    const newer = msg.createdAt >= prev.createdAt ? msg : prev;
-    if (readAt !== undefined) newer.readAt = Math.round(Number(readAt));
-    byId.set(msg.id, newer);
-  }
-  const messages = [...byId.values()].sort(
-    (x, y) => y.createdAt - x.createdAt || x.id.localeCompare(y.id),
-  );
-  return { messages: messages.slice(0, MAX_FEEDBACK) };
-}
-
 /** One-time: copy legacy server/feedback.json into DATA_DIR when mounting a disk. */
 function migrateFeedbackToDataDir() {
   if (FEEDBACK_PATH === FEEDBACK_LEGACY_PATH) return;
@@ -1088,7 +1026,9 @@ async function hydrateFeedbackFromBlob() {
     }
     if (!remote.messages.length) return;
     const local = loadFeedback();
-    const merged = mergeFeedbackStores(local, remote);
+    // Prefer local rows under MAX_FEEDBACK so a flooded/poisoned replaceable
+    // event cannot displace disk-backed inbox messages on every boot.
+    const merged = mergeFeedbackStoresPreferLocal(local, remote);
     if (JSON.stringify(merged) === JSON.stringify(local)) {
       console.log(
         `[feedback] nostr hydrate — already have ${local.messages.length} messages`,
@@ -1481,6 +1421,7 @@ function abandonBattleClaimShare(room, clientId, reason) {
   if (room.phase !== "finished") return 0;
   if (room.battleClaimedIds?.has(clientId)) return 0;
   const sats = Math.max(0, Math.round(room.battleClaimable?.get(clientId) || 0));
+  const tipState = room.battleClaimTips?.get(clientId) || null;
   if (sats <= 0) {
     room.battleClaimable?.delete(clientId);
     room.battleClaimTips?.delete(clientId);
@@ -1488,11 +1429,45 @@ function abandonBattleClaimShare(room, clientId, reason) {
   }
   room.battleClaimable.delete(clientId);
   room.battleClaimTips?.delete(clientId);
-  room.battleLeftoverSats = Math.max(0, Math.round(room.battleLeftoverSats || 0)) + sats;
+  // Tip may already have left the pot during a failed claimPot — fold only the
+  // remainder and custody any pending tip bearer token (never drop it).
+  const plan = planAbandonedBattleShare({ claimableSats: sats, tipState });
+  if (plan.pendingTipToken) {
+    recordPayout({
+      room: room.name,
+      potId: room.potId,
+      winnerId: "developer",
+      winnerPubkey: null,
+      potSats: plan.pendingTipSats,
+      winnerSats: 0,
+      tipSats: plan.pendingTipSats,
+      tipPercent: 100,
+      feeSats: 0,
+      collected: false,
+      collectedAt: null,
+      tipToken: plan.pendingTipToken,
+      mock: payments.mock,
+      kind: "battle-abandoned-claim-tip",
+    });
+    potLog(
+      room,
+      "warn",
+      `battle abandoned tip token custody · ${clientId} · ${plan.pendingTipSats} sats (${reason})`,
+    );
+  }
+  room.battleLeftoverSats =
+    Math.max(0, Math.round(room.battleLeftoverSats || 0)) + plan.leftoverAdd;
   room.battleLeftoverCollected = false;
-  potLog(room, "info", `battle share abandoned · ${clientId} · ${sats} sats → tip (${reason})`);
-  console.log(`[battle] ${room.name} abandoned ${sats} sats from ${clientId} (${reason})`);
-  return sats;
+  potLog(
+    room,
+    "info",
+    `battle share abandoned · ${clientId} · ${plan.leftoverAdd} sats → tip (${reason})` +
+      (plan.pendingTipSats ? ` · ${plan.pendingTipSats} tip already out of pot` : ""),
+  );
+  console.log(
+    `[battle] ${room.name} abandoned ${plan.leftoverAdd} sats from ${clientId} (${reason})`,
+  );
+  return plan.leftoverAdd + plan.pendingTipSats;
 }
 
 /** Sweep every unclaimed battle share into leftover (room empty / deadline). */
@@ -1520,6 +1495,25 @@ async function refundLobbyBuyIn(room, client, ws, buyIn) {
     return;
   }
   try {
+    // Disconnect runs this with a closed socket — never mint a bearer nobody can
+    // receive (old path only console.error'd the token → silent fund burn).
+    if (!canDeliverBuyInRefund(ws.readyState)) {
+      potLog(
+        room,
+        "warn",
+        `buy-in refund kept in pot · ${client.name} · ${wanted} sats (socket closed — no bearer minted)`,
+      );
+      appendActivity({
+        type: "payment",
+        kind: "payment-failed",
+        detail: `Buy-in refund kept in pot · ${room.name} · ${client.name} · ${wanted} sats (socket closed)`,
+        level: "warn",
+        ok: false,
+        room: room.name,
+        player: client.name,
+      });
+      return;
+    }
     const perSendFee = Math.max(0, await payments.sendFeeSats(room.potId).catch(() => 0));
     const bal = await Promise.resolve()
       .then(() => payments.potBalanceSats?.(room.potId))
@@ -1550,24 +1544,64 @@ async function refundLobbyBuyIn(room, client, ws, buyIn) {
       mock: payments.mock,
     });
     if (!delivered) {
-      console.error(
-        `[event] EMERGENCY buy-in refund token for ${client.name} (ws closed) — redeem once:`,
-        token,
-      );
-      potLog(
-        room,
-        "warn",
-        `buy-in refund token undelivered · ${client.name} · ${refundSats} sats (see server log)`,
-      );
-      appendActivity({
-        type: "payment",
-        kind: "payment-failed",
-        detail: `Buy-in refund undelivered · ${room.name} · ${client.name} · ${refundSats} sats — check server log`,
-        level: "error",
-        ok: false,
-        room: room.name,
-        player: client.name,
-      });
+      // Mint raced the close — put secrets back into the pot file when possible.
+      try {
+        const fresh = await payments.receiveToken({ amountSats: 1, token });
+        await depositProofs(fresh, room.potId);
+        potLog(
+          room,
+          "warn",
+          `buy-in refund redeposited · ${client.name} · ${refundSats} sats (ws closed after mint)`,
+        );
+        appendActivity({
+          type: "payment",
+          kind: "payment-failed",
+          detail: `Buy-in refund redeposited · ${room.name} · ${client.name} · ${refundSats} sats`,
+          level: "warn",
+          ok: false,
+          room: room.name,
+          player: client.name,
+        });
+      } catch (err) {
+        const custody = planUndeliveredBuyInRefundCustody({ token, refundSats });
+        if (custody.custody) {
+          recordPayout({
+            room: room.name,
+            potId: room.potId,
+            winnerId: client.id,
+            winnerPubkey: client.pose.pubkey || null,
+            potSats: custody.tipSats,
+            winnerSats: 0,
+            tipSats: custody.tipSats,
+            tipPercent: 0,
+            feeSats: 0,
+            collected: false,
+            collectedAt: null,
+            tipToken: custody.tipToken,
+            mock: payments.mock,
+            kind: "buy-in-refund-undelivered",
+          });
+          void sweepPendingTipTokens().catch(() => {});
+        }
+        console.error(
+          `[event] EMERGENCY buy-in refund token for ${client.name} (ws closed, redeposit failed) — redeem once:`,
+          token,
+        );
+        potLog(
+          room,
+          "warn",
+          `buy-in refund token undelivered · ${client.name} · ${refundSats} sats · ${String(err?.message || err).slice(0, 120)}`,
+        );
+        appendActivity({
+          type: "payment",
+          kind: "payment-failed",
+          detail: `Buy-in refund undelivered · ${room.name} · ${client.name} · ${refundSats} sats — custody/sweep`,
+          level: "error",
+          ok: false,
+          room: room.name,
+          player: client.name,
+        });
+      }
     }
   } catch (err) {
     potLog(
@@ -1606,7 +1640,11 @@ async function removeClientFromRoom(room, client, ws) {
   // Post-finish battle: unclaimed share → developer leftover (not stranded).
   if (room.isEvent && room.eventMode === "battle" && room.phase === "finished") {
     const abandoned = abandonBattleClaimShare(room, client.id, "disconnect");
-    if (abandoned > 0) void collectBattleLeftover(room);
+    if (abandoned > 0) {
+      void collectBattleLeftover(room)
+        .then(() => sweepPendingTipTokens())
+        .catch(() => {});
+    }
   }
 
   room.clients.delete(client.id);
@@ -1624,6 +1662,7 @@ async function removeClientFromRoom(room, client, ws) {
     if (room.isEvent && room.eventMode === "battle" && room.phase === "finished") {
       abandonAllUnclaimedBattleShares(room, "room-empty");
       await collectBattleLeftover(room).catch(() => {});
+      await sweepPendingTipTokens().catch(() => {});
     }
     potLog(room, "info", "last player left — room closed (pot file kept)");
     roomActivity(room, "room-closed", `room closed · last player ${client.name} left`, {
@@ -3364,15 +3403,17 @@ setInterval(() => {
     const n = abandonAllUnclaimedBattleShares(room, "claim-timeout");
     room.battleClaimDeadline = 0;
     if (n > 0) {
-      void collectBattleLeftover(room).then(() => {
-        if (rooms.get(room.name) !== room) return;
-        const info = eventInfo(room);
-        if (info) broadcast(room, { t: "eventUpdate", event: info });
-        broadcast(room, {
-          t: "notice",
-          text: "Unclaimed battle shares went to the developer tip",
+      void collectBattleLeftover(room)
+        .then(() => sweepPendingTipTokens())
+        .then(() => {
+          if (rooms.get(room.name) !== room) return;
+          const info = eventInfo(room);
+          if (info) broadcast(room, { t: "eventUpdate", event: info });
+          broadcast(room, {
+            t: "notice",
+            text: "Unclaimed battle shares went to the developer tip",
+          });
         });
-      });
     }
   }
 }, 15_000);
@@ -3404,6 +3445,12 @@ httpServer.listen(PORT, HOST, () => {
     console.warn(
       "[feedback] DATA_DIR unset — Render free disk wipes feedback.json on every deploy. " +
         "Attach a persistent disk and set DATA_DIR (e.g. /var/data), or rely on the Nostr relay mirror.",
+    );
+  }
+  if (!FEEDBACK_NOSTR_SK) {
+    console.warn(
+      "[feedback] FEEDBACK_NOSTR_NSEC unset or invalid — Nostr mirror/hydrate disabled. " +
+        "Set a secret 64-char hex (openssl rand -hex 32); never commit it.",
     );
   }
   // Soft restore after ephemeral-disk redeploys (merge with existing file).
