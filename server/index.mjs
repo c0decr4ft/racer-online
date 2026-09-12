@@ -10,6 +10,11 @@ import {
   BATTLE_PICKUP_RADIUS,
   BATTLE_PICKUP_POSE_SLACK,
 } from "../shared/battleCubes.mjs";
+import {
+  normalizeFeedbackMessage,
+  normalizeFeedbackStore,
+  mergeFeedbackStoresPreferLocal,
+} from "./feedbackStore.mjs";
 import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, copyFileSync } from "node:fs";
 import { dirname, join, extname, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -83,16 +88,13 @@ const FEEDBACK_LEGACY_PATH = join(DIR, "feedback.json");
  * replaceable Nostr event on public relays. Prefer DATA_DIR on a persistent
  * disk when you can; relays are the soft backup.
  *
- * Override with FEEDBACK_NOSTR_NSEC (64-char hex). Default key is dedicated to
- * this mirror (write URL was already public on the old blob).
+ * Requires FEEDBACK_NOSTR_NSEC (64-char hex secret). Never commit a default —
+ * a public nsec lets anyone publish kind 30078 and poison boot hydrate.
  */
 const FEEDBACK_EVENT_KIND = 30078;
 const FEEDBACK_D_TAG = "racer-online:feedback";
 const FEEDBACK_T_TAG = "racer-online-feedback";
-const FEEDBACK_NOSTR_NSEC_HEX = (
-  process.env.FEEDBACK_NOSTR_NSEC ||
-  "2c9e8cbeee3f50bdd1cfe386babc361a7b68a76f2ce4aae111deef78f2df761d"
-).trim().toLowerCase();
+const FEEDBACK_NOSTR_NSEC_HEX = (process.env.FEEDBACK_NOSTR_NSEC || "").trim().toLowerCase();
 const FEEDBACK_NOSTR_SK = (() => {
   if (!/^[0-9a-f]{64}$/.test(FEEDBACK_NOSTR_NSEC_HEX)) return null;
   return Uint8Array.from(Buffer.from(FEEDBACK_NOSTR_NSEC_HEX, "hex"));
@@ -203,9 +205,6 @@ async function sendFeedbackEmail(msg) {
   }
 }
 const MAX_BOARD = 10;
-const MAX_FEEDBACK = 80;
-const FEEDBACK_TEXT_MAX = 500;
-const FEEDBACK_NAME_MAX = 24;
 const NAME_MAX = 15;
 const PRESENCE_STALE_MS = 75_000;
 const PRESENCE_KEEP_HOURS = 14 * 24;
@@ -924,82 +923,6 @@ function savePresence(store) {
   return body;
 }
 
-function sanitizeFeedbackText(raw) {
-  return String(raw ?? "")
-    .normalize("NFKC")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, FEEDBACK_TEXT_MAX);
-}
-
-function sanitizeFeedbackName(raw) {
-  if (raw == null) return undefined;
-  const cleaned = String(raw)
-    .normalize("NFKC")
-    .replace(/[^\p{L}\p{N} _\-.]/gu, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, FEEDBACK_NAME_MAX)
-    .trim();
-  return cleaned || undefined;
-}
-
-function normalizeFeedbackMessage(raw) {
-  if (!raw || typeof raw !== "object") return null;
-  const text = sanitizeFeedbackText(raw.text);
-  if (!text) return null;
-  const createdAt =
-    typeof raw.createdAt === "number" && Number.isFinite(raw.createdAt)
-      ? Math.round(raw.createdAt)
-      : Date.now();
-  const id = String(raw.id ?? "").trim() || `fb-${Date.now().toString(36)}`;
-  const name = sanitizeFeedbackName(raw.name);
-  const readAt =
-    typeof raw.readAt === "number" && Number.isFinite(raw.readAt) && raw.readAt > 0
-      ? Math.round(raw.readAt)
-      : undefined;
-  const msg = name ? { id, text, createdAt, name } : { id, text, createdAt };
-  if (readAt !== undefined) msg.readAt = readAt;
-  return msg;
-}
-
-/** Normalize a raw feedback store (disk or blob) into sorted unique messages. */
-function normalizeFeedbackStore(raw) {
-  const list = Array.isArray(raw?.messages) ? raw.messages : Array.isArray(raw) ? raw : [];
-  const seen = new Set();
-  const messages = [];
-  for (const row of list) {
-    const msg = normalizeFeedbackMessage(row);
-    if (!msg || seen.has(msg.id)) continue;
-    seen.add(msg.id);
-    messages.push(msg);
-  }
-  messages.sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
-  return { messages: messages.slice(0, MAX_FEEDBACK) };
-}
-
-/** Union two stores by id — keep readAt if either side has it. */
-function mergeFeedbackStores(a, b) {
-  const byId = new Map();
-  for (const row of [...(a?.messages || []), ...(b?.messages || [])]) {
-    const msg = normalizeFeedbackMessage(row);
-    if (!msg) continue;
-    const prev = byId.get(msg.id);
-    if (!prev) {
-      byId.set(msg.id, msg);
-      continue;
-    }
-    const readAt = [prev.readAt, msg.readAt].find((n) => Number.isFinite(Number(n)));
-    const newer = msg.createdAt >= prev.createdAt ? msg : prev;
-    if (readAt !== undefined) newer.readAt = Math.round(Number(readAt));
-    byId.set(msg.id, newer);
-  }
-  const messages = [...byId.values()].sort(
-    (x, y) => y.createdAt - x.createdAt || x.id.localeCompare(y.id),
-  );
-  return { messages: messages.slice(0, MAX_FEEDBACK) };
-}
-
 /** One-time: copy legacy server/feedback.json into DATA_DIR when mounting a disk. */
 function migrateFeedbackToDataDir() {
   if (FEEDBACK_PATH === FEEDBACK_LEGACY_PATH) return;
@@ -1088,7 +1011,9 @@ async function hydrateFeedbackFromBlob() {
     }
     if (!remote.messages.length) return;
     const local = loadFeedback();
-    const merged = mergeFeedbackStores(local, remote);
+    // Prefer local rows under MAX_FEEDBACK so a flooded/poisoned replaceable
+    // event cannot displace disk-backed inbox messages on every boot.
+    const merged = mergeFeedbackStoresPreferLocal(local, remote);
     if (JSON.stringify(merged) === JSON.stringify(local)) {
       console.log(
         `[feedback] nostr hydrate — already have ${local.messages.length} messages`,
@@ -3404,6 +3329,12 @@ httpServer.listen(PORT, HOST, () => {
     console.warn(
       "[feedback] DATA_DIR unset — Render free disk wipes feedback.json on every deploy. " +
         "Attach a persistent disk and set DATA_DIR (e.g. /var/data), or rely on the Nostr relay mirror.",
+    );
+  }
+  if (!FEEDBACK_NOSTR_SK) {
+    console.warn(
+      "[feedback] FEEDBACK_NOSTR_NSEC unset or invalid — Nostr mirror/hydrate disabled. " +
+        "Set a secret 64-char hex (openssl rand -hex 32); never commit it.",
     );
   }
   // Soft restore after ephemeral-disk redeploys (merge with existing file).

@@ -41,3 +41,7 @@ services:
       # Example after attaching a disk at /var/data:
       # - key: DATA_DIR
       #   value: /var/data
+      # Secret 64-char hex for the feedback Nostr mirror (openssl rand -hex 32).
+      # Required for relay backup; never commit a real value.
+      # - key: FEEDBACK_NOSTR_NSEC
+      #   sync: false
