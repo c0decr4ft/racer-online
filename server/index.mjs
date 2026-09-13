@@ -5,6 +5,12 @@ import { networkInterfaces } from "node:os";
 import { payments, depositProofs, recordPayout, loadPayouts, savePayouts } from "./payments.mjs";
 import { appendActivity, loadActivity, classifyActivityMsg, inferActivityKind, activityStats } from "./activityLog.mjs";
 import {
+  buyInCreditStillLive,
+  planOrphanBuyInRefund,
+  ORPHAN_BUYIN_REFUND_KIND,
+  isTipSweepablePayout,
+} from "./orphanBuyIn.mjs";
+import {
   buildBattleCubes,
   buildDroppedBattleCubes,
   BATTLE_PICKUP_RADIUS,
@@ -436,6 +442,8 @@ async function sweepPendingTipTokens() {
   let swept = 0;
   for (const r of list) {
     if (!r || r.mock || r.collected || r.claimedAt || !r.tipToken || !(Number(r.tipSats) > 0)) continue;
+    // Player buy-in refund custody must never be burned into the tip wallet.
+    if (!isTipSweepablePayout(r)) continue;
     try {
       const net = await payments.receiveTipToken(r.tipToken, Number(r.tipSats));
       r.collected = true;
@@ -492,7 +500,7 @@ async function devTipsSummary() {
   const pendingWithdraw = payments.pendingWithdraw();
   const walletEmpty = walletSats === 0 && !pendingWithdraw;
   const list = loadPayouts()
-    .filter((r) => r && Number.isFinite(Number(r.tipSats)))
+    .filter((r) => r && Number.isFinite(Number(r.tipSats)) && isTipSweepablePayout(r))
     .map((r) => {
       const collected =
         r.collected === true || Number.isFinite(Number(r.collectedAt)) || Number.isFinite(Number(r.claimedAt));
@@ -2102,6 +2110,132 @@ function markBuyInPaid(room, clientId, netSats) {
   return true;
 }
 
+/**
+ * Buy-in proofs landed after the payer left (or the lobby moved on). Pull them
+ * back out of the pot as a custodied Cashu token so a later claim cannot drain
+ * someone else's sats. Prefer WS/HTTP delivery when available.
+ *
+ * @param {Room} room
+ * @param {number} netSats
+ * @param {{ clientId?: string, player?: string, ws?: import('ws').WebSocket | null }} [meta]
+ * @returns {Promise<{ token: string, refundSats: number } | null>}
+ */
+async function refundOrphanBuyInDeposit(room, netSats, meta = {}) {
+  const plan = planOrphanBuyInRefund({ credited: false, netSats });
+  if (!plan.refund || !room?.potId) return null;
+  const wanted = plan.refundSats;
+  try {
+    const perSendFee = Math.max(0, await payments.sendFeeSats(room.potId).catch(() => 0));
+    const bal = await Promise.resolve()
+      .then(() => payments.potBalanceSats?.(room.potId))
+      .then((v) => (Number.isFinite(v) ? v : 0))
+      .catch(() => 0);
+    const refundSats = Math.max(0, Math.min(wanted, bal - perSendFee));
+    if (refundSats <= 0) {
+      potLog(room, "error", `orphan buy-in refund failed: pot empty (wanted ${wanted}, bal ${bal})`);
+      appendActivity({
+        type: "payment",
+        kind: "payment-failed",
+        detail: `Orphan buy-in stuck in pot · ${room.name} · ${wanted} sats (balance ${bal})`,
+        level: "error",
+        ok: false,
+        room: room.name,
+        player: meta.player,
+      });
+      return null;
+    }
+    const { token } = await payments.sendToken(refundSats, {
+      includeFees: true,
+      potId: room.potId,
+    });
+    recordPayout({
+      room: room.name,
+      potId: room.potId,
+      winnerId: meta.clientId || "orphan",
+      winnerPubkey: null,
+      potSats: refundSats,
+      winnerSats: 0,
+      tipSats: refundSats,
+      tipPercent: 100,
+      feeSats: Math.max(0, wanted - refundSats),
+      collected: false,
+      collectedAt: null,
+      tipToken: token,
+      mock: payments.mock,
+      kind: ORPHAN_BUYIN_REFUND_KIND,
+    });
+    const delivered = meta.ws ? send(meta.ws, {
+      t: "buyInRefund",
+      ok: true,
+      token,
+      sats: refundSats,
+      mock: payments.mock,
+      orphan: true,
+    }) : false;
+    potLog(
+      room,
+      delivered ? "info" : "warn",
+      `orphan buy-in refund · ${meta.player || meta.clientId || "payer"} · ${refundSats} sats${delivered ? "" : " (custodied)"}`,
+    );
+    console.log(
+      `[event] ${room.name} orphan buy-in refund ${refundSats} sats` +
+        (delivered ? "" : " — custodied in payouts (payer left)"),
+    );
+    if (!delivered) {
+      console.error(
+        `[event] EMERGENCY orphan buy-in refund token for ${meta.player || meta.clientId || "payer"} — redeem once:`,
+        token,
+      );
+      appendActivity({
+        type: "payment",
+        kind: "payment-failed",
+        detail: `Orphan buy-in refund custodied · ${room.name} · ${refundSats} sats — check payouts / server log`,
+        level: "error",
+        ok: false,
+        room: room.name,
+        player: meta.player,
+      });
+    }
+    return { token, refundSats };
+  } catch (err) {
+    potLog(
+      room,
+      "error",
+      `orphan buy-in refund failed: ${String(err?.message || err).slice(0, 160)}`,
+    );
+    appendActivity({
+      type: "payment",
+      kind: "payment-failed",
+      detail: `Orphan buy-in refund failed · ${room.name}: ${String(err?.message || err).slice(0, 140)}`,
+      level: "error",
+      ok: false,
+      room: room.name,
+      player: meta.player,
+    });
+    return null;
+  }
+}
+
+/**
+ * Credit a live lobby buy-in, or refund the deposit if the payer already left.
+ * @param {Room} room
+ * @param {string} clientId
+ * @param {number} netSats
+ * @param {{ ws?: import('ws').WebSocket | null }} [opts]
+ */
+async function creditBuyInOrRefundOrphan(room, clientId, netSats, opts = {}) {
+  if (buyInCreditStillLive(room, clientId) && markBuyInPaid(room, clientId, netSats)) {
+    return { credited: true, refund: null };
+  }
+  const client = room.clients?.get(clientId);
+  const refund = await refundOrphanBuyInDeposit(room, netSats, {
+    clientId,
+    player: client?.name,
+    ws: opts.ws || client?.ws || null,
+  });
+  return { credited: false, refund };
+}
+
 /** Find (room, clientId) for a payment-request id across event rooms. */
 function findBuyInByHash(paymentHash) {
   for (const room of rooms.values()) {
@@ -2398,19 +2532,26 @@ const httpServer = createServer(async (req, res) => {
       return;
     }
     let found = null;
+    /** @type {string} */
+    let payHash = "";
+    /** @type {number} */
+    let payAmount = 0;
     try {
       if (payments.mock) throw new Error("mock mode");
       const raw = JSON.parse(body || "{}");
       const payload = raw?.payload && typeof raw.payload === "object" ? raw.payload : raw;
-      found = findBuyInByHash(
-        String(payload.id || raw.id || payload.paymentId || raw.payment_id || payload.i || ""),
-      );
+      payHash = String(payload.id || raw.id || payload.paymentId || raw.payment_id || payload.i || "");
+      found = findBuyInByHash(payHash);
       if (!found) {
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: false, error: "unknown payment id" }));
         return;
       }
       const buyIn = found.room.buyIns.get(found.clientId);
+      payHash = buyIn.paymentHash;
+      payAmount = found.room.buyInSats;
+      const potId = found.room.potId;
+      const clientId = found.clientId;
       // Idempotent: a timeout after a successful mint-swap looks like a failure
       // in the wallet, which then retries. 409 made that retry look like a
       // second error even though the sats were already in the pot.
@@ -2419,24 +2560,57 @@ const httpServer = createServer(async (req, res) => {
         res.end(JSON.stringify({ ok: true }));
         return;
       }
+      // Payer already left — refuse before consuming proofs so the wallet keeps them.
+      if (!buyInCreditStillLive(found.room, clientId)) {
+        res.writeHead(409, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "payer left the lobby — rejoin to pay" }));
+        return;
+      }
       const fresh = await payments.receivePayload({
-        paymentHash: buyIn.paymentHash,
-        amountSats: found.room.buyInSats,
+        paymentHash: payHash,
+        amountSats: payAmount,
         payload,
-        potId: found.room.potId,
+        potId,
       });
       const netSats = Array.isArray(fresh) && fresh.length
         ? fresh.reduce((a, p) => a + Number(p.amount), 0)
-        : found.room.buyInSats;
-      markBuyInPaid(found.room, found.clientId, netSats);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true }));
-    } catch (err) {
-      const buyIn = found?.clientId ? found.room.buyIns.get(found.clientId) : null;
-      if (found?.room && buyIn && payments.alreadyReceived?.(buyIn.paymentHash, found.room.potId)) {
-        markBuyInPaid(found.room, found.clientId, found.room.buyInSats);
+        : payAmount;
+      const outcome = await creditBuyInOrRefundOrphan(found.room, clientId, netSats);
+      if (outcome.credited) {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+      // Proofs already swapped after leave — refund token when possible.
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          refunded: true,
+          token: outcome.refund?.token || undefined,
+          sats: outcome.refund?.refundSats || 0,
+        }),
+      );
+    } catch (err) {
+      if (found?.room && payHash && payments.alreadyReceived?.(payHash, found.room.potId)) {
+        const outcome = await creditBuyInOrRefundOrphan(
+          found.room,
+          found.clientId,
+          payAmount || found.room.buyInSats,
+        );
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify(
+            outcome.credited
+              ? { ok: true }
+              : {
+                  ok: true,
+                  refunded: true,
+                  token: outcome.refund?.token || undefined,
+                  sats: outcome.refund?.refundSats || 0,
+                },
+          ),
+        );
         return;
       }
       if (found?.room) {
@@ -2487,7 +2661,13 @@ const httpServer = createServer(async (req, res) => {
         const retryAt = Math.round(Number(data.retryAt));
         const list = loadPayouts();
         const rec = list.find(
-          (r) => r && Number(r.at) === retryAt && !r.collected && Number(r.tipSats) > 0 && !r.mock,
+          (r) =>
+            r &&
+            Number(r.at) === retryAt &&
+            !r.collected &&
+            Number(r.tipSats) > 0 &&
+            !r.mock &&
+            isTipSweepablePayout(r),
         );
         if (!rec) {
           res.writeHead(404, { "Content-Type": "application/json" });
@@ -3009,6 +3189,9 @@ wss.on("connection", (ws) => {
       if (!room.isEvent || room.phase !== "lobby" || payments.mock) return;
       const buyIn = room.buyIns.get(client.id);
       if (!buyIn || buyIn.paidAt) return;
+      const payerId = client.id;
+      const payerName = client.name;
+      const payerWs = ws;
       void (async () => {
         try {
           const fresh = await payments.receiveToken({
@@ -3016,10 +3199,17 @@ wss.on("connection", (ws) => {
             token: String(msg.token || ""),
           });
           await depositProofs(fresh, room.potId);
-          markBuyInPaid(room, client.id, fresh.reduce((a, p) => a + Number(p.amount), 0));
+          const netSats = fresh.reduce((a, p) => a + Number(p.amount), 0);
+          const outcome = await creditBuyInOrRefundOrphan(room, payerId, netSats, { ws: payerWs });
+          if (!outcome.credited && !outcome.refund) {
+            send(payerWs, {
+              t: "notice",
+              text: "payment landed after you left — contact host; sats are in the pot file",
+            });
+          }
         } catch (err) {
-          potLog(room, "error", `pasted token rejected for ${client.name}: ${String(err?.message || err).slice(0, 160)}`);
-          send(ws, { t: "notice", text: `token rejected — ${String(err?.message || err).slice(0, 100)}` });
+          potLog(room, "error", `pasted token rejected for ${payerName}: ${String(err?.message || err).slice(0, 160)}`);
+          send(payerWs, { t: "notice", text: `token rejected — ${String(err?.message || err).slice(0, 100)}` });
         }
       })();
       return;
@@ -3343,10 +3533,20 @@ setInterval(() => {
     if (!room.isEvent || room.phase !== "lobby") continue;
     for (const [id, buyIn] of room.buyIns) {
       if (buyIn.paidAt > 0) continue;
-      void payments.settleIfPaid(buyIn.paymentHash).then((settled) => {
-        if (!settled || rooms.get(room.name) !== room) return;
+      void payments.settleIfPaid(buyIn.paymentHash).then(async (settled) => {
+        if (!settled) return;
+        // Already credited this quote (or a prior poll finished) — never refund twice.
         if (buyIn.paidAt > 0) return;
-        markBuyInPaid(room, id, settled.netSats);
+        const netSats = settled.netSats;
+        // Payer left / room replaced after mint — pull sats back out of the pot file.
+        if (rooms.get(room.name) !== room || !room.clients.has(id) || !room.buyIns.has(id)) {
+          await refundOrphanBuyInDeposit(room, netSats, { clientId: id });
+          return;
+        }
+        const outcome = await creditBuyInOrRefundOrphan(room, id, netSats);
+        if (!outcome.credited && !outcome.refund) {
+          potLog(room, "error", `Lightning buy-in orphaned with no refund path · ${netSats} sats`);
+        }
       }).catch((err) => {
         console.warn("[event] settleIfPaid failed:", err?.message || err);
         potLog(room, "warn", `Lightning settle poll failed: ${String(err?.message || err).slice(0, 160)}`);
