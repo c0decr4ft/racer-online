@@ -88,27 +88,7 @@ function normalizeStore(data: unknown): FeedbackStore {
   return store;
 }
 
-/**
- * Public GET only exposes a count (inbox is private). Returns null unless the
- * body includes a messages array (POST responses / older servers).
- */
-async function fetchServerFeedback(): Promise<FeedbackStore | null> {
-  const url = apiUrl("/feedback");
-  if (!url) return null;
-  try {
-    const res = await fetch(url, { cache: "no-store", headers: { Accept: "application/json" } });
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (!data || typeof data !== "object" || !Array.isArray((data as { messages?: unknown }).messages)) {
-      return null;
-    }
-    return normalizeStore(data);
-  } catch {
-    return null;
-  }
-}
-
-async function postServerFeedback(msg: FeedbackMessage): Promise<{ store: FeedbackStore; emailed: boolean } | null> {
+async function postServerFeedback(msg: FeedbackMessage): Promise<{ emailed: boolean } | null> {
   const url = apiUrl("/feedback");
   if (!url) return null;
   try {
@@ -119,14 +99,26 @@ async function postServerFeedback(msg: FeedbackMessage): Promise<{ store: Feedba
     });
     if (!res.ok) return null;
     const data = await res.json();
-    return { store: normalizeStore(data), emailed: data?.emailed === true };
+    if (!data || typeof data !== "object" || data.ok !== true) return null;
+    return { emailed: data.emailed === true };
   } catch {
     return null;
   }
 }
 
-/** Version-agnostic local cache — never include GAME_VERSION in the key. */
-const LOCAL_KEY = "racer-feedback-local-v1";
+/**
+ * Version-agnostic local cache of *this device's own* messages — never include
+ * GAME_VERSION in the key. v2 drops v1 caches, which could hold other players'
+ * messages echoed back by older servers.
+ */
+const LOCAL_KEY = "racer-feedback-local-v2";
+const LEGACY_LOCAL_KEYS = ["racer-feedback-local-v1"];
+
+try {
+  for (const key of LEGACY_LOCAL_KEYS) localStorage.removeItem(key);
+} catch {
+  /* ignore private mode */
+}
 
 function readLocal(): FeedbackMessage[] {
   try {
@@ -146,12 +138,8 @@ function writeLocal(messages: FeedbackMessage[]) {
   }
 }
 
+/** The inbox is private to the dev account — only this device's own messages are readable here. */
 export async function fetchFeedback(): Promise<FeedbackSnapshot> {
-  const fromServer = await fetchServerFeedback();
-  if (fromServer) {
-    writeLocal(fromServer.messages);
-    return { messages: fromServer.messages, source: "server" };
-  }
   return { messages: readLocal(), source: "local" };
 }
 
@@ -166,14 +154,14 @@ export async function submitFeedback(text: string, name?: string): Promise<Feedb
     return fetchFeedback();
   }
 
-  // Prefer durable game-server file (same store the DEV inbox reads).
-  const fromServer = await postServerFeedback(msg);
-  if (fromServer) {
-    writeLocal(fromServer.store.messages);
-    return { messages: fromServer.store.messages, source: "server", emailed: fromServer.emailed };
-  }
-
+  // Prefer durable game-server file (same store the DEV inbox reads). The
+  // response carries no inbox — keep only our own message on this device.
   const merged = normalizeStore({ messages: [msg, ...readLocal()] }).messages;
   writeLocal(merged);
+
+  const fromServer = await postServerFeedback(msg);
+  if (fromServer) {
+    return { messages: merged, source: "server", emailed: fromServer.emailed };
+  }
   return { messages: merged, source: "local" };
 }
