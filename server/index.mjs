@@ -2685,7 +2685,9 @@ const httpServer = createServer(async (req, res) => {
         console.warn(`[feedback] email relay failed:`, err?.message || err);
       }
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true, messages: saved.messages, source: "server", emailed }));
+      // Never echo the inbox back: it is private to the dev account
+      // (/api/dev/feedback), and this endpoint is unauthenticated.
+      res.end(JSON.stringify({ ok: true, count: saved.messages.length, source: "server", emailed }));
     } catch {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "bad json" }));
