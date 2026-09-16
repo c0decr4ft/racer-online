@@ -10,6 +10,12 @@ import {
   BATTLE_PICKUP_RADIUS,
   BATTLE_PICKUP_POSE_SLACK,
 } from "../shared/battleCubes.mjs";
+import {
+  needsPendingTipCustody,
+  persistPendingClaimTip,
+  markClaimTipTokenCollected,
+  finalClaimPayoutFields,
+} from "./claimTipCustody.mjs";
 import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, copyFileSync } from "node:fs";
 import { dirname, join, extname, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -424,6 +430,55 @@ function verifyDevEvent(event) {
     throw { status: 400, message: "invalid signature" };
   }
   return true;
+}
+
+/**
+ * Persist a claim tip bearer token to payouts.json immediately (before winner
+ * send / room teardown). Idempotent per tipToken.
+ */
+function persistClaimTipCustody(fields) {
+  return persistPendingClaimTip(loadPayouts, savePayouts, fields);
+}
+
+/** Mark payouts.json tipToken rows collected after tip-wallet receive. */
+function markPersistedClaimTipCollected(tipToken, tipSats) {
+  return markClaimTipTokenCollected(loadPayouts, savePayouts, tipToken, tipSats);
+}
+
+/**
+ * Flush any in-memory claim tip tokens before the room is deleted.
+ * Normally already on disk right after collectTip; this is belt-and-suspenders.
+ * @param {Room} room
+ */
+function flushRoomClaimTipCustody(room) {
+  if (!room?.isEvent) return;
+  if (needsPendingTipCustody({ tipSats: room.payoutTipSats, tipToken: room.payoutTipToken, collected: room.payoutTipCollected })) {
+    persistClaimTipCustody({
+      room: room.name,
+      potId: room.potId,
+      winnerId: room.winnerId || "developer",
+      potSats: room.payoutTipSats,
+      tipSats: room.payoutTipSats,
+      tipPercent: 0,
+      tipToken: room.payoutTipToken,
+      mock: payments.mock,
+      kind: "claim-tip-pending",
+    });
+  }
+  for (const [clientId, tip] of room.battleClaimTips || []) {
+    if (!needsPendingTipCustody(tip)) continue;
+    persistClaimTipCustody({
+      room: room.name,
+      potId: room.potId,
+      winnerId: clientId,
+      potSats: tip.tipSats,
+      tipSats: tip.tipSats,
+      tipPercent: 0,
+      tipToken: tip.tipToken,
+      mock: payments.mock,
+      kind: "battle-claim-tip-pending",
+    });
+  }
 }
 
 /**
@@ -1630,6 +1685,8 @@ async function removeClientFromRoom(room, client, ws) {
       player: client.name,
       playerId: client.id,
     });
+    // Tip bearer tokens must survive room teardown for sweep/retry.
+    flushRoomClaimTipCustody(room);
     rooms.delete(client.room);
   } else {
     if (room.hostId === client.id) {
@@ -3070,11 +3127,13 @@ wss.on("connection", (ws) => {
 
             if (!tipCollected && tipState.tipToken) {
               try {
+                const priorToken = tipState.tipToken;
                 const net = await payments.receiveTipToken(tipState.tipToken, tipSats);
                 tipSats = Number.isFinite(net) && net > 0 ? net : tipSats;
                 tipCollected = true;
                 tipState = { tipSats, tipCollected: true, tipToken: "" };
                 room.battleClaimTips.set(client.id, tipState);
+                markPersistedClaimTipCollected(priorToken, tipSats);
               } catch (err) {
                 console.warn(`[event] battle tip token collect failed:`, err?.message || err);
                 potLog(
@@ -3085,6 +3144,7 @@ wss.on("connection", (ws) => {
               }
             }
 
+            let tipCustodyPersisted = false;
             if (!tipCollected && !tipState.tipToken) {
               const tipWanted = Math.floor((shareCap * tipPercent) / 100);
               const tipCap = Math.min(tipWanted, Math.max(0, shareCap - perSendFee));
@@ -3098,7 +3158,20 @@ wss.on("connection", (ws) => {
                   tipToken: tipCollected ? "" : result.token || "",
                 };
                 room.battleClaimTips.set(client.id, tipState);
-                if (!tipCollected) {
+                if (!tipCollected && tipState.tipToken) {
+                  persistClaimTipCustody({
+                    room: room.name,
+                    potId: room.potId,
+                    winnerId: client.id,
+                    winnerPubkey: client.pose.pubkey || null,
+                    potSats: claimable,
+                    tipSats,
+                    tipPercent,
+                    tipToken: tipState.tipToken,
+                    mock: payments.mock,
+                    kind: "battle-claim-tip-pending",
+                  });
+                  tipCustodyPersisted = true;
                   potLog(room, "warn", `battle tip ${tipSats} swapped but tip-wallet receive failed`);
                 }
               } else {
@@ -3110,6 +3183,21 @@ wss.on("connection", (ws) => {
             } else {
               tipSats = tipState.tipSats || 0;
               tipCollected = tipState.tipCollected === true;
+              if (!tipCollected && tipState.tipToken) {
+                persistClaimTipCustody({
+                  room: room.name,
+                  potId: room.potId,
+                  winnerId: client.id,
+                  winnerPubkey: client.pose.pubkey || null,
+                  potSats: claimable,
+                  tipSats,
+                  tipPercent,
+                  tipToken: tipState.tipToken,
+                  mock: payments.mock,
+                  kind: "battle-claim-tip-pending",
+                });
+                tipCustodyPersisted = true;
+              }
             }
 
             const remaining = await balanceNow();
@@ -3125,22 +3213,28 @@ wss.on("connection", (ws) => {
             }
 
             const feeSats = Math.max(0, claimable - winnerSats - tipSats);
-            recordPayout({
-              room: room.name,
-              potId: room.potId,
-              winnerId: client.id,
-              winnerPubkey: client.pose.pubkey || null,
-              potSats: claimable,
-              winnerSats,
-              tipSats,
-              tipPercent,
-              feeSats,
-              collected: tipCollected,
-              collectedAt: tipCollected ? Date.now() : null,
-              tipToken: tipCollected ? null : tipState.tipToken || null,
-              mock: payments.mock,
-            });
-            // Claim completed — tip leftover (if any) stays on disk via recordPayout.
+            recordPayout(
+              finalClaimPayoutFields(
+                {
+                  room: room.name,
+                  potId: room.potId,
+                  winnerId: client.id,
+                  winnerPubkey: client.pose.pubkey || null,
+                  potSats: claimable,
+                  winnerSats,
+                  tipPercent,
+                  feeSats,
+                  mock: payments.mock,
+                },
+                {
+                  tipCustodyPersisted,
+                  tipCollected,
+                  tipSats,
+                  tipToken: tipState.tipToken || "",
+                },
+              ),
+            );
+            // Claim completed — tip leftover (if any) stays on disk via custody/recordPayout.
             room.battleClaimTips.delete(client.id);
             room.battleClaimable.delete(client.id);
             send(ws, {
@@ -3198,17 +3292,33 @@ wss.on("connection", (ws) => {
           //    attempt already moved it (winner send may have failed after).
           let tipSats = room.payoutTipSats || 0;
           let tipCollected = room.payoutTipCollected === true;
+          let tipCustodyPersisted = false;
           if (!tipCollected && room.payoutTipToken) {
             try {
+              const priorToken = room.payoutTipToken;
               const net = await payments.receiveTipToken(room.payoutTipToken, tipSats);
               tipSats = Number.isFinite(net) && net > 0 ? net : tipSats;
               tipCollected = true;
               room.payoutTipCollected = true;
               room.payoutTipSats = tipSats;
               room.payoutTipToken = "";
+              markPersistedClaimTipCollected(priorToken, tipSats);
             } catch (err) {
               console.warn(`[event] leftover tip token collect failed:`, err?.message || err);
               potLog(room, "warn", `leftover tip token collect failed: ${String(err?.message || err).slice(0, 160)}`);
+              persistClaimTipCustody({
+                room: room.name,
+                potId: room.potId,
+                winnerId: client.id,
+                winnerPubkey: client.pose.pubkey || null,
+                potSats: room.potSats,
+                tipSats,
+                tipPercent,
+                tipToken: room.payoutTipToken,
+                mock: payments.mock,
+                kind: "claim-tip-pending",
+              });
+              tipCustodyPersisted = true;
             }
           }
           if (!tipCollected && !room.payoutTipToken) {
@@ -3221,13 +3331,40 @@ wss.on("connection", (ws) => {
               room.payoutTipSats = tipSats;
               room.payoutTipCollected = tipCollected;
               room.payoutTipToken = result.token || "";
-              if (!tipCollected) {
+              if (!tipCollected && room.payoutTipToken) {
+                persistClaimTipCustody({
+                  room: room.name,
+                  potId: room.potId,
+                  winnerId: client.id,
+                  winnerPubkey: client.pose.pubkey || null,
+                  potSats: room.potSats,
+                  tipSats,
+                  tipPercent,
+                  tipToken: room.payoutTipToken,
+                  mock: payments.mock,
+                  kind: "claim-tip-pending",
+                });
+                tipCustodyPersisted = true;
                 potLog(room, "warn", `tip ${tipSats} swapped from pot but tip-wallet receive failed`);
               }
             } else {
               room.payoutTipSats = 0;
               room.payoutTipCollected = true;
             }
+          } else if (!tipCollected && room.payoutTipToken) {
+            persistClaimTipCustody({
+              room: room.name,
+              potId: room.potId,
+              winnerId: client.id,
+              winnerPubkey: client.pose.pubkey || null,
+              potSats: room.potSats,
+              tipSats,
+              tipPercent,
+              tipToken: room.payoutTipToken,
+              mock: payments.mock,
+              kind: "claim-tip-pending",
+            });
+            tipCustodyPersisted = true;
           }
 
           // 2) Winner gets everything left in THIS event's pot, minus send fee.
@@ -3241,22 +3378,27 @@ wss.on("connection", (ws) => {
           }
 
           const feeSats = Math.max(0, room.potSats - winnerSats - tipSats);
-          recordPayout({
-            room: room.name,
-            potId: room.potId,
-            winnerId: client.id,
-            winnerPubkey: client.pose.pubkey || null,
-            potSats: room.potSats,
-            winnerSats,
-            tipSats,
-            tipPercent,
-            feeSats,
-            collected: tipCollected,
-            collectedAt: tipCollected ? Date.now() : null,
-            // Leftover bearer token stays on disk for a server-side retry only.
-            tipToken: tipCollected ? null : room.payoutTipToken || null,
-            mock: payments.mock,
-          });
+          recordPayout(
+            finalClaimPayoutFields(
+              {
+                room: room.name,
+                potId: room.potId,
+                winnerId: client.id,
+                winnerPubkey: client.pose.pubkey || null,
+                potSats: room.potSats,
+                winnerSats,
+                tipPercent,
+                feeSats,
+                mock: payments.mock,
+              },
+              {
+                tipCustodyPersisted,
+                tipCollected,
+                tipSats,
+                tipToken: room.payoutTipToken || "",
+              },
+            ),
+          );
           send(ws, {
             t: "payoutResult",
             ok: true,
