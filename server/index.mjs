@@ -10,7 +10,16 @@ import {
   BATTLE_PICKUP_RADIUS,
   BATTLE_PICKUP_POSE_SLACK,
 } from "../shared/battleCubes.mjs";
-import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, copyFileSync } from "node:fs";
+import {
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  statSync,
+  mkdirSync,
+  copyFileSync,
+  renameSync,
+  unlinkSync,
+} from "node:fs";
 import { dirname, join, extname, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -612,8 +621,7 @@ async function devTipsSummary() {
 }
 
 /** Dev feedback inbox: newest first, with read state (read = dismissed from view). */
-function devFeedbackList() {
-  const store = loadFeedback();
+function feedbackListFromStore(store) {
   return store.messages.map((m) => ({
     id: m.id,
     text: m.text,
@@ -623,27 +631,51 @@ function devFeedbackList() {
   }));
 }
 
+function devFeedbackList() {
+  return feedbackListFromStore(loadFeedback());
+}
+
+/**
+ * Serialize load→mutate→save on feedback.json. Concurrent POSTs and
+ * writeFileSync's truncate-then-write used to interleave: a tear-read hit
+ * JSON.parse → empty messages → save wiped the durable private inbox (and
+ * could poison the Nostr mirror).
+ */
+let feedbackTail = Promise.resolve();
+function withFeedbackLock(fn) {
+  const run = feedbackTail.catch(() => {}).then(fn);
+  feedbackTail = run.then(
+    () => {},
+    () => {},
+  );
+  return run;
+}
+
 /** Mark one feedback message read (dismissed). Returns updated inbox. */
-function markFeedbackRead(id) {
-  const store = loadFeedback();
-  let changed = false;
-  for (const m of store.messages) {
-    if (m.id === id && !Number.isFinite(Number(m.readAt))) {
-      m.readAt = Date.now();
-      changed = true;
+async function markFeedbackRead(id) {
+  return withFeedbackLock(async () => {
+    const store = loadFeedback({ allowEmptyOnCorrupt: false });
+    let changed = false;
+    for (const m of store.messages) {
+      if (m.id === id && !Number.isFinite(Number(m.readAt))) {
+        m.readAt = Date.now();
+        changed = true;
+      }
     }
-  }
-  if (changed) saveFeedback(store);
-  return devFeedbackList();
+    if (changed) saveFeedback(store);
+    return feedbackListFromStore(store);
+  });
 }
 
 /** Permanently delete one feedback message. Returns updated inbox. */
-function deleteFeedback(id) {
-  const store = loadFeedback();
-  const before = store.messages.length;
-  store.messages = store.messages.filter((m) => m.id !== id);
-  if (store.messages.length !== before) saveFeedback(store);
-  return devFeedbackList();
+async function deleteFeedback(id) {
+  return withFeedbackLock(async () => {
+    const store = loadFeedback({ allowEmptyOnCorrupt: false });
+    const before = store.messages.length;
+    store.messages = store.messages.filter((m) => m.id !== id);
+    if (store.messages.length !== before) saveFeedback(store);
+    return feedbackListFromStore(store);
+  });
 }
 
 /**
@@ -1013,12 +1045,19 @@ function migrateFeedbackToDataDir() {
   }
 }
 
-function loadFeedback() {
+/**
+ * @param {{ allowEmptyOnCorrupt?: boolean }} [opts]
+ * @returns {{ messages: object[] }}
+ */
+function loadFeedback(opts = {}) {
+  const allowEmptyOnCorrupt = opts.allowEmptyOnCorrupt !== false;
   migrateFeedbackToDataDir();
   try {
     if (!existsSync(FEEDBACK_PATH)) return { messages: [] };
     return normalizeFeedbackStore(JSON.parse(readFileSync(FEEDBACK_PATH, "utf8")));
-  } catch {
+  } catch (err) {
+    // Mutations must not treat a torn/corrupt file as empty and overwrite it.
+    if (!allowEmptyOnCorrupt && existsSync(FEEDBACK_PATH)) throw err;
     return { messages: [] };
   }
 }
@@ -1087,18 +1126,20 @@ async function hydrateFeedbackFromBlob() {
       }
     }
     if (!remote.messages.length) return;
-    const local = loadFeedback();
-    const merged = mergeFeedbackStores(local, remote);
-    if (JSON.stringify(merged) === JSON.stringify(local)) {
+    await withFeedbackLock(async () => {
+      const local = loadFeedback({ allowEmptyOnCorrupt: false });
+      const merged = mergeFeedbackStores(local, remote);
+      if (JSON.stringify(merged) === JSON.stringify(local)) {
+        console.log(
+          `[feedback] nostr hydrate — already have ${local.messages.length} messages`,
+        );
+        return;
+      }
+      saveFeedback(merged, { mirror: false });
       console.log(
-        `[feedback] nostr hydrate — already have ${local.messages.length} messages`,
+        `[feedback] hydrated from nostr — ${local.messages.length} → ${merged.messages.length} messages @ ${FEEDBACK_PATH}`,
       );
-      return;
-    }
-    saveFeedback(merged, { mirror: false });
-    console.log(
-      `[feedback] hydrated from nostr — ${local.messages.length} → ${merged.messages.length} messages @ ${FEEDBACK_PATH}`,
-    );
+    });
   } catch (err) {
     console.warn(`[feedback] nostr hydrate failed:`, err?.message || err);
   }
@@ -1110,11 +1151,21 @@ async function hydrateFeedbackFromBlob() {
  */
 function saveFeedback(store, opts = {}) {
   const body = normalizeFeedbackStore(store);
+  if (DATA_DIR !== DIR) mkdirSync(DATA_DIR, { recursive: true });
+  const payload = JSON.stringify(body, null, 2);
+  // Atomic replace: readers never observe a truncated mid-write file.
+  const tmp = `${FEEDBACK_PATH}.${process.pid}.${Date.now()}.tmp`;
   try {
-    if (DATA_DIR !== DIR) mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(FEEDBACK_PATH, JSON.stringify(body, null, 2));
+    writeFileSync(tmp, payload);
+    renameSync(tmp, FEEDBACK_PATH);
   } catch (err) {
+    try {
+      if (existsSync(tmp)) unlinkSync(tmp);
+    } catch {
+      /* ignore */
+    }
     console.warn(`[feedback] write failed:`, FEEDBACK_PATH, err?.message || err);
+    throw err;
   }
   if (opts.mirror !== false) void mirrorFeedbackBlob(body);
   return body;
@@ -2589,12 +2640,19 @@ const httpServer = createServer(async (req, res) => {
       const action = String(data.action || "list").toLowerCase();
       const id = String(data.id || "");
       let messages;
-      if (action === "read" && id) {
-        messages = markFeedbackRead(id);
-      } else if (action === "delete" && id) {
-        messages = deleteFeedback(id);
-      } else {
-        messages = devFeedbackList();
+      try {
+        if (action === "read" && id) {
+          messages = await markFeedbackRead(id);
+        } else if (action === "delete" && id) {
+          messages = await deleteFeedback(id);
+        } else {
+          messages = devFeedbackList();
+        }
+      } catch (err) {
+        console.error("[feedback] refuse to mutate unreadable feedback.json:", err?.message || err);
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "feedback temporarily unavailable" }));
+        return;
       }
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true, messages }));
@@ -2673,9 +2731,19 @@ const httpServer = createServer(async (req, res) => {
         res.end(JSON.stringify({ ok: false, error: "bad feedback" }));
         return;
       }
-      const store = loadFeedback();
-      store.messages = [msg, ...store.messages.filter((m) => m.id !== msg.id)];
-      const saved = saveFeedback(store);
+      let saved;
+      try {
+        saved = await withFeedbackLock(async () => {
+          const store = loadFeedback({ allowEmptyOnCorrupt: false });
+          store.messages = [msg, ...store.messages.filter((m) => m.id !== msg.id)];
+          return saveFeedback(store);
+        });
+      } catch (err) {
+        console.error("[feedback] refuse to save over unreadable feedback.json:", err?.message || err);
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "feedback temporarily unavailable" }));
+        return;
+      }
       // Forward to the feedback inbox (best-effort — local log is the backup)
       let emailed = false;
       try {
