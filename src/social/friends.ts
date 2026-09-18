@@ -140,12 +140,15 @@ export function addFriend(ownerPubkey: string, peer: { pubkey: string; name?: st
   if (!owner || !pubkey || owner === pubkey) return readFriends(ownerPubkey);
   const list = readFriends(owner);
   const existing = list.find((f) => f.pubkey === pubkey);
+  const incoming = sanitizeName(peer.name || "");
   if (existing) {
-    if (peer.name) existing.name = sanitizeName(peer.name);
+    if (peer.name && (!isWeakName(incoming) || isWeakName(existing.name))) {
+      existing.name = incoming;
+    }
   } else {
     list.push({
       pubkey,
-      name: sanitizeName(peer.name || ""),
+      name: incoming,
       addedAt: Date.now(),
     });
   }
@@ -176,8 +179,23 @@ export function updateFriendName(ownerPubkey: string, peerPubkey: string, name: 
   const list = readFriends(ownerPubkey);
   const row = list.find((f) => f.pubkey === peer);
   if (!row) return list;
-  row.name = sanitizeName(name);
+  const next = sanitizeName(name);
+  // Never clobber a real name with the placeholder.
+  if (isWeakName(next) && !isWeakName(row.name)) return list;
+  row.name = next;
   return writeFriends(ownerPubkey, list);
+}
+
+/** True for empty / default placeholders that should be replaced by a profile name. */
+export function isWeakFriendName(name: string): boolean {
+  return isWeakName(name);
+}
+
+function isWeakName(name: string): boolean {
+  const n = String(name || "")
+    .trim()
+    .toUpperCase();
+  return !n || n === "RACER" || n.startsWith("NPUB");
 }
 
 export function listIncomingRequests(ownerPubkey: string): FriendRequest[] {
