@@ -87,6 +87,7 @@ export function initControlsHelp(opts?: { onStartTutorial?: () => void }): void 
     onOpen: () => {
       document.getElementById("feedback-compose")?.classList.add("hidden");
       closeHomeInstructions();
+      document.getElementById("home-settings")?.classList.add("hidden");
     },
   });
 
@@ -98,6 +99,7 @@ export function initControlsHelp(opts?: { onStartTutorial?: () => void }): void 
     onOpen: () => {
       document.getElementById("feedback-compose")?.classList.add("hidden");
       closeControlsHelp();
+      document.getElementById("home-settings")?.classList.add("hidden");
     },
   });
 

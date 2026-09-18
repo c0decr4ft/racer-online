@@ -2289,6 +2289,80 @@ input:focus-visible,
   flex: 1;
 }
 
+/* —— Home settings —— */
+.home-settings-panel {
+  text-align: left;
+  max-width: 22rem;
+}
+
+.home-settings-panel .eyebrow,
+.home-settings-panel .feedback-compose-hint {
+  text-align: center;
+}
+
+.settings-section {
+  margin: 0 0 1rem;
+}
+
+.settings-label {
+  margin: 0;
+  color: var(--text);
+  font-family: "Rajdhani", sans-serif;
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.settings-label span {
+  color: #ffc857;
+  letter-spacing: 0.04em;
+}
+
+.settings-hint {
+  margin: 0.15rem 0 0.45rem;
+  color: var(--muted);
+  font-family: "Rajdhani", sans-serif;
+  font-size: 0.85rem;
+}
+
+.settings-seg {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.35rem;
+}
+
+.settings-seg-btn {
+  appearance: none;
+  margin: 0;
+  padding: 0.45rem 0.35rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font-family: "Orbitron", sans-serif;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+}
+
+.settings-seg-btn:hover {
+  border-color: rgba(255, 200, 87, 0.45);
+}
+
+.settings-seg-btn.is-active {
+  border-color: #ffc857;
+  background: rgba(255, 200, 87, 0.16);
+  color: #ffc857;
+}
+
+.settings-slider {
+  width: 100%;
+  accent-color: #ffc857;
+  cursor: pointer;
+}
+
 /* —— In-race tutorial coach —— */
 .tutorial-coach {
   position: fixed;

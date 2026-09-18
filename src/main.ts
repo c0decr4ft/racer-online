@@ -7,6 +7,7 @@ import { startPresenceHeartbeat } from "./net/presence";
 import { restoreSession } from "./nostr/session";
 import { initNostrUi } from "./nostr/ui";
 import { initVehiclePhysics, vehiclePhysicsBackend } from "./physics/vehiclePhysics";
+import { initSettingsUi } from "./settingsUi";
 import { GAME_VERSION } from "./version";
 import { initVersionBadge } from "./versions";
 
@@ -34,6 +35,9 @@ if (!mobileBlocked) {
     Object.assign(window, { __game: game, __physicsBackend: vehiclePhysicsBackend() });
     initControlsHelp({
       onStartTutorial: () => game.startTutorial(),
+    });
+    initSettingsUi({
+      onApply: (settings) => game.applyGameSettings(settings),
     });
     const api = configuredApiBase();
     const ws = configuredWsUrl();

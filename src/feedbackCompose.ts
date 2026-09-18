@@ -1,4 +1,5 @@
 import { closeControlsHelp } from "./controlsHelp";
+import { closeSettings } from "./settingsUi";
 import {
   FEEDBACK_NAME_MAX,
   FEEDBACK_TEXT_MAX,
@@ -17,6 +18,7 @@ export function setFeedbackBtnVisible(visible: boolean): void {
   if (!visible) {
     modal?.classList.add("hidden");
     closeControlsHelp();
+    closeSettings();
     const form = document.getElementById("feedback-compose-form");
     if (form instanceof HTMLFormElement) form.reset();
     const status = document.getElementById("feedback-compose-status");

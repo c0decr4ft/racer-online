@@ -96,11 +96,19 @@ import { WildlifeHerd } from "./wildlife";
 import {
   bindWebglContextRecovery,
   createGameRenderer,
-  probeBootPerfTier,
   settingsForTier,
   type PerfSettings,
   type PerfTier,
 } from "./perfQuality";
+import {
+  effectsFlashIntensity,
+  effectsParticleCount,
+  graphicsToTier,
+  loadSettings,
+  soundGain,
+  type GameSettings,
+  type QualityLevel,
+} from "./settings";
 
 function formatTime(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "--:--.---";
@@ -206,16 +214,15 @@ export class Game {
   private wantRearview = false;
   /** One-shot shadow rebuild after home/track transitions (menu orbit is static-lit). */
   private shadowNeedsWarmup = true;
-  /** Frame-time EMA (ms) — used to drop non-essential HUD/FX work under load. */
+  /** Frame-time EMA (ms) — kept for diagnostics; quality is Settings-only. */
   private fpsEmaMs = 16.7;
-  private lowFpsSince = 0;
-  private highFpsSince = 0;
   /** Sustained slow frames → skip minimap / rain particles (never skip shadow maps). */
   private perfThrottle = false;
-  /** Boot-detected GPU floor — FPS can only push quality down from here. */
-  private bootTier: PerfTier = "high";
+  /** Manual Settings → Graphics (never auto-detected). */
   private qualityTier: PerfTier = "high";
   private perf: PerfSettings = settingsForTier("high");
+  /** Manual Settings → Effects (explosions / smoke). */
+  private effectsLevel: QualityLevel = "high";
   private sunLight: THREE.DirectionalLight | null = null;
   /** Reused coasting input when finished/wrecked online — avoid per-frame object alloc. */
   private readonly _coastInput: InputState = {
@@ -517,9 +524,12 @@ export class Game {
   private viewport = viewportSize();
 
   constructor(canvas: HTMLCanvasElement) {
-    this.bootTier = probeBootPerfTier();
-    this.qualityTier = this.bootTier;
+    const saved = loadSettings();
+    this.qualityTier = graphicsToTier(saved.graphics);
+    this.effectsLevel = saved.effects;
     this.perf = settingsForTier(this.qualityTier);
+    this.perfThrottle = this.qualityTier !== "high";
+    this.audio.setMasterVolume(soundGain(saved.sound));
 
     // Cap DPR for stable FPS on retina / weak GPUs. Prefer high-performance GL,
     // then fall back so dual-GPU laptops / flaky drivers don't leave a blue clear.
@@ -3082,6 +3092,16 @@ export class Game {
   }
 
   /**
+   * Apply Settings panel choices. Graphics map to render tiers; effects control
+   * explosions/smoke; sound scales the master bus. Never auto-overrides these.
+   */
+  applyGameSettings(settings: GameSettings) {
+    this.effectsLevel = settings.effects;
+    this.audio.setMasterVolume(soundGain(settings.sound));
+    this.applyPerfSettings(graphicsToTier(settings.graphics), { force: true });
+  }
+
+  /**
    * Apply internal GPU dials — shadow map size/filter, night light budget, draw distance.
    * Does not change gameplay or palette; only work the GPU does per frame.
    */
@@ -3089,7 +3109,7 @@ export class Game {
     if (!opts?.force && tier === this.qualityTier) return;
     this.qualityTier = tier;
     this.perf = settingsForTier(tier);
-    this.perfThrottle = tier !== "high";
+    this.perfThrottle = tier !== "high" || this.effectsLevel === "low";
 
     this.renderer.shadowMap.enabled = this.perf.shadows;
     this.renderer.shadowMap.type = this.perf.softShadows
@@ -3127,7 +3147,7 @@ export class Game {
       headlightBeams: this.perf.headlightBeams,
     });
 
-    if (!this.perf.engineSmoke) this.clearEngineSmoke();
+    if (!this.perf.engineSmoke || this.effectsLevel === "low") this.clearEngineSmoke();
     this.shadowNeedsWarmup = true;
   }
 
@@ -3604,44 +3624,9 @@ export class Game {
     return performance.now() - this.pauseTotal - extra;
   }
 
-  /** FPS scaler: sustained hitch → drop a quality tier; sustained smooth → climb toward boot floor. */
-  private updatePerfThrottle(now: number) {
-    if (!this.running || this.paused || this.finished) {
-      this.lowFpsSince = 0;
-      this.highFpsSince = 0;
-      // Leave quality where it is — menu already uses a lighter path.
-      return;
-    }
-
-    // Drop quickly when frames are bad (old Linux iGPUs often start already mid/low).
-    if (this.fpsEmaMs > 24) {
-      this.highFpsSince = 0;
-      if (!this.lowFpsSince) this.lowFpsSince = now;
-      if (now - this.lowFpsSince > 900) {
-        this.lowFpsSince = now;
-        if (this.qualityTier === "high") this.applyPerfSettings("mid");
-        else if (this.qualityTier === "mid") this.applyPerfSettings("low");
-      }
-      return;
-    }
-    this.lowFpsSince = 0;
-
-    // Climb back only toward the boot-detected floor (never above what the GPU claimed).
-    if (this.fpsEmaMs < 17 && this.qualityTier !== this.bootTier) {
-      if (!this.highFpsSince) this.highFpsSince = now;
-      if (now - this.highFpsSince > 5000) {
-        this.highFpsSince = now;
-        let next: PerfTier = this.qualityTier;
-        if (this.qualityTier === "low") {
-          next = this.bootTier === "low" ? "low" : "mid";
-        } else if (this.qualityTier === "mid") {
-          next = this.bootTier;
-        }
-        if (next !== this.qualityTier) this.applyPerfSettings(next);
-      }
-    } else {
-      this.highFpsSince = 0;
-    }
+  /** FPS scaler disabled — quality comes only from Settings. */
+  private updatePerfThrottle(_now: number) {
+    /* no-op: Settings owns graphics tier */
   }
 
   private onResize() {
@@ -4267,7 +4252,7 @@ export class Game {
   }
 
   private tickEngineSmoke(dt: number) {
-    if (!this.perf.engineSmoke) {
+    if (!this.perf.engineSmoke || this.effectsLevel === "low") {
       if (this.engineSmoke) this.engineSmoke.visible = false;
       return;
     }
@@ -4460,7 +4445,7 @@ export class Game {
     this.clearExplodeParticles();
     const origin = this.player.state.position;
     const colors = [0xff6a2e, 0xffc857, 0xff3b2e, 0xffeeaa, 0x888888];
-    const count = this.perfThrottle ? 12 : 24;
+    const count = effectsParticleCount(this.effectsLevel);
     for (let i = 0; i < count; i++) {
       const mat = new THREE.MeshBasicMaterial({
         color: colors[i % colors.length]!,
@@ -4485,8 +4470,8 @@ export class Game {
     }
     if (this.explodeFlashLight) {
       this.explodeFlashLight.position.set(origin.x, 2.2, origin.z);
-      this.explodeFlashLight.intensity = this.perfThrottle ? 4 : 8;
-      this.explodeFlashLight.visible = true;
+      this.explodeFlashLight.intensity = effectsFlashIntensity(this.effectsLevel);
+      this.explodeFlashLight.visible = this.effectsLevel !== "low";
     }
   }
 
@@ -4563,7 +4548,7 @@ export class Game {
   /** Smaller burst for crushed/shot AI cars — particles only, no flash light. */
   private spawnRivalExplodeFx(origin: THREE.Vector3) {
     const colors = [0xff6a2e, 0xffc857, 0xff3b2e, 0xffeeaa, 0x888888];
-    const count = this.perfThrottle ? 8 : 14;
+    const count = Math.max(3, Math.round(effectsParticleCount(this.effectsLevel) * 0.55));
     for (let i = 0; i < count; i++) {
       const mat = new THREE.MeshBasicMaterial({
         color: colors[i % colors.length]!,

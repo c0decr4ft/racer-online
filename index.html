@@ -133,6 +133,34 @@
 
       <div id="home-corner-btns" class="home-corner-btns">
         <button
+          id="settings-btn"
+          class="feedback-btn"
+          type="button"
+          aria-haspopup="dialog"
+          aria-controls="home-settings"
+          aria-label="Settings"
+          title="Settings"
+        >
+          <svg class="feedback-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z"
+            />
+            <path
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              d="M19.4 13.2v-2.4l1.7-1.3-1.6-2.8-2 .7a7.2 7.2 0 0 0-1.7-1L15.4 4h-2.8l-.4 2.4a7.2 7.2 0 0 0-1.7 1l-2-.7-1.6 2.8 1.7 1.3v2.4l-1.7 1.3 1.6 2.8 2-.7c.53.42 1.1.75 1.7 1l.4 2.4h2.8l.4-2.4c.6-.25 1.17-.58 1.7-1l2 .7 1.6-2.8-1.7-1.3z"
+            />
+          </svg>
+        </button>
+        <button
           id="feedback-btn"
           class="feedback-btn"
           type="button"
@@ -219,6 +247,52 @@
               <button id="feedback-compose-cancel" class="btn-ghost" type="button">CANCEL</button>
             </div>
           </form>
+        </div>
+      </div>
+
+      <div id="home-settings" class="feedback-compose hidden" role="dialog" aria-modal="true" aria-labelledby="home-settings-title">
+        <div class="feedback-compose-panel home-settings-panel">
+          <p class="eyebrow" id="home-settings-title">SETTINGS</p>
+          <p class="feedback-compose-hint">Manual quality — the game will not auto-change these</p>
+
+          <div class="settings-section">
+            <h3 class="settings-label">Graphics</h3>
+            <p class="settings-hint">Shadows, detail distance, night lights</p>
+            <div id="settings-graphics" class="settings-seg" role="group" aria-label="Graphics quality">
+              <button type="button" class="settings-seg-btn" data-value="low">LOW</button>
+              <button type="button" class="settings-seg-btn" data-value="mid">MEDIUM</button>
+              <button type="button" class="settings-seg-btn is-active" data-value="high">HIGH</button>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <h3 class="settings-label">Effects</h3>
+            <p class="settings-hint">Explosions, smoke, particles</p>
+            <div id="settings-effects" class="settings-seg" role="group" aria-label="Effects quality">
+              <button type="button" class="settings-seg-btn" data-value="low">LOW</button>
+              <button type="button" class="settings-seg-btn" data-value="mid">MEDIUM</button>
+              <button type="button" class="settings-seg-btn is-active" data-value="high">HIGH</button>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <h3 class="settings-label">Sound <span id="settings-sound-value">100%</span></h3>
+            <p class="settings-hint">Master volume (mute button still silences all)</p>
+            <input
+              id="settings-sound"
+              class="settings-slider"
+              type="range"
+              min="0"
+              max="100"
+              step="5"
+              value="100"
+              aria-label="Sound volume"
+            />
+          </div>
+
+          <div class="feedback-compose-actions">
+            <button id="settings-close" class="btn-ghost" type="button">CLOSE</button>
+          </div>
         </div>
       </div>
 
