@@ -1608,6 +1608,20 @@ body:has(#mute-btn.hidden) .hud-top {
   text-align: center;
 }
 
+.buyin-refund-overlay {
+  z-index: 40;
+}
+
+.buyin-refund-panel {
+  max-width: min(28rem, 94vw);
+  gap: 0.75rem;
+}
+
+.buyin-refund-panel .event-token-box {
+  max-height: min(70vh, 36rem);
+  overflow: auto;
+}
+
 .event-token-box {
   display: flex;
   flex-direction: column;

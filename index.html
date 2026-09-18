@@ -21,6 +21,28 @@
       <div id="player-tags"></div>
       <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
 
+      <!-- Event Mode: durable buy-in refund custody (survives lobby BACK / clipboard failure) -->
+      <div id="buyin-refund" class="overlay buyin-refund-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="buyin-refund-title">
+        <div class="overlay-inner buyin-refund-panel">
+          <p class="eyebrow">BUY-IN REFUND</p>
+          <h1 id="buyin-refund-title">TOKEN</h1>
+          <p id="buyin-refund-status" class="tagline" aria-live="polite"></p>
+          <div id="buyin-refund-token-box" class="event-token-box hidden">
+            <div id="buyin-refund-qr-wrap" class="event-payout-qr-wrap hidden">
+              <img id="buyin-refund-qr" class="event-payout-qr" alt="Cashu buy-in refund QR code" width="280" height="280" />
+            </div>
+            <p id="buyin-refund-qr-note" class="event-payout-qr-note hidden" aria-live="polite"></p>
+            <input id="buyin-refund-token" class="event-payout-token" type="text" readonly aria-label="Buy-in refund Cashu token" />
+            <div class="event-token-actions">
+              <button id="buyin-refund-copy" class="btn-ghost" type="button">COPY TOKEN</button>
+              <a id="buyin-refund-open-cashu" class="btn-ghost" href="https://wallet.cashu.me" target="_blank" rel="noopener noreferrer">OPEN CASHU.ME</a>
+            </div>
+            <p class="event-token-hint">Scan with cashu.me, or Receive → paste the token</p>
+          </div>
+          <button id="buyin-refund-dismiss" type="button">I SAVED THE TOKEN</button>
+        </div>
+      </div>
+
       <div id="hud">
         <div class="hud-top">
           <div class="hud-top-left">

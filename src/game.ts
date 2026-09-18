@@ -72,6 +72,10 @@ import {
 
 /** QRCode is only needed for payment/login QRs — lazy-load it off the hot path. */
 const qrCode = () => import("qrcode");
+import {
+  buyInRefundCopyToast,
+  buyInRefundStatusText,
+} from "./net/buyInRefundUi";
 import { GameAudio } from "./audio";
 import { setFeedbackBtnVisible } from "./feedbackCompose";
 import {
@@ -895,6 +899,8 @@ export class Game {
         })
         .catch(() => input.select());
     };
+    document.getElementById("buyin-refund-copy")!.onclick = () => this.copyBuyInRefundToken();
+    document.getElementById("buyin-refund-dismiss")!.onclick = () => this.dismissBuyInRefund();
     onSessionChange(() => {
       if (!this.el.nameEntry.classList.contains("hidden")) this.renderNameEntryState();
       void this.refreshDevAccess();
@@ -1466,14 +1472,19 @@ export class Game {
     let refund: { ok: boolean; token?: string; sats?: number; error?: string } | null = null;
     if (this.inLobby && paid && this.net.connected) {
       this.el.mpStatus.textContent = "Refunding buy-in…";
-      refund = await this.net.leaveRoom(4_000);
+      // Mint + WS can exceed a few seconds; keep the socket until the refund lands.
+      refund = await this.net.leaveRoom(12_000);
     }
     // Leave room → back to the main home menu (not a blank overlay).
     this.closeMultiplayer();
-    if (refund) this.onBuyInRefund(refund);
+    if (refund) {
+      this.onBuyInRefund(refund);
+    } else if (paid) {
+      this.showToast("Buy-in refund timed out — check the server activity log");
+    }
   }
 
-  /** Show / copy a lobby buy-in refund token after leave. */
+  /** Show durable custody UI for a lobby buy-in refund bearer token. */
   private onBuyInRefund(result: {
     ok: boolean;
     token?: string;
@@ -1487,14 +1498,120 @@ export class Game {
     }
     const sats = Math.max(0, Math.round(result.sats || 0));
     const token = String(result.token || "").trim();
-    if (!token) {
-      if (sats > 0) this.showToast(`Refunded ${sats} sats`);
+    const panel = document.getElementById("buyin-refund");
+    const status = document.getElementById("buyin-refund-status");
+    const box = document.getElementById("buyin-refund-token-box");
+    const input = document.getElementById("buyin-refund-token") as HTMLInputElement | null;
+    if (!panel || !status) {
+      // HTML missing — last resort toast (still never claim clipboard success blindly).
+      this.showToast(buyInRefundStatusText(sats, !!token));
       return;
     }
-    this.showToast(`Buy-in refund · ${sats} sats — token copied`);
-    void navigator.clipboard?.writeText(token).catch(() => {
-      /* ignore — toast still tells them it refunded */
-    });
+    status.textContent = buyInRefundStatusText(sats, !!token);
+    if (input) input.value = token;
+    box?.classList.toggle("hidden", !token);
+    panel.classList.remove("hidden");
+    if (token) {
+      void this.renderBuyInRefundQr(token);
+      // Best-effort clipboard; only announce success after write resolves.
+      const clip = navigator.clipboard;
+      if (clip) {
+        void clip
+          .writeText(token)
+          .then(() => this.showToast(buyInRefundCopyToast(true)))
+          .catch(() => this.showToast(buyInRefundCopyToast(false)));
+      } else {
+        this.showToast(buyInRefundCopyToast(false));
+      }
+    }
+  }
+
+  private copyBuyInRefundToken() {
+    const input = document.getElementById("buyin-refund-token") as HTMLInputElement | null;
+    const btn = document.getElementById("buyin-refund-copy");
+    const token = input?.value.trim() ?? "";
+    if (!token || !btn) return;
+    void navigator.clipboard
+      .writeText(token)
+      .then(() => {
+        btn.textContent = "COPIED ✓";
+        setTimeout(() => (btn.textContent = "COPY TOKEN"), 1500);
+        this.showToast(buyInRefundCopyToast(true));
+      })
+      .catch(() => {
+        input?.select();
+        this.showToast(buyInRefundCopyToast(false));
+      });
+  }
+
+  private dismissBuyInRefund() {
+    document.getElementById("buyin-refund")?.classList.add("hidden");
+    document.getElementById("buyin-refund-token-box")?.classList.add("hidden");
+    const input = document.getElementById("buyin-refund-token") as HTMLInputElement | null;
+    if (input) input.value = "";
+    this.clearBuyInRefundQr();
+  }
+
+  private async renderBuyInRefundQr(token: string) {
+    const qr = document.getElementById("buyin-refund-qr") as HTMLImageElement | null;
+    const wrap = document.getElementById("buyin-refund-qr-wrap");
+    const note = document.getElementById("buyin-refund-qr-note");
+    if (!qr) return;
+    const raw = token.trim();
+    if (!raw) {
+      this.clearBuyInRefundQr();
+      return;
+    }
+    const payload = raw.startsWith("cashu:") ? raw : `cashu:${raw}`;
+    try {
+      const QRCode = await qrCode();
+      const created = QRCode.create(payload, { errorCorrectionLevel: "L" });
+      const modules = created.modules.size;
+      const margin = 2;
+      const maxPx = 640;
+      let scale = 4;
+      let px = (modules + margin * 2) * scale;
+      if (px > maxPx) {
+        scale = 3;
+        px = (modules + margin * 2) * scale;
+      }
+      if (px > maxPx) throw new Error("qr too dense for display");
+      const url = await QRCode.toDataURL(payload, {
+        scale,
+        margin,
+        errorCorrectionLevel: "L",
+      });
+      const current = (document.getElementById("buyin-refund-token") as HTMLInputElement | null)?.value;
+      if (current !== raw) return;
+      qr.src = url;
+      qr.alt = "Cashu buy-in refund QR code";
+      wrap?.classList.remove("hidden");
+      if (note) {
+        note.textContent = "";
+        note.classList.add("hidden");
+      }
+    } catch {
+      this.clearBuyInRefundQr();
+      if (note) {
+        note.textContent = "QR unavailable — copy the token instead";
+        note.classList.remove("hidden");
+      }
+    }
+  }
+
+  private clearBuyInRefundQr() {
+    const qr = document.getElementById("buyin-refund-qr") as HTMLImageElement | null;
+    const wrap = document.getElementById("buyin-refund-qr-wrap");
+    const note = document.getElementById("buyin-refund-qr-note");
+    if (qr) {
+      qr.removeAttribute("src");
+      qr.alt = "Cashu buy-in refund QR code";
+    }
+    wrap?.classList.add("hidden");
+    if (note) {
+      note.textContent = "";
+      note.classList.add("hidden");
+    }
   }
 
   private upsertLobbyPlayer(player: PlayerPose) {

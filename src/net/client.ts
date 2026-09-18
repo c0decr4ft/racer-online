@@ -952,13 +952,17 @@ export class NetClient {
           mock: msg.mock,
           error: msg.error,
         };
+        // When leaveRoom() is awaiting, deliver only via the promise so the
+        // lobby can close first and show durable custody UI once. Otherwise
+        // surface immediately (unexpected / late refund).
         if (this.refundWait) {
           clearTimeout(this.refundWait.timer);
           const wait = this.refundWait;
           this.refundWait = null;
           wait.resolve(result);
+        } else {
+          this.handlers.onBuyInRefund?.(result);
         }
-        this.handlers.onBuyInRefund?.(result);
       } else if (msg.t === "eventUpdate") {
         if (msg.event) this.event = msg.event;
         this.handlers.onEventUpdate?.(msg.event);
