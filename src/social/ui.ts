@@ -43,10 +43,10 @@ export type SocialHubCallbacks = {
   isRacing?: () => boolean;
 };
 
-type Tab = "find" | "requests" | "friends" | "chat" | "organize";
+type Tab = "entry" | "find" | "requests" | "friends" | "chat" | "organize";
 
 let callbacks: SocialHubCallbacks | null = null;
-let activeTab: Tab = "find";
+let activeTab: Tab = "entry";
 let chatPeer: Friend | null = null;
 let stopThread: (() => void) | null = null;
 let stopInbox: (() => void) | null = null;
@@ -144,16 +144,16 @@ function restartInbox(): void {
 
 function updateRequestBadge(): void {
   const session = getSession();
-  const tab = el("social-tab-requests");
-  if (!tab || !session) return;
+  const btn = el("social-goto-requests");
+  if (!btn || !session) return;
   const n = listIncomingRequests(session.pubkey).length;
-  tab.textContent = n > 0 ? `REQUESTS (${n})` : "REQUESTS";
+  btn.textContent = n > 0 ? `REQUESTS (${n})` : "REQUESTS";
 }
 
-function setTab(tab: Tab): void {
+function showSocialView(tab: Tab): void {
   activeTab = tab;
+  el("social-entry")?.classList.toggle("hidden", tab !== "entry");
   for (const id of ["find", "requests", "friends", "chat", "organize"] as const) {
-    el(`social-tab-${id}`)?.classList.toggle("is-active", id === tab);
     el(`social-pane-${id}`)?.classList.toggle("hidden", id !== tab);
   }
   if (tab === "find") {
@@ -163,8 +163,13 @@ function setTab(tab: Tab): void {
   }
   if (tab === "requests") renderRequests();
   if (tab === "friends") renderFriends();
-  if (tab === "chat") renderChatPeers();
+  if (tab === "chat") {
+    renderChatPeers();
+    const title = el("social-chat-title");
+    if (title && !chatPeer) title.textContent = "CHAT";
+  }
   if (tab === "organize") renderOrganize();
+  if (tab === "entry") updateRequestBadge();
   updateRequestBadge();
 }
 
@@ -360,6 +365,7 @@ async function refreshActiveLists(): Promise<void> {
   if (activeTab === "friends") renderFriends();
   if (activeTab === "chat") renderChatPeers();
   if (activeTab === "organize") renderOrganize();
+  if (activeTab === "entry") updateRequestBadge();
   updateRequestBadge();
 }
 
@@ -372,7 +378,7 @@ function renderChatPeers(): void {
     ? friends
         .map(
           (f) =>
-            `<button type="button" class="garage-kind-btn social-peer-btn${chatPeer?.pubkey === f.pubkey ? " is-active" : ""}" data-pubkey="${f.pubkey}">${escapeHtml(f.name).toUpperCase()}</button>`,
+            `<button type="button" class="garage-kind-btn${chatPeer?.pubkey === f.pubkey ? " is-active" : ""}" data-pubkey="${f.pubkey}">${escapeHtml(f.name).toUpperCase()}</button>`,
         )
         .join("")
     : `<p class="social-empty">Accept a friend request to chat</p>`;
@@ -393,7 +399,7 @@ function openChatWith(friend: Friend): void {
     return;
   }
   chatPeer = friend;
-  setTab("chat");
+  showSocialView("chat");
   renderChatPeers();
   const title = el("social-chat-title");
   if (title) title.textContent = friend.name.toUpperCase();
@@ -545,8 +551,7 @@ export function openSocialHub(): void {
   document.getElementById("dev-dash")?.classList.add("hidden");
   hub.classList.remove("hidden");
   syncPresenceFromSession();
-  setTab(activeTab);
-  void refreshActiveLists();
+  showSocialView("entry");
   const session = getSession();
   if (session) {
     for (const f of listFriends(session.pubkey)) {
@@ -565,6 +570,8 @@ export function closeSocialHub(): void {
   el("social-hub")?.classList.add("hidden");
   stopThread?.();
   stopThread = null;
+  chatPeer = null;
+  showSocialView("entry");
 }
 
 export function isSocialHubOpen(): boolean {
@@ -585,8 +592,15 @@ export function initSocialUi(cbs: SocialHubCallbacks): void {
   });
   document.getElementById("social-back-btn")?.addEventListener("click", () => closeSocialHub());
 
-  for (const tab of ["find", "requests", "friends", "chat", "organize"] as const) {
-    el(`social-tab-${tab}`)?.addEventListener("click", () => setTab(tab));
+  const go = (tab: Tab) => () => showSocialView(tab);
+  document.getElementById("social-goto-friends")?.addEventListener("click", go("friends"));
+  document.getElementById("social-goto-find")?.addEventListener("click", go("find"));
+  document.getElementById("social-goto-requests")?.addEventListener("click", go("requests"));
+  document.getElementById("social-goto-chat")?.addEventListener("click", go("chat"));
+  document.getElementById("social-goto-organize")?.addEventListener("click", go("organize"));
+
+  for (const id of ["friends", "find", "requests", "chat", "organize"] as const) {
+    document.getElementById(`social-${id}-back`)?.addEventListener("click", () => showSocialView("entry"));
   }
 
   el<HTMLInputElement>("social-find-input")?.addEventListener("input", () => {

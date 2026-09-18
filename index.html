@@ -128,7 +128,7 @@
       </div>
 
       <div class="version-switcher" id="version-switcher">
-        <span id="version-badge" class="version-badge" aria-label="Version 8.4">v8.4</span>
+        <span id="version-badge" class="version-badge" aria-label="Version 8.5">v8.5</span>
       </div>
 
       <div id="home-corner-btns" class="home-corner-btns">
@@ -596,71 +596,98 @@
       <div id="social-invite-banner" class="social-invite-banner hidden" role="status"></div>
 
       <div id="social-hub" class="overlay hidden">
-        <div class="overlay-inner social-panel multiplayer-panel">
-          <p class="eyebrow">SOCIAL</p>
-          <h1>FRIENDS</h1>
-          <p class="tagline">Search · requests · chat · invite</p>
-          <div class="garage-kind social-tabs" role="tablist" aria-label="Friends sections">
-            <button id="social-tab-find" class="garage-kind-btn social-tab is-active" type="button" role="tab">FIND</button>
-            <button id="social-tab-requests" class="garage-kind-btn social-tab" type="button" role="tab">REQUESTS</button>
-            <button id="social-tab-friends" class="garage-kind-btn social-tab" type="button" role="tab">FRIENDS</button>
-            <button id="social-tab-chat" class="garage-kind-btn social-tab" type="button" role="tab">CHAT</button>
-            <button id="social-tab-organize" class="garage-kind-btn social-tab" type="button" role="tab">INVITE</button>
+        <div class="overlay-inner multiplayer-panel social-panel">
+          <div id="social-entry" class="social-view">
+            <p class="eyebrow">SOCIAL</p>
+            <h1>FRIENDS</h1>
+            <p class="tagline">Find racers · chat · invite to a lobby</p>
+            <div class="mp-entry-actions social-entry-actions">
+              <button id="social-goto-friends" type="button">MY FRIENDS</button>
+              <button id="social-goto-find" class="btn-ghost" type="button">FIND</button>
+              <button id="social-goto-requests" class="btn-ghost" type="button">REQUESTS</button>
+              <button id="social-goto-chat" class="btn-ghost" type="button">CHAT</button>
+              <button id="social-goto-organize" class="btn-ghost" type="button">INVITE TO LOBBY</button>
+              <button id="social-back-btn" class="btn-ghost" type="button">BACK</button>
+            </div>
           </div>
 
-          <div id="social-pane-find" class="social-pane">
-            <form id="social-find-form" class="multiplayer-form social-find-form" autocomplete="off">
+          <div id="social-pane-friends" class="social-view hidden">
+            <p class="eyebrow">LIST</p>
+            <h1>MY FRIENDS</h1>
+            <p id="social-friends-status" class="tagline">Accepted friends</p>
+            <div id="social-friends-list" class="social-list"></div>
+            <button id="social-friends-back" class="btn-ghost" type="button">BACK</button>
+          </div>
+
+          <div id="social-pane-find" class="social-view hidden">
+            <p class="eyebrow">SEARCH</p>
+            <h1>FIND</h1>
+            <p class="tagline">Search a username to send a request</p>
+            <form id="social-find-form" class="multiplayer-form" autocomplete="off">
               <label class="mp-field">
                 <span>Username</span>
-                <input id="social-find-input" type="search" maxlength="40" placeholder="Search username" spellcheck="false" />
+                <input id="social-find-input" type="search" maxlength="40" placeholder="Type a username" spellcheck="false" />
               </label>
               <button type="submit">SEARCH</button>
             </form>
-            <p id="social-find-status" class="social-status">Type a username to search</p>
+            <p id="social-find-status" class="tagline social-status">Type a username to search</p>
             <div id="social-find-list" class="social-list"></div>
+            <button id="social-find-back" class="btn-ghost" type="button">BACK</button>
           </div>
 
-          <div id="social-pane-requests" class="social-pane hidden">
-            <p id="social-requests-status" class="social-status"></p>
+          <div id="social-pane-requests" class="social-view hidden">
+            <p class="eyebrow">INBOX</p>
+            <h1>REQUESTS</h1>
+            <p id="social-requests-status" class="tagline">Yes accepts · No dismisses</p>
             <div id="social-requests-list" class="social-list"></div>
+            <button id="social-requests-back" class="btn-ghost" type="button">BACK</button>
           </div>
 
-          <div id="social-pane-friends" class="social-pane hidden">
-            <p id="social-friends-status" class="social-status"></p>
-            <div id="social-friends-list" class="social-list"></div>
-          </div>
-
-          <div id="social-pane-chat" class="social-pane hidden">
+          <div id="social-pane-chat" class="social-view hidden">
+            <p class="eyebrow">MESSAGES</p>
+            <h1 id="social-chat-title">CHAT</h1>
+            <p class="tagline">Pick a friend below</p>
             <div id="social-chat-peers" class="garage-kind social-chat-peers"></div>
-            <p id="social-chat-title" class="social-chat-title">Pick a friend</p>
             <div id="social-chat-messages" class="social-chat-messages"></div>
             <form id="social-chat-form" class="multiplayer-form social-chat-form" autocomplete="off">
-              <input id="social-chat-input" type="text" maxlength="500" placeholder="Message…" />
-              <button type="submit">SEND</button>
+              <label class="mp-field social-chat-field">
+                <span>Message</span>
+                <input id="social-chat-input" type="text" maxlength="500" placeholder="Say something…" />
+              </label>
+              <div class="mp-form-actions">
+                <button type="submit">SEND</button>
+                <button id="social-chat-back" class="btn-ghost" type="button">BACK</button>
+              </div>
             </form>
-            <p id="social-chat-status" class="social-status"></p>
+            <p id="social-chat-status" class="tagline social-status"></p>
           </div>
 
-          <div id="social-pane-organize" class="social-pane hidden">
-            <form id="social-org-form" class="multiplayer-form social-org-form" autocomplete="off">
-              <label class="mp-field">
-                <span>Room</span>
-                <input id="social-org-room" type="text" maxlength="24" value="circuit" required />
-              </label>
-              <label class="mp-field">
-                <span>Password</span>
-                <input id="social-org-pass" type="text" maxlength="32" placeholder="Optional" />
-              </label>
-              <div>
-                <p class="social-status">Add friends to invite</p>
+          <div id="social-pane-organize" class="social-view hidden">
+            <p class="eyebrow">HOST</p>
+            <h1>INVITE</h1>
+            <p class="tagline">Create a lobby and send a game request</p>
+            <form id="social-org-form" class="multiplayer-form" autocomplete="off">
+              <div class="mp-fields-row">
+                <label class="mp-field">
+                  <span>Room</span>
+                  <input id="social-org-room" type="text" maxlength="24" value="circuit" required />
+                </label>
+                <label class="mp-field">
+                  <span>Password</span>
+                  <input id="social-org-pass" type="text" maxlength="32" placeholder="Optional" />
+                </label>
+              </div>
+              <div class="mp-field">
+                <span>Friends</span>
                 <div id="social-org-friends" class="social-org-friends"></div>
               </div>
-              <button type="submit">SEND &amp; HOST LOBBY</button>
+              <p id="social-org-status" class="tagline social-status">Sends a chat request · then opens your lobby</p>
+              <div class="mp-form-actions">
+                <button type="submit">SEND &amp; HOST LOBBY</button>
+                <button id="social-organize-back" class="btn-ghost" type="button">BACK</button>
+              </div>
             </form>
-            <p id="social-org-status" class="social-status">Creates your lobby and messages friends a join request</p>
           </div>
-
-          <button id="social-back-btn" class="btn-ghost" type="button">BACK</button>
         </div>
       </div>
 
