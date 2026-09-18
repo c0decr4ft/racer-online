@@ -2368,7 +2368,7 @@ input:focus-visible,
   position: fixed;
   left: 50%;
   bottom: 6.5rem;
-  z-index: 35;
+  z-index: 45;
   transform: translateX(-50%);
   pointer-events: none;
   width: min(26rem, calc(100vw - 2rem));
@@ -2528,7 +2528,7 @@ input:focus-visible,
 
 .tutorial-coach-pointer {
   position: fixed;
-  z-index: 36;
+  z-index: 46;
   transform: translate(-50%, 0);
   color: #ffc857;
   font-size: 1.35rem;
