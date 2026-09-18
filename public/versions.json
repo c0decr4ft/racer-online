@@ -1,6 +1,10 @@
 {
   "versions": [
     {
+      "id": "9.1",
+      "path": "/racer-online/"
+    },
+    {
       "id": "9.0",
       "path": "/racer-online/"
     },
