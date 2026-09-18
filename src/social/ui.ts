@@ -165,8 +165,7 @@ function showSocialView(tab: Tab): void {
   if (tab === "friends") renderFriends();
   if (tab === "chat") {
     renderChatPeers();
-    const title = el("social-chat-title");
-    if (title && !chatPeer) title.textContent = "CHAT";
+    syncChatWithLabel();
   }
   if (tab === "organize") renderOrganize();
   if (tab === "entry") updateRequestBadge();
@@ -369,6 +368,12 @@ async function refreshActiveLists(): Promise<void> {
   updateRequestBadge();
 }
 
+function syncChatWithLabel(): void {
+  const label = el("social-chat-with");
+  if (!label) return;
+  label.textContent = chatPeer ? `Chatting with ${chatPeer.name}` : "Pick a friend below";
+}
+
 function renderChatPeers(): void {
   const peers = el("social-chat-peers");
   const session = getSession();
@@ -401,8 +406,7 @@ function openChatWith(friend: Friend): void {
   chatPeer = friend;
   showSocialView("chat");
   renderChatPeers();
-  const title = el("social-chat-title");
-  if (title) title.textContent = friend.name.toUpperCase();
+  syncChatWithLabel();
   threadMessages = [];
   stopThread?.();
   stopThread = subscribeThread(friend.pubkey, {

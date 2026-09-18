@@ -128,7 +128,7 @@
       </div>
 
       <div class="version-switcher" id="version-switcher">
-        <span id="version-badge" class="version-badge" aria-label="Version 8.5">v8.5</span>
+        <span id="version-badge" class="version-badge" aria-label="Version 8.6">v8.6</span>
       </div>
 
       <div id="home-corner-btns" class="home-corner-btns">
@@ -645,19 +645,16 @@
 
           <div id="social-pane-chat" class="social-view hidden">
             <p class="eyebrow">MESSAGES</p>
-            <h1 id="social-chat-title">CHAT</h1>
-            <p class="tagline">Pick a friend below</p>
+            <h1>CHAT</h1>
+            <p id="social-chat-with" class="tagline">Pick a friend below</p>
             <div id="social-chat-peers" class="garage-kind social-chat-peers"></div>
             <div id="social-chat-messages" class="social-chat-messages"></div>
             <form id="social-chat-form" class="multiplayer-form social-chat-form" autocomplete="off">
-              <label class="mp-field social-chat-field">
-                <span>Message</span>
-                <input id="social-chat-input" type="text" maxlength="500" placeholder="Say something…" />
-              </label>
-              <div class="mp-form-actions">
+              <div class="social-chat-compose">
+                <input id="social-chat-input" type="text" maxlength="500" placeholder="Message…" aria-label="Message" />
                 <button type="submit">SEND</button>
-                <button id="social-chat-back" class="btn-ghost" type="button">BACK</button>
               </div>
+              <button id="social-chat-back" class="btn-ghost" type="button">BACK</button>
             </form>
             <p id="social-chat-status" class="tagline social-status"></p>
           </div>
