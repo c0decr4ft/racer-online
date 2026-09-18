@@ -55,6 +55,46 @@ export async function registerPlayer(pubkey: string, name: string): Promise<bool
   }
 }
 
+async function playersFromLeaderboard(query: string): Promise<DirectoryPlayer[]> {
+  const url = apiUrl("/leaderboard");
+  if (!url) return [];
+  try {
+    const res = await fetch(url, { cache: "no-store", headers: { Accept: "application/json" } });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { byTrack?: Record<string, unknown> };
+    const byTrack = data.byTrack && typeof data.byTrack === "object" ? data.byTrack : {};
+    const map = new Map<string, DirectoryPlayer>();
+    for (const entries of Object.values(byTrack)) {
+      if (!Array.isArray(entries)) continue;
+      for (const row of entries) {
+        if (!row || typeof row !== "object") continue;
+        const r = row as { pubkey?: unknown; name?: unknown; at?: unknown };
+        const pubkey = normalizePubkey(r.pubkey);
+        if (!pubkey) continue;
+        const lastSeen =
+          typeof r.at === "number" && Number.isFinite(r.at) ? Math.round(r.at) : 0;
+        const prev = map.get(pubkey);
+        if (!prev || lastSeen >= prev.lastSeen) {
+          map.set(pubkey, { pubkey, name: sanitizeName(r.name), lastSeen });
+        }
+      }
+    }
+    const q = query.trim().toLowerCase();
+    let rows = [...map.values()];
+    if (q) {
+      rows = rows.filter(
+        (r) =>
+          r.name.toLowerCase().includes(q) ||
+          r.pubkey.startsWith(q) ||
+          r.pubkey.includes(q),
+      );
+    }
+    return rows.sort((a, b) => b.lastSeen - a.lastSeen).slice(0, 40);
+  } catch {
+    return [];
+  }
+}
+
 export async function searchPlayers(query = ""): Promise<DirectoryResult> {
   const url = apiUrl(`/players?q=${encodeURIComponent(query.trim().slice(0, 64))}`);
   if (!url) return { players: [], online: [], source: "empty" };
@@ -95,6 +135,12 @@ export async function searchPlayers(query = ""): Promise<DirectoryResult> {
           at: typeof r.at === "number" && Number.isFinite(r.at) ? Math.round(r.at) : undefined,
         });
       }
+    }
+    // After a redeploy the directory can be empty until relay board sync finishes —
+    // fall back to the leaderboard so Find still works for known racers.
+    if (!players.length) {
+      const fromBoard = await playersFromLeaderboard(query);
+      if (fromBoard.length) return { players: fromBoard, online, source: "server" };
     }
     return { players, online, source: "server" };
   } catch {
