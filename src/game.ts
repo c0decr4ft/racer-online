@@ -1565,6 +1565,11 @@ export class Game {
     this.showToast(text);
   }
 
+  /** True while a race (or countdown) is actively running. */
+  isInRace(): boolean {
+    return this.running && !this.finished;
+  }
+
   private renderLobby() {
     const trackName = getTrackDef(this.net.trackId || this.mpCreateTrackId).name;
     const vehicle = this.net.kind === "bike" ? "BIKES" : "CARS";

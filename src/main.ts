@@ -46,6 +46,7 @@ if (!mobileBlocked) {
         game.joinFromInvite(invite);
       },
       showToast: (text) => game.notify(text),
+      isRacing: () => game.isInRace(),
     });
 
     const invite = parseInviteQuery();

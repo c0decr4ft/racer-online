@@ -2703,40 +2703,46 @@ input:focus-visible,
   display: none;
 }
 
-/* ── Friends / social hub ─────────────────────────────────────── */
+/* ── Friends / social hub (match multiplayer / garage language) ─ */
+#social-hub .overlay-inner {
+  padding: 0.75rem 1rem;
+  max-width: min(28rem, 96vw);
+}
+
 .social-panel {
-  width: min(34rem, 100%);
-  max-height: min(88vh, 44rem);
+  width: min(100%, 26rem);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-height: min(88vh, 42rem);
   overflow: auto;
   text-align: center;
 }
 
-.social-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-  justify-content: center;
-  margin: 0.75rem 0 0.85rem;
+.social-panel > .tagline {
+  margin-bottom: 0.4rem;
+  font-size: 0.92rem;
 }
 
-.social-tab {
-  appearance: none;
-  border: 1px solid var(--line);
-  background: rgba(8, 12, 20, 0.55);
-  color: var(--muted);
-  font-family: var(--font-display);
-  font-size: 0.62rem;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  padding: 0.45rem 0.55rem;
-  cursor: pointer;
+.social-tabs {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  width: min(100%, 24rem);
+  margin: 0.65rem auto 0.75rem;
+  gap: 0.35rem;
+}
+
+.social-tabs .garage-kind-btn {
+  font-size: 0.55rem;
+  letter-spacing: 0.08em;
+  padding: 0.45rem 0.2rem;
 }
 
 .social-tab.is-active,
-.social-tab:hover {
+.garage-kind-btn.social-tab.is-active {
+  border-color: var(--accent);
+  background: rgba(255, 59, 46, 0.18);
   color: var(--text);
-  border-color: rgba(255, 200, 87, 0.55);
-  background: rgba(255, 200, 87, 0.12);
 }
 
 .social-pane {
@@ -2749,15 +2755,18 @@ input:focus-visible,
 }
 
 .social-status {
-  margin: 0 0 0.5rem;
+  margin: 0.35rem 0 0.45rem;
   color: var(--muted);
+  font-family: var(--font-ui);
   font-size: 0.88rem;
   letter-spacing: 0.04em;
+  text-align: center;
 }
 
 .social-empty {
   margin: 0.5rem 0;
   color: var(--muted);
+  font-family: var(--font-ui);
   font-size: 0.92rem;
   text-align: center;
 }
@@ -2768,7 +2777,8 @@ input:focus-visible,
   gap: 0.4rem;
   max-height: 14rem;
   overflow: auto;
-  margin-bottom: 0.85rem;
+  margin-bottom: 0.75rem;
+  width: 100%;
 }
 
 .social-row {
@@ -2778,7 +2788,7 @@ input:focus-visible,
   gap: 0.5rem;
   padding: 0.55rem 0.65rem;
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(8, 12, 20, 0.55);
 }
 
 .social-row-main {
@@ -2788,12 +2798,15 @@ input:focus-visible,
 }
 
 .social-row-name {
+  font-family: var(--font-display);
+  font-size: 0.78rem;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.1em;
 }
 
 .social-row-meta {
   color: var(--muted);
+  font-family: var(--font-ui);
   font-size: 0.78rem;
 }
 
@@ -2806,7 +2819,7 @@ input:focus-visible,
 .social-mini {
   appearance: none;
   border: 1px solid var(--line);
-  background: rgba(255, 59, 46, 0.85);
+  background: var(--accent);
   color: #fff;
   font-family: var(--font-display);
   font-size: 0.55rem;
@@ -2816,6 +2829,11 @@ input:focus-visible,
   cursor: pointer;
 }
 
+.social-mini:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .social-mini.btn-ghost,
 button.btn-ghost.social-mini {
   background: transparent;
@@ -2823,15 +2841,26 @@ button.btn-ghost.social-mini {
 }
 
 .social-find-form,
-.social-chat-form {
+.social-chat-form,
+.social-org-form {
+  width: 100%;
   display: flex;
-  gap: 0.4rem;
+  flex-direction: column;
+  gap: 0.55rem;
   margin-bottom: 0.55rem;
 }
 
-.social-find-form input,
-.social-chat-form input,
-.social-org-form input {
+.social-find-form .mp-field,
+.social-org-form .mp-field {
+  width: 100%;
+}
+
+.social-chat-form {
+  flex-direction: row;
+  align-items: stretch;
+}
+
+.social-chat-form input {
   flex: 1;
   min-width: 0;
   border: 1px solid var(--line);
@@ -2842,32 +2871,21 @@ button.btn-ghost.social-mini {
   padding: 0.65rem 0.75rem;
 }
 
-.social-find-form button,
 .social-chat-form button {
   flex-shrink: 0;
+  width: auto;
+  margin: 0;
 }
 
 .social-chat-peers {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-  margin-bottom: 0.5rem;
-}
-
-.social-peer-btn {
-  appearance: none;
-  border: 1px solid var(--line);
-  background: rgba(8, 12, 20, 0.55);
-  color: var(--muted);
-  font-family: var(--font-ui);
-  font-size: 0.85rem;
-  padding: 0.35rem 0.55rem;
-  cursor: pointer;
+  width: 100%;
+  margin: 0 0 0.55rem;
+  grid-template-columns: repeat(auto-fill, minmax(5.5rem, 1fr));
 }
 
 .social-peer-btn.is-active {
-  color: var(--text);
-  border-color: rgba(255, 200, 87, 0.55);
+  border-color: var(--accent);
+  background: rgba(255, 59, 46, 0.18);
 }
 
 .social-chat-title {
@@ -2875,6 +2893,7 @@ button.btn-ghost.social-mini {
   font-family: var(--font-display);
   font-size: 0.72rem;
   letter-spacing: 0.14em;
+  text-align: center;
 }
 
 .social-chat-messages {
@@ -2885,9 +2904,9 @@ button.btn-ghost.social-mini {
   max-height: 12rem;
   overflow: auto;
   margin-bottom: 0.5rem;
-  padding: 0.4rem;
+  padding: 0.45rem;
   border: 1px solid var(--line);
-  background: rgba(0, 0, 0, 0.2);
+  background: rgba(8, 12, 20, 0.55);
 }
 
 .social-msg {
@@ -2902,8 +2921,9 @@ button.btn-ghost.social-mini {
 .social-msg-bubble {
   max-width: 85%;
   padding: 0.45rem 0.6rem;
-  border-radius: 0.35rem;
-  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.06);
+  font-family: var(--font-ui);
   font-size: 0.92rem;
   display: flex;
   flex-direction: column;
@@ -2912,14 +2932,8 @@ button.btn-ghost.social-mini {
 }
 
 .social-msg.is-mine .social-msg-bubble {
-  background: rgba(255, 59, 46, 0.28);
-}
-
-.social-org-form {
-  display: flex;
-  flex-direction: column;
-  gap: 0.55rem;
-  margin-bottom: 0.65rem;
+  background: rgba(255, 59, 46, 0.22);
+  border-color: rgba(255, 59, 46, 0.45);
 }
 
 .social-org-friends {
@@ -2936,6 +2950,7 @@ button.btn-ghost.social-mini {
   align-items: center;
   gap: 0.45rem;
   color: var(--text);
+  font-family: var(--font-ui);
   font-size: 0.95rem;
 }
 
@@ -2949,7 +2964,7 @@ button.btn-ghost.social-mini {
   align-items: center;
   gap: 0.75rem;
   padding: 0.65rem 0.9rem;
-  border: 1px solid rgba(255, 200, 87, 0.45);
+  border: 1px solid var(--line);
   background: rgba(8, 12, 18, 0.94);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
   font-family: var(--font-ui);
