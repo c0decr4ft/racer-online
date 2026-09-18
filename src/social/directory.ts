@@ -1,5 +1,6 @@
 /** Player directory + online list from the game server. */
 
+import { nip19 } from "nostr-tools";
 import { apiUrl } from "../net/apiBase";
 
 export type DirectoryPlayer = {
@@ -36,6 +37,23 @@ function sanitizeName(raw: unknown): string {
     .slice(0, 24)
     .trim();
   return cleaned || "RACER";
+}
+
+function queryPubkeyHint(query: string): string {
+  const q = String(query ?? "").trim();
+  if (!q) return "";
+  if (/^[0-9a-f]{8,64}$/i.test(q)) return q.toLowerCase();
+  if (/^npub1[0-9a-z]+$/i.test(q)) {
+    try {
+      const decoded = nip19.decode(q);
+      if (decoded.type === "npub" && typeof decoded.data === "string") {
+        return decoded.data.toLowerCase();
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return "";
 }
 
 /** Explicit directory write — more reliable than waiting for the next presence heartbeat. */
@@ -80,14 +98,16 @@ async function playersFromLeaderboard(query: string): Promise<DirectoryPlayer[]>
       }
     }
     const q = query.trim().toLowerCase();
+    const pkHint = queryPubkeyHint(query);
     let rows = [...map.values()];
     if (q) {
-      rows = rows.filter(
-        (r) =>
-          r.name.toLowerCase().includes(q) ||
-          r.pubkey.startsWith(q) ||
-          r.pubkey.includes(q),
-      );
+      rows = rows.filter((r) => {
+        if (r.name.toLowerCase().includes(q)) return true;
+        if (pkHint && (r.pubkey === pkHint || r.pubkey.startsWith(pkHint) || r.pubkey.includes(pkHint))) {
+          return true;
+        }
+        return r.pubkey.startsWith(q) || r.pubkey.includes(q);
+      });
     }
     return rows.sort((a, b) => b.lastSeen - a.lastSeen).slice(0, 40);
   } catch {
@@ -95,12 +115,30 @@ async function playersFromLeaderboard(query: string): Promise<DirectoryPlayer[]>
   }
 }
 
+function mergeDirectoryPlayers(...lists: DirectoryPlayer[][]): DirectoryPlayer[] {
+  const map = new Map<string, DirectoryPlayer>();
+  for (const list of lists) {
+    for (const p of list) {
+      const prev = map.get(p.pubkey);
+      if (!prev || p.lastSeen >= prev.lastSeen) map.set(p.pubkey, p);
+    }
+  }
+  return [...map.values()].sort((a, b) => b.lastSeen - a.lastSeen).slice(0, 40);
+}
+
 export async function searchPlayers(query = ""): Promise<DirectoryResult> {
-  const url = apiUrl(`/players?q=${encodeURIComponent(query.trim().slice(0, 64))}`);
-  if (!url) return { players: [], online: [], source: "empty" };
+  const q = query.trim().slice(0, 64);
+  const url = apiUrl(`/players?q=${encodeURIComponent(q)}`);
+  if (!url) {
+    const fromBoard = await playersFromLeaderboard(q);
+    return { players: fromBoard, online: [], source: fromBoard.length ? "server" : "empty" };
+  }
   try {
     const res = await fetch(url, { cache: "no-store", headers: { Accept: "application/json" } });
-    if (!res.ok) return { players: [], online: [], source: "empty" };
+    if (!res.ok) {
+      const fromBoard = await playersFromLeaderboard(q);
+      return { players: fromBoard, online: [], source: fromBoard.length ? "server" : "empty" };
+    }
     const data = (await res.json()) as {
       players?: unknown;
       online?: unknown;
@@ -136,15 +174,13 @@ export async function searchPlayers(query = ""): Promise<DirectoryResult> {
         });
       }
     }
-    // After a redeploy the directory can be empty until relay board sync finishes —
-    // fall back to the leaderboard so Find still works for known racers.
-    if (!players.length) {
-      const fromBoard = await playersFromLeaderboard(query);
-      if (fromBoard.length) return { players: fromBoard, online, source: "server" };
-    }
-    return { players, online, source: "server" };
+    // Always union with board racers so Find works even when the directory is thin.
+    const fromBoard = await playersFromLeaderboard(q);
+    const merged = mergeDirectoryPlayers(fromBoard, players);
+    return { players: merged, online, source: "server" };
   } catch {
-    return { players: [], online: [], source: "empty" };
+    const fromBoard = await playersFromLeaderboard(q);
+    return { players: fromBoard, online: [], source: fromBoard.length ? "server" : "empty" };
   }
 }
 

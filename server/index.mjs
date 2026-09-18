@@ -203,7 +203,7 @@ async function sendFeedbackEmail(msg) {
     await sendFeedbackEmailOnce(msg);
   }
 }
-const MAX_BOARD = 10;
+const MAX_BOARD = 25;
 const MAX_FEEDBACK = 80;
 const FEEDBACK_TEXT_MAX = 500;
 const FEEDBACK_NAME_MAX = 24;
@@ -1311,10 +1311,10 @@ function seedPlayersFromLeaderboard() {
 
 let playersSeededFromBoard = false;
 function ensurePlayersSeeded() {
-  // Re-run when the directory is empty (common right after redeploy, before relay sync).
-  if (playersSeededFromBoard && Object.keys(playersDir.players).length > 0) return;
-  playersSeededFromBoard = true;
+  // Always upsert board racers into the directory (cheap) so Find stays populated
+  // after redeploys / partial player writes.
   seedPlayersFromLeaderboard();
+  playersSeededFromBoard = true;
 }
 
 function reseedPlayersFromLeaderboard() {
@@ -2580,7 +2580,7 @@ const httpServer = createServer(async (req, res) => {
       store[tid] = sortBoard([...(store[tid] || []), entry], tid);
       saveStore(store);
       touchPlayerDirectory(entry.pubkey, entry.name, Date.now());
-      playersSeededFromBoard = true;
+      reseedPlayersFromLeaderboard();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true, trackId: tid, entries: store[tid], byTrack: store }));
     } catch {

@@ -3173,6 +3173,32 @@ button.btn-ghost.social-mini {
   max-width: 100%;
 }
 
+#social-find-form.multiplayer-form {
+  width: 100%;
+  gap: 0.55rem;
+}
+
+#social-find-form .mp-field {
+  width: 100%;
+}
+
+#social-find-form .social-find-submit,
+#social-find-form button[type="submit"] {
+  width: 100%;
+  margin: 0;
+  box-sizing: border-box;
+  min-height: 2.85rem;
+  padding: 0.7rem 0.8rem;
+  font-size: 0.85rem;
+  letter-spacing: 0.2em;
+}
+
+#social-find-form .mp-field input {
+  min-height: 2.85rem;
+  box-sizing: border-box;
+  padding: 0.7rem 0.8rem;
+}
+
 .social-invite-banner {
   position: fixed;
   top: 4.5rem;

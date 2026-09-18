@@ -13,6 +13,7 @@ import {
   loginWithExtension,
   logout,
   onSessionChange,
+  reconnectRemoteSession,
   startConnectLogin,
   type NostrSession,
 } from "./session";
@@ -138,10 +139,25 @@ export function openNostrModal(reason?: string) {
 export function ensureNostrLogin(reason: string): Promise<NostrSession | null> {
   const session = getSession();
   if (session) return Promise.resolve(session);
-  return new Promise((resolve) => {
-    pendingResolver = resolve;
-    openNostrModal(reason);
-  });
+  // Bunker sessions are not auto-restored on boot (permission spam). Reconnect
+  // once here on an explicit user gesture before opening the login modal.
+  return reconnectRemoteSession()
+    .then((remote) => {
+      if (remote) {
+        void refreshIdentityViews();
+        return remote;
+      }
+      return new Promise<NostrSession | null>((resolve) => {
+        pendingResolver = resolve;
+        openNostrModal(reason);
+      });
+    })
+    .catch(() => {
+      return new Promise<NostrSession | null>((resolve) => {
+        pendingResolver = resolve;
+        openNostrModal(reason);
+      });
+    });
 }
 
 function onLoginSuccess(session: NostrSession) {
