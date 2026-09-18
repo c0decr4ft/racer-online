@@ -6,7 +6,7 @@ import { getSession, onSessionChange } from "../nostr/session";
 import { ensureNostrLogin, getCurrentProfile } from "../nostr/ui";
 import { sendHeartbeat, setPresenceIdentity } from "../net/presence";
 import { addFriend, isFriend, listFriends, removeFriend, type Friend } from "./friends";
-import { searchPlayers, type DirectoryPlayer } from "./directory";
+import { searchPlayers, registerPlayer, type DirectoryPlayer } from "./directory";
 import { sendDm, subscribeInbox, subscribeThread, type DmMessage } from "./dm";
 import {
   armAllSchedules,
@@ -50,8 +50,10 @@ function syncPresenceFromSession(): void {
     setPresenceIdentity(null);
     return;
   }
-  setPresenceIdentity({ pubkey: session.pubkey, name: myDisplayName() });
+  const name = myDisplayName();
+  setPresenceIdentity({ pubkey: session.pubkey, name });
   void sendHeartbeat();
+  void registerPlayer(session.pubkey, name);
   armAllSchedules(session.pubkey);
   restartInbox();
 }
@@ -86,6 +88,7 @@ function setTab(tab: Tab): void {
     el(`social-pane-${id}`)?.classList.toggle("hidden", id !== tab);
   }
   if (tab === "online") void refreshOnline();
+  if (tab === "find") void runSearch(el<HTMLInputElement>("social-find-input")?.value || "");
   if (tab === "friends") renderFriends();
   if (tab === "chat") renderChatPeers();
   if (tab === "organize") renderOrganize();
@@ -152,16 +155,17 @@ async function runSearch(query: string): Promise<void> {
   if (!list) return;
   if (status) status.textContent = "Searching…";
   const result = await searchPlayers(query);
-  const session = getSession();
-  const players = result.players.filter((p) => p.pubkey !== session?.pubkey.toLowerCase());
+  const players = result.players;
   const onlineSet = new Set(result.online.map((p) => p.pubkey));
   if (status) {
     status.textContent =
       result.source === "empty"
-        ? "Search unavailable"
+        ? "Search unavailable — is the game server online?"
         : players.length
           ? `${players.length} match${players.length === 1 ? "" : "es"}`
-          : "No players found — they need to sign in to Sats Racer once";
+          : query.trim()
+            ? "No players found — they need a Sats Racer score or sign-in"
+            : "No players in the directory yet";
   }
   list.innerHTML = players.length
     ? players
