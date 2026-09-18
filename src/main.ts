@@ -45,6 +45,9 @@ if (!mobileBlocked) {
       onJoinInvite: (invite) => {
         game.joinFromInvite(invite);
       },
+      onHostLobby: (invite) => {
+        game.hostLobbyFromInvite(invite);
+      },
       showToast: (text) => game.notify(text),
       isRacing: () => game.isInRace(),
     });

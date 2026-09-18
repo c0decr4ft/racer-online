@@ -1242,6 +1242,32 @@ export class Game {
       });
   }
 
+  /** Host a lobby from Friends → Invite (after DMing friends the room). */
+  hostLobbyFromInvite(opts: { room: string; password?: string }): void {
+    void this.unlockAndMaybeMenuMusic()
+      .then(() => ensureNostrLogin("Sign in with Nostr to host a lobby"))
+      .then(async (session) => {
+        if (!session) return;
+        this.openMultiplayer(false);
+        this.showMpView("create");
+        const room = this.sanitizeRoomName(opts.room);
+        this.el.mpCreateRoom.value = room;
+        this.el.mpCreatePass.value = String(opts.password || "").slice(0, 32);
+        const name =
+          this.nostrDisplayName() ??
+          (await this.nostrDisplayNameAsync()) ??
+          getLocalDriverName() ??
+          "";
+        if (name) this.el.mpCreateName.value = name;
+        if (!this.el.mpCreateName.value.trim()) {
+          this.el.mpCreateStatus.textContent = "Enter a racer name, then create";
+          this.el.mpCreateName.focus();
+          return;
+        }
+        await this.createMultiplayerRoom();
+      });
+  }
+
   private closeMultiplayer() {
     this.expectingLobby = false;
     this.inLobby = false;
