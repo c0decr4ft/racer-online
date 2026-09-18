@@ -2706,7 +2706,7 @@ input:focus-visible,
 .garage-kind {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  /* Equal-height buttons — the dev extras (truck/tank) match car/bike. */
+  /* Equal-height garage kind buttons. */
   grid-auto-rows: 1fr;
   gap: 0.5rem;
   width: min(100%, 16rem);
