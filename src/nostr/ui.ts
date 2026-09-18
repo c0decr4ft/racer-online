@@ -18,6 +18,7 @@ import {
 } from "./session";
 import { fetchProfile, profileLabel, publishProfileName, shortNpub, type NostrProfile } from "./profile";
 import { sendHeartbeat, setPresenceIdentity } from "../net/presence";
+import { registerPlayer } from "../social/directory";
 
 /** QRCode is only needed for the NIP-46 connect QR — lazy-load it. */
 const qrCode = () => import("qrcode");
@@ -35,6 +36,7 @@ function syncPresenceIdentity(session: NostrSession | null, profile: NostrProfil
   const name = profile?.displayName || profile?.name || "RACER";
   setPresenceIdentity({ pubkey: session.pubkey, name });
   void sendHeartbeat();
+  void registerPlayer(session.pubkey, name);
 }
 
 function el<T extends HTMLElement>(id: string): T | null {

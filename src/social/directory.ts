@@ -38,8 +38,25 @@ function sanitizeName(raw: unknown): string {
   return cleaned || "RACER";
 }
 
+/** Explicit directory write — more reliable than waiting for the next presence heartbeat. */
+export async function registerPlayer(pubkey: string, name: string): Promise<boolean> {
+  const url = apiUrl("/players");
+  const pk = normalizePubkey(pubkey);
+  if (!url || !pk) return false;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ pubkey: pk, name: sanitizeName(name) }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function searchPlayers(query = ""): Promise<DirectoryResult> {
-  const url = apiUrl(`/players?q=${encodeURIComponent(query.trim().slice(0, 40))}`);
+  const url = apiUrl(`/players?q=${encodeURIComponent(query.trim().slice(0, 64))}`);
   if (!url) return { players: [], online: [], source: "empty" };
   try {
     const res = await fetch(url, { cache: "no-store", headers: { Accept: "application/json" } });

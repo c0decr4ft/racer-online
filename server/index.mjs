@@ -1,5 +1,5 @@
 import { WebSocketServer } from "ws";
-import { verifyEvent, finalizeEvent } from "nostr-tools";
+import { verifyEvent, finalizeEvent, nip19 } from "nostr-tools";
 import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
 import { payments, depositProofs, recordPayout, loadPayouts, savePayouts } from "./payments.mjs";
@@ -1202,7 +1202,13 @@ function sanitizePlayerName(raw) {
     .trim()
     .slice(0, 24)
     .trim();
-  return cleaned || "RACER";
+  if (!cleaned || /^nostr racer$/i.test(cleaned)) return "RACER";
+  return cleaned;
+}
+
+function isPlaceholderPlayerName(name) {
+  const n = String(name || "").trim().toLowerCase();
+  return !n || n === "racer" || n === "nostr racer";
 }
 
 function emptyPlayers() {
@@ -1257,11 +1263,52 @@ function savePlayers(store) {
 
 let playersDir = loadPlayers();
 
+/** Upsert directory row — keep the better display name and newest lastSeen. */
 function touchPlayerDirectory(pubkey, name, now = Date.now()) {
   const pk = normalizePubkeyHex(pubkey);
   if (!pk) return;
-  playersDir.players[pk] = { name: sanitizePlayerName(name), lastSeen: now };
+  const prev = playersDir.players[pk];
+  const cleaned = sanitizePlayerName(name);
+  const nextName =
+    !isPlaceholderPlayerName(cleaned)
+      ? cleaned
+      : prev && !isPlaceholderPlayerName(prev.name)
+        ? prev.name
+        : cleaned;
+  playersDir.players[pk] = {
+    name: nextName,
+    lastSeen: Math.max(prev?.lastSeen || 0, now),
+  };
   playersDir = savePlayers(playersDir);
+}
+
+/** Anyone who posted a verified board time is findable (even if offline). */
+function seedPlayersFromLeaderboard() {
+  try {
+    const store = loadStore();
+    const now = Date.now();
+    for (const tid of Object.keys(store)) {
+      const entries = store[tid];
+      if (!Array.isArray(entries)) continue;
+      for (const entry of entries) {
+        const pk = normalizePubkeyHex(entry?.pubkey);
+        if (!pk) continue;
+        const prev = playersDir.players[pk];
+        // First sighting: stamp "now" so 90-day prune doesn't drop old race times.
+        // Later: refresh name only, keep existing lastSeen.
+        touchPlayerDirectory(pk, entry.name || "RACER", prev?.lastSeen || now);
+      }
+    }
+  } catch (err) {
+    console.warn(`[players] leaderboard seed failed:`, err?.message || err);
+  }
+}
+
+let playersSeededFromBoard = false;
+function ensurePlayersSeeded() {
+  if (playersSeededFromBoard) return;
+  playersSeededFromBoard = true;
+  seedPlayersFromLeaderboard();
 }
 
 function listOnlinePlayers(now = Date.now()) {
@@ -1279,12 +1326,30 @@ function listOnlinePlayers(now = Date.now()) {
   return [...byPk.values()].sort((a, b) => a.name.localeCompare(b.name) || a.pubkey.localeCompare(b.pubkey));
 }
 
+function queryToPubkeyHint(query) {
+  const q = String(query ?? "").trim();
+  if (!q) return "";
+  if (/^[0-9a-f]{8,64}$/i.test(q)) return q.toLowerCase();
+  if (/^npub1[0-9a-z]+$/i.test(q)) {
+    try {
+      const decoded = nip19.decode(q);
+      if (decoded.type === "npub" && typeof decoded.data === "string") {
+        return decoded.data.toLowerCase();
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return "";
+}
+
 function searchPlayers(query) {
-  const q = String(query ?? "")
+  const raw = String(query ?? "")
     .normalize("NFKC")
     .trim()
-    .toLowerCase()
-    .slice(0, 40);
+    .slice(0, 64);
+  const q = raw.toLowerCase();
+  const pkHint = queryToPubkeyHint(raw);
   const rows = Object.entries(playersDir.players).map(([pubkey, row]) => ({
     pubkey,
     name: row.name,
@@ -1294,7 +1359,13 @@ function searchPlayers(query) {
     return rows.sort((a, b) => b.lastSeen - a.lastSeen).slice(0, 40);
   }
   return rows
-    .filter((r) => r.name.toLowerCase().includes(q) || r.pubkey.startsWith(q) || r.pubkey.includes(q))
+    .filter((r) => {
+      if (r.name.toLowerCase().includes(q)) return true;
+      if (pkHint && (r.pubkey === pkHint || r.pubkey.startsWith(pkHint) || r.pubkey.includes(pkHint))) {
+        return true;
+      }
+      return r.pubkey.startsWith(q) || r.pubkey.includes(q);
+    })
     .sort((a, b) => {
       const an = a.name.toLowerCase().startsWith(q) ? 0 : 1;
       const bn = b.name.toLowerCase().startsWith(q) ? 0 : 1;
@@ -2393,6 +2464,8 @@ function admitClient(ws, msg, mode) {
     lap: 1,
   };
 
+  if (pubkey) touchPlayerDirectory(pubkey, name);
+
   /** @type {Client} */
   const client = { id, name, color, room: roomName, ws, pose, lastPoseAt: 0 };
   room.clients.set(id, client);
@@ -2495,6 +2568,8 @@ const httpServer = createServer(async (req, res) => {
       const store = loadStore();
       store[tid] = sortBoard([...(store[tid] || []), entry], tid);
       saveStore(store);
+      touchPlayerDirectory(entry.pubkey, entry.name, Date.now());
+      playersSeededFromBoard = true;
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true, trackId: tid, entries: store[tid], byTrack: store }));
     } catch {
@@ -2780,6 +2855,7 @@ const httpServer = createServer(async (req, res) => {
 
   if (url.pathname === "/api/players" && req.method === "GET") {
     if (tooMany(res, req, "players", 40, 60_000)) return;
+    ensurePlayersSeeded();
     playersDir = prunePlayers(playersDir);
     const q = url.searchParams.get("q") || "";
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -2791,6 +2867,38 @@ const httpServer = createServer(async (req, res) => {
         source: "server",
       }),
     );
+    return;
+  }
+
+  if (url.pathname === "/api/players" && req.method === "POST") {
+    if (tooMany(res, req, "players-write", 20, 60_000)) return;
+    const body = await readBody(req, 4 * 1024);
+    if (body === null) {
+      res.writeHead(413, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "payload too large" }));
+      return;
+    }
+    try {
+      const data = JSON.parse(body || "{}");
+      const pubkey = normalizePubkeyHex(data.pubkey);
+      if (!pubkey) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "bad pubkey" }));
+        return;
+      }
+      touchPlayerDirectory(pubkey, data.name, Date.now());
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          player: playersDir.players[pubkey] || null,
+          source: "server",
+        }),
+      );
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "bad json" }));
+    }
     return;
   }
 
@@ -3539,6 +3647,7 @@ setInterval(() => {
 }, 15_000);
 
 httpServer.listen(PORT, HOST, () => {
+  ensurePlayersSeeded();
   console.log(
     `Sats Racer http://${HOST}:${PORT} (WS + /api/*${DIST_DIR ? ` + static ${STATIC_BASE || "/"}` : ""})`,
   );
