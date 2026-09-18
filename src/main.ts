@@ -29,16 +29,25 @@ if (!mobileBlocked) {
   // Reconnect a persisted Nostr login (NIP-07 pubkey / NIP-46 nbunksec) in the background.
   void restoreSession().catch(() => undefined);
 
-  const game = new Game(canvas);
-  Object.assign(window, { __game: game, __physicsBackend: vehiclePhysicsBackend() });
-  initControlsHelp({
-    onStartTutorial: () => game.startTutorial(),
-  });
-  const api = configuredApiBase();
-  const ws = configuredWsUrl();
-  console.info(
-    `[racer] v${GAME_VERSION} ready` +
-      ` · physics=${vehiclePhysicsBackend()}` +
-      (api || ws ? ` · online api=${api || "—"} ws=${ws || "—"}` : " · local / offline online-config"),
-  );
+  try {
+    const game = new Game(canvas);
+    Object.assign(window, { __game: game, __physicsBackend: vehiclePhysicsBackend() });
+    initControlsHelp({
+      onStartTutorial: () => game.startTutorial(),
+    });
+    const api = configuredApiBase();
+    const ws = configuredWsUrl();
+    console.info(
+      `[racer] v${GAME_VERSION} ready` +
+        ` · physics=${vehiclePhysicsBackend()}` +
+        (api || ws ? ` · online api=${api || "—"} ws=${ws || "—"}` : " · local / offline online-config"),
+    );
+  } catch (err) {
+    console.error("[racer] boot failed", err);
+    const msg = err instanceof Error ? err.message : String(err);
+    const gate = document.createElement("div");
+    gate.className = "mobile-gate";
+    gate.innerHTML = `<div class="mobile-gate-inner"><h1>GRAPHICS ERROR</h1><p>${msg.replace(/[<>&]/g, "")}</p><p>Try Chrome/Edge, update GPU drivers, or disable browser hardware acceleration and reload.</p></div>`;
+    document.body.appendChild(gate);
+  }
 }

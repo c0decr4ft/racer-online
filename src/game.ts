@@ -94,6 +94,8 @@ import {
 } from "./weather";
 import { WildlifeHerd } from "./wildlife";
 import {
+  bindWebglContextRecovery,
+  createGameRenderer,
   probeBootPerfTier,
   settingsForTier,
   type PerfSettings,
@@ -519,17 +521,17 @@ export class Game {
     this.qualityTier = this.bootTier;
     this.perf = settingsForTier(this.qualityTier);
 
-    // Cap DPR for stable FPS on retina displays
-    this.renderer = new THREE.WebGLRenderer({
+    // Cap DPR for stable FPS on retina / weak GPUs. Prefer high-performance GL,
+    // then fall back so dual-GPU laptops / flaky drivers don't leave a blue clear.
+    this.renderer = createGameRenderer({
       canvas,
       antialias: this.perf.antialias,
-      powerPreference: "high-performance",
     });
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1));
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, this.perf.maxPixelRatio));
     const boot = this.viewport;
     this.renderer.setSize(boot.w, boot.h);
     this.renderer.setClearColor(0x87a0bc, 1);
-    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.enabled = this.perf.shadows;
     // Soft PCF — blurred contact shadows instead of blocky texel cubes.
     this.renderer.shadowMap.type = this.perf.softShadows
       ? THREE.PCFSoftShadowMap
@@ -540,6 +542,18 @@ export class Game {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.2;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    bindWebglContextRecovery(
+      canvas,
+      () => {
+        this.showToast("Graphics hiccup — recovering…");
+      },
+      () => {
+        this.shadowNeedsWarmup = true;
+        this.applyPerfSettings(this.qualityTier, { force: true });
+        this.showToast("Graphics restored");
+      },
+    );
 
     this.camera = new THREE.PerspectiveCamera(55, boot.w / boot.h, 0.1, this.perf.cameraFar);
     this.rearCamera = new THREE.PerspectiveCamera(70, 1.6, 0.2, Math.min(400, this.perf.cameraFar));
@@ -2376,7 +2390,7 @@ export class Game {
     for (const msg of shown) {
       const li = document.createElement("li");
       li.className = `dev-tip dev-feedback${msg.read ? " is-read" : ""}`;
-      const when = new Date(msg.createdAt).toLocaleString(undefined, {
+      const when = new Date(msg.createdAt).toLocaleString("en-US", {
         month: "short",
         day: "numeric",
         hour: "2-digit",
@@ -2519,7 +2533,7 @@ export class Game {
       for (const tip of visibleTips) {
         const li = document.createElement("li");
         li.className = "dev-tip";
-        const when = new Date(tip.at).toLocaleString(undefined, {
+        const when = new Date(tip.at).toLocaleString("en-US", {
           month: "short",
           day: "numeric",
           hour: "2-digit",
@@ -2641,7 +2655,7 @@ export class Game {
           const li = document.createElement("li");
           li.className = `dev-event-log is-${entry.level}`;
           const when = entry.at
-            ? new Date(entry.at).toLocaleString(undefined, {
+            ? new Date(entry.at).toLocaleString("en-US", {
                 month: "short",
                 day: "numeric",
                 hour: "2-digit",
@@ -2708,7 +2722,7 @@ export class Game {
       if (isError) li.classList.add("is-error");
 
       const when = row.at
-        ? new Date(row.at).toLocaleString(undefined, {
+        ? new Date(row.at).toLocaleString("en-US", {
             month: "short",
             day: "numeric",
             hour: "2-digit",
@@ -3039,7 +3053,7 @@ export class Game {
     const ambient = new THREE.AmbientLight(0xffffff, 0.4);
     const sun = new THREE.DirectionalLight(0xfff5e6, 1.85);
     sun.position.set(40, 80, 20);
-    sun.castShadow = true;
+    sun.castShadow = this.perf.shadows;
     // Higher res + soft radius → smudged oval shadow, not little darkness cubes.
     // Size/filter follow internal quality tier (weak GPUs start lower).
     sun.shadow.mapSize.set(this.perf.shadowMapSize, this.perf.shadowMapSize);
@@ -3077,12 +3091,15 @@ export class Game {
     this.perf = settingsForTier(tier);
     this.perfThrottle = tier !== "high";
 
+    this.renderer.shadowMap.enabled = this.perf.shadows;
     this.renderer.shadowMap.type = this.perf.softShadows
       ? THREE.PCFSoftShadowMap
       : THREE.BasicShadowMap;
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, this.perf.maxPixelRatio));
 
     const sun = this.sunLight;
     if (sun) {
+      sun.castShadow = this.perf.shadows;
       const size = this.perf.shadowMapSize;
       if (sun.shadow.mapSize.x !== size || sun.shadow.mapSize.y !== size) {
         sun.shadow.map?.dispose();
@@ -3431,6 +3448,8 @@ export class Game {
 
   private showCountdownStep(label: (typeof COUNTDOWN_STEPS)[number]) {
     const el = this.el.countdown;
+    el.setAttribute("translate", "no");
+    el.dataset.label = label;
     el.classList.toggle("go", label === "GO");
     el.textContent = label;
     el.classList.remove("hidden");
@@ -3628,7 +3647,7 @@ export class Game {
   private onResize() {
     this.viewport = viewportSize();
     const { w, h } = this.viewport;
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1));
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, this.perf.maxPixelRatio));
     this.camera.aspect = w / Math.max(1, h);
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);

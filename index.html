@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" translate="no" class="notranslate">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="/favicon.png" />
@@ -7,6 +7,9 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1, user-scalable=no"
     />
+    <!-- Keep UI English — browser auto-translate (IT/etc.) was mangling GO / HUD mid-race. -->
+    <meta name="google" content="notranslate" />
+    <meta http-equiv="content-language" content="en" />
     <title>SATS RACER</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -15,8 +18,8 @@
       rel="stylesheet"
     />
   </head>
-  <body>
-    <div id="app">
+  <body translate="no" class="notranslate">
+    <div id="app" translate="no" class="notranslate">
       <canvas id="game"></canvas>
       <div id="player-tags"></div>
       <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
@@ -88,7 +91,7 @@
         </div>
         <div id="animal-hit" class="animal-hit hidden" aria-live="assertive">COW!</div>
         <div id="final-lap-flash" class="final-lap-flash hidden" aria-live="polite">FINAL LAP</div>
-        <div id="countdown" class="countdown hidden" aria-live="assertive">3</div>
+        <div id="countdown" class="countdown hidden notranslate" translate="no" lang="en" aria-live="assertive">3</div>
         <div id="tutorial-coach" class="tutorial-coach hidden" aria-live="polite">
           <div class="tutorial-coach-panel">
             <p class="tutorial-coach-eyebrow">TUTORIAL</p>
