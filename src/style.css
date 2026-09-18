@@ -2917,6 +2917,33 @@ button.btn-ghost.social-mini {
   overflow: hidden;
 }
 
+.social-chat-stack {
+  width: 100%;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.45rem;
+  flex: 1;
+  min-height: 0;
+}
+
+.social-chat-stack > .social-chat-thread {
+  flex: 1;
+  min-height: 13rem;
+}
+
+.social-chat-stack > #social-chat-back,
+.social-chat-stack > .btn-ghost {
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  box-sizing: border-box;
+  padding: 0.95rem 1.2rem;
+  font-size: 0.85rem;
+  align-self: stretch;
+}
+
 .social-chat-messages {
   display: flex;
   flex-direction: column;
@@ -3038,13 +3065,6 @@ button.btn-ghost.social-mini {
   box-shadow: none;
 }
 
-.social-chat-view > .btn-ghost {
-  width: 100%;
-  margin: 0;
-  padding: 0.95rem 1.2rem;
-  font-size: 0.85rem;
-}
-
 .mp-send-friend-name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3146,6 +3166,11 @@ button.btn-ghost.social-mini {
 .social-view > .btn-ghost {
   width: min(100%, 20rem);
   margin-top: 0.15rem;
+}
+
+#social-hub .social-chat-stack > #social-chat-back {
+  width: 100%;
+  max-width: 100%;
 }
 
 .social-invite-banner {
