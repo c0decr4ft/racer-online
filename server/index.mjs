@@ -767,7 +767,10 @@ async function syncBoardFromRelays() {
       store[score.trackId] = sortBoard([...(store[score.trackId] || []), score], score.trackId);
       merged++;
     }
-    if (merged > 0) saveStore(store);
+    if (merged > 0) {
+      saveStore(store);
+      reseedPlayersFromLeaderboard();
+    }
     console.log(`[board] relay sync — ${merged} signed scores merged, ${events.length} events seen`);
   } catch (err) {
     console.warn("[board] relay sync failed:", err?.message || err);
@@ -1275,10 +1278,12 @@ function touchPlayerDirectory(pubkey, name, now = Date.now()) {
       : prev && !isPlaceholderPlayerName(prev.name)
         ? prev.name
         : cleaned;
-  playersDir.players[pk] = {
+  const next = {
     name: nextName,
     lastSeen: Math.max(prev?.lastSeen || 0, now),
   };
+  if (prev && prev.name === next.name && prev.lastSeen === next.lastSeen) return;
+  playersDir.players[pk] = next;
   playersDir = savePlayers(playersDir);
 }
 
@@ -1306,9 +1311,15 @@ function seedPlayersFromLeaderboard() {
 
 let playersSeededFromBoard = false;
 function ensurePlayersSeeded() {
-  if (playersSeededFromBoard) return;
+  // Re-run when the directory is empty (common right after redeploy, before relay sync).
+  if (playersSeededFromBoard && Object.keys(playersDir.players).length > 0) return;
   playersSeededFromBoard = true;
   seedPlayersFromLeaderboard();
+}
+
+function reseedPlayersFromLeaderboard() {
+  playersSeededFromBoard = false;
+  ensurePlayersSeeded();
 }
 
 function listOnlinePlayers(now = Date.now()) {
