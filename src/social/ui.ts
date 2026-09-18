@@ -101,6 +101,10 @@ function notifyFriendMessage(msg: DmMessage): void {
     return;
   }
   if (!shouldToast(session.pubkey, msg)) return;
+  if (callbacks?.isRacing?.()) {
+    markNotificationSeen(session.pubkey, msg.id);
+    return;
+  }
   const friends = listFriends(session.pubkey);
   const name = friends.find((f) => f.pubkey === msg.from)?.name || shortNpub(msg.from);
   const preview = msg.plaintext.length > 40 ? `${msg.plaintext.slice(0, 40)}…` : msg.plaintext;
@@ -125,7 +129,7 @@ function restartInbox(): void {
         const name = friendRequestName(msg.plaintext);
         upsertIncomingRequest(session.pubkey, { pubkey: msg.from, name });
         if (msg.from !== session.pubkey.toLowerCase() && shouldToast(session.pubkey, msg)) {
-          callbacks?.showToast(`Friend request from ${name}`);
+          if (!callbacks?.isRacing?.()) callbacks?.showToast(`Friend request from ${name}`);
         } else {
           markNotificationSeen(session.pubkey, msg.id);
         }
@@ -137,7 +141,7 @@ function restartInbox(): void {
         const name = friendRequestName(msg.plaintext);
         addFriend(session.pubkey, { pubkey: msg.from, name });
         void refreshFriendDisplayNames(session.pubkey).then(() => void refreshActiveLists());
-        if (shouldToast(session.pubkey, msg)) {
+        if (shouldToast(session.pubkey, msg) && !callbacks?.isRacing?.()) {
           callbacks?.showToast(`${name} accepted your friend request`);
         }
         void refreshActiveLists();
@@ -146,9 +150,11 @@ function restartInbox(): void {
       if (msg.invite) {
         rememberInviteFromDm(session.pubkey, msg.invite, msg.from);
         if (msg.from !== session.pubkey.toLowerCase() && shouldToast(session.pubkey, msg)) {
-          const who = msg.invite.fromName || shortNpub(msg.from);
-          const room = msg.invite.room || "lobby";
-          callbacks?.showToast(`${who} has sent you a ${room} lobby request`);
+          if (!callbacks?.isRacing?.()) {
+            const who = msg.invite.fromName || shortNpub(msg.from);
+            const room = msg.invite.room || "lobby";
+            callbacks?.showToast(`${who} has sent you a ${room} lobby request`);
+          }
         } else {
           markNotificationSeen(session.pubkey, msg.id);
         }

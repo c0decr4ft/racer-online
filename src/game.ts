@@ -28,6 +28,8 @@ import { Input, type InputState } from "./input";
 import { isTouchPrimary, TouchControls, viewportSize } from "./touch";
 import { Vehicle, RivalAI } from "./vehicle";
 import { NetClient, RemotePlayer, type RemoteTrackAdapter, type WelcomeInfo } from "./net/client";
+import { closeControlsHelp, closeHomeInstructions } from "./controlsHelp";
+import { closeSocialHub } from "./social/ui";
 import { WreckFire } from "./wreckFire";
 import type { EventGameMode, EventRoomInfo, NetVehicleKind, PlayerPose, BattleCubeWire } from "./net/protocol";
 import {
@@ -2314,6 +2316,13 @@ export class Game {
     this.el.mapSelect.classList.add("hidden");
     this.el.garage.classList.add("hidden");
     this.el.multiplayer.classList.add("hidden");
+    document.getElementById("dev-dash")?.classList.add("hidden");
+    // Friends / help overlays sit above the race — clear them so tutorial isn't covered.
+    closeSocialHub();
+    closeControlsHelp();
+    closeHomeInstructions();
+    document.getElementById("home-settings")?.classList.add("hidden");
+    document.getElementById("feedback-compose")?.classList.add("hidden");
     this.startRace(opts);
   }
 

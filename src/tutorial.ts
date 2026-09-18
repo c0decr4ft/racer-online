@@ -26,7 +26,7 @@ const STEPS: StepDef[] = [
   {
     id: "welcome",
     title: "Learner Loop",
-    body: "Welcome! The world runs slowly so you can learn. Follow the arrow.",
+    body: "Welcome! The world runs slowly so you can learn. Wait for GO, then follow the key prompts.",
     keys: [],
   },
   {
@@ -172,13 +172,23 @@ export class TutorialCoach {
       return;
     }
     if (opts.gridHeld) {
-      // Stay on welcome until GO
+      // Stay on welcome until GO — show countdown-aware copy.
       if (this.stepIndex !== 0) {
         this.stepIndex = 0;
         this.hold = 0;
-        this.render();
       }
+      if (this.titleEl) this.titleEl.textContent = "Get ready";
+      if (this.bodyEl) this.bodyEl.textContent = "Wait for GO — then follow the key prompts.";
+      this.arrowEl?.classList.add("hidden");
+      this.keysEl?.classList.add("hidden");
+      this.root?.style.setProperty("--tutorial-fill", "0");
+      this.layoutPointer();
       return;
+    }
+
+    // Restore welcome copy once the grid drops (in case we overwrote it above).
+    if (this.stepIndex === 0 && this.titleEl?.textContent === "Get ready") {
+      this.render();
     }
 
     const step = STEPS[this.stepIndex]!;
