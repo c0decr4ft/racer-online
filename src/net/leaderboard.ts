@@ -58,7 +58,7 @@ function storageKey(trackId: string) {
 const LEGACY_STORAGE_KEYS = ["racer-leaderboard-v1", "racer-leaderboard-v2", "racer-leaderboard-v3", "racer-leaderboard-v4"];
 const LEGACY_TRACK_PREFIXES = ["racer-leaderboard-v2-", "racer-leaderboard-v3-", "racer-leaderboard-v4-"];
 const DRIVER_NAME_KEY = "racer-driver-name";
-const MAX = 10;
+const MAX = 25;
 export const NAME_MAX = 15;
 
 function clearLegacyLocalBoards() {
@@ -476,22 +476,31 @@ export async function fetchLeaderboard(
 ): Promise<{ entries: LeaderboardEntry[]; source: BoardSource }> {
   const tid = normalizeTrackId(trackId);
 
-  // Verified-only board: game server first (verifies signatures at write),
-  // public blob as fallback (verify-on-read). Unsigned local scores stay off it.
+  // Merge server + public blob so an empty/fresh server never hides worldwide scores.
   const fromServer = await fetchLocalServerStore();
   if (fromServer) {
-    // Background heal: forward verified blob-only events to the server so
-    // scores submitted during server downtime merge in — without slowing loads.
     void healServerFromBlob(fromServer).catch(() => undefined);
-    return { entries: entriesFor(fromServer, tid), source: "server" };
   }
 
+  let fromPublic: BoardStore | null = null;
   try {
-    const fromPublic = await fetchPublicBlobStore();
-    return { entries: entriesFor(fromPublic, tid), source: "online" };
+    fromPublic = await fetchPublicBlobStore();
   } catch {
-    return { entries: entriesFor(emptyStore(), tid), source: "local" };
+    fromPublic = null;
   }
+
+  const merged = mergeBoardStores(fromServer ?? emptyStore(), fromPublic ?? emptyStore());
+  const hasAny = allBoardIds().some((id) => (merged[id] ?? []).length > 0);
+  if (hasAny || fromServer || fromPublic) {
+    const source: BoardSource = fromServer
+      ? "server"
+      : fromPublic
+        ? "online"
+        : "local";
+    return { entries: entriesFor(merged, tid), source };
+  }
+
+  return { entries: entriesFor(emptyStore(), tid), source: "local" };
 }
 
 /**
