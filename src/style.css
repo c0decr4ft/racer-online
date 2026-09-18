@@ -2704,11 +2704,6 @@ input:focus-visible,
   letter-spacing: 0.28em;
 }
 
-.multiplayer-panel h1 {
-  font-size: clamp(1.4rem, 4.8vw, 2rem);
-  margin-bottom: 0.2rem;
-}
-
 .multiplayer-panel > .mp-view > .tagline {
   margin-bottom: 0.4rem;
   font-size: 0.92rem;
@@ -2733,12 +2728,15 @@ input:focus-visible,
 
 .social-panel {
   width: min(100%, 24rem);
+  max-width: 100%;
   max-height: min(88vh, 42rem);
   overflow: auto;
+  overflow-x: hidden;
 }
 
 .social-view {
   width: 100%;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -2798,7 +2796,11 @@ input:focus-visible,
   font-family: var(--font-display);
   font-size: 0.72rem;
   font-weight: 700;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.08em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
 }
 
 .social-row-meta {
@@ -2839,8 +2841,20 @@ button.btn-ghost.social-mini {
 
 .social-chat-peers {
   width: 100%;
+  max-width: 100%;
   margin: 0.35rem 0 0.65rem;
-  grid-template-columns: repeat(auto-fill, minmax(5.2rem, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(4.5rem, 1fr));
+}
+
+.social-chat-peers .garage-kind-btn {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.58rem;
+  letter-spacing: 0.06em;
+  padding: 0.45rem 0.35rem;
 }
 
 .social-chat-messages {
@@ -3744,9 +3758,10 @@ button.btn-ghost.social-mini {
     font-size: 0.55rem;
   }
 
-  .multiplayer-panel h1,
-  .finish-panel h1 {
-    font-size: clamp(1.15rem, 4vw, 1.55rem);
+  #multiplayer .multiplayer-panel h1,
+  #social-hub .social-panel h1,
+  #finish .finish-panel h1 {
+    font-size: clamp(1.1rem, 3.8vw, 1.45rem);
     margin-bottom: 0.1rem;
   }
 
@@ -4096,6 +4111,20 @@ button.btn-ghost.social-mini {
   letter-spacing: 0.04em;
   margin-bottom: 1rem;
   flex-shrink: 0;
+}
+
+/* Dense panels — must beat .overlay h1 (same specificity otherwise loses) */
+#multiplayer .multiplayer-panel h1,
+#social-hub .social-panel h1,
+#finish .finish-panel h1 {
+  font-size: clamp(1.25rem, 4.2vw, 1.75rem);
+  line-height: 1;
+  letter-spacing: 0.06em;
+  margin-bottom: 0.35rem;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  text-align: center;
 }
 
 .overlay h1 span {
