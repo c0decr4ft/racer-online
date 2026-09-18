@@ -2703,6 +2703,262 @@ input:focus-visible,
   display: none;
 }
 
+/* ── Friends / social hub ─────────────────────────────────────── */
+.social-panel {
+  width: min(34rem, 100%);
+  max-height: min(88vh, 44rem);
+  overflow: auto;
+  text-align: center;
+}
+
+.social-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  justify-content: center;
+  margin: 0.75rem 0 0.85rem;
+}
+
+.social-tab {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: rgba(8, 12, 20, 0.55);
+  color: var(--muted);
+  font-family: var(--font-display);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  padding: 0.45rem 0.55rem;
+  cursor: pointer;
+}
+
+.social-tab.is-active,
+.social-tab:hover {
+  color: var(--text);
+  border-color: rgba(255, 200, 87, 0.55);
+  background: rgba(255, 200, 87, 0.12);
+}
+
+.social-pane {
+  width: 100%;
+  text-align: left;
+}
+
+.social-pane.hidden {
+  display: none !important;
+}
+
+.social-status {
+  margin: 0 0 0.5rem;
+  color: var(--muted);
+  font-size: 0.88rem;
+  letter-spacing: 0.04em;
+}
+
+.social-empty {
+  margin: 0.5rem 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+  text-align: center;
+}
+
+.social-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  max-height: 14rem;
+  overflow: auto;
+  margin-bottom: 0.85rem;
+}
+
+.social-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.social-row-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.social-row-name {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.social-row-meta {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.social-row-actions {
+  display: flex;
+  gap: 0.3rem;
+  flex-shrink: 0;
+}
+
+.social-mini {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: rgba(255, 59, 46, 0.85);
+  color: #fff;
+  font-family: var(--font-display);
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  padding: 0.4rem 0.5rem;
+  cursor: pointer;
+}
+
+.social-mini.btn-ghost,
+button.btn-ghost.social-mini {
+  background: transparent;
+  color: var(--muted);
+}
+
+.social-find-form,
+.social-chat-form {
+  display: flex;
+  gap: 0.4rem;
+  margin-bottom: 0.55rem;
+}
+
+.social-find-form input,
+.social-chat-form input,
+.social-org-form input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 1rem;
+  padding: 0.65rem 0.75rem;
+}
+
+.social-find-form button,
+.social-chat-form button {
+  flex-shrink: 0;
+}
+
+.social-chat-peers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.5rem;
+}
+
+.social-peer-btn {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: rgba(8, 12, 20, 0.55);
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: 0.85rem;
+  padding: 0.35rem 0.55rem;
+  cursor: pointer;
+}
+
+.social-peer-btn.is-active {
+  color: var(--text);
+  border-color: rgba(255, 200, 87, 0.55);
+}
+
+.social-chat-title {
+  margin: 0 0 0.35rem;
+  font-family: var(--font-display);
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+}
+
+.social-chat-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-height: 8rem;
+  max-height: 12rem;
+  overflow: auto;
+  margin-bottom: 0.5rem;
+  padding: 0.4rem;
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.social-msg {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.social-msg.is-mine {
+  justify-content: flex-end;
+}
+
+.social-msg-bubble {
+  max-width: 85%;
+  padding: 0.45rem 0.6rem;
+  border-radius: 0.35rem;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 0.92rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  align-items: flex-start;
+}
+
+.social-msg.is-mine .social-msg-bubble {
+  background: rgba(255, 59, 46, 0.28);
+}
+
+.social-org-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  margin-bottom: 0.65rem;
+}
+
+.social-org-friends {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  max-height: 7rem;
+  overflow: auto;
+  margin-bottom: 0.35rem;
+}
+
+.social-check {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--text);
+  font-size: 0.95rem;
+}
+
+.social-invite-banner {
+  position: fixed;
+  top: 4.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.65rem 0.9rem;
+  border: 1px solid rgba(255, 200, 87, 0.45);
+  background: rgba(8, 12, 18, 0.94);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+  font-family: var(--font-ui);
+}
+
+.social-invite-banner.hidden {
+  display: none !important;
+}
+
 .garage-kind {
   display: grid;
   grid-template-columns: 1fr 1fr;

@@ -8,6 +8,8 @@ import { restoreSession } from "./nostr/session";
 import { initNostrUi } from "./nostr/ui";
 import { initVehiclePhysics, vehiclePhysicsBackend } from "./physics/vehiclePhysics";
 import { initSettingsUi } from "./settingsUi";
+import { initSocialUi } from "./social/ui";
+import { clearInviteQuery, parseInviteQuery } from "./social/organize";
 import { GAME_VERSION } from "./version";
 import { initVersionBadge } from "./versions";
 
@@ -39,6 +41,19 @@ if (!mobileBlocked) {
     initSettingsUi({
       onApply: (settings) => game.applyGameSettings(settings),
     });
+    initSocialUi({
+      onJoinInvite: (invite) => {
+        game.joinFromInvite(invite);
+      },
+      showToast: (text) => game.notify(text),
+    });
+
+    const invite = parseInviteQuery();
+    if (invite) {
+      clearInviteQuery();
+      game.joinFromInvite(invite);
+    }
+
     const api = configuredApiBase();
     const ws = configuredWsUrl();
     console.info(

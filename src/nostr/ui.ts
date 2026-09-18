@@ -17,6 +17,7 @@ import {
   type NostrSession,
 } from "./session";
 import { fetchProfile, profileLabel, publishProfileName, shortNpub, type NostrProfile } from "./profile";
+import { sendHeartbeat, setPresenceIdentity } from "../net/presence";
 
 /** QRCode is only needed for the NIP-46 connect QR — lazy-load it. */
 const qrCode = () => import("qrcode");
@@ -24,6 +25,16 @@ const qrCode = () => import("qrcode");
 let currentProfile: NostrProfile | null = null;
 export function getCurrentProfile(): NostrProfile | null {
   return currentProfile;
+}
+
+function syncPresenceIdentity(session: NostrSession | null, profile: NostrProfile | null) {
+  if (!session) {
+    setPresenceIdentity(null);
+    return;
+  }
+  const name = profile?.displayName || profile?.name || "RACER";
+  setPresenceIdentity({ pubkey: session.pubkey, name });
+  void sendHeartbeat();
 }
 
 function el<T extends HTMLElement>(id: string): T | null {
@@ -56,6 +67,7 @@ async function refreshIdentityViews() {
 
   if (!session) {
     currentProfile = null;
+    syncPresenceIdentity(null, null);
     return;
   }
 
@@ -64,6 +76,7 @@ async function refreshIdentityViews() {
   if (nameEl) nameEl.textContent = currentProfile?.displayName || currentProfile?.name || "NOSTR RACER";
   const npub = el<HTMLParagraphElement>("nostr-npub");
   if (npub) npub.textContent = shortNpub(session.pubkey);
+  syncPresenceIdentity(session, currentProfile);
 
   const profile = await fetchProfile(session.pubkey);
   if (getSession()?.pubkey !== session.pubkey) return; // logged out / switched mid-fetch
@@ -72,6 +85,7 @@ async function refreshIdentityViews() {
   const displayName = profile?.displayName || profile?.name || "NOSTR RACER";
   if (chipLabel) chipLabel.textContent = profileLabel(session.pubkey, profile).toUpperCase().slice(0, 16);
   if (nameEl) nameEl.textContent = displayName;
+  syncPresenceIdentity(session, profile);
   // Local accounts get a backup-key reveal (extension/remote sessions hold no secret here)
   el<HTMLDivElement>("nostr-backup-box")?.classList.toggle("hidden", session.method !== "local");
   const avatar = el<HTMLImageElement>("nostr-avatar");

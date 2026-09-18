@@ -75,6 +75,7 @@ const DATA_DIR = (() => {
 })();
 const LEADERBOARD_PATH = join(DIR, "leaderboard.json");
 const PRESENCE_PATH = join(DIR, "presence.json");
+const PLAYERS_PATH = join(DATA_DIR, "players.json");
 const FEEDBACK_PATH = join(DATA_DIR, "feedback.json");
 const FEEDBACK_LEGACY_PATH = join(DIR, "feedback.json");
 /**
@@ -1178,7 +1179,129 @@ function presenceSnapshot(store) {
       phase: room.phase,
       maxPlayers: room.maxPlayers,
     })),
+    online: listOnlinePlayers(nowAt),
   };
+}
+
+/* ── Signed-in player directory + online identities ───────────── */
+const PLAYERS_MAX = 500;
+const PLAYERS_STALE_MS = 90 * 24 * 3_600_000;
+/** sessionId → { pubkey, name, at } for signed-in heartbeats. */
+const presenceIdentities = new Map();
+
+function normalizePubkeyHex(raw) {
+  const hex = String(raw ?? "").trim().toLowerCase();
+  return /^[0-9a-f]{64}$/.test(hex) ? hex : "";
+}
+
+function sanitizePlayerName(raw) {
+  const cleaned = String(raw ?? "")
+    .normalize("NFKC")
+    .replace(/[^\p{L}\p{N} _\-.]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 24)
+    .trim();
+  return cleaned || "RACER";
+}
+
+function emptyPlayers() {
+  return { players: {} };
+}
+
+function loadPlayers() {
+  try {
+    if (!existsSync(PLAYERS_PATH)) return emptyPlayers();
+    const raw = JSON.parse(readFileSync(PLAYERS_PATH, "utf8"));
+    return normalizePlayers(raw);
+  } catch {
+    return emptyPlayers();
+  }
+}
+
+function normalizePlayers(data) {
+  const store = emptyPlayers();
+  if (!data || typeof data !== "object") return store;
+  const map = /** @type {{ players?: unknown }} */ (data).players;
+  if (!map || typeof map !== "object") return store;
+  for (const [pk, row] of Object.entries(map)) {
+    const pubkey = normalizePubkeyHex(pk);
+    if (!pubkey || !row || typeof row !== "object") continue;
+    const r = /** @type {{ name?: unknown; lastSeen?: unknown }} */ (row);
+    const lastSeen =
+      typeof r.lastSeen === "number" && Number.isFinite(r.lastSeen) ? Math.round(r.lastSeen) : 0;
+    if (!lastSeen) continue;
+    store.players[pubkey] = { name: sanitizePlayerName(r.name), lastSeen };
+  }
+  return prunePlayers(store);
+}
+
+function prunePlayers(store, now = Date.now()) {
+  const entries = Object.entries(store.players)
+    .filter(([, row]) => now - row.lastSeen <= PLAYERS_STALE_MS)
+    .sort((a, b) => b[1].lastSeen - a[1].lastSeen)
+    .slice(0, PLAYERS_MAX);
+  return { players: Object.fromEntries(entries) };
+}
+
+function savePlayers(store) {
+  const body = prunePlayers(store);
+  try {
+    if (DATA_DIR !== DIR) mkdirSync(DATA_DIR, { recursive: true });
+    writeFileSync(PLAYERS_PATH, JSON.stringify(body, null, 2));
+  } catch (err) {
+    console.warn(`[players] write failed:`, PLAYERS_PATH, err?.message || err);
+  }
+  return body;
+}
+
+let playersDir = loadPlayers();
+
+function touchPlayerDirectory(pubkey, name, now = Date.now()) {
+  const pk = normalizePubkeyHex(pubkey);
+  if (!pk) return;
+  playersDir.players[pk] = { name: sanitizePlayerName(name), lastSeen: now };
+  playersDir = savePlayers(playersDir);
+}
+
+function listOnlinePlayers(now = Date.now()) {
+  /** @type {Map<string, { pubkey: string; name: string; at: number }>} */
+  const byPk = new Map();
+  for (const [sessionId, at] of Object.entries(presence.sessions || {})) {
+    if (now - at > PRESENCE_STALE_MS) continue;
+    const id = presenceIdentities.get(sessionId);
+    if (!id?.pubkey) continue;
+    const prev = byPk.get(id.pubkey);
+    if (!prev || id.at >= prev.at) {
+      byPk.set(id.pubkey, { pubkey: id.pubkey, name: id.name, at: Math.max(at, id.at) });
+    }
+  }
+  return [...byPk.values()].sort((a, b) => a.name.localeCompare(b.name) || a.pubkey.localeCompare(b.pubkey));
+}
+
+function searchPlayers(query) {
+  const q = String(query ?? "")
+    .normalize("NFKC")
+    .trim()
+    .toLowerCase()
+    .slice(0, 40);
+  const rows = Object.entries(playersDir.players).map(([pubkey, row]) => ({
+    pubkey,
+    name: row.name,
+    lastSeen: row.lastSeen,
+  }));
+  if (!q) {
+    return rows.sort((a, b) => b.lastSeen - a.lastSeen).slice(0, 40);
+  }
+  return rows
+    .filter((r) => r.name.toLowerCase().includes(q) || r.pubkey.startsWith(q) || r.pubkey.includes(q))
+    .sort((a, b) => {
+      const an = a.name.toLowerCase().startsWith(q) ? 0 : 1;
+      const bn = b.name.toLowerCase().startsWith(q) ? 0 : 1;
+      if (an !== bn) return an - bn;
+      return b.lastSeen - a.lastSeen;
+    })
+    .slice(0, 40);
 }
 
 function cors(res) {
@@ -2627,12 +2750,23 @@ const httpServer = createServer(async (req, res) => {
       const action = String(data.action || "heartbeat").toLowerCase();
       if (action === "leave") {
         delete presence.sessions[id];
+        presenceIdentities.delete(id);
         recordPresenceSample(presence, now);
         presence.updatedAt = now;
         presence.historyEpoch = PRESENCE_HISTORY_EPOCH;
       } else {
         presence.sessions[id] = now;
         recordPresencePeak(presence, now);
+        const pubkey = normalizePubkeyHex(data.pubkey);
+        if (pubkey) {
+          const name = sanitizePlayerName(data.name);
+          presenceIdentities.set(id, { pubkey, name, at: now });
+          touchPlayerDirectory(pubkey, name, now);
+        }
+      }
+      // Drop identity rows whose sessions expired.
+      for (const [sid] of presenceIdentities) {
+        if (!presence.sessions[sid]) presenceIdentities.delete(sid);
       }
       presence = savePresence(presence);
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -2641,6 +2775,22 @@ const httpServer = createServer(async (req, res) => {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "bad json" }));
     }
+    return;
+  }
+
+  if (url.pathname === "/api/players" && req.method === "GET") {
+    if (tooMany(res, req, "players", 40, 60_000)) return;
+    playersDir = prunePlayers(playersDir);
+    const q = url.searchParams.get("q") || "";
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        ok: true,
+        players: searchPlayers(q),
+        online: listOnlinePlayers(),
+        source: "server",
+      }),
+    );
     return;
   }
 
