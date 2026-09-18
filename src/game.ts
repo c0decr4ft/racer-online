@@ -54,6 +54,8 @@ import {
 import { getSession, onSessionChange } from "./nostr/session";
 import { ensureNostrLogin, getCurrentProfile } from "./nostr/ui";
 import { fetchProfile, shortNpub } from "./nostr/profile";
+import { listFriends } from "./social/friends";
+import { sendGameInvites } from "./social/organize";
 import {
   fetchDevPubkey,
   fetchDevTips,
@@ -841,6 +843,14 @@ export class Game {
       e.preventDefault();
       void this.createMultiplayerRoom();
     });
+    document.getElementById("mp-send-friends-toggle")?.addEventListener("click", () => {
+      const panel = document.getElementById("mp-send-friends-panel");
+      if (!panel) return;
+      panel.classList.toggle("hidden");
+      const open = !panel.classList.contains("hidden");
+      const toggle = document.getElementById("mp-send-friends-toggle");
+      if (toggle) toggle.textContent = open ? "HIDE FRIENDS" : "SEND TO FRIENDS";
+    });
     document.getElementById("mp-join-form")!.addEventListener("submit", (e) => {
       e.preventDefault();
       void this.joinMultiplayerRoom();
@@ -1208,6 +1218,7 @@ export class Game {
     if (!this.el.mpJoinRoom.value.trim()) this.el.mpJoinRoom.value = "circuit";
     this.el.mpCreateStatus.textContent = "Vehicle class and weather apply to everyone in the room";
     this.el.mpJoinStatus.textContent = "Vehicle class and weather are set by the host · garage paint still applies";
+    this.refreshMpFriendInviteUi();
     this.showMpView("entry");
     this.el.multiplayer.classList.remove("hidden");
     this.syncMuteBtn();
@@ -1312,6 +1323,7 @@ export class Game {
       this.syncMpCreateKindUi();
       this.syncMpCreateWeatherUi();
       this.renderMpCreateTracks();
+      this.refreshMpFriendInviteUi();
       this.applyMenuWeatherPreview(this.mpCreateWeather);
     } else if (view === "lobby") {
       // Keep host choice / room weather visible behind the lobby panel
@@ -1398,6 +1410,39 @@ export class Game {
     return this.profileNameToBoard(profile?.displayName || profile?.name);
   }
 
+  private refreshMpFriendInviteUi() {
+    const wrap = document.getElementById("mp-send-friends-wrap");
+    const list = document.getElementById("mp-send-friends-list");
+    const panel = document.getElementById("mp-send-friends-panel");
+    const toggle = document.getElementById("mp-send-friends-toggle");
+    if (!wrap || !list) return;
+    const session = getSession();
+    const friends = session ? listFriends(session.pubkey) : [];
+    if (!friends.length) {
+      wrap.classList.add("hidden");
+      panel?.classList.add("hidden");
+      list.innerHTML = "";
+      if (toggle) toggle.textContent = "SEND TO FRIENDS";
+      return;
+    }
+    wrap.classList.remove("hidden");
+    const selected = new Set(
+      [...list.querySelectorAll<HTMLInputElement>('input[name="mp-invite-friend"]:checked')].map((i) => i.value),
+    );
+    list.innerHTML = friends
+      .map((f) => {
+        const checked = selected.size ? selected.has(f.pubkey) : false;
+        return `<label class="mp-send-friend"><input type="checkbox" name="mp-invite-friend" value="${f.pubkey}"${checked ? " checked" : ""} /> ${escapeHtml(f.name.toUpperCase())}</label>`;
+      })
+      .join("");
+  }
+
+  private selectedMpInviteFriends(): string[] {
+    return [...document.querySelectorAll<HTMLInputElement>('input[name="mp-invite-friend"]:checked')]
+      .map((i) => i.value)
+      .filter(Boolean);
+  }
+
   private async createMultiplayerRoom() {
     const typed = this.el.mpCreateName.value.trim();
     if (!typed) {
@@ -1424,6 +1469,32 @@ export class Game {
       eventBuyInSats = Math.min(1_000_000, raw);
       (document.getElementById("mp-create-buyin") as HTMLInputElement).value = String(eventBuyInSats);
     }
+
+    const inviteTargets = this.selectedMpInviteFriends();
+    if (inviteTargets.length) {
+      this.el.mpCreateStatus.textContent = `Sending lobby request to ${inviteTargets.length} friend${inviteTargets.length === 1 ? "" : "s"}…`;
+      try {
+        const result = await sendGameInvites({
+          room,
+          password,
+          trackId: this.mpCreateTrackId,
+          fromName: name,
+          friendPubkeys: inviteTargets,
+        });
+        if (result.sent > 0) {
+          this.showToast(
+            `Sent ${result.sent} ${room} lobby request${result.sent === 1 ? "" : "s"} · first 6 in get a seat`,
+          );
+        }
+        if (result.failed.length) {
+          this.showToast(`${result.failed.length} invite${result.failed.length === 1 ? "" : "s"} failed`);
+        }
+      } catch (err) {
+        this.el.mpCreateStatus.textContent = err instanceof Error ? err.message : "Could not send invites";
+        return;
+      }
+    }
+
     this.el.mpCreateStatus.textContent = "Creating room…";
     await this.audio.unlock();
     this.audio.stopMenuMusic();

@@ -1,5 +1,5 @@
 /**
- * Friends / Find / Requests / Chat / Organize social hub UI.
+ * Friends / Find / Requests / Chat social hub UI.
  */
 import { fetchProfile, profileLabel, shortNpub } from "../nostr/profile";
 import { getSession, onSessionChange } from "../nostr/session";
@@ -32,7 +32,6 @@ import {
   buildInviteJoinUrl,
   onInviteJoin,
   rememberInviteFromDm,
-  sendGameInvites,
 } from "./organize";
 
 export type SocialHubCallbacks = {
@@ -43,7 +42,7 @@ export type SocialHubCallbacks = {
   isRacing?: () => boolean;
 };
 
-type Tab = "entry" | "find" | "requests" | "friends" | "chat" | "organize";
+type Tab = "entry" | "find" | "requests" | "friends" | "chat";
 
 let callbacks: SocialHubCallbacks | null = null;
 let activeTab: Tab = "entry";
@@ -128,7 +127,8 @@ function restartInbox(): void {
         rememberInviteFromDm(session.pubkey, msg.invite, msg.from);
         if (msg.from !== session.pubkey.toLowerCase()) {
           const who = msg.invite.fromName || shortNpub(msg.from);
-          callbacks?.showToast(`${who} sent you a game request`);
+          const room = msg.invite.room || "lobby";
+          callbacks?.showToast(`${who} has sent you a ${room} lobby request`);
         }
       }
       if (chatPeer && (msg.from === chatPeer.pubkey || msg.to === chatPeer.pubkey)) {
@@ -153,7 +153,7 @@ function updateRequestBadge(): void {
 function showSocialView(tab: Tab): void {
   activeTab = tab;
   el("social-entry")?.classList.toggle("hidden", tab !== "entry");
-  for (const id of ["find", "requests", "friends", "chat", "organize"] as const) {
+  for (const id of ["find", "requests", "friends", "chat"] as const) {
     el(`social-pane-${id}`)?.classList.toggle("hidden", id !== tab);
   }
   if (tab === "find") {
@@ -167,7 +167,6 @@ function showSocialView(tab: Tab): void {
     renderChatPeers();
     syncChatWithLabel();
   }
-  if (tab === "organize") renderOrganize();
   if (tab === "entry") updateRequestBadge();
   updateRequestBadge();
 }
@@ -363,7 +362,6 @@ async function refreshActiveLists(): Promise<void> {
   if (activeTab === "requests") renderRequests();
   if (activeTab === "friends") renderFriends();
   if (activeTab === "chat") renderChatPeers();
-  if (activeTab === "organize") renderOrganize();
   if (activeTab === "entry") updateRequestBadge();
   updateRequestBadge();
 }
@@ -371,7 +369,15 @@ async function refreshActiveLists(): Promise<void> {
 function syncChatWithLabel(): void {
   const label = el("social-chat-with");
   if (!label) return;
-  label.textContent = chatPeer ? `Chatting with ${chatPeer.name}` : "Pick a friend below";
+  label.textContent = chatPeer ? chatPeer.name.toUpperCase() : "Pick a friend below";
+}
+
+function formatChatTime(ms: number): string {
+  try {
+    return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return "";
+  }
 }
 
 function renderChatPeers(): void {
@@ -441,17 +447,19 @@ function renderChatMessages(): void {
     ? visible
         .map((m) => {
           const mine = m.from === me;
+          const time = formatChatTime(m.createdAt);
           if (m.invite) {
             const who = m.invite.fromName || (mine ? "You" : shortNpub(m.from));
+            const room = m.invite.room || "lobby";
             const body = mine
-              ? `You sent a game request · ${m.invite.room}`
-              : `${who} has sent you a game request`;
+              ? `You sent a ${room} lobby request`
+              : `${who} has sent you a ${room} lobby request`;
             const btn = mine
               ? ""
               : `<button type="button" class="social-mini" data-invite-id="${m.id}">JOIN</button>`;
-            return `<div class="social-msg${mine ? " is-mine" : ""}"><div class="social-msg-bubble">${escapeHtml(body)}${btn}</div></div>`;
+            return `<div class="social-msg${mine ? " is-mine" : ""}"><div class="social-msg-bubble social-msg-invite"><span class="social-msg-text">${escapeHtml(body)}</span>${btn}<span class="social-msg-meta">${escapeHtml(time)}</span></div></div>`;
           }
-          return `<div class="social-msg${mine ? " is-mine" : ""}"><div class="social-msg-bubble">${escapeHtml(m.plaintext)}</div></div>`;
+          return `<div class="social-msg${mine ? " is-mine" : ""}"><div class="social-msg-bubble"><span class="social-msg-text">${escapeHtml(m.plaintext)}</span><span class="social-msg-meta">${escapeHtml(time)}</span></div></div>`;
         })
         .join("")
     : `<p class="social-empty">No messages yet — say hi</p>`;
@@ -467,58 +475,6 @@ function renderChatMessages(): void {
     };
   });
   box.scrollTop = box.scrollHeight;
-}
-
-function renderOrganize(): void {
-  const friendsBox = el("social-org-friends");
-  const session = getSession();
-  if (!session) return;
-  const friends = listFriends(session.pubkey);
-  if (friendsBox) {
-    friendsBox.innerHTML = friends.length
-      ? friends
-          .map(
-            (f) =>
-              `<label class="social-check"><input type="checkbox" name="org-friend" value="${f.pubkey}" checked /> ${escapeHtml(f.name)}</label>`,
-          )
-          .join("")
-      : `<p class="social-empty">Accept friends before inviting</p>`;
-  }
-}
-
-async function submitOrganize(e: Event): Promise<void> {
-  e.preventDefault();
-  const session = getSession();
-  const status = el("social-org-status");
-  if (!session) return;
-  const room = (el<HTMLInputElement>("social-org-room")?.value || "").trim();
-  const password = (el<HTMLInputElement>("social-org-pass")?.value || "").trim();
-  const selected = [
-    ...document.querySelectorAll<HTMLInputElement>('input[name="org-friend"]:checked'),
-  ].map((i) => i.value);
-  if (!selected.length) {
-    if (status) status.textContent = "Add at least one friend";
-    return;
-  }
-  if (status) status.textContent = "Sending game requests…";
-  try {
-    const result = await sendGameInvites({
-      room,
-      password,
-      fromName: myDisplayName(),
-      friendPubkeys: selected,
-    });
-    if (status) {
-      status.textContent = `Sent ${result.sent} request${result.sent === 1 ? "" : "s"}${
-        result.failed.length ? ` · ${result.failed.length} failed` : ""
-      } — opening lobby…`;
-    }
-    callbacks?.showToast(`Game request sent · ${result.invite.room}`);
-    closeSocialHub();
-    callbacks?.onHostLobby({ room: result.invite.room, password: result.invite.password });
-  } catch (err) {
-    if (status) status.textContent = err instanceof Error ? err.message : "Failed";
-  }
 }
 
 async function sendChat(e: Event): Promise<void> {
@@ -601,9 +557,8 @@ export function initSocialUi(cbs: SocialHubCallbacks): void {
   document.getElementById("social-goto-find")?.addEventListener("click", go("find"));
   document.getElementById("social-goto-requests")?.addEventListener("click", go("requests"));
   document.getElementById("social-goto-chat")?.addEventListener("click", go("chat"));
-  document.getElementById("social-goto-organize")?.addEventListener("click", go("organize"));
 
-  for (const id of ["friends", "find", "requests", "chat", "organize"] as const) {
+  for (const id of ["friends", "find", "requests", "chat"] as const) {
     document.getElementById(`social-${id}-back`)?.addEventListener("click", () => showSocialView("entry"));
   }
 
@@ -622,9 +577,6 @@ export function initSocialUi(cbs: SocialHubCallbacks): void {
 
   document.getElementById("social-chat-form")?.addEventListener("submit", (e) => {
     void sendChat(e);
-  });
-  document.getElementById("social-org-form")?.addEventListener("submit", (e) => {
-    void submitOrganize(e);
   });
 
   onSessionChange((session) => {

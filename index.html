@@ -128,7 +128,7 @@
       </div>
 
       <div class="version-switcher" id="version-switcher">
-        <span id="version-badge" class="version-badge" aria-label="Version 8.7">v8.7</span>
+        <span id="version-badge" class="version-badge" aria-label="Version 8.8">v8.8</span>
       </div>
 
       <div id="home-corner-btns" class="home-corner-btns">
@@ -606,7 +606,6 @@
               <button id="social-goto-find" class="btn-ghost" type="button">FIND</button>
               <button id="social-goto-requests" class="btn-ghost" type="button">REQUESTS</button>
               <button id="social-goto-chat" class="btn-ghost" type="button">CHAT</button>
-              <button id="social-goto-organize" class="btn-ghost" type="button">INVITE TO LOBBY</button>
               <button id="social-back-btn" class="btn-ghost" type="button">BACK</button>
             </div>
           </div>
@@ -643,13 +642,15 @@
             <button id="social-requests-back" class="btn-ghost" type="button">BACK</button>
           </div>
 
-          <div id="social-pane-chat" class="social-view hidden">
-            <p class="eyebrow">MESSAGES</p>
-            <h1>CHAT</h1>
-            <p id="social-chat-with" class="tagline">Pick a friend below</p>
-            <div id="social-chat-peers" class="garage-kind social-chat-peers"></div>
-            <div id="social-chat-messages" class="social-chat-messages"></div>
-            <form id="social-chat-form" class="multiplayer-form social-chat-form" autocomplete="off">
+          <div id="social-pane-chat" class="social-view social-chat-view hidden">
+            <div class="social-chat-header">
+              <p class="eyebrow">MESSAGES</p>
+              <h1>CHAT</h1>
+              <p id="social-chat-with" class="social-chat-peer-name">Pick a friend below</p>
+              <div id="social-chat-peers" class="garage-kind social-chat-peers"></div>
+            </div>
+            <div id="social-chat-messages" class="social-chat-messages" role="log" aria-live="polite"></div>
+            <form id="social-chat-form" class="social-chat-form" autocomplete="off">
               <div class="social-chat-compose">
                 <input id="social-chat-input" type="text" maxlength="500" placeholder="Message…" aria-label="Message" />
                 <button type="submit">SEND</button>
@@ -657,33 +658,6 @@
               <button id="social-chat-back" class="btn-ghost" type="button">BACK</button>
             </form>
             <p id="social-chat-status" class="tagline social-status"></p>
-          </div>
-
-          <div id="social-pane-organize" class="social-view hidden">
-            <p class="eyebrow">HOST</p>
-            <h1>INVITE</h1>
-            <p class="tagline">Create a lobby and send a game request</p>
-            <form id="social-org-form" class="multiplayer-form" autocomplete="off">
-              <div class="mp-fields-row">
-                <label class="mp-field">
-                  <span>Room</span>
-                  <input id="social-org-room" type="text" maxlength="24" value="circuit" required />
-                </label>
-                <label class="mp-field">
-                  <span>Password</span>
-                  <input id="social-org-pass" type="text" maxlength="32" placeholder="Optional" />
-                </label>
-              </div>
-              <div class="mp-field">
-                <span>Friends</span>
-                <div id="social-org-friends" class="social-org-friends"></div>
-              </div>
-              <p id="social-org-status" class="tagline social-status">Sends a chat request · then opens your lobby</p>
-              <div class="mp-form-actions">
-                <button type="submit">SEND &amp; HOST LOBBY</button>
-                <button id="social-organize-back" class="btn-ghost" type="button">BACK</button>
-              </div>
-            </form>
           </div>
         </div>
       </div>
@@ -764,6 +738,13 @@
               </div>
               </div>
               <div class="mp-create-footer">
+                <div id="mp-send-friends-wrap" class="mp-send-friends-wrap hidden">
+                  <button id="mp-send-friends-toggle" class="btn-ghost" type="button">SEND TO FRIENDS</button>
+                  <div id="mp-send-friends-panel" class="mp-send-friends-panel hidden">
+                    <p class="mp-send-friends-hint">Pick friends · first 6 in the lobby get a seat</p>
+                    <div id="mp-send-friends-list" class="mp-send-friends-list"></div>
+                  </div>
+                </div>
                 <p id="mp-create-status" class="tagline mp-status">Vehicle class and weather apply to everyone in the room</p>
                 <div class="mp-form-actions">
                   <button type="submit">CREATE &amp; ENTER LOBBY</button>
