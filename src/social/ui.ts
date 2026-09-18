@@ -30,15 +30,15 @@ import {
 import {
   armAllSchedules,
   buildInviteJoinUrl,
-  listSchedules,
   onInviteJoin,
-  organizeRace,
   rememberInviteFromDm,
-  type ScheduledRace,
+  sendGameInvites,
 } from "./organize";
 
 export type SocialHubCallbacks = {
   onJoinInvite: (invite: { room: string; password: string; eventMode?: boolean }) => void;
+  /** Host creates this room and enters the lobby after invites are sent. */
+  onHostLobby: (invite: { room: string; password: string }) => void;
   showToast: (text: string) => void;
   isRacing?: () => boolean;
 };
@@ -127,9 +127,8 @@ function restartInbox(): void {
       if (msg.invite) {
         rememberInviteFromDm(session.pubkey, msg.invite, msg.from);
         if (msg.from !== session.pubkey.toLowerCase()) {
-          callbacks?.showToast(
-            `Race invite from ${msg.invite.fromName || shortNpub(msg.from)} · ${new Date(msg.invite.at).toLocaleString()}`,
-          );
+          const who = msg.invite.fromName || shortNpub(msg.from);
+          callbacks?.showToast(`${who} sent you a game request`);
         }
       }
       if (chatPeer && (msg.from === chatPeer.pubkey || msg.to === chatPeer.pubkey)) {
@@ -432,13 +431,17 @@ function renderChatMessages(): void {
     ? visible
         .map((m) => {
           const mine = m.from === me;
-          const invite = m.invite
-            ? `<button type="button" class="social-mini" data-invite-id="${m.id}">JUMP IN</button>`
-            : "";
-          const body = m.invite
-            ? `Race invite · ${m.invite.room} · ${new Date(m.invite.at).toLocaleString()}`
-            : m.plaintext;
-          return `<div class="social-msg${mine ? " is-mine" : ""}"><div class="social-msg-bubble">${escapeHtml(body)}${invite}</div></div>`;
+          if (m.invite) {
+            const who = m.invite.fromName || (mine ? "You" : shortNpub(m.from));
+            const body = mine
+              ? `You sent a game request · ${m.invite.room}`
+              : `${who} has sent you a game request`;
+            const btn = mine
+              ? ""
+              : `<button type="button" class="social-mini" data-invite-id="${m.id}">JOIN</button>`;
+            return `<div class="social-msg${mine ? " is-mine" : ""}"><div class="social-msg-bubble">${escapeHtml(body)}${btn}</div></div>`;
+          }
+          return `<div class="social-msg${mine ? " is-mine" : ""}"><div class="social-msg-bubble">${escapeHtml(m.plaintext)}</div></div>`;
         })
         .join("")
     : `<p class="social-empty">No messages yet — say hi</p>`;
@@ -446,6 +449,7 @@ function renderChatMessages(): void {
     btn.onclick = () => {
       const msg = visible.find((m) => m.id === btn.dataset.inviteId);
       if (!msg?.invite) return;
+      closeSocialHub();
       callbacks?.onJoinInvite({
         room: msg.invite.room,
         password: msg.invite.password,
@@ -457,7 +461,6 @@ function renderChatMessages(): void {
 
 function renderOrganize(): void {
   const friendsBox = el("social-org-friends");
-  const upcoming = el("social-org-upcoming");
   const session = getSession();
   if (!session) return;
   const friends = listFriends(session.pubkey);
@@ -469,34 +472,7 @@ function renderOrganize(): void {
               `<label class="social-check"><input type="checkbox" name="org-friend" value="${f.pubkey}" checked /> ${escapeHtml(f.name)}</label>`,
           )
           .join("")
-      : `<p class="social-empty">Add friends before organizing</p>`;
-  }
-  if (upcoming) {
-    const rows = listSchedules(session.pubkey).filter((r) => r.at > Date.now() - 60_000);
-    upcoming.innerHTML = rows.length
-      ? rows
-          .map(
-            (r) =>
-              `<div class="social-row">
-                <div class="social-row-main">
-                  <span class="social-row-name">${escapeHtml(r.room)}</span>
-                  <span class="social-row-meta">${new Date(r.at).toLocaleString()}${r.fromName ? ` · ${escapeHtml(r.fromName)}` : ""}</span>
-                </div>
-                <div class="social-row-actions">
-                  <button type="button" class="social-mini" data-jump="${r.id}">JUMP IN</button>
-                </div>
-              </div>`,
-          )
-          .join("")
-      : `<p class="social-empty">No upcoming races</p>`;
-    upcoming.querySelectorAll<HTMLButtonElement>("[data-jump]").forEach((btn) => {
-      btn.onclick = () => {
-        const row = rows.find((r) => r.id === btn.dataset.jump);
-        if (row) {
-          callbacks?.onJoinInvite({ room: row.room, password: row.password });
-        }
-      };
-    });
+      : `<p class="social-empty">Accept friends before inviting</p>`;
   }
 }
 
@@ -507,34 +483,29 @@ async function submitOrganize(e: Event): Promise<void> {
   if (!session) return;
   const room = (el<HTMLInputElement>("social-org-room")?.value || "").trim();
   const password = (el<HTMLInputElement>("social-org-pass")?.value || "").trim();
-  const when = el<HTMLInputElement>("social-org-when")?.value;
   const selected = [
     ...document.querySelectorAll<HTMLInputElement>('input[name="org-friend"]:checked'),
   ].map((i) => i.value);
-  if (!when) {
-    if (status) status.textContent = "Pick a time";
+  if (!selected.length) {
+    if (status) status.textContent = "Add at least one friend";
     return;
   }
-  const at = new Date(when).getTime();
-  if (status) status.textContent = "Sending invites…";
+  if (status) status.textContent = "Sending game requests…";
   try {
-    const result = await organizeRace({
+    const result = await sendGameInvites({
       room,
       password,
-      at,
       fromName: myDisplayName(),
       friendPubkeys: selected,
     });
     if (status) {
-      status.textContent = `Sent ${result.sent} invite${result.sent === 1 ? "" : "s"}${
+      status.textContent = `Sent ${result.sent} request${result.sent === 1 ? "" : "s"}${
         result.failed.length ? ` · ${result.failed.length} failed` : ""
-      }`;
+      } — opening lobby…`;
     }
-    callbacks?.showToast(`Race organized · ${result.schedule.room}`);
-    if (typeof Notification !== "undefined" && Notification.permission === "default") {
-      void Notification.requestPermission();
-    }
-    renderOrganize();
+    callbacks?.showToast(`Game request sent · ${result.invite.room}`);
+    closeSocialHub();
+    callbacks?.onHostLobby({ room: result.invite.room, password: result.invite.password });
   } catch (err) {
     if (status) status.textContent = err instanceof Error ? err.message : "Failed";
   }
@@ -638,13 +609,6 @@ export function initSocialUi(cbs: SocialHubCallbacks): void {
     void submitOrganize(e);
   });
 
-  const when = el<HTMLInputElement>("social-org-when");
-  if (when && !when.value) {
-    const d = new Date(Date.now() + 30 * 60_000);
-    d.setSeconds(0, 0);
-    when.value = new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
-  }
-
   onSessionChange((session) => {
     syncPresenceFromSession();
     if (!session) {
@@ -652,22 +616,6 @@ export function initSocialUi(cbs: SocialHubCallbacks): void {
       chatPeer = null;
       stopThread?.();
       stopThread = null;
-    }
-  });
-
-  window.addEventListener("racer-race-invite", (ev) => {
-    const detail = (ev as CustomEvent<ScheduledRace>).detail;
-    if (!detail) return;
-    callbacks?.showToast(`Race now · ${detail.room}`);
-    const banner = el("social-invite-banner");
-    if (banner) {
-      banner.classList.remove("hidden");
-      banner.innerHTML = `<span>Race starting: <strong>${escapeHtml(detail.room)}</strong></span>
-        <button type="button" class="social-mini" id="social-invite-jump">JUMP IN</button>`;
-      el("social-invite-jump")?.addEventListener("click", () => {
-        banner.classList.add("hidden");
-        callbacks?.onJoinInvite({ room: detail.room, password: detail.password });
-      });
     }
   });
 
