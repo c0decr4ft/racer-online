@@ -56,6 +56,7 @@ import { ensureNostrLogin, getCurrentProfile } from "./nostr/ui";
 import { fetchProfile, shortNpub } from "./nostr/profile";
 import { listFriends } from "./social/friends";
 import { sendGameInvites } from "./social/organize";
+import { refreshFriendDisplayNames } from "./social/ui";
 import {
   fetchDevPubkey,
   fetchDevTips,
@@ -1417,24 +1418,39 @@ export class Game {
     const toggle = document.getElementById("mp-send-friends-toggle");
     if (!wrap || !list) return;
     const session = getSession();
-    const friends = session ? listFriends(session.pubkey) : [];
-    if (!friends.length) {
+    if (!session) {
       wrap.classList.add("hidden");
       panel?.classList.add("hidden");
       list.innerHTML = "";
-      if (toggle) toggle.textContent = "SEND TO FRIENDS";
       return;
     }
-    wrap.classList.remove("hidden");
-    const selected = new Set(
-      [...list.querySelectorAll<HTMLInputElement>('input[name="mp-invite-friend"]:checked')].map((i) => i.value),
-    );
-    list.innerHTML = friends
-      .map((f) => {
-        const checked = selected.size ? selected.has(f.pubkey) : false;
-        return `<label class="mp-send-friend"><input type="checkbox" name="mp-invite-friend" value="${f.pubkey}"${checked ? " checked" : ""} /> ${escapeHtml(f.name.toUpperCase())}</label>`;
-      })
-      .join("");
+
+    const render = (friends: ReturnType<typeof listFriends>) => {
+      if (!friends.length) {
+        wrap.classList.add("hidden");
+        panel?.classList.add("hidden");
+        list.innerHTML = "";
+        if (toggle) toggle.textContent = "SEND TO FRIENDS";
+        return;
+      }
+      wrap.classList.remove("hidden");
+      const selected = new Set(
+        [...list.querySelectorAll<HTMLInputElement>('input[name="mp-invite-friend"]:checked')].map((i) => i.value),
+      );
+      list.innerHTML = friends
+        .map((f) => {
+          const checked = selected.size ? selected.has(f.pubkey) : false;
+          const label = (f.name || "FRIEND").toUpperCase();
+          return `<label class="mp-send-friend"><input type="checkbox" name="mp-invite-friend" value="${f.pubkey}"${checked ? " checked" : ""} /> <span class="mp-send-friend-name">${escapeHtml(label)}</span></label>`;
+        })
+        .join("");
+    };
+
+    render(listFriends(session.pubkey));
+    void refreshFriendDisplayNames(session.pubkey).then((friends) => {
+      if (document.getElementById("mp-send-friends-list") !== list) return;
+      render(friends);
+    });
   }
 
   private selectedMpInviteFriends(): string[] {

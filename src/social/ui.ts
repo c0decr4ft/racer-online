@@ -1,7 +1,7 @@
 /**
  * Friends / Find / Requests / Chat social hub UI.
  */
-import { fetchProfile, profileLabel, shortNpub } from "../nostr/profile";
+import { fetchProfile, shortNpub } from "../nostr/profile";
 import { getSession, onSessionChange } from "../nostr/session";
 import { ensureNostrLogin, getCurrentProfile } from "../nostr/ui";
 import { sendHeartbeat, setPresenceIdentity } from "../net/presence";
@@ -10,9 +10,11 @@ import {
   dismissIncomingRequest,
   hasOutgoingRequest,
   isFriend,
+  isWeakFriendName,
   listFriends,
   listIncomingRequests,
   removeFriend,
+  updateFriendName,
   upsertIncomingRequest,
   upsertOutgoingRequest,
   type Friend,
@@ -33,6 +35,7 @@ import {
   onInviteJoin,
   rememberInviteFromDm,
 } from "./organize";
+import { claimNotification, markNotificationSeen } from "./seenNotifs";
 
 export type SocialHubCallbacks = {
   onJoinInvite: (invite: { room: string; password: string; eventMode?: boolean }) => void;
@@ -91,12 +94,22 @@ function notifyFriendMessage(msg: DmMessage): void {
   if (!session || msg.from === session.pubkey.toLowerCase()) return;
   if (!isFriend(session.pubkey, msg.from)) return;
   // Don't spam if you're already looking at that thread
-  if (chatPeer?.pubkey === msg.from && isSocialHubOpen() && activeTab === "chat") return;
+  if (chatPeer?.pubkey === msg.from && isSocialHubOpen() && activeTab === "chat") {
+    markNotificationSeen(session.pubkey, msg.id);
+    return;
+  }
+  if (!shouldToast(session.pubkey, msg)) return;
   const friends = listFriends(session.pubkey);
   const name = friends.find((f) => f.pubkey === msg.from)?.name || shortNpub(msg.from);
   const preview = msg.plaintext.length > 40 ? `${msg.plaintext.slice(0, 40)}…` : msg.plaintext;
-  // Toast always — including mid-race — so friend pings stay visible while driving.
   callbacks?.showToast(`${name}: ${preview}`);
+}
+
+/** First-time toast only; skip backlog older than ~2 minutes and anything already shown. */
+function shouldToast(ownerPubkey: string, msg: DmMessage): boolean {
+  if (!claimNotification(ownerPubkey, msg.id)) return false;
+  if (msg.createdAt < Date.now() - 120_000) return false;
+  return true;
 }
 
 function restartInbox(): void {
@@ -109,26 +122,33 @@ function restartInbox(): void {
       if (msg.friendRequest) {
         const name = friendRequestName(msg.plaintext);
         upsertIncomingRequest(session.pubkey, { pubkey: msg.from, name });
-        if (msg.from !== session.pubkey.toLowerCase()) {
+        if (msg.from !== session.pubkey.toLowerCase() && shouldToast(session.pubkey, msg)) {
           callbacks?.showToast(`Friend request from ${name}`);
-          if (activeTab === "requests") renderRequests();
-          else updateRequestBadge();
+        } else {
+          markNotificationSeen(session.pubkey, msg.id);
         }
+        if (activeTab === "requests") renderRequests();
+        else updateRequestBadge();
         return;
       }
       if (msg.friendAccept) {
         const name = friendRequestName(msg.plaintext);
         addFriend(session.pubkey, { pubkey: msg.from, name });
-        callbacks?.showToast(`${name} accepted your friend request`);
+        void refreshFriendDisplayNames(session.pubkey).then(() => void refreshActiveLists());
+        if (shouldToast(session.pubkey, msg)) {
+          callbacks?.showToast(`${name} accepted your friend request`);
+        }
         void refreshActiveLists();
         return;
       }
       if (msg.invite) {
         rememberInviteFromDm(session.pubkey, msg.invite, msg.from);
-        if (msg.from !== session.pubkey.toLowerCase()) {
+        if (msg.from !== session.pubkey.toLowerCase() && shouldToast(session.pubkey, msg)) {
           const who = msg.invite.fromName || shortNpub(msg.from);
           const room = msg.invite.room || "lobby";
           callbacks?.showToast(`${who} has sent you a ${room} lobby request`);
+        } else {
+          markNotificationSeen(session.pubkey, msg.id);
         }
       }
       if (chatPeer && (msg.from === chatPeer.pubkey || msg.to === chatPeer.pubkey)) {
@@ -140,6 +160,44 @@ function restartInbox(): void {
       notifyFriendMessage(msg);
     },
   });
+}
+
+/** Pull Nostr / directory names so friend chips never stick on "RACER". */
+export async function refreshFriendDisplayNames(ownerPubkey?: string): Promise<Friend[]> {
+  const session = getSession();
+  const owner = ownerPubkey || session?.pubkey || "";
+  if (!owner) return [];
+  const friends = listFriends(owner);
+  if (!friends.length) return friends;
+
+  let directoryByPubkey = new Map<string, string>();
+  try {
+    const dir = await searchPlayers("");
+    directoryByPubkey = new Map(dir.players.map((p) => [p.pubkey, p.name]));
+  } catch {
+    /* ignore */
+  }
+
+  await Promise.all(
+    friends.map(async (f) => {
+      const fromDir = directoryByPubkey.get(f.pubkey);
+      if (fromDir && !isWeakFriendName(fromDir)) {
+        updateFriendName(owner, f.pubkey, fromDir);
+      }
+      try {
+        const profile = await fetchProfile(f.pubkey);
+        const label = profile?.displayName || profile?.name;
+        if (label && !isWeakFriendName(label)) {
+          updateFriendName(owner, f.pubkey, label);
+        } else if (isWeakFriendName(f.name) && fromDir && !isWeakFriendName(fromDir)) {
+          updateFriendName(owner, f.pubkey, fromDir);
+        }
+      } catch {
+        /* ignore */
+      }
+    }),
+  );
+  return listFriends(owner);
 }
 
 function updateRequestBadge(): void {
@@ -514,15 +572,10 @@ export function openSocialHub(): void {
   showSocialView("entry");
   const session = getSession();
   if (session) {
-    for (const f of listFriends(session.pubkey)) {
-      void fetchProfile(f.pubkey).then((p) => {
-        if (!p) return;
-        const label = profileLabel(f.pubkey, p);
-        if (label && label !== f.name) {
-          addFriend(session.pubkey, { pubkey: f.pubkey, name: label });
-        }
-      });
-    }
+    void refreshFriendDisplayNames(session.pubkey).then(() => {
+      if (activeTab === "friends") renderFriends();
+      if (activeTab === "chat") renderChatPeers();
+    });
   }
 }
 
