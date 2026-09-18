@@ -78,6 +78,8 @@ function syncPresenceFromSession(): void {
   const session = getSession();
   if (!session) {
     setPresenceIdentity(null);
+    stopInbox?.();
+    stopInbox = null;
     return;
   }
   const name = myDisplayName();
@@ -85,7 +87,7 @@ function syncPresenceFromSession(): void {
   void sendHeartbeat();
   void registerPlayer(session.pubkey, name);
   armAllSchedules(session.pubkey);
-  restartInbox();
+  // Inbox starts only when Friends hub opens — never on cold boot (decrypt spam).
 }
 
 function notifyFriendMessage(msg: DmMessage): void {
@@ -569,6 +571,7 @@ export function openSocialHub(): void {
   document.getElementById("dev-dash")?.classList.add("hidden");
   hub.classList.remove("hidden");
   syncPresenceFromSession();
+  restartInbox();
   showSocialView("entry");
   const session = getSession();
   if (session) {
@@ -583,6 +586,8 @@ export function closeSocialHub(): void {
   el("social-hub")?.classList.add("hidden");
   stopThread?.();
   stopThread = null;
+  stopInbox?.();
+  stopInbox = null;
   chatPeer = null;
   showSocialView("entry");
 }
