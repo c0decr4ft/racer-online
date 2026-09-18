@@ -29,7 +29,8 @@ if (!mobileBlocked) {
   initFeedbackCompose();
   initNostrUi();
   startPresenceHeartbeat();
-  // Reconnect a persisted Nostr login (NIP-07 pubkey / NIP-46 nbunksec) in the background.
+  // Reconnect a persisted local/NIP-07 login quietly (no extension prompts on boot).
+  // NIP-46 bunkers are NOT auto-restored — that opened auth popup storms.
   void restoreSession().catch(() => undefined);
 
   try {

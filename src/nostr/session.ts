@@ -22,10 +22,13 @@ export type NostrSession = {
 const STORAGE_KEY = "racer-nostr-session-v1";
 
 function signingPermissions(): string[] {
-  // kind 0 (profile) so remote signers also allow publishing the username;
-  // kind 4 = NIP-04 DMs (friends chat / race invites);
-  // kind 30078 = leaderboard scores.
-  return NostrConnectSigner.buildSigningPermissions([0, 4, SCORE_EVENT_KIND]);
+  // kind 0 = profile; kind 13 = NIP-17 seals; kind 30078 = leaderboard scores.
+  // nip44_* so remote signers grant DM crypto once (not per message).
+  return [
+    ...NostrConnectSigner.buildSigningPermissions([0, 13, SCORE_EVENT_KIND]),
+    "nip44_encrypt",
+    "nip44_decrypt",
+  ];
 }
 
 let current: NostrSession | null = null;
@@ -105,13 +108,21 @@ export function createAccount(): { session: NostrSession; nsec: string } {
 
 /** NIP-46 — paste a bunker:// URI from a remote signer. */
 export async function loginWithBunker(uri: string): Promise<NostrSession> {
+  let authOpened = false;
   const signer = await withTimeout(
-    NostrConnectSigner.fromBunkerURI(uri.trim(), { permissions: signingPermissions() }),
+    NostrConnectSigner.fromBunkerURI(uri.trim(), {
+      permissions: signingPermissions(),
+      onAuth: async (url: string) => {
+        if (authOpened) return;
+        authOpened = true;
+        window.open(url, "sats-racer-auth", "width=420,height=640,noopener,noreferrer");
+      },
+    }),
     20_000,
     "Remote signer did not respond — check the bunker URI",
   );
   const pubkey = await withTimeout(signer.getPublicKey(), 10_000, "Remote signer did not respond");
-  persist({ method: "nip46", nbunksec: signer.getNbunksec() });
+  persist({ method: "nip46", nbunksec: signer.getNbunksec(), pubkey });
   const session: NostrSession = { pubkey, method: "nip46", signer };
   setSession(session);
   return session;
@@ -126,7 +137,12 @@ export function startConnectLogin(): {
   wait: Promise<NostrSession>;
   cancel: () => void;
 } {
-  const signer = new NostrConnectSigner({ relays: DEFAULT_RELAYS });
+  const signer = new NostrConnectSigner({
+    relays: DEFAULT_RELAYS,
+    onAuth: async (url: string) => {
+      window.open(url, "sats-racer-auth", "width=420,height=640,noopener,noreferrer");
+    },
+  });
   const uri = signer.getNostrConnectURI({
     name: "Sats Racer",
     url: location.origin,
@@ -135,7 +151,7 @@ export function startConnectLogin(): {
   const wait = (async () => {
     await withTimeout(signer.waitForSigner(), 180_000, "Timed out waiting for the remote signer");
     const pubkey = await withTimeout(signer.getPublicKey(), 10_000, "Remote signer did not respond");
-    persist({ method: "nip46", nbunksec: signer.getNbunksec() });
+    persist({ method: "nip46", nbunksec: signer.getNbunksec(), pubkey });
     const session: NostrSession = { pubkey, method: "nip46", signer };
     setSession(session);
     return session;
@@ -149,22 +165,18 @@ export function startConnectLogin(): {
   };
 }
 
-/** Restore a persisted session on boot. Silently clears broken sessions. */
+/** Restore a persisted session on boot without spamming extension/remote prompts. */
 export async function restoreSession(): Promise<NostrSession | null> {
   if (current) return current;
   const saved = readPersisted();
   if (!saved) return null;
   try {
     if (saved.method === "nip07" && typeof saved.pubkey === "string") {
-      // Extensions inject window.nostr asynchronously — allow a brief grace period.
-      const deadline = Date.now() + 2_000;
-      while (!(window as { nostr?: unknown }).nostr && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
+      // Use the cached pubkey only — never call window.nostr.getPublicKey() on boot.
+      // That Alby/nos2x prompt (often labeled as Bitcoin + Nostr) froze cold loads.
       const signer = new ExtensionSigner();
-      const pubkey = await withTimeout(signer.getPublicKey(), 8_000, "extension unavailable");
-      if (pubkey !== saved.pubkey) throw new Error("extension account changed");
-      const session: NostrSession = { pubkey, method: "nip07", signer };
+      (signer as unknown as { pubkey?: string }).pubkey = saved.pubkey;
+      const session: NostrSession = { pubkey: saved.pubkey, method: "nip07", signer };
       setSession(session);
       return session;
     }
@@ -178,21 +190,45 @@ export async function restoreSession(): Promise<NostrSession | null> {
       return session;
     }
     if (saved.method === "nip46" && typeof saved.nbunksec === "string") {
-      const signer = await withTimeout(
-        NostrConnectSigner.fromNbunksec(saved.nbunksec),
-        10_000,
-        "stored session unreadable",
-      );
-      await withTimeout(signer.open(), 10_000, "relays unreachable");
-      const pubkey = await withTimeout(signer.getPublicKey(), 12_000, "remote signer unreachable");
-      const session: NostrSession = { pubkey, method: "nip46", signer };
-      setSession(session);
-      return session;
+      // Do NOT auto-connect bunkers on boot — fromNbunksec() calls connect() and
+      // may open many auth windows. User reconnects via Sign In when needed.
+      return null;
     }
   } catch {
     clearPersisted();
   }
   return null;
+}
+
+/**
+ * Activate a live remote (NIP-46) session after an explicit user gesture.
+ * Call from Sign In — never from page load.
+ */
+export async function reconnectRemoteSession(): Promise<NostrSession | null> {
+  const saved = readPersisted();
+  if (!saved || saved.method !== "nip46" || typeof saved.nbunksec !== "string") return null;
+  try {
+    let authOpened = false;
+    const signer = await withTimeout(
+      NostrConnectSigner.fromNbunksec(saved.nbunksec, {
+        permissions: signingPermissions(),
+        onAuth: async (url: string) => {
+          if (authOpened) return;
+          authOpened = true;
+          window.open(url, "sats-racer-auth", "width=420,height=640,noopener,noreferrer");
+        },
+      }),
+      15_000,
+      "stored session unreadable",
+    );
+    const pubkey = await withTimeout(signer.getPublicKey(), 12_000, "remote signer unreachable");
+    persist({ method: "nip46", nbunksec: signer.getNbunksec(), pubkey });
+    const session: NostrSession = { pubkey, method: "nip46", signer };
+    setSession(session);
+    return session;
+  } catch {
+    return null;
+  }
 }
 
 export async function logout(): Promise<void> {
