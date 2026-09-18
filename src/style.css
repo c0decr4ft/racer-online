@@ -13,11 +13,15 @@
 }
 
 /* Windows High Contrast / forced-colors often remaps red accents to system blue.
-   Keep brand red + primary buttons explicit. */
+   Keep brand red + primary buttons + countdown explicit. */
 @media (forced-colors: active) {
   .brand span,
+  #brand-accent,
   .eyebrow,
-  .overlay h1 span {
+  .overlay h1 span,
+  .countdown.go,
+  .final-lap-flash,
+  .finish-callout.is-pb {
     forced-color-adjust: none;
     color: #ff3b2e !important;
   }
@@ -502,7 +506,7 @@ body:has(#mute-btn.hidden) .hud-top {
   top: 46%;
   left: 50%;
   transform: translate(-50%, -50%);
-  font-family: var(--font-display);
+  font-family: var(--font-display), "Arial Black", Impact, sans-serif;
   font-weight: 900;
   font-size: clamp(4.5rem, 18vw, 9rem);
   letter-spacing: 0.08em;
@@ -513,12 +517,17 @@ body:has(#mute-btn.hidden) .hud-top {
   pointer-events: none;
   z-index: 7;
   animation: countdown-pulse 1s ease-out both;
+  white-space: nowrap;
+  /* Avoid font/translate wrapping that made "GO" look half-cut on some locales. */
+  overflow: visible;
 }
 
 .countdown.go {
   color: var(--accent);
-  letter-spacing: 0.18em;
+  letter-spacing: 0.06em;
   font-size: clamp(3.2rem, 14vw, 7rem);
+  min-width: 3.2em;
+  text-align: center;
   text-shadow:
     0 0 36px var(--glow),
     0 4px 0 rgba(0, 0, 0, 0.4);
