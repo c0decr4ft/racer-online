@@ -57,7 +57,7 @@ const MID: PerfSettings = {
   maxNightLamps: 8,
   headlightBeams: true,
   engineSmoke: true,
-  wildlifeHalfRate: false,
+  wildlifeHalfRate: true,
   cameraFar: 560,
   maxPixelRatio: 1,
 };

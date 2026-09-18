@@ -157,8 +157,8 @@ export class Vehicle {
       p.descend = input.descend;
       p.lookDown = input.lookDown;
       this.animalHitPenalty = Math.max(0, this.animalHitPenalty - dt);
-      p.throttle = input.throttle * 0.12;
-      p.brake = Math.max(input.brake, 0.18);
+      p.throttle = input.throttle * 0.4;
+      p.brake = Math.max(input.brake, 0.06);
       p.handbrake = 0;
       physicsInput = p;
     }
