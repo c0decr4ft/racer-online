@@ -35,6 +35,8 @@ export class GameAudio {
   private muted = true;
   /** User speaker mute — silences everything. */
   private userMuted = false;
+  /** 0–1 master volume from Settings (mute still zeros output). */
+  private volumeScale = 1;
 
   private menuBuffer: AudioBuffer | null = null;
   private explodeBuffer: AudioBuffer | null = null;
@@ -81,6 +83,17 @@ export class GameAudio {
     this.applyUserMuteGain();
   }
 
+  /** Settings → Sound (0–1). Stacks under the mute button. */
+  setMasterVolume(scale: number): void {
+    this.volumeScale = Math.max(0, Math.min(1, Number.isFinite(scale) ? scale : 1));
+    this.applyUserMuteGain();
+    if (!this.muted && this.master && this.ctx) {
+      const now = this.ctx.currentTime;
+      this.master.gain.cancelScheduledValues(now);
+      this.master.gain.setValueAtTime(SFX_MASTER_VOL * this.volumeScale, now);
+    }
+  }
+
   toggleUserMute(): boolean {
     this.setUserMuted(!this.userMuted);
     return this.userMuted;
@@ -113,7 +126,7 @@ export class GameAudio {
     if (!this.unlocked || !this.master || !this.ctx) return;
     const now = this.ctx.currentTime;
     this.master.gain.cancelScheduledValues(now);
-    this.master.gain.setValueAtTime(SFX_MASTER_VOL, now);
+    this.master.gain.setValueAtTime(SFX_MASTER_VOL * this.volumeScale, now);
   }
 
   /** Looping homepage / BOARD music. */
@@ -479,7 +492,7 @@ export class GameAudio {
     if (!this.output || !this.ctx) return;
     const now = this.ctx.currentTime;
     this.output.gain.cancelScheduledValues(now);
-    this.output.gain.setValueAtTime(this.userMuted ? 0 : 1, now);
+    this.output.gain.setValueAtTime(this.userMuted ? 0 : this.volumeScale, now);
   }
 
   private async setMusic(mode: MusicMode): Promise<void> {

@@ -96,11 +96,19 @@ import { WildlifeHerd } from "./wildlife";
 import {
   bindWebglContextRecovery,
   createGameRenderer,
-  probeBootPerfTier,
   settingsForTier,
   type PerfSettings,
   type PerfTier,
 } from "./perfQuality";
+import {
+  effectsFlashIntensity,
+  effectsParticleCount,
+  graphicsToTier,
+  loadSettings,
+  soundGain,
+  type GameSettings,
+  type QualityLevel,
+} from "./settings";
 
 function formatTime(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "--:--.---";
@@ -144,12 +152,6 @@ const GOD_MODE_AI_POWER = 1.5;
 /** Dev-only GOD MODE on City Circuit (`oval-circuit`): shared player+AI speed/accel scale. */
 const CITY_TRACK_ID = "oval-circuit";
 const GOD_MODE_CITY_SPEED = 1.3;
-/** Dev extras: a crushed/shot AI car sits out this long, then reappears. */
-const RIVAL_DISABLE_MS = 10_000;
-/** Tank cannon — shell speed (m/s), max flight time, refire delay. */
-const SHELL_SPEED = 95;
-const SHELL_LIFE_S = 1.4;
-const SHELL_COOLDOWN_MS = 220;
 
 /**
  * Skill tiers + fixed racing-line offsets (same every race). Player is slot 0.
@@ -206,16 +208,15 @@ export class Game {
   private wantRearview = false;
   /** One-shot shadow rebuild after home/track transitions (menu orbit is static-lit). */
   private shadowNeedsWarmup = true;
-  /** Frame-time EMA (ms) — used to drop non-essential HUD/FX work under load. */
+  /** Frame-time EMA (ms) — kept for diagnostics; quality is Settings-only. */
   private fpsEmaMs = 16.7;
-  private lowFpsSince = 0;
-  private highFpsSince = 0;
   /** Sustained slow frames → skip minimap / rain particles (never skip shadow maps). */
   private perfThrottle = false;
-  /** Boot-detected GPU floor — FPS can only push quality down from here. */
-  private bootTier: PerfTier = "high";
+  /** Manual Settings → Graphics (never auto-detected). */
   private qualityTier: PerfTier = "high";
   private perf: PerfSettings = settingsForTier("high");
+  /** Manual Settings → Effects (explosions / smoke). */
+  private effectsLevel: QualityLevel = "high";
   private sunLight: THREE.DirectionalLight | null = null;
   /** Reused coasting input when finished/wrecked online — avoid per-frame object alloc. */
   private readonly _coastInput: InputState = {
@@ -468,17 +469,6 @@ export class Game {
     life: number;
   }[] = [];
   private explodeFlashLight: THREE.PointLight | null = null;
-  /** Live tank shells (dev tank only, offline). */
-  private shells: { mesh: THREE.Mesh; dir: THREE.Vector3; life: number }[] = [];
-  private shellCooldownUntil = 0;
-  private readonly _shellGeo = new THREE.SphereGeometry(0.16, 10, 8);
-  private readonly _shellMat = new THREE.MeshStandardMaterial({
-    color: 0x1a1d22,
-    roughness: 0.4,
-    metalness: 0.8,
-    emissive: 0xff5a2e,
-    emissiveIntensity: 0.9,
-  });
 
   /** Per-track wildlife herd — null only if a track has no animal spec. */
   private wildlife: WildlifeHerd | null = null;
@@ -517,9 +507,12 @@ export class Game {
   private viewport = viewportSize();
 
   constructor(canvas: HTMLCanvasElement) {
-    this.bootTier = probeBootPerfTier();
-    this.qualityTier = this.bootTier;
+    const saved = loadSettings();
+    this.qualityTier = graphicsToTier(saved.graphics);
+    this.effectsLevel = saved.effects;
     this.perf = settingsForTier(this.qualityTier);
+    this.perfThrottle = this.qualityTier !== "high";
+    this.audio.setMasterVolume(soundGain(saved.sound));
 
     // Cap DPR for stable FPS on retina / weak GPUs. Prefer high-performance GL,
     // then fall back so dual-GPU laptops / flaky drivers don't leave a blue clear.
@@ -824,9 +817,6 @@ export class Game {
     document.getElementById("garage-save-btn")!.onclick = () => this.closeGarage(true);
     document.getElementById("garage-kind-car")!.onclick = () => this.setGarageKind("car");
     document.getElementById("garage-kind-bike")!.onclick = () => this.setGarageKind("bike");
-    document.getElementById("garage-kind-truck")!.onclick = () => this.setGarageKind("truck");
-    document.getElementById("garage-kind-tank")!.onclick = () => this.setGarageKind("tank");
-    document.getElementById("garage-kind-f1")!.onclick = () => this.setGarageKind("f1");
     document.getElementById("garage-kind-bird")!.onclick = () => this.setGarageKind("bird");
     this.el.garagePrimary.addEventListener("input", () => {
       this.setGarageChannel("primary", parseHexColor(this.el.garagePrimary.value, this.garage.primary));
@@ -999,7 +989,7 @@ export class Game {
     this.syncGarageUi();
     this.el.garage.classList.remove("hidden");
     this.syncMuteBtn();
-    // Reveal monster truck / tank buttons for the dev profile only.
+    // Reveal bird button for the dev profile only.
     void this.devAccessAllowed().then((allowed) => this.syncGarageDevKinds(allowed));
   }
 
@@ -1028,9 +1018,6 @@ export class Game {
   private syncGarageUi() {
     document.getElementById("garage-kind-car")?.classList.toggle("is-active", this.garage.kind === "car");
     document.getElementById("garage-kind-bike")?.classList.toggle("is-active", this.garage.kind === "bike");
-    document.getElementById("garage-kind-truck")?.classList.toggle("is-active", this.garage.kind === "truck");
-    document.getElementById("garage-kind-tank")?.classList.toggle("is-active", this.garage.kind === "tank");
-    document.getElementById("garage-kind-f1")?.classList.toggle("is-active", this.garage.kind === "f1");
     document.getElementById("garage-kind-bird")?.classList.toggle("is-active", this.garage.kind === "bird");
     this.el.garagePrimary.value = hexColor(this.garage.primary);
     this.el.garageAccent.value = hexColor(this.garage.accent);
@@ -1040,9 +1027,6 @@ export class Game {
       const hints: Record<VehicleKind, string> = {
         car: "Car selected — same speed as bikes, AI rivals become cars",
         bike: "Bike selected — same speed as cars, AI rivals become bikes",
-        truck: "Monster truck selected — AI rivals stay in cars",
-        tank: "Tank selected — AI rivals stay in cars",
-        f1: "F1 selected — open-wheel, AI rivals stay in cars",
         bird: "Bird mode — WASD · Space up · C down · V look down · Shift boost",
       };
       hint.textContent = hints[this.garage.kind];
@@ -1182,7 +1166,7 @@ export class Game {
     this.el.garage.classList.add("hidden");
     document.getElementById("dev-dash")?.classList.add("hidden");
     this.garage = loadGarage();
-    // Rooms are car/bike only — dev garage extras (truck/tank) fall back to car.
+    // Rooms are car/bike only — bird falls back to car for multiplayer create.
     this.mpCreateKind = this.garage.kind === "bike" ? "bike" : "car";
     this.mpCreateWeather = "dry";
     this.mpCreateTrackId = DEFAULT_TRACK_ID;
@@ -2206,7 +2190,6 @@ export class Game {
     this.clearCountdown();
     this.clearExplode(true);
     this.clearOnlineWreck();
-    this.clearShells();
     this.hideAnimalHit();
     this.resetWallHits();
     this.resetMapVote();
@@ -2309,13 +2292,10 @@ export class Game {
   }
 
   /**
-   * Monster truck / tank / f1 / bird are dev-profile-only. Hides their garage buttons and
-   * falls back to CAR if a non-dev session somehow has one stored.
+   * Bird is dev-profile-only. Hides its garage button and falls back to CAR
+   * if a non-dev session somehow has it stored.
    */
   private syncGarageDevKinds(allowed: boolean) {
-    document.getElementById("garage-kind-truck")?.classList.toggle("hidden", !allowed);
-    document.getElementById("garage-kind-tank")?.classList.toggle("hidden", !allowed);
-    document.getElementById("garage-kind-f1")?.classList.toggle("hidden", !allowed);
     document.getElementById("garage-kind-bird")?.classList.toggle("hidden", !allowed);
     if (!allowed && isDevGarageKind(this.garage.kind)) {
       this.garage.kind = "car";
@@ -3082,6 +3062,16 @@ export class Game {
   }
 
   /**
+   * Apply Settings panel choices. Graphics map to render tiers; effects control
+   * explosions/smoke; sound scales the master bus. Never auto-overrides these.
+   */
+  applyGameSettings(settings: GameSettings) {
+    this.effectsLevel = settings.effects;
+    this.audio.setMasterVolume(soundGain(settings.sound));
+    this.applyPerfSettings(graphicsToTier(settings.graphics), { force: true });
+  }
+
+  /**
    * Apply internal GPU dials — shadow map size/filter, night light budget, draw distance.
    * Does not change gameplay or palette; only work the GPU does per frame.
    */
@@ -3089,7 +3079,7 @@ export class Game {
     if (!opts?.force && tier === this.qualityTier) return;
     this.qualityTier = tier;
     this.perf = settingsForTier(tier);
-    this.perfThrottle = tier !== "high";
+    this.perfThrottle = tier !== "high" || this.effectsLevel === "low";
 
     this.renderer.shadowMap.enabled = this.perf.shadows;
     this.renderer.shadowMap.type = this.perf.softShadows
@@ -3127,7 +3117,7 @@ export class Game {
       headlightBeams: this.perf.headlightBeams,
     });
 
-    if (!this.perf.engineSmoke) this.clearEngineSmoke();
+    if (!this.perf.engineSmoke || this.effectsLevel === "low") this.clearEngineSmoke();
     this.shadowNeedsWarmup = true;
   }
 
@@ -3249,7 +3239,6 @@ export class Game {
     this.disposeVehicleMesh(this.player);
     for (const r of this.rivals) this.disposeVehicleMesh(r.vehicle);
     // Shells in flight referenced the old rival objects — drop them
-    this.clearShells();
 
     const playerMesh = createVehicle(kind, this.garage.primary, 7, this.garage.accent, {
       headlights: true,
@@ -3260,7 +3249,7 @@ export class Game {
     this.rivals = CAR_PALETTE.rivals.map((color, i) => {
       const slot = GRID[i + 1] ?? GRID[GRID.length - 1];
       const accent = CAR_PALETTE.rivalAccents[i] ?? 0xf0f4f8;
-      // AI matches the player's class — except dev extras (truck/tank/bird) use car rivals.
+      // AI matches the player's class — bird uses car rivals.
       const rivalKind: VehicleKind = isDevGarageKind(kind) ? "car" : kind;
       // No SpotLight beams on AI — keeps MeshStandard fragment cost low
       const mesh = createVehicle(rivalKind, color, 11 + i * 3, accent);
@@ -3306,7 +3295,7 @@ export class Game {
       widthScale: battleWide ? BATTLE_TRACK_WIDTH_SCALE : this.tutorial ? 1.2 : 1,
     });
     if (!this.online) this.applyGarageToWorld();
-    // Tutorial always uses a normal car — not bird / truck / tank.
+    // Tutorial always uses a normal car — not bird.
     if (this.tutorial && isDevGarageKind(this.garage.kind)) {
       this.garage = { ...this.garage, kind: "car" };
       this.applyGarageToWorld();
@@ -3349,7 +3338,6 @@ export class Game {
     this.input.clearDriveKeys();
     this.clearExplode(true);
     this.clearOnlineWreck();
-    this.clearShells();
     this.resetWallHits();
     // Online: host-chosen weather only. Solo/practice: random pick.
     // Never call pickWeather() while online — that used to overwrite the room choice.
@@ -3604,44 +3592,9 @@ export class Game {
     return performance.now() - this.pauseTotal - extra;
   }
 
-  /** FPS scaler: sustained hitch → drop a quality tier; sustained smooth → climb toward boot floor. */
-  private updatePerfThrottle(now: number) {
-    if (!this.running || this.paused || this.finished) {
-      this.lowFpsSince = 0;
-      this.highFpsSince = 0;
-      // Leave quality where it is — menu already uses a lighter path.
-      return;
-    }
-
-    // Drop quickly when frames are bad (old Linux iGPUs often start already mid/low).
-    if (this.fpsEmaMs > 24) {
-      this.highFpsSince = 0;
-      if (!this.lowFpsSince) this.lowFpsSince = now;
-      if (now - this.lowFpsSince > 900) {
-        this.lowFpsSince = now;
-        if (this.qualityTier === "high") this.applyPerfSettings("mid");
-        else if (this.qualityTier === "mid") this.applyPerfSettings("low");
-      }
-      return;
-    }
-    this.lowFpsSince = 0;
-
-    // Climb back only toward the boot-detected floor (never above what the GPU claimed).
-    if (this.fpsEmaMs < 17 && this.qualityTier !== this.bootTier) {
-      if (!this.highFpsSince) this.highFpsSince = now;
-      if (now - this.highFpsSince > 5000) {
-        this.highFpsSince = now;
-        let next: PerfTier = this.qualityTier;
-        if (this.qualityTier === "low") {
-          next = this.bootTier === "low" ? "low" : "mid";
-        } else if (this.qualityTier === "mid") {
-          next = this.bootTier;
-        }
-        if (next !== this.qualityTier) this.applyPerfSettings(next);
-      }
-    } else {
-      this.highFpsSince = 0;
-    }
+  /** FPS scaler disabled — quality comes only from Settings. */
+  private updatePerfThrottle(_now: number) {
+    /* no-op: Settings owns graphics tier */
   }
 
   private onResize() {
@@ -3770,7 +3723,6 @@ export class Game {
           // After mesh pose is final so the burn stays glued to the wreck.
           this.localWreckFire?.update(dt);
           this.tickDriveAudio(input.throttle);
-          if (input.fire) this.tryFireTankShell();
           const isBird = this.player.mesh.userData.kind === "bird";
           if (this.onlineWrecked) {
             this.player.syncCollision();
@@ -3788,15 +3740,9 @@ export class Game {
             const playerT = this.stickyT.get(this.player) ?? this.projectSticky(this.player, this.player.state.position).t;
             const cars = this.fillPack();
             for (const r of this.rivals) {
-              // Crushed/shot rivals sit out their 10s, then reappear
-              if (r.disabledUntil > 0) {
-                if (now >= r.disabledUntil) this.respawnRival(r);
-                continue;
-              }
               r.update(dt, this.track.path, playerT, now * 0.001, cars);
               this.keepOnTrack(r.vehicle);
             }
-            this.updateShells(dt);
             // Race mode: AI that complete TOTAL_LAPS finish ahead; practice never ends for them
             if (!this.practice) {
               for (const r of this.rivals) {
@@ -4150,9 +4096,6 @@ export class Game {
   /** Local point on the vehicle where engine smoke leaks (hood / motor / stacks). */
   private engineSmokeOrigin(kind: string): { x: number; y: number; z: number } {
     if (kind === "bike") return { x: 0, y: 0.72, z: 0.04 };
-    if (kind === "truck") return { x: 0, y: 2.12, z: 1.18 };
-    if (kind === "tank") return { x: 0, y: 1.28, z: -1.15 };
-    if (kind === "f1") return { x: 0, y: 0.95, z: -0.35 };
     return { x: 0, y: 0.9, z: 1.12 };
   }
 
@@ -4267,7 +4210,7 @@ export class Game {
   }
 
   private tickEngineSmoke(dt: number) {
-    if (!this.perf.engineSmoke) {
+    if (!this.perf.engineSmoke || this.effectsLevel === "low") {
       if (this.engineSmoke) this.engineSmoke.visible = false;
       return;
     }
@@ -4460,7 +4403,7 @@ export class Game {
     this.clearExplodeParticles();
     const origin = this.player.state.position;
     const colors = [0xff6a2e, 0xffc857, 0xff3b2e, 0xffeeaa, 0x888888];
-    const count = this.perfThrottle ? 12 : 24;
+    const count = effectsParticleCount(this.effectsLevel);
     for (let i = 0; i < count; i++) {
       const mat = new THREE.MeshBasicMaterial({
         color: colors[i % colors.length]!,
@@ -4485,8 +4428,8 @@ export class Game {
     }
     if (this.explodeFlashLight) {
       this.explodeFlashLight.position.set(origin.x, 2.2, origin.z);
-      this.explodeFlashLight.intensity = this.perfThrottle ? 4 : 8;
-      this.explodeFlashLight.visible = true;
+      this.explodeFlashLight.intensity = effectsFlashIntensity(this.effectsLevel);
+      this.explodeFlashLight.visible = this.effectsLevel !== "low";
     }
   }
 
@@ -4538,105 +4481,6 @@ export class Game {
     }
   }
 
-  /** Truck crush / tank hit — rival explodes and sits out RIVAL_DISABLE_MS. */
-  private crushRival(r: RivalAI, toast: string) {
-    if (r.disabledUntil > 0) return;
-    r.disabledUntil = performance.now() + RIVAL_DISABLE_MS;
-    r.vehicle.state.speed = 0;
-    r.vehicle.mesh.visible = false;
-    this.spawnRivalExplodeFx(r.vehicle.state.position);
-    this.audio.playExplode();
-    this.showToast(toast);
-  }
-
-  /** Back on its racing line where it was taken out (laps kept — the 10s
-   *  timeout is the penalty). */
-  private respawnRival(r: RivalAI) {
-    const t = this.projectSticky(r.vehicle, r.vehicle.state.position).t;
-    const { pos, heading } = this.spawnPose(t, r.racingOffset);
-    r.vehicle.reset(pos, heading);
-    r.respawn();
-    this.resetSticky(r.vehicle);
-    r.vehicle.mesh.visible = true;
-  }
-
-  /** Smaller burst for crushed/shot AI cars — particles only, no flash light. */
-  private spawnRivalExplodeFx(origin: THREE.Vector3) {
-    const colors = [0xff6a2e, 0xffc857, 0xff3b2e, 0xffeeaa, 0x888888];
-    const count = this.perfThrottle ? 8 : 14;
-    for (let i = 0; i < count; i++) {
-      const mat = new THREE.MeshBasicMaterial({
-        color: colors[i % colors.length]!,
-        transparent: true,
-        opacity: 1,
-        depthWrite: false,
-      });
-      const mesh = new THREE.Mesh(this._explodeGeo, mat);
-      mesh.position.set(
-        origin.x + (Math.random() - 0.5) * 1.2,
-        0.6 + Math.random() * 0.8,
-        origin.z + (Math.random() - 0.5) * 1.2,
-      );
-      const speed = 7 + Math.random() * 12;
-      const vel = new THREE.Vector3(
-        (Math.random() - 0.5) * speed,
-        4 + Math.random() * 9,
-        (Math.random() - 0.5) * speed,
-      );
-      this.scene.add(mesh);
-      this.explodeParts.push({ mesh, vel, life: 0.5 + Math.random() * 0.5 });
-    }
-  }
-
-  /** Dev tank cannon — F / gamepad X. Offline only (tank never races online). */
-  private tryFireTankShell() {
-    if (this.online || this.finished || this.gridHeld || this.countingDown) return;
-    if (this.player.mesh.userData.kind !== "tank") return;
-    const now = performance.now();
-    if (now < this.shellCooldownUntil) return;
-    this.shellCooldownUntil = now + SHELL_COOLDOWN_MS;
-    const h = this.player.state.heading;
-    const dir = new THREE.Vector3(Math.sin(h), 0, Math.cos(h));
-    const p = this.player.state.position;
-    const mesh = new THREE.Mesh(this._shellGeo, this._shellMat);
-    // Barrel tip ≈ 3.4 ahead of hull center at turret height
-    mesh.position.set(p.x + dir.x * 3.4, 1.3, p.z + dir.z * 3.4);
-    this.scene.add(mesh);
-    this.shells.push({ mesh, dir, life: SHELL_LIFE_S });
-    this.audio.playBoom();
-  }
-
-  private updateShells(dt: number) {
-    for (let i = this.shells.length - 1; i >= 0; i--) {
-      const s = this.shells[i]!;
-      s.life -= dt;
-      s.mesh.position.addScaledVector(s.dir, SHELL_SPEED * dt);
-      let dead = s.life <= 0;
-      if (!dead) {
-        for (const r of this.rivals) {
-          if (r.disabledUntil > 0) continue;
-          const dx = r.vehicle.state.position.x - s.mesh.position.x;
-          const dz = r.vehicle.state.position.z - s.mesh.position.z;
-          if (Math.hypot(dx, dz) < this.vehicleRadius(r.vehicle) + 0.4) {
-            this.crushRival(r, "DIRECT HIT!");
-            dead = true;
-            break;
-          }
-        }
-      }
-      if (dead) {
-        this.scene.remove(s.mesh);
-        this.shells.splice(i, 1);
-      }
-    }
-  }
-
-  private clearShells() {
-    for (const s of this.shells) this.scene.remove(s.mesh);
-    this.shells.length = 0;
-    this.shellCooldownUntil = 0;
-  }
-
   /** 0.42 → 1.0 power in the first seconds after GO — cars work through the gears. */
   private launchPower() {
     if (this.raceStart <= 0) return LAUNCH_MIN_POWER;
@@ -4672,27 +4516,9 @@ export class Game {
     const all = this.fillPack();
     for (let i = 0; i < all.length; i++) {
       for (let j = i + 1; j < all.length; j++) {
-        if (this.tryTruckCrush(all[i]!, all[j]!)) continue;
         this.bumpVehicles(all[i]!, all[j]!);
       }
     }
-  }
-
-  /** Monster truck drives OVER cars — a moving truck crushes rivals on contact. */
-  private tryTruckCrush(a: Vehicle, b: Vehicle): boolean {
-    if (this.player.mesh.userData.kind !== "truck") return false;
-    if (a !== this.player && b !== this.player) return false;
-    const other = a === this.player ? b : a;
-    const dx = other.state.position.x - this.player.state.position.x;
-    const dz = other.state.position.z - this.player.state.position.z;
-    const dist = Math.hypot(dx, dz);
-    if (dist >= this.vehicleRadius(this.player) + this.vehicleRadius(other)) return false;
-    // A parked truck just bumps — crushing needs some speed
-    if (Math.abs(this.player.state.speed) < 4) return false;
-    const rival = this.rivals.find((r) => r.vehicle === other);
-    if (!rival) return false;
-    this.crushRival(rival, "CRUSHED!");
-    return true; // no bump — the truck rolls straight through
   }
 
   private resolveRemoteCollisions() {

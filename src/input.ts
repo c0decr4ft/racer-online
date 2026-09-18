@@ -59,7 +59,7 @@ export type InputState = {
   gear: Gear | null;
   /** Sequential shift request: +1 = up, -1 = down. Consumed once per frame. */
   shiftDelta: -1 | 0 | 1;
-  /** One-shot fire (dev tank cannon). Consumed once per frame. */
+  /** One-shot fire (unused — reserved). Consumed once per frame. */
   fire: boolean;
   /** Space / pad A — sports jump, or bird ascend. */
   jump: boolean;
@@ -205,7 +205,7 @@ export class Input {
     if (edge(4)) this.shiftPress = -1; // LB
     if (edge(9)) this.pausePressed = true; // Start
     if (edge(3)) this.resetPressed = true; // Y / Triangle
-    if (edge(2)) this.firePress = true; // X / Square — tank cannon
+    if (edge(2)) this.firePress = true; // X / Square
 
     // Positive steer = LEFT (A key). Left stick: left is -x, so flip the sign.
     const ax = pad.axes[0] ?? 0;
