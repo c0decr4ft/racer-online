@@ -2727,7 +2727,7 @@ input:focus-visible,
 }
 
 .social-panel {
-  width: min(100%, 24rem);
+  width: min(100%, 26rem);
   max-width: 100%;
   max-height: min(88vh, 42rem);
   overflow: auto;
@@ -3912,7 +3912,7 @@ button.btn-ghost.social-mini {
   #multiplayer .multiplayer-panel h1,
   #social-hub .social-panel h1,
   #finish .finish-panel h1 {
-    font-size: clamp(1.65rem, 7vw, 2.4rem);
+    font-size: clamp(1.4rem, 5.5vw, 2.1rem);
     margin-bottom: 0.25rem;
   }
 
@@ -4264,21 +4264,22 @@ button.btn-ghost.social-mini {
   flex-shrink: 0;
 }
 
-/* Dense panels — big display titles like home, but wrap so edges never clip */
+/* Dense panels — big display titles; never split a word mid-letter */
 #multiplayer .multiplayer-panel h1,
 #social-hub .social-panel h1,
 #finish .finish-panel h1 {
-  font-size: clamp(2rem, 8.5vw, 3.45rem);
-  line-height: 0.92;
-  letter-spacing: 0.03em;
+  font-size: clamp(1.55rem, 6.2vw, 2.65rem);
+  line-height: 0.95;
+  letter-spacing: 0.04em;
   margin-bottom: 0.45rem;
   max-width: 100%;
-  padding: 0 0.2rem;
+  padding: 0 0.35rem;
   box-sizing: border-box;
-  overflow-wrap: anywhere;
-  word-break: break-word;
   text-align: center;
   overflow: visible;
+  overflow-wrap: normal;
+  word-break: normal;
+  hyphens: none;
 }
 
 .overlay h1 span {
