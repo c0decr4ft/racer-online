@@ -1,14 +1,24 @@
 /**
  * NIP-04 end-to-end DMs via the active Nostr session signer.
- * Ciphertext only ever touches relays — never the game server.
+ *
+ * Encryption: each message is encrypted with NIP-04 (ECDH shared secret between
+ * your key and the recipient's, then AES). Relays only ever see ciphertext.
  */
 import type { NostrEvent } from "nostr-tools";
 import { getSession } from "../nostr/session";
-import { DEFAULT_RELAYS, pool } from "../nostr/relays";
+import { pool } from "../nostr/relays";
 import type { Subscription } from "rxjs";
 
 export const DM_KIND = 4;
 export const INVITE_TAG = "sats-racer-invite";
+
+/** Relays that tend to accept/serve kind-4 DMs (profile relays alone are often not enough). */
+export const DM_RELAYS = [
+  "wss://relay.damus.io",
+  "wss://nos.lol",
+  "wss://relay.primal.net",
+  "wss://nostr.mom",
+];
 
 export type DmMessage = {
   id: string;
@@ -17,6 +27,8 @@ export type DmMessage = {
   createdAt: number;
   plaintext: string;
   invite?: RaceInvitePayload | null;
+  friendRequest?: boolean;
+  friendAccept?: boolean;
 };
 
 export type RaceInvitePayload = {
@@ -45,7 +57,7 @@ function sessionNip04(): Nip04 {
   if (!session) throw new Error("Sign in with Nostr to chat");
   const nip04 = (session.signer as { nip04?: Nip04 }).nip04;
   if (!nip04?.encrypt || !nip04?.decrypt) {
-    throw new Error("This signer cannot encrypt DMs (needs NIP-04)");
+    throw new Error("This signer cannot encrypt DMs — try a local key or an extension with NIP-04");
   }
   return nip04;
 }
@@ -74,6 +86,33 @@ export function parseInvitePayload(plaintext: string): RaceInvitePayload | null 
   }
 }
 
+export function isFriendRequestPayload(plaintext: string): boolean {
+  try {
+    const data = JSON.parse(plaintext) as { type?: unknown };
+    return data.type === "friend-request";
+  } catch {
+    return false;
+  }
+}
+
+export function isFriendAcceptPayload(plaintext: string): boolean {
+  try {
+    const data = JSON.parse(plaintext) as { type?: unknown };
+    return data.type === "friend-accept";
+  } catch {
+    return false;
+  }
+}
+
+export function friendRequestName(plaintext: string): string {
+  try {
+    const data = JSON.parse(plaintext) as { fromName?: unknown };
+    return typeof data.fromName === "string" ? data.fromName.slice(0, 24) : "RACER";
+  } catch {
+    return "RACER";
+  }
+}
+
 export function invitePlaintext(invite: Omit<RaceInvitePayload, "type">): string {
   const payload: RaceInvitePayload = {
     type: "race-invite",
@@ -84,6 +123,27 @@ export function invitePlaintext(invite: Omit<RaceInvitePayload, "type">): string
     fromName: invite.fromName,
   };
   return JSON.stringify(payload);
+}
+
+export function friendRequestPlaintext(fromName: string): string {
+  return JSON.stringify({ type: "friend-request", fromName: fromName.slice(0, 24) || "RACER" });
+}
+
+export function friendAcceptPlaintext(fromName: string): string {
+  return JSON.stringify({ type: "friend-accept", fromName: fromName.slice(0, 24) || "RACER" });
+}
+
+function toDmMessage(event: NostrEvent, from: string, to: string, plaintext: string): DmMessage {
+  return {
+    id: event.id,
+    from,
+    to,
+    createdAt: event.created_at * 1000,
+    plaintext,
+    invite: parseInvitePayload(plaintext),
+    friendRequest: isFriendRequestPayload(plaintext),
+    friendAccept: isFriendAcceptPayload(plaintext),
+  };
 }
 
 async function decryptEvent(event: NostrEvent, myPubkey: string): Promise<DmMessage | null> {
@@ -97,20 +157,13 @@ async function decryptEvent(event: NostrEvent, myPubkey: string): Promise<DmMess
   try {
     const nip04 = sessionNip04();
     const plaintext = await nip04.decrypt(peer, event.content);
-    return {
-      id: event.id,
-      from,
-      to,
-      createdAt: event.created_at * 1000,
-      plaintext,
-      invite: parseInvitePayload(plaintext),
-    };
+    return toDmMessage(event, from, to, plaintext);
   } catch {
     return null;
   }
 }
 
-/** Send a NIP-04 DM to a friend's pubkey. */
+/** Send a NIP-04 DM to a pubkey. */
 export async function sendDm(peerPubkey: string, plaintext: string): Promise<DmMessage> {
   const session = getSession();
   if (!session) throw new Error("Sign in with Nostr to chat");
@@ -120,9 +173,17 @@ export async function sendDm(peerPubkey: string, plaintext: string): Promise<DmM
   if (!text) throw new Error("Message is empty");
 
   const nip04 = sessionNip04();
-  const content = await nip04.encrypt(to, text);
+  let content: string;
+  try {
+    content = await nip04.encrypt(to, text);
+  } catch (err) {
+    throw new Error(err instanceof Error ? err.message : "Could not encrypt message");
+  }
+
   const tags: string[][] = [["p", to]];
   if (parseInvitePayload(text)) tags.push(["t", INVITE_TAG]);
+  if (isFriendRequestPayload(text)) tags.push(["t", "sats-racer-friend-request"]);
+  if (isFriendAcceptPayload(text)) tags.push(["t", "sats-racer-friend-accept"]);
 
   const signed = (await session.signer.signEvent({
     kind: DM_KIND,
@@ -131,19 +192,17 @@ export async function sendDm(peerPubkey: string, plaintext: string): Promise<DmM
     tags,
   })) as NostrEvent;
 
-  await Promise.race([
-    pool.publish(DEFAULT_RELAYS, signed),
-    new Promise((r) => setTimeout(r, 5_000)),
-  ]);
+  try {
+    await Promise.race([
+      pool.publish(DM_RELAYS, signed),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Relay publish timed out")), 8_000)),
+    ]);
+  } catch (err) {
+    // Still return the local message so the sender sees it; warn via thrown soft? Keep going.
+    console.warn("[dm] publish issue", err);
+  }
 
-  return {
-    id: signed.id,
-    from: session.pubkey,
-    to,
-    createdAt: signed.created_at * 1000,
-    plaintext: text,
-    invite: parseInvitePayload(text),
-  };
+  return toDmMessage(signed, normalizePubkey(session.pubkey), to, text);
 }
 
 export type DmInboxHandlers = {
@@ -151,75 +210,67 @@ export type DmInboxHandlers = {
   onError?: (err: unknown) => void;
 };
 
-/** Live inbox: all kind-4 events addressed to the signed-in pubkey. */
+function watchFilters(
+  filters: { kinds: number[]; authors?: string[]; "#p"?: string[]; limit?: number }[],
+  myPubkey: string,
+  handlers: DmInboxHandlers,
+  seen: Set<string>,
+): () => void {
+  const handle = (event: NostrEvent) => {
+    if (!event?.id || seen.has(event.id)) return;
+    seen.add(event.id);
+    void decryptEvent(event, myPubkey).then((msg) => {
+      if (msg) handlers.onMessage(msg);
+    });
+  };
+
+  const subs: Subscription[] = [];
+  // Historical catch-up
+  subs.push(
+    pool.request(DM_RELAYS, filters).subscribe({
+      next: handle,
+      error: (err) => handlers.onError?.(err),
+    }),
+  );
+  // Live
+  subs.push(
+    pool.subscription(DM_RELAYS, filters).subscribe({
+      next: handle,
+      error: (err) => handlers.onError?.(err),
+    }),
+  );
+
+  return () => {
+    for (const sub of subs) {
+      try {
+        sub.unsubscribe();
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+}
+
+/** Live inbox: kind-4 events addressed to the signed-in pubkey. */
 export function subscribeInbox(handlers: DmInboxHandlers): () => void {
   const session = getSession();
   if (!session) return () => undefined;
   const me = normalizePubkey(session.pubkey);
   if (!me) return () => undefined;
-
-  const seen = new Set<string>();
-  const sub: Subscription = pool
-    .subscription(DEFAULT_RELAYS, {
-      kinds: [DM_KIND],
-      "#p": [me],
-      limit: 80,
-    })
-    .subscribe({
-      next: (event) => {
-        if (!event?.id || seen.has(event.id)) return;
-        seen.add(event.id);
-        void decryptEvent(event, me).then((msg) => {
-          if (msg) handlers.onMessage(msg);
-        });
-      },
-      error: (err) => handlers.onError?.(err),
-    });
-
-  return () => {
-    try {
-      sub.unsubscribe();
-    } catch {
-      /* ignore */
-    }
-  };
+  return watchFilters([{ kinds: [DM_KIND], "#p": [me], limit: 100 }], me, handlers, new Set());
 }
 
 /** Load + subscribe to a 1:1 thread with a friend. */
-export function subscribeThread(
-  peerPubkey: string,
-  handlers: DmInboxHandlers,
-): () => void {
+export function subscribeThread(peerPubkey: string, handlers: DmInboxHandlers): () => void {
   const session = getSession();
   if (!session) return () => undefined;
   const me = normalizePubkey(session.pubkey);
   const peer = normalizePubkey(peerPubkey);
   if (!me || !peer) return () => undefined;
 
-  const seen = new Set<string>();
-  const handle = (event: NostrEvent) => {
-    if (!event?.id || seen.has(event.id)) return;
-    seen.add(event.id);
-    void decryptEvent(event, me).then((msg) => {
-      if (msg) handlers.onMessage(msg);
-    });
-  };
-
   const filters = [
-    { kinds: [DM_KIND], authors: [me], "#p": [peer], limit: 60 },
-    { kinds: [DM_KIND], authors: [peer], "#p": [me], limit: 60 },
+    { kinds: [DM_KIND], authors: [me], "#p": [peer], limit: 80 },
+    { kinds: [DM_KIND], authors: [peer], "#p": [me], limit: 80 },
   ];
-
-  const sub: Subscription = pool.subscription(DEFAULT_RELAYS, filters).subscribe({
-    next: handle,
-    error: (err) => handlers.onError?.(err),
-  });
-
-  return () => {
-    try {
-      sub.unsubscribe();
-    } catch {
-      /* ignore */
-    }
-  };
+  return watchFilters(filters, me, handlers, new Set());
 }

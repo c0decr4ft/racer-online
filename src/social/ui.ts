@@ -1,13 +1,32 @@
 /**
- * Friends / Find / Online / Chat / Organize social hub UI.
+ * Friends / Find / Requests / Chat / Organize social hub UI.
  */
 import { fetchProfile, profileLabel, shortNpub } from "../nostr/profile";
 import { getSession, onSessionChange } from "../nostr/session";
 import { ensureNostrLogin, getCurrentProfile } from "../nostr/ui";
 import { sendHeartbeat, setPresenceIdentity } from "../net/presence";
-import { addFriend, isFriend, listFriends, removeFriend, type Friend } from "./friends";
+import {
+  addFriend,
+  dismissIncomingRequest,
+  hasOutgoingRequest,
+  isFriend,
+  listFriends,
+  listIncomingRequests,
+  removeFriend,
+  upsertIncomingRequest,
+  upsertOutgoingRequest,
+  type Friend,
+} from "./friends";
 import { searchPlayers, registerPlayer, type DirectoryPlayer } from "./directory";
-import { sendDm, subscribeInbox, subscribeThread, type DmMessage } from "./dm";
+import {
+  friendAcceptPlaintext,
+  friendRequestName,
+  friendRequestPlaintext,
+  sendDm,
+  subscribeInbox,
+  subscribeThread,
+  type DmMessage,
+} from "./dm";
 import {
   armAllSchedules,
   buildInviteJoinUrl,
@@ -21,12 +40,13 @@ import {
 export type SocialHubCallbacks = {
   onJoinInvite: (invite: { room: string; password: string; eventMode?: boolean }) => void;
   showToast: (text: string) => void;
+  isRacing?: () => boolean;
 };
 
-type Tab = "online" | "find" | "friends" | "chat" | "organize";
+type Tab = "find" | "requests" | "friends" | "chat" | "organize";
 
 let callbacks: SocialHubCallbacks | null = null;
-let activeTab: Tab = "online";
+let activeTab: Tab = "find";
 let chatPeer: Friend | null = null;
 let stopThread: (() => void) | null = null;
 let stopInbox: (() => void) | null = null;
@@ -44,6 +64,14 @@ function myDisplayName(): string {
   return (profile?.displayName || profile?.name || "RACER").slice(0, 24);
 }
 
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 function syncPresenceFromSession(): void {
   const session = getSession();
   if (!session) {
@@ -58,6 +86,20 @@ function syncPresenceFromSession(): void {
   restartInbox();
 }
 
+function notifyFriendMessage(msg: DmMessage): void {
+  if (msg.friendRequest || msg.friendAccept || msg.invite) return;
+  const session = getSession();
+  if (!session || msg.from === session.pubkey.toLowerCase()) return;
+  if (!isFriend(session.pubkey, msg.from)) return;
+  // Don't spam if you're already looking at that thread
+  if (chatPeer?.pubkey === msg.from && isSocialHubOpen() && activeTab === "chat") return;
+  const friends = listFriends(session.pubkey);
+  const name = friends.find((f) => f.pubkey === msg.from)?.name || shortNpub(msg.from);
+  const preview = msg.plaintext.length > 40 ? `${msg.plaintext.slice(0, 40)}…` : msg.plaintext;
+  // Toast always — including mid-race — so friend pings stay visible while driving.
+  callbacks?.showToast(`${name}: ${preview}`);
+}
+
 function restartInbox(): void {
   stopInbox?.();
   stopInbox = null;
@@ -65,97 +107,116 @@ function restartInbox(): void {
   if (!session) return;
   stopInbox = subscribeInbox({
     onMessage: (msg) => {
+      if (msg.friendRequest) {
+        const name = friendRequestName(msg.plaintext);
+        upsertIncomingRequest(session.pubkey, { pubkey: msg.from, name });
+        if (msg.from !== session.pubkey.toLowerCase()) {
+          callbacks?.showToast(`Friend request from ${name}`);
+          if (activeTab === "requests") renderRequests();
+          else updateRequestBadge();
+        }
+        return;
+      }
+      if (msg.friendAccept) {
+        const name = friendRequestName(msg.plaintext);
+        addFriend(session.pubkey, { pubkey: msg.from, name });
+        callbacks?.showToast(`${name} accepted your friend request`);
+        void refreshActiveLists();
+        return;
+      }
       if (msg.invite) {
         rememberInviteFromDm(session.pubkey, msg.invite, msg.from);
-        if (msg.from !== session.pubkey) {
+        if (msg.from !== session.pubkey.toLowerCase()) {
           callbacks?.showToast(
             `Race invite from ${msg.invite.fromName || shortNpub(msg.from)} · ${new Date(msg.invite.at).toLocaleString()}`,
           );
         }
       }
       if (chatPeer && (msg.from === chatPeer.pubkey || msg.to === chatPeer.pubkey)) {
-        upsertThreadMessage(msg);
-        renderChatMessages();
+        if (!msg.friendRequest && !msg.friendAccept) {
+          upsertThreadMessage(msg);
+          renderChatMessages();
+        }
       }
+      notifyFriendMessage(msg);
     },
   });
 }
 
+function updateRequestBadge(): void {
+  const session = getSession();
+  const tab = el("social-tab-requests");
+  if (!tab || !session) return;
+  const n = listIncomingRequests(session.pubkey).length;
+  tab.textContent = n > 0 ? `REQUESTS (${n})` : "REQUESTS";
+}
+
 function setTab(tab: Tab): void {
   activeTab = tab;
-  for (const id of ["online", "find", "friends", "chat", "organize"] as const) {
+  for (const id of ["find", "requests", "friends", "chat", "organize"] as const) {
     el(`social-tab-${id}`)?.classList.toggle("is-active", id === tab);
     el(`social-pane-${id}`)?.classList.toggle("hidden", id !== tab);
   }
-  if (tab === "online") void refreshOnline();
-  if (tab === "find") void runSearch(el<HTMLInputElement>("social-find-input")?.value || "");
+  if (tab === "find") {
+    const q = (el<HTMLInputElement>("social-find-input")?.value || "").trim();
+    if (q.length >= 2) void runSearch(q);
+    else clearFindList();
+  }
+  if (tab === "requests") renderRequests();
   if (tab === "friends") renderFriends();
   if (tab === "chat") renderChatPeers();
   if (tab === "organize") renderOrganize();
+  updateRequestBadge();
+}
+
+function clearFindList(): void {
+  const list = el("social-find-list");
+  const status = el("social-find-status");
+  if (status) status.textContent = "Type a username to search";
+  if (list) list.innerHTML = `<p class="social-empty">Search to find racers</p>`;
 }
 
 function playerRowHtml(
   player: { pubkey: string; name: string },
-  opts: { online?: boolean; friend?: boolean },
+  opts: { online?: boolean; friend?: boolean } = {},
 ): string {
   const session = getSession();
   const me = session?.pubkey.toLowerCase() === player.pubkey;
   const friend = opts.friend ?? (session ? isFriend(session.pubkey, player.pubkey) : false);
+  const outgoing = session ? hasOutgoingRequest(session.pubkey, player.pubkey) : false;
+  let actions = "";
+  if (!me) {
+    if (friend) {
+      actions = `<button type="button" class="btn-ghost social-mini" data-action="unfriend">REMOVE</button>
+                 <button type="button" class="social-mini" data-action="chat">CHAT</button>`;
+    } else if (outgoing) {
+      actions = `<button type="button" class="btn-ghost social-mini" disabled>SENT</button>`;
+    } else {
+      actions = `<button type="button" class="social-mini" data-action="request">REQUEST</button>`;
+    }
+  }
   return `<div class="social-row" data-pubkey="${player.pubkey}">
     <div class="social-row-main">
       <span class="social-row-name">${escapeHtml(player.name)}</span>
       <span class="social-row-meta">${opts.online ? "ONLINE" : shortNpub(player.pubkey)}${me ? " · you" : ""}</span>
     </div>
-    <div class="social-row-actions">
-      ${
-        me
-          ? ""
-          : friend
-            ? `<button type="button" class="btn-ghost social-mini" data-action="unfriend">REMOVE</button>
-               <button type="button" class="social-mini" data-action="chat">CHAT</button>`
-            : `<button type="button" class="social-mini" data-action="add">ADD</button>`
-      }
-    </div>
+    <div class="social-row-actions">${actions}</div>
   </div>`;
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-async function refreshOnline(): Promise<void> {
-  const list = el("social-online-list");
-  const status = el("social-online-status");
-  if (!list) return;
-  if (status) status.textContent = "Loading…";
-  const result = await searchPlayers("");
-  const session = getSession();
-  const online = result.online.filter((p) => p.pubkey !== session?.pubkey.toLowerCase());
-  if (status) {
-    status.textContent =
-      result.source === "empty"
-        ? "Directory unavailable — is the game server online?"
-        : online.length
-          ? `${online.length} signed-in racer${online.length === 1 ? "" : "s"} online`
-          : "Nobody else online right now";
-  }
-  list.innerHTML = online.length
-    ? online.map((p) => playerRowHtml(p, { online: true })).join("")
-    : `<p class="social-empty">No signed-in players online</p>`;
-  bindRowActions(list);
 }
 
 async function runSearch(query: string): Promise<void> {
   const list = el("social-find-list");
   const status = el("social-find-status");
   if (!list) return;
+  const q = query.trim();
+  if (q.length < 2) {
+    clearFindList();
+    return;
+  }
   if (status) status.textContent = "Searching…";
-  const result = await searchPlayers(query);
-  const players = result.players;
+  const result = await searchPlayers(q);
+  const session = getSession();
+  const players = result.players.filter((p) => p.pubkey !== session?.pubkey.toLowerCase());
   const onlineSet = new Set(result.online.map((p) => p.pubkey));
   if (status) {
     status.textContent =
@@ -163,9 +224,7 @@ async function runSearch(query: string): Promise<void> {
         ? "Search unavailable — is the game server online?"
         : players.length
           ? `${players.length} match${players.length === 1 ? "" : "es"}`
-          : query.trim()
-            ? "No players found — they need a Sats Racer score or sign-in"
-            : "No players in the directory yet";
+          : "No players found";
   }
   list.innerHTML = players.length
     ? players
@@ -181,11 +240,46 @@ function renderFriends(): void {
   const session = getSession();
   if (!list || !session) return;
   const friends = listFriends(session.pubkey);
-  if (status) status.textContent = friends.length ? `${friends.length} friend${friends.length === 1 ? "" : "s"}` : "No friends yet — use Find";
+  if (status) {
+    status.textContent = friends.length
+      ? `${friends.length} friend${friends.length === 1 ? "" : "s"}`
+      : "No friends yet — search Find and send a request";
+  }
   list.innerHTML = friends.length
     ? friends.map((f) => playerRowHtml(f, { friend: true })).join("")
-    : `<p class="social-empty">Add friends from Find or Online</p>`;
+    : `<p class="social-empty">Accepted friends show up here</p>`;
   bindRowActions(list);
+}
+
+function renderRequests(): void {
+  const list = el("social-requests-list");
+  const status = el("social-requests-status");
+  const session = getSession();
+  if (!list || !session) return;
+  const incoming = listIncomingRequests(session.pubkey);
+  if (status) {
+    status.textContent = incoming.length
+      ? `${incoming.length} pending request${incoming.length === 1 ? "" : "s"}`
+      : "No friend requests";
+  }
+  list.innerHTML = incoming.length
+    ? incoming
+        .map(
+          (r) => `<div class="social-row" data-pubkey="${r.pubkey}">
+            <div class="social-row-main">
+              <span class="social-row-name">${escapeHtml(r.name)}</span>
+              <span class="social-row-meta">${shortNpub(r.pubkey)}</span>
+            </div>
+            <div class="social-row-actions">
+              <button type="button" class="social-mini" data-action="accept">YES</button>
+              <button type="button" class="btn-ghost social-mini" data-action="decline">NO</button>
+            </div>
+          </div>`,
+        )
+        .join("")
+    : `<p class="social-empty">When someone requests you, YES / NO shows here</p>`;
+  bindRowActions(list);
+  updateRequestBadge();
 }
 
 function bindRowActions(root: HTMLElement): void {
@@ -198,10 +292,8 @@ function bindRowActions(root: HTMLElement): void {
         const session = getSession();
         if (!session || !pubkey) return;
         const action = btn.dataset.action;
-        if (action === "add") {
-          addFriend(session.pubkey, { pubkey, name });
-          callbacks?.showToast(`Added ${name}`);
-          void refreshActiveLists();
+        if (action === "request") {
+          void sendFriendRequest(pubkey, name);
         } else if (action === "unfriend") {
           removeFriend(session.pubkey, pubkey);
           if (chatPeer?.pubkey === pubkey) {
@@ -212,22 +304,64 @@ function bindRowActions(root: HTMLElement): void {
           callbacks?.showToast(`Removed ${name}`);
           void refreshActiveLists();
         } else if (action === "chat") {
+          if (!isFriend(session.pubkey, pubkey)) {
+            callbacks?.showToast("Accept a friend request before chatting");
+            return;
+          }
           openChatWith({ pubkey, name, addedAt: Date.now() });
+        } else if (action === "accept") {
+          void acceptFriendRequest(pubkey, name);
+        } else if (action === "decline") {
+          dismissIncomingRequest(session.pubkey, pubkey);
+          callbacks?.showToast(`Declined ${name}`);
+          renderRequests();
         }
       };
     });
   });
 }
 
+async function sendFriendRequest(pubkey: string, name: string): Promise<void> {
+  const session = getSession();
+  if (!session) return;
+  if (isFriend(session.pubkey, pubkey)) {
+    callbacks?.showToast("Already friends");
+    return;
+  }
+  try {
+    await sendDm(pubkey, friendRequestPlaintext(myDisplayName()));
+    upsertOutgoingRequest(session.pubkey, { pubkey, name });
+    callbacks?.showToast(`Friend request sent to ${name}`);
+    void refreshActiveLists();
+  } catch (err) {
+    callbacks?.showToast(err instanceof Error ? err.message : "Request failed");
+  }
+}
+
+async function acceptFriendRequest(pubkey: string, name: string): Promise<void> {
+  const session = getSession();
+  if (!session) return;
+  addFriend(session.pubkey, { pubkey, name });
+  try {
+    await sendDm(pubkey, friendAcceptPlaintext(myDisplayName()));
+  } catch {
+    /* still friends locally */
+  }
+  callbacks?.showToast(`You and ${name} are friends`);
+  void refreshActiveLists();
+}
+
 async function refreshActiveLists(): Promise<void> {
-  if (activeTab === "online") await refreshOnline();
   if (activeTab === "find") {
     const q = (el<HTMLInputElement>("social-find-input")?.value || "").trim();
-    await runSearch(q);
+    if (q.length >= 2) await runSearch(q);
+    else clearFindList();
   }
+  if (activeTab === "requests") renderRequests();
   if (activeTab === "friends") renderFriends();
   if (activeTab === "chat") renderChatPeers();
   if (activeTab === "organize") renderOrganize();
+  updateRequestBadge();
 }
 
 function renderChatPeers(): void {
@@ -239,11 +373,11 @@ function renderChatPeers(): void {
     ? friends
         .map(
           (f) =>
-            `<button type="button" class="social-peer-btn${chatPeer?.pubkey === f.pubkey ? " is-active" : ""}" data-pubkey="${f.pubkey}">${escapeHtml(f.name)}</button>`,
+            `<button type="button" class="garage-kind-btn social-peer-btn${chatPeer?.pubkey === f.pubkey ? " is-active" : ""}" data-pubkey="${f.pubkey}">${escapeHtml(f.name).toUpperCase()}</button>`,
         )
         .join("")
-    : `<p class="social-empty">Add a friend to start chatting</p>`;
-  peers.querySelectorAll<HTMLButtonElement>(".social-peer-btn").forEach((btn) => {
+    : `<p class="social-empty">Accept a friend request to chat</p>`;
+  peers.querySelectorAll<HTMLButtonElement>("[data-pubkey]").forEach((btn) => {
     btn.onclick = () => {
       const pubkey = btn.dataset.pubkey || "";
       const friend = friends.find((f) => f.pubkey === pubkey);
@@ -254,18 +388,21 @@ function renderChatPeers(): void {
 }
 
 function openChatWith(friend: Friend): void {
-  chatPeer = friend;
-  if (!isFriend(getSession()!.pubkey, friend.pubkey)) {
-    addFriend(getSession()!.pubkey, friend);
+  const session = getSession();
+  if (!session || !isFriend(session.pubkey, friend.pubkey)) {
+    callbacks?.showToast("You can only chat with accepted friends");
+    return;
   }
+  chatPeer = friend;
   setTab("chat");
   renderChatPeers();
   const title = el("social-chat-title");
-  if (title) title.textContent = friend.name;
+  if (title) title.textContent = friend.name.toUpperCase();
   threadMessages = [];
   stopThread?.();
   stopThread = subscribeThread(friend.pubkey, {
     onMessage: (msg) => {
+      if (msg.friendRequest || msg.friendAccept) return;
       upsertThreadMessage(msg);
       renderChatMessages();
     },
@@ -275,6 +412,7 @@ function openChatWith(friend: Friend): void {
 }
 
 function upsertThreadMessage(msg: DmMessage): void {
+  if (msg.friendRequest || msg.friendAccept) return;
   if (threadMessages.some((m) => m.id === msg.id)) return;
   threadMessages.push(msg);
   threadMessages.sort((a, b) => a.createdAt - b.createdAt);
@@ -289,8 +427,9 @@ function renderChatMessages(): void {
     return;
   }
   const me = getSession()?.pubkey.toLowerCase();
-  box.innerHTML = threadMessages.length
-    ? threadMessages
+  const visible = threadMessages.filter((m) => !m.friendRequest && !m.friendAccept);
+  box.innerHTML = visible.length
+    ? visible
         .map((m) => {
           const mine = m.from === me;
           const invite = m.invite
@@ -305,7 +444,7 @@ function renderChatMessages(): void {
     : `<p class="social-empty">No messages yet — say hi</p>`;
   box.querySelectorAll<HTMLButtonElement>("[data-invite-id]").forEach((btn) => {
     btn.onclick = () => {
-      const msg = threadMessages.find((m) => m.id === btn.dataset.inviteId);
+      const msg = visible.find((m) => m.id === btn.dataset.inviteId);
       if (!msg?.invite) return;
       callbacks?.onJoinInvite({
         room: msg.invite.room,
@@ -404,6 +543,11 @@ async function submitOrganize(e: Event): Promise<void> {
 async function sendChat(e: Event): Promise<void> {
   e.preventDefault();
   if (!chatPeer) return;
+  const session = getSession();
+  if (!session || !isFriend(session.pubkey, chatPeer.pubkey)) {
+    callbacks?.showToast("You can only chat with accepted friends");
+    return;
+  }
   const input = el<HTMLInputElement>("social-chat-input");
   const status = el("social-chat-status");
   const text = (input?.value || "").trim();
@@ -432,7 +576,6 @@ export function openSocialHub(): void {
   syncPresenceFromSession();
   setTab(activeTab);
   void refreshActiveLists();
-  // Prefetch friend profile labels.
   const session = getSession();
   if (session) {
     for (const f of listFriends(session.pubkey)) {
@@ -471,7 +614,7 @@ export function initSocialUi(cbs: SocialHubCallbacks): void {
   });
   document.getElementById("social-back-btn")?.addEventListener("click", () => closeSocialHub());
 
-  for (const tab of ["online", "find", "friends", "chat", "organize"] as const) {
+  for (const tab of ["find", "requests", "friends", "chat", "organize"] as const) {
     el(`social-tab-${tab}`)?.addEventListener("click", () => setTab(tab));
   }
 
@@ -495,7 +638,6 @@ export function initSocialUi(cbs: SocialHubCallbacks): void {
     void submitOrganize(e);
   });
 
-  // Default organize time = +30 minutes
   const when = el<HTMLInputElement>("social-org-when");
   if (when && !when.value) {
     const d = new Date(Date.now() + 30 * 60_000);
@@ -532,7 +674,6 @@ export function initSocialUi(cbs: SocialHubCallbacks): void {
   syncPresenceFromSession();
 }
 
-/** Used by deep-link / organize jump-in copy helpers. */
 export function inviteLinkFor(room: string, password: string): string {
   return buildInviteJoinUrl({ room, password });
 }

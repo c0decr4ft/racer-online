@@ -128,7 +128,7 @@
       </div>
 
       <div class="version-switcher" id="version-switcher">
-        <span id="version-badge" class="version-badge" aria-label="Version 8.2">v8.2</span>
+        <span id="version-badge" class="version-badge" aria-label="Version 8.3">v8.3</span>
       </div>
 
       <div id="home-corner-btns" class="home-corner-btns">
@@ -593,30 +593,33 @@
       <div id="social-invite-banner" class="social-invite-banner hidden" role="status"></div>
 
       <div id="social-hub" class="overlay hidden">
-        <div class="overlay-inner social-panel">
+        <div class="overlay-inner social-panel multiplayer-panel">
           <p class="eyebrow">SOCIAL</p>
           <h1>FRIENDS</h1>
-          <p class="tagline">Find racers · chat E2E · organize a race</p>
-          <div class="social-tabs" role="tablist" aria-label="Friends sections">
-            <button id="social-tab-online" class="social-tab is-active" type="button" role="tab">ONLINE</button>
-            <button id="social-tab-find" class="social-tab" type="button" role="tab">FIND</button>
-            <button id="social-tab-friends" class="social-tab" type="button" role="tab">FRIENDS</button>
-            <button id="social-tab-chat" class="social-tab" type="button" role="tab">CHAT</button>
-            <button id="social-tab-organize" class="social-tab" type="button" role="tab">ORGANIZE</button>
+          <p class="tagline">Search · requests · chat · organize</p>
+          <div class="garage-kind social-tabs" role="tablist" aria-label="Friends sections">
+            <button id="social-tab-find" class="garage-kind-btn social-tab is-active" type="button" role="tab">FIND</button>
+            <button id="social-tab-requests" class="garage-kind-btn social-tab" type="button" role="tab">REQUESTS</button>
+            <button id="social-tab-friends" class="garage-kind-btn social-tab" type="button" role="tab">FRIENDS</button>
+            <button id="social-tab-chat" class="garage-kind-btn social-tab" type="button" role="tab">CHAT</button>
+            <button id="social-tab-organize" class="garage-kind-btn social-tab" type="button" role="tab">ORGANIZE</button>
           </div>
 
-          <div id="social-pane-online" class="social-pane">
-            <p id="social-online-status" class="social-status">Loading…</p>
-            <div id="social-online-list" class="social-list"></div>
-          </div>
-
-          <div id="social-pane-find" class="social-pane hidden">
-            <form id="social-find-form" class="social-find-form" autocomplete="off">
-              <input id="social-find-input" type="search" maxlength="40" placeholder="Search username" spellcheck="false" />
+          <div id="social-pane-find" class="social-pane">
+            <form id="social-find-form" class="multiplayer-form social-find-form" autocomplete="off">
+              <label class="mp-field">
+                <span>Username</span>
+                <input id="social-find-input" type="search" maxlength="40" placeholder="Search username" spellcheck="false" />
+              </label>
               <button type="submit">SEARCH</button>
             </form>
-            <p id="social-find-status" class="social-status"></p>
+            <p id="social-find-status" class="social-status">Type a username to search</p>
             <div id="social-find-list" class="social-list"></div>
+          </div>
+
+          <div id="social-pane-requests" class="social-pane hidden">
+            <p id="social-requests-status" class="social-status"></p>
+            <div id="social-requests-list" class="social-list"></div>
           </div>
 
           <div id="social-pane-friends" class="social-pane hidden">
@@ -625,18 +628,18 @@
           </div>
 
           <div id="social-pane-chat" class="social-pane hidden">
-            <div id="social-chat-peers" class="social-chat-peers"></div>
+            <div id="social-chat-peers" class="garage-kind social-chat-peers"></div>
             <p id="social-chat-title" class="social-chat-title">Pick a friend</p>
             <div id="social-chat-messages" class="social-chat-messages"></div>
-            <form id="social-chat-form" class="social-chat-form" autocomplete="off">
-              <input id="social-chat-input" type="text" maxlength="500" placeholder="Encrypted message…" />
+            <form id="social-chat-form" class="multiplayer-form social-chat-form" autocomplete="off">
+              <input id="social-chat-input" type="text" maxlength="500" placeholder="Message…" />
               <button type="submit">SEND</button>
             </form>
             <p id="social-chat-status" class="social-status"></p>
           </div>
 
           <div id="social-pane-organize" class="social-pane hidden">
-            <form id="social-org-form" class="social-org-form" autocomplete="off">
+            <form id="social-org-form" class="multiplayer-form social-org-form" autocomplete="off">
               <label class="mp-field">
                 <span>Room</span>
                 <input id="social-org-room" type="text" maxlength="24" value="circuit" required />
