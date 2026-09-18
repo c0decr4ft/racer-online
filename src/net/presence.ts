@@ -33,6 +33,8 @@ const STARTED_FLAG = "__racerPresenceHeartbeatStarted";
 
 export type PresenceBucket = { key: string; count: number; at: number };
 export type PresenceSample = { at: number; count: number };
+export type PresenceOnlinePlayer = { pubkey: string; name: string; at?: number };
+
 export type PresenceSnapshot = {
   now: number;
   buckets: PresenceBucket[];
@@ -40,7 +42,26 @@ export type PresenceSnapshot = {
   updatedAt: number;
   source: "online" | "server" | "local";
   racing?: number;
+  online?: PresenceOnlinePlayer[];
 };
+
+/** Optional signed-in identity attached to heartbeats (directory + online list). */
+let presenceIdentity: { pubkey: string; name: string } | null = null;
+
+/** Call when Nostr session/profile is known so presence writes include pubkey+name. */
+export function setPresenceIdentity(identity: { pubkey: string; name: string } | null): void {
+  if (!identity?.pubkey || !/^[0-9a-f]{64}$/i.test(identity.pubkey)) {
+    presenceIdentity = null;
+    return;
+  }
+  const name = String(identity.name || "")
+    .trim()
+    .slice(0, 24);
+  presenceIdentity = {
+    pubkey: identity.pubkey.toLowerCase(),
+    name: name || "RACER",
+  };
+}
 
 type PresenceStore = {
   buckets: Record<string, number>;
@@ -224,6 +245,22 @@ function snapshotOf(
   };
 }
 
+function parseOnlinePlayers(raw: unknown): PresenceOnlinePlayer[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: PresenceOnlinePlayer[] = [];
+  for (const row of raw) {
+    if (!row || typeof row !== "object") continue;
+    const r = row as { pubkey?: unknown; name?: unknown; at?: unknown };
+    if (typeof r.pubkey !== "string" || !/^[0-9a-f]{64}$/i.test(r.pubkey)) continue;
+    out.push({
+      pubkey: r.pubkey.toLowerCase(),
+      name: typeof r.name === "string" && r.name.trim() ? r.name.trim().slice(0, 24) : "RACER",
+      at: typeof r.at === "number" && Number.isFinite(r.at) ? Math.round(r.at) : undefined,
+    });
+  }
+  return out;
+}
+
 function snapshotFromServerPayload(data: unknown): PresenceSnapshot | null {
   if (!data || typeof data !== "object") return null;
   const obj = data as {
@@ -232,6 +269,7 @@ function snapshotFromServerPayload(data: unknown): PresenceSnapshot | null {
     samples?: unknown;
     updatedAt?: unknown;
     racing?: unknown;
+    online?: unknown;
     ok?: unknown;
   };
   if (typeof obj.now !== "number" || !Number.isFinite(obj.now)) return null;
@@ -286,6 +324,7 @@ function snapshotFromServerPayload(data: unknown): PresenceSnapshot | null {
       typeof obj.racing === "number" && Number.isFinite(obj.racing)
         ? Math.max(0, Math.round(obj.racing))
         : undefined,
+    online: parseOnlinePlayers(obj.online),
   };
 }
 
@@ -434,10 +473,15 @@ async function postServerPresence(
   const url = apiUrl("/presence");
   if (!url) return null;
   try {
+    const payload: Record<string, string> = { id, action };
+    if (action === "heartbeat" && presenceIdentity) {
+      payload.pubkey = presenceIdentity.pubkey;
+      payload.name = presenceIdentity.name;
+    }
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ id, action }),
+      body: JSON.stringify(payload),
       keepalive,
     });
     if (!res.ok) return null;

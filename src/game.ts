@@ -959,12 +959,13 @@ export class Game {
     setFeedbackBtnVisible(onHome);
   }
 
-  /** Homepage overlay visible (incl. BOARD / garage / multiplayer / map picker). */
+  /** Homepage overlay visible (incl. BOARD / garage / multiplayer / friends / map picker). */
   private onHomeOrBoard(): boolean {
     const mapOpen = !this.el.mapSelect.classList.contains("hidden");
     const boardOpen = !this.el.leaderboard.classList.contains("hidden");
     const garageOpen = !this.el.garage.classList.contains("hidden");
     const mpOpen = !this.el.multiplayer.classList.contains("hidden");
+    const socialOpen = !document.getElementById("social-hub")?.classList.contains("hidden");
     const devOpen = !document.getElementById("dev-dash")?.classList.contains("hidden");
     return (
       !this.running &&
@@ -975,6 +976,7 @@ export class Game {
         boardOpen ||
         garageOpen ||
         mpOpen ||
+        !!socialOpen ||
         !!devOpen)
     );
   }
@@ -983,6 +985,7 @@ export class Game {
     this.el.mapSelect.classList.add("hidden");
     this.el.leaderboard.classList.add("hidden");
     this.el.multiplayer.classList.add("hidden");
+    document.getElementById("social-hub")?.classList.add("hidden");
     document.getElementById("dev-dash")?.classList.add("hidden");
     this.garage = loadGarage();
     this.closeGarageSwatchPalettes();
@@ -1164,6 +1167,7 @@ export class Game {
     this.el.mapSelect.classList.add("hidden");
     this.el.leaderboard.classList.add("hidden");
     this.el.garage.classList.add("hidden");
+    document.getElementById("social-hub")?.classList.add("hidden");
     document.getElementById("dev-dash")?.classList.add("hidden");
     this.garage = loadGarage();
     // Rooms are car/bike only — bird falls back to car for multiplayer create.
@@ -1207,6 +1211,35 @@ export class Game {
     this.showMpView("entry");
     this.el.multiplayer.classList.remove("hidden");
     this.syncMuteBtn();
+  }
+
+  /**
+   * Deep-link / organize invite: open multiplayer join with room+pass filled and
+   * auto-attempt join after Nostr identity is ready.
+   */
+  joinFromInvite(opts: { room: string; password?: string; eventMode?: boolean }): void {
+    void this.unlockAndMaybeMenuMusic()
+      .then(() => ensureNostrLogin("Sign in with Nostr to join the race room"))
+      .then(async (session) => {
+        if (!session) return;
+        this.openMultiplayer(!!opts.eventMode);
+        this.showMpView("join");
+        const room = this.sanitizeRoomName(opts.room);
+        this.el.mpJoinRoom.value = room;
+        this.el.mpJoinPass.value = String(opts.password || "").slice(0, 32);
+        const name =
+          this.nostrDisplayName() ??
+          (await this.nostrDisplayNameAsync()) ??
+          getLocalDriverName() ??
+          "";
+        if (name) this.el.mpJoinName.value = name;
+        if (!this.el.mpJoinName.value.trim()) {
+          this.el.mpJoinStatus.textContent = "Enter a racer name, then join";
+          this.el.mpJoinName.focus();
+          return;
+        }
+        await this.joinMultiplayerRoom();
+      });
   }
 
   private closeMultiplayer() {
@@ -1525,6 +1558,11 @@ export class Game {
     stack.appendChild(toast);
     setTimeout(() => toast.classList.add("toast-out"), 2600);
     setTimeout(() => toast.remove(), 3100);
+  }
+
+  /** Public toast for social hub / deep-link notices. */
+  notify(text: string) {
+    this.showToast(text);
   }
 
   private renderLobby() {
@@ -2252,8 +2290,10 @@ export class Game {
     this.el.mapSelect.classList.add("hidden");
     this.el.garage.classList.add("hidden");
     this.el.multiplayer.classList.add("hidden");
+    document.getElementById("social-hub")?.classList.add("hidden");
     document.getElementById("dev-dash")?.classList.add("hidden");
-    this.el.leaderboard.classList.remove("hidden");    const boardEyebrow = document.getElementById("board-eyebrow");
+    this.el.leaderboard.classList.remove("hidden");
+    const boardEyebrow = document.getElementById("board-eyebrow");
     if (boardEyebrow) {
       boardEyebrow.textContent = `WORLDWIDE · ${new Date().getFullYear()}`;
     }

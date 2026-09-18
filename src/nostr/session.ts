@@ -23,8 +23,9 @@ const STORAGE_KEY = "racer-nostr-session-v1";
 
 function signingPermissions(): string[] {
   // kind 0 (profile) so remote signers also allow publishing the username;
+  // kind 4 = NIP-04 DMs (friends chat / race invites);
   // kind 30078 = leaderboard scores.
-  return NostrConnectSigner.buildSigningPermissions([0, SCORE_EVENT_KIND]);
+  return NostrConnectSigner.buildSigningPermissions([0, 4, SCORE_EVENT_KIND]);
 }
 
 let current: NostrSession | null = null;

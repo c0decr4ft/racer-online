@@ -128,7 +128,7 @@
       </div>
 
       <div class="version-switcher" id="version-switcher">
-        <span id="version-badge" class="version-badge" aria-label="Version 6.4">v6.4</span>
+        <span id="version-badge" class="version-badge" aria-label="Version 8.1">v8.1</span>
       </div>
 
       <div id="home-corner-btns" class="home-corner-btns">
@@ -508,6 +508,12 @@
             </svg>
             <span class="board-icon-label">BOARD</span>
           </button>
+          <button id="home-friends-btn" class="board-icon-btn" type="button" aria-label="Friends">
+            <svg class="board-icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M16 11a4 4 0 1 0-3.2-6.4A4 4 0 0 0 16 11zM8 12a3.5 3.5 0 1 0-2.9-5.5A3.5 3.5 0 0 0 8 12zm8 2c-2.7 0-8 1.35-8 4v2h16v-2c0-2.65-5.3-4-8-4zM8 15c-.7 0-1.4.06-2.05.16C3.7 15.5 2 16.5 2 18v2h4v-2c0-1.2.55-2.2 1.5-3-.15-.02-.3-.03-.5-.03z" fill="currentColor"/>
+            </svg>
+            <span class="board-icon-label">FRIENDS</span>
+          </button>
           <button id="nostr-btn" class="board-icon-btn" type="button" aria-label="Nostr sign in" aria-haspopup="dialog" aria-controls="nostr-login">
             <svg class="board-icon-svg" viewBox="0 0 24 24" aria-hidden="true">
               <path d="M14.5 2a6.5 6.5 0 0 0-6.4 7.7L2 15.8V22h6.2l1.5-1.5v-2h2l1.4-1.4v-2h2l1.9-1.9A6.5 6.5 0 1 0 14.5 2zm0 4a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z" fill="currentColor"/>
@@ -581,6 +587,80 @@
           <p id="garage-hint" class="tagline garage-hint">Cars race cars · bikes race bikes</p>
           <button id="garage-save-btn" type="button">SAVE &amp; CLOSE</button>
           <button id="garage-back-btn" class="btn-ghost" type="button">BACK</button>
+        </div>
+      </div>
+
+      <div id="social-invite-banner" class="social-invite-banner hidden" role="status"></div>
+
+      <div id="social-hub" class="overlay hidden">
+        <div class="overlay-inner social-panel">
+          <p class="eyebrow">SOCIAL</p>
+          <h1>FRIENDS</h1>
+          <p class="tagline">Find racers · chat E2E · organize a race</p>
+          <div class="social-tabs" role="tablist" aria-label="Friends sections">
+            <button id="social-tab-online" class="social-tab is-active" type="button" role="tab">ONLINE</button>
+            <button id="social-tab-find" class="social-tab" type="button" role="tab">FIND</button>
+            <button id="social-tab-friends" class="social-tab" type="button" role="tab">FRIENDS</button>
+            <button id="social-tab-chat" class="social-tab" type="button" role="tab">CHAT</button>
+            <button id="social-tab-organize" class="social-tab" type="button" role="tab">ORGANIZE</button>
+          </div>
+
+          <div id="social-pane-online" class="social-pane">
+            <p id="social-online-status" class="social-status">Loading…</p>
+            <div id="social-online-list" class="social-list"></div>
+          </div>
+
+          <div id="social-pane-find" class="social-pane hidden">
+            <form id="social-find-form" class="social-find-form" autocomplete="off">
+              <input id="social-find-input" type="search" maxlength="40" placeholder="Search username" spellcheck="false" />
+              <button type="submit">SEARCH</button>
+            </form>
+            <p id="social-find-status" class="social-status"></p>
+            <div id="social-find-list" class="social-list"></div>
+          </div>
+
+          <div id="social-pane-friends" class="social-pane hidden">
+            <p id="social-friends-status" class="social-status"></p>
+            <div id="social-friends-list" class="social-list"></div>
+          </div>
+
+          <div id="social-pane-chat" class="social-pane hidden">
+            <div id="social-chat-peers" class="social-chat-peers"></div>
+            <p id="social-chat-title" class="social-chat-title">Pick a friend</p>
+            <div id="social-chat-messages" class="social-chat-messages"></div>
+            <form id="social-chat-form" class="social-chat-form" autocomplete="off">
+              <input id="social-chat-input" type="text" maxlength="500" placeholder="Encrypted message…" />
+              <button type="submit">SEND</button>
+            </form>
+            <p id="social-chat-status" class="social-status"></p>
+          </div>
+
+          <div id="social-pane-organize" class="social-pane hidden">
+            <form id="social-org-form" class="social-org-form" autocomplete="off">
+              <label class="mp-field">
+                <span>Room</span>
+                <input id="social-org-room" type="text" maxlength="24" value="circuit" required />
+              </label>
+              <label class="mp-field">
+                <span>Password</span>
+                <input id="social-org-pass" type="text" maxlength="32" placeholder="Optional" />
+              </label>
+              <label class="mp-field">
+                <span>When</span>
+                <input id="social-org-when" type="datetime-local" required />
+              </label>
+              <div>
+                <p class="social-status">Notify friends</p>
+                <div id="social-org-friends" class="social-org-friends"></div>
+              </div>
+              <button type="submit">SEND INVITES</button>
+            </form>
+            <p id="social-org-status" class="social-status"></p>
+            <p class="social-status">Upcoming</p>
+            <div id="social-org-upcoming" class="social-list"></div>
+          </div>
+
+          <button id="social-back-btn" class="btn-ghost" type="button">BACK</button>
         </div>
       </div>
 
