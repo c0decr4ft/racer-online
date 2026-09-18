@@ -25,11 +25,11 @@ const CAR_RADIUS = 1.7;
 const HIT_DIST = ANIMAL_RADIUS + CAR_RADIUS;
 const SMALL_HIT_DIST = SMALL_RADIUS + CAR_RADIUS;
 
-/** Noticeable hit, not a full crash — keep ~40% of speed. */
-const HIT_SPEED_KEEP = 0.4;
-const HIT_SPEED_FLOOR = 4;
-/** Sticky throttle cut after a hit (player + AI). */
-const HIT_DRIVE_PENALTY = 0.9;
+/** Noticeable hit, not a full crash — keep most of the speed. */
+const HIT_SPEED_KEEP = 0.55;
+const HIT_SPEED_FLOOR = 6;
+/** Sticky throttle cut after a hit (player + AI) — short so it doesn't feel like a freeze. */
+const HIT_DRIVE_PENALTY = 0.45;
 
 const WANDER_SPEED = 1.15;
 const CROSS_SPEED = 1.85;
@@ -808,6 +808,8 @@ export class WildlifeHerd {
   private readonly q: PathQuery;
   private readonly spec: HerdSpec;
   private readonly animals: Animal[] = [];
+  /** Precomputed habitat points — respawn must never re-run the expensive probe. */
+  private readonly spawnPool: { x: number; z: number }[] = [];
   private crossCooldown = CROSS_GAP_MIN + Math.random() * (CROSS_GAP_MAX - CROSS_GAP_MIN);
   private readonly bursts: BurstPart[] = [];
   private readonly burstGeo = new THREE.BoxGeometry(0.16, 0.16, 0.16);
@@ -839,7 +841,10 @@ export class WildlifeHerd {
     this.group.add(this.burstLight);
     const far = spec.outfieldFar ?? OUTFIELD_FAR;
     const near = spec.outfieldNear ?? ZONE_CLEAR;
-    const spawns = collectSpawns(this.q, spec.habitat, WANDER_COUNT, far, near);
+    // Build a fat pool once at herd create — hits/respawns only sample it.
+    const pool = collectSpawns(this.q, spec.habitat, Math.max(WANDER_COUNT * 4, 40), far, near);
+    this.spawnPool.push(...pool);
+    const spawns = this.spawnPool.slice(0, WANDER_COUNT);
     for (let i = 0; i < spawns.length; i++) {
       const s = spawns[i]!;
       const mesh = spec.createMesh(i);
@@ -1299,7 +1304,7 @@ export class WildlifeHerd {
     animal.respawnIn = RESPAWN_DELAY;
 
     // Cap concurrent debris — old GPUs hitch hard on many transparent meshes.
-    const n = Math.min(8, 16 - this.bursts.length);
+    const n = Math.min(5, 12 - this.bursts.length);
     for (let i = 0; i < n; i++) {
       const base = this.burstMats[i % this.burstMats.length]!;
       let mesh = this.burstPool.pop();
@@ -1324,30 +1329,27 @@ export class WildlifeHerd {
         (Math.random() - 0.5) * speed,
       );
       this.group.add(mesh);
-      this.bursts.push({ mesh, vel, life: 0.35 + Math.random() * 0.4 });
+      this.bursts.push({ mesh, vel, life: 0.28 + Math.random() * 0.28 });
     }
     // Reuse the resident light — never add/remove (avoids shader recompile freezes).
     this.burstLight.position.set(ox, 1.6, oz);
-    this.burstLight.intensity = 3.2;
+    this.burstLight.intensity = 2.2;
     this.burstLight.visible = true;
   }
 
   private respawnAnimal(animal: Animal) {
-    // Habitat-correct respawn: cows → infield middle; all others → outfield fringe.
-    const spawns = collectSpawns(
-      this.q,
-      this.spec.habitat,
-      8,
-      this.farLimit(),
-      this.nearLimit(),
-    );
+    // Habitat-correct respawn from the precomputed pool (no collectSpawns hitch).
+    const spawns = this.spawnPool;
     const s = spawns[animal.seed % Math.max(1, spawns.length)] ?? {
       x: animal.x,
       z: animal.z,
     };
     let best = s;
     let bestScore = -1;
-    for (const cand of spawns) {
+    const start = (animal.seed * 3 + (spawns.length >> 1)) % Math.max(1, spawns.length);
+    const probe = Math.min(spawns.length, 12);
+    for (let i = 0; i < probe; i++) {
+      const cand = spawns[(start + i) % spawns.length]!;
       let minD = Infinity;
       for (const other of this.animals) {
         if (other === animal || other.mode === "dead") continue;

@@ -3597,6 +3597,8 @@ setInterval(() => {
       tickWreckFire(room, NET_TICK_MS);
       if (room.allWreckResetAt && Date.now() >= room.allWreckResetAt) runFieldReset(room);
     }
+    // Solo room: no remotes to feed — skip the 30Hz binary broadcast.
+    if (room.clients.size <= 1) continue;
     const raw = encodeStateBinary(roomPlayers(room), at, room.wreckedIds);
     for (const c of room.clients.values()) {
       if (c.ws.readyState === 1) c.ws.send(raw);

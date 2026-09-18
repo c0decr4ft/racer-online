@@ -454,16 +454,16 @@ export class GameAudio {
     filter.frequency.setValueAtTime(280, now);
     filter.frequency.exponentialRampToValueAtTime(80, now + 0.4);
     gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.55, now + 0.012);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.55);
+    gain.gain.exponentialRampToValueAtTime(0.38, now + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.42);
     osc.connect(filter);
     filter.connect(gain);
     gain.connect(this.master!);
     osc.start(now);
-    osc.stop(now + 0.58);
+    osc.stop(now + 0.45);
 
-    this.playNoiseBurst(0.35, 0.42, 1400);
-    this.playNoiseBurst(0.18, 0.28, 420);
+    this.playNoiseBurst(0.22, 0.32, 1200);
+    this.playNoiseBurst(0.12, 0.2, 380);
   }
 
   /** Sampled explosion for wall-limit car crash / explode. */

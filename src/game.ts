@@ -211,6 +211,8 @@ export class Game {
   private wantRearview = false;
   /** One-shot shadow rebuild after home/track transitions (menu orbit is static-lit). */
   private shadowNeedsWarmup = true;
+  /** Cadence counter — rebuild soft shadows every N live frames (GPU hitch cut). */
+  private shadowFrame = 0;
   /** Frame-time EMA (ms) — kept for diagnostics; quality is Settings-only. */
   private fpsEmaMs = 16.7;
   /** Sustained slow frames → skip minimap / rain particles (never skip shadow maps). */
@@ -2270,12 +2272,14 @@ export class Game {
   private showAnimalHit(name: string) {
     const el = this.el.animalHit;
     el.textContent = `${name}!`;
-    el.classList.remove("hidden");
-    // Retrigger CSS enter/fade animation
+    // Restart enter animation without a forced layout reflow (offsetWidth hitch).
+    el.classList.add("hidden");
     el.style.animation = "none";
-    void el.offsetWidth;
-    el.style.animation = "";
-    this.animalHitUntil = performance.now() + 1400;
+    requestAnimationFrame(() => {
+      el.classList.remove("hidden");
+      el.style.animation = "";
+    });
+    this.animalHitUntil = performance.now() + 1200;
   }
 
   private updateAnimalHit() {
@@ -3909,22 +3913,25 @@ export class Game {
             }
             this.resolveCollisions();
           } else if (this.online) {
-            this.net.maybeSendPose(dt, {
-              x: this.player.state.position.x,
-              z: this.player.state.position.z,
-              h: this.player.state.heading,
-              s: this.onlineWrecked ? 0 : this.player.state.speed,
-              g: this.player.gearLabel,
-              lap: this.lap,
-            });
-            if (!this.onlineWrecked) {
-              this.resolveRemoteCollisions();
-              this.tickWreckContact(dt);
+            // Solo lobby: skip 30Hz pose spam — nobody is interpolating you.
+            if (this.remotes.size > 0) {
+              this.net.maybeSendPose(dt, {
+                x: this.player.state.position.x,
+                z: this.player.state.position.z,
+                h: this.player.state.heading,
+                s: this.onlineWrecked ? 0 : this.player.state.speed,
+                g: this.player.gearLabel,
+                lap: this.lap,
+              });
+              if (!this.onlineWrecked) {
+                this.resolveRemoteCollisions();
+                this.tickWreckContact(dt);
+              }
             }
             this.pingTimer += dt;
             if (this.pingTimer > 2) {
               this.pingTimer = 0;
-              this.net.ping();
+              // NetClient already runs a 2s ping loop — only refresh the status line.
               if (this.net.connected) {
                 this.setNetStatus(`Sats Racer · ${this.net.room}`, "ok");
               }
@@ -4012,12 +4019,16 @@ export class Game {
     this.renderer.setViewport(0, 0, w, h);
     this.renderer.autoClear = true;
     // Rearview reuses the main pass shadow map (autoUpdate=false). Rebuild
-    // once before the main pass every live frame — skipping frames lagged
-    // behind the car (rear trail / pop). Soft PCF + resolution unchanged.
-    // Home/pause/finish: casters are still — skip rebuilds after a warmup.
+    // every other live frame — soft PCF at 2048 is expensive; half-rate keeps
+    // the trail tight enough without a hitch every frame.
     const liveShadows =
       this.running && !this.paused && (!this.finished || this.onlineFinishPending || this.spectating);
-    this.renderer.shadowMap.needsUpdate = liveShadows || this.shadowNeedsWarmup;
+    if (liveShadows) {
+      this.shadowFrame += 1;
+      this.renderer.shadowMap.needsUpdate = this.shadowNeedsWarmup || this.shadowFrame % 2 === 0;
+    } else {
+      this.renderer.shadowMap.needsUpdate = this.shadowNeedsWarmup;
+    }
     if (this.shadowNeedsWarmup) this.shadowNeedsWarmup = false;
     this.renderer.render(this.scene, this.camera);
 
