@@ -19,8 +19,8 @@ export type SendGameInvitesInput = {
   password: string;
   trackId?: string;
   fromName?: string;
-  /** Friend pubkeys to DM; defaults to all friends. */
-  friendPubkeys?: string[];
+  /** Explicit friend pubkeys to DM — never defaults to everyone. */
+  friendPubkeys: string[];
 };
 
 function normalizePubkey(raw: string): string {
@@ -85,11 +85,12 @@ export async function sendGameInvites(input: SendGameInvitesInput): Promise<{
   const session = getSession();
   if (!session) throw new Error("Sign in with Nostr to invite");
   const room = sanitizeRoom(input.room);
-  const friends = listFriends(session.pubkey);
-  const targets =
-    input.friendPubkeys && input.friendPubkeys.length
-      ? input.friendPubkeys.map(normalizePubkey).filter(Boolean)
-      : friends.map((f) => f.pubkey);
+  const me = session.pubkey.toLowerCase();
+  const known = new Set(listFriends(session.pubkey).map((f) => f.pubkey));
+  // Only the callers' explicit picks — never blast the whole friends list.
+  const targets = [...new Set((input.friendPubkeys || []).map(normalizePubkey).filter(Boolean))].filter(
+    (pk) => pk !== me && known.has(pk),
+  );
   if (!targets.length) throw new Error("Pick at least one friend");
 
   const password = String(input.password || "").slice(0, 32);
@@ -104,7 +105,6 @@ export async function sendGameInvites(input: SendGameInvitesInput): Promise<{
   const failed: string[] = [];
   let sent = 0;
   for (const pk of targets) {
-    if (pk === session.pubkey.toLowerCase()) continue;
     try {
       await sendDm(pk, plaintext);
       sent += 1;
@@ -121,7 +121,7 @@ export async function sendGameInvites(input: SendGameInvitesInput): Promise<{
       password,
       trackId: input.trackId,
       fromName: input.fromName,
-      fromPubkey: session.pubkey.toLowerCase(),
+      fromPubkey: me,
     },
   };
 }

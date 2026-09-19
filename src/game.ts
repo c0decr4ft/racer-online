@@ -299,6 +299,8 @@ export class Game {
   /** Rooms are car/bike only — dev garage extras never leave the local garage. */
   private mpCreateKind: NetVehicleKind = "car";
   private mpCreateWeather: WeatherMode = "dry";
+  /** Create-room: which friends are ticked for lobby invites (explicit only). */
+  private mpInviteSelected = new Set<string>();
   /** Create-room / lobby: show weather on the menu track before the race starts. */
   private mpWeatherPreview = false;
   /** Event Mode buy-in: which QR is showing (Cashu creqA vs Lightning bolt11). */
@@ -854,7 +856,26 @@ export class Game {
       panel.classList.toggle("hidden");
       const open = !panel.classList.contains("hidden");
       const toggle = document.getElementById("mp-send-friends-toggle");
-      if (toggle) toggle.textContent = open ? "HIDE FRIENDS" : "SEND TO FRIENDS";
+      if (toggle) {
+        const n = this.mpInviteSelected.size;
+        toggle.textContent = open
+          ? "HIDE FRIENDS"
+          : n > 0
+            ? `INVITE FRIENDS (${n})`
+            : "INVITE FRIENDS";
+      }
+    });
+    document.getElementById("mp-send-friends-list")?.addEventListener("click", (e) => {
+      const btn = (e.target as HTMLElement | null)?.closest<HTMLButtonElement>("button[data-invite-pk]");
+      if (!btn) return;
+      e.preventDefault();
+      const pk = (btn.dataset.invitePk || "").toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(pk)) return;
+      if (this.mpInviteSelected.has(pk)) this.mpInviteSelected.delete(pk);
+      else this.mpInviteSelected.add(pk);
+      btn.classList.toggle("is-selected", this.mpInviteSelected.has(pk));
+      btn.setAttribute("aria-pressed", this.mpInviteSelected.has(pk) ? "true" : "false");
+      this.syncMpInviteToggleLabel();
     });
     document.getElementById("mp-join-form")!.addEventListener("submit", (e) => {
       e.preventDefault();
@@ -1328,6 +1349,8 @@ export class Game {
       this.syncMpCreateKindUi();
       this.syncMpCreateWeatherUi();
       this.renderMpCreateTracks();
+      // Fresh picks each time you open Create — never carry over a full list.
+      this.mpInviteSelected.clear();
       this.refreshMpFriendInviteUi();
       this.applyMenuWeatherPreview(this.mpCreateWeather);
     } else if (view === "lobby") {
@@ -1415,17 +1438,30 @@ export class Game {
     return this.profileNameToBoard(profile?.displayName || profile?.name);
   }
 
+  private syncMpInviteToggleLabel() {
+    const panel = document.getElementById("mp-send-friends-panel");
+    const toggle = document.getElementById("mp-send-friends-toggle");
+    if (!toggle) return;
+    const open = !!panel && !panel.classList.contains("hidden");
+    if (open) {
+      toggle.textContent = "HIDE FRIENDS";
+      return;
+    }
+    const n = this.mpInviteSelected.size;
+    toggle.textContent = n > 0 ? `INVITE FRIENDS (${n})` : "INVITE FRIENDS";
+  }
+
   private refreshMpFriendInviteUi() {
     const wrap = document.getElementById("mp-send-friends-wrap");
     const list = document.getElementById("mp-send-friends-list");
     const panel = document.getElementById("mp-send-friends-panel");
-    const toggle = document.getElementById("mp-send-friends-toggle");
     if (!wrap || !list) return;
     const session = getSession();
     if (!session) {
       wrap.classList.add("hidden");
       panel?.classList.add("hidden");
       list.innerHTML = "";
+      this.mpInviteSelected.clear();
       return;
     }
 
@@ -1434,20 +1470,24 @@ export class Game {
         wrap.classList.add("hidden");
         panel?.classList.add("hidden");
         list.innerHTML = "";
-        if (toggle) toggle.textContent = "SEND TO FRIENDS";
+        this.mpInviteSelected.clear();
+        this.syncMpInviteToggleLabel();
         return;
       }
       wrap.classList.remove("hidden");
-      const selected = new Set(
-        [...list.querySelectorAll<HTMLInputElement>('input[name="mp-invite-friend"]:checked')].map((i) => i.value),
-      );
+      // Drop stale picks that are no longer friends.
+      const allowed = new Set(friends.map((f) => f.pubkey));
+      for (const pk of [...this.mpInviteSelected]) {
+        if (!allowed.has(pk)) this.mpInviteSelected.delete(pk);
+      }
       list.innerHTML = friends
         .map((f) => {
-          const checked = selected.size ? selected.has(f.pubkey) : false;
+          const on = this.mpInviteSelected.has(f.pubkey);
           const label = (f.name || "FRIEND").toUpperCase();
-          return `<label class="mp-send-friend"><input type="checkbox" name="mp-invite-friend" value="${f.pubkey}"${checked ? " checked" : ""} /> <span class="mp-send-friend-name">${escapeHtml(label)}</span></label>`;
+          return `<button type="button" class="mp-send-friend${on ? " is-selected" : ""}" data-invite-pk="${f.pubkey}" aria-pressed="${on ? "true" : "false"}"><span class="mp-send-friend-name">${escapeHtml(label)}</span></button>`;
         })
         .join("");
+      this.syncMpInviteToggleLabel();
     };
 
     render(listFriends(session.pubkey));
@@ -1458,9 +1498,7 @@ export class Game {
   }
 
   private selectedMpInviteFriends(): string[] {
-    return [...document.querySelectorAll<HTMLInputElement>('input[name="mp-invite-friend"]:checked')]
-      .map((i) => i.value)
-      .filter(Boolean);
+    return [...this.mpInviteSelected];
   }
 
   private async createMultiplayerRoom() {
@@ -1505,6 +1543,8 @@ export class Game {
           this.showToast(
             `Sent ${result.sent} ${room} lobby request${result.sent === 1 ? "" : "s"} · first 6 in get a seat`,
           );
+          this.mpInviteSelected.clear();
+          this.refreshMpFriendInviteUi();
         }
         if (result.failed.length) {
           this.showToast(`${result.failed.length} invite${result.failed.length === 1 ? "" : "s"} failed`);
