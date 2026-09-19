@@ -761,6 +761,7 @@ async function sendChat(e: Event): Promise<void> {
 export function openSocialHub(): void {
   const hub = el("social-hub");
   if (!hub) return;
+  document.getElementById("overlay")?.classList.add("hidden");
   document.getElementById("map-select")?.classList.add("hidden");
   document.getElementById("leaderboard")?.classList.add("hidden");
   document.getElementById("garage")?.classList.add("hidden");
@@ -784,6 +785,7 @@ export function openSocialHub(): void {
 
 export function closeSocialHub(): void {
   el("social-hub")?.classList.add("hidden");
+  document.getElementById("overlay")?.classList.remove("hidden");
   stopThread?.();
   stopThread = null;
   stopInbox?.();
