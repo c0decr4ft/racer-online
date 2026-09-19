@@ -236,13 +236,19 @@ async function syncLobbyInvitesFromServer(): Promise<void> {
       const banner = el("social-invite-banner");
       if (banner) {
         banner.classList.remove("hidden");
-        banner.innerHTML = `<span>${escapeHtml(who)} invited you to <strong>${escapeHtml(inv.room)}</strong></span>
-          <button type="button" class="social-mini" data-lobby-join="${escapeHtml(inv.id)}">JOIN</button>`;
-        banner.querySelector<HTMLButtonElement>("[data-lobby-join]")?.addEventListener("click", () => {
+        banner.replaceChildren();
+        const text = document.createElement("span");
+        text.textContent = `${who} invited you to ${inv.room}`;
+        const join = document.createElement("button");
+        join.type = "button";
+        join.className = "social-mini";
+        join.textContent = "JOIN";
+        join.addEventListener("click", () => {
           banner.classList.add("hidden");
           void ackLobbyInvite(session.pubkey, inv.id);
           callbacks?.onJoinInvite({ room: inv.room, password: inv.password });
         });
+        banner.append(text, join);
       }
     }
   }
