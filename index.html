@@ -59,44 +59,38 @@
         </div>
 
         <div class="hud-bottom">
-          <div class="hud-drive">
-            <div id="tachometer" class="tachometer hidden" aria-label="Tachometer" aria-hidden="true">
-              <svg class="tach-svg" viewBox="0 0 160 92" aria-hidden="true">
-                <path
-                  class="tach-track"
-                  d="M 18 78 A 62 62 0 0 1 142 78"
-                  fill="none"
-                  pathLength="100"
-                />
-                <path
-                  class="tach-redzone"
-                  d="M 18 78 A 62 62 0 0 1 142 78"
-                  fill="none"
-                  pathLength="100"
-                />
-                <path
-                  class="tach-fill"
-                  id="tach-fill"
-                  d="M 18 78 A 62 62 0 0 1 142 78"
-                  fill="none"
-                  pathLength="100"
-                />
-                <line
-                  id="tach-needle"
-                  class="tach-needle"
-                  x1="80"
-                  y1="78"
-                  x2="80"
-                  y2="24"
-                />
-                <circle class="tach-hub" cx="80" cy="78" r="4.5" />
-              </svg>
-              <div class="tach-meta">
-                <span class="tach-label">RPM</span>
-                <span id="tach-shift" class="tach-shift">SHIFT</span>
-              </div>
-            </div>
-            <div class="hud-drive-readouts">
+          <div id="speed-dial" class="speed-dial" aria-label="Speed dial">
+            <svg class="speed-dial-svg" viewBox="0 0 200 128" aria-hidden="true">
+              <path
+                class="speed-dial-track"
+                d="M 22 102 A 78 78 0 0 1 178 102"
+                fill="none"
+                pathLength="100"
+              />
+              <path
+                class="speed-dial-redzone"
+                d="M 22 102 A 78 78 0 0 1 178 102"
+                fill="none"
+                pathLength="100"
+              />
+              <path
+                class="speed-dial-fill"
+                id="tach-fill"
+                d="M 22 102 A 78 78 0 0 1 178 102"
+                fill="none"
+                pathLength="100"
+              />
+              <line
+                id="tach-needle"
+                class="speed-dial-needle"
+                x1="100"
+                y1="102"
+                x2="100"
+                y2="34"
+              />
+              <circle class="speed-dial-hub" cx="100" cy="102" r="5" />
+            </svg>
+            <div class="speed-dial-readouts">
               <div class="speed-block">
                 <div id="speed">0</div>
                 <div class="unit">KM/H</div>
@@ -106,6 +100,7 @@
                 <div id="gear">N</div>
               </div>
             </div>
+            <span id="tach-shift" class="tach-shift">SHIFT</span>
           </div>
           <div class="best-block">
             <div class="label">BEST</div>
@@ -169,7 +164,7 @@
       <div id="tutorial-coach-pointer" class="tutorial-coach-pointer hidden" aria-hidden="true">▲</div>
 
       <div class="version-switcher" id="version-switcher">
-        <span id="version-badge" class="version-badge" aria-label="Version 1.0.4">v1.0.4</span>
+        <span id="version-badge" class="version-badge" aria-label="Version 1.0.5">v1.0.5</span>
       </div>
 
       <div id="home-corner-btns" class="home-corner-btns">

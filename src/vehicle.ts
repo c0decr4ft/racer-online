@@ -325,15 +325,28 @@ export class Vehicle {
 
   /**
    * Normalized engine revs in the current gear (0 idle → ~1 redline).
-   * Matches the audio speed→RPM curve so the tach and engine note agree.
+   * Maps speed through the gear's pull band so the needle climbs through
+   * the useful rev range instead of sitting low until the limiter.
    */
   get rpmNorm(): number {
     const gear = this.state.gear;
     const kmh = this.kmh;
-    if (gear === "N") return kmh < 2 ? 0.18 : Math.min(1, kmh / 40);
-    const max =
-      gear === "R" ? GEAR_STATS.R.max * 3.6 : GEAR_STATS[gear].max * 3.6;
-    return Math.max(0, Math.min(1.05, kmh / Math.max(8, max)));
+    if (gear === "N") return kmh < 2 ? 0.16 : Math.min(0.95, 0.2 + kmh / 55);
+    if (gear === "R") {
+      const max = GEAR_STATS.R.max * 3.6;
+      return Math.max(0, Math.min(1, kmh / Math.max(6, max)));
+    }
+    const stats = GEAR_STATS[gear];
+    const maxKmh = stats.max * 3.6;
+    const pullKmh = stats.pullFrom * 3.6;
+    // Below the pull band → needle stays low (lugging). Through the band →
+    // sweep 0.2→1.0 so redline lines up with the gear ceiling.
+    if (kmh <= pullKmh * 0.85) {
+      return Math.max(0.08, (kmh / Math.max(8, pullKmh)) * 0.22);
+    }
+    const span = Math.max(8, maxKmh - pullKmh * 0.85);
+    const t = (kmh - pullKmh * 0.85) / span;
+    return Math.max(0.2, Math.min(1.05, 0.2 + t * 0.85));
   }
 
   get gearLabel(): string {
