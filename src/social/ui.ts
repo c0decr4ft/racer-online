@@ -60,6 +60,7 @@ let stopInbox: (() => void) | null = null;
 let threadMessages: DmMessage[] = [];
 let searchTimer: number | null = null;
 let requestPollTimer: number | null = null;
+let searchSeq = 0;
 
 function el<T extends HTMLElement>(id: string): T | null {
   return document.getElementById(id) as T | null;
@@ -285,8 +286,8 @@ function showSocialView(tab: Tab): void {
   }
   if (tab === "find") {
     const q = (el<HTMLInputElement>("social-find-input")?.value || "").trim();
-    if (q.length >= 2) void runSearch(q);
-    else clearFindList();
+    if (q.length >= 1) void runSearch(q);
+    else void showBrowsePlayers();
   }
   if (tab === "requests") {
     void syncFriendRequestsFromServer().then(() => renderRequests());
@@ -309,6 +310,72 @@ function clearFindList(): void {
   const status = el("social-find-status");
   if (status) status.textContent = "Type a username to search";
   if (list) list.innerHTML = `<p class="social-empty">Search to find racers</p>`;
+}
+
+function renderFindPlayers(players: DirectoryPlayer[], onlineSet: Set<string>, statusText: string): void {
+  const list = el("social-find-list");
+  const status = el("social-find-status");
+  if (status) status.textContent = statusText;
+  if (!list) return;
+  list.innerHTML = players.length
+    ? players.map((p) => playerRowHtml(p, { online: onlineSet.has(p.pubkey) })).join("")
+    : `<p class="social-empty">No matches</p>`;
+  bindRowActions(list);
+}
+
+/** Recent / online racers when the Find box is empty. */
+async function showBrowsePlayers(): Promise<void> {
+  const list = el("social-find-list");
+  const status = el("social-find-status");
+  if (!list) return;
+  const seq = ++searchSeq;
+  if (status) status.textContent = "Loading racers…";
+  const result = await searchPlayers("");
+  if (seq !== searchSeq) return;
+  const session = getSession();
+  const players = result.players.filter((p) => p.pubkey !== session?.pubkey.toLowerCase()).slice(0, 24);
+  const onlineSet = new Set(result.online.map((p) => p.pubkey));
+  if (result.source === "empty") {
+    clearFindList();
+    if (status) status.textContent = "Search unavailable — is the game server online?";
+    return;
+  }
+  renderFindPlayers(
+    players,
+    onlineSet,
+    players.length
+      ? `${players.length} recent racer${players.length === 1 ? "" : "s"} — type to filter`
+      : "Type a username to search",
+  );
+}
+
+async function runSearch(query: string): Promise<void> {
+  const list = el("social-find-list");
+  const status = el("social-find-status");
+  if (!list) return;
+  const q = query.trim();
+  if (q.length < 1) {
+    void showBrowsePlayers();
+    return;
+  }
+  const seq = ++searchSeq;
+  if (status) status.textContent = "Searching…";
+  const result = await searchPlayers(q);
+  if (seq !== searchSeq) return;
+  const session = getSession();
+  const players = result.players.filter((p) => p.pubkey !== session?.pubkey.toLowerCase());
+  const onlineSet = new Set(result.online.map((p) => p.pubkey));
+  if (result.source === "empty") {
+    renderFindPlayers([], onlineSet, "Search unavailable — is the game server online?");
+    return;
+  }
+  renderFindPlayers(
+    players,
+    onlineSet,
+    players.length
+      ? `${players.length} match${players.length === 1 ? "" : "es"}`
+      : "No players found",
+  );
 }
 
 function playerRowHtml(
@@ -337,36 +404,6 @@ function playerRowHtml(
     </div>
     <div class="social-row-actions">${actions}</div>
   </div>`;
-}
-
-async function runSearch(query: string): Promise<void> {
-  const list = el("social-find-list");
-  const status = el("social-find-status");
-  if (!list) return;
-  const q = query.trim();
-  if (q.length < 2) {
-    clearFindList();
-    return;
-  }
-  if (status) status.textContent = "Searching…";
-  const result = await searchPlayers(q);
-  const session = getSession();
-  const players = result.players.filter((p) => p.pubkey !== session?.pubkey.toLowerCase());
-  const onlineSet = new Set(result.online.map((p) => p.pubkey));
-  if (status) {
-    status.textContent =
-      result.source === "empty"
-        ? "Search unavailable — is the game server online?"
-        : players.length
-          ? `${players.length} match${players.length === 1 ? "" : "es"}`
-          : "No players found";
-  }
-  list.innerHTML = players.length
-    ? players
-        .map((p: DirectoryPlayer) => playerRowHtml(p, { online: onlineSet.has(p.pubkey) }))
-        .join("")
-    : `<p class="social-empty">No matches</p>`;
-  bindRowActions(list);
 }
 
 function renderFriends(): void {
@@ -501,8 +538,8 @@ async function declineFriendRequest(pubkey: string, name: string): Promise<void>
 async function refreshActiveLists(): Promise<void> {
   if (activeTab === "find") {
     const q = (el<HTMLInputElement>("social-find-input")?.value || "").trim();
-    if (q.length >= 2) await runSearch(q);
-    else clearFindList();
+    if (q.length >= 1) await runSearch(q);
+    else await showBrowsePlayers();
   }
   if (activeTab === "requests") renderRequests();
   if (activeTab === "friends") renderFriends();

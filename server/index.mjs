@@ -1456,17 +1456,24 @@ function searchPlayers(query) {
     name: row.name,
     lastSeen: row.lastSeen,
   }));
+  // Always fold currently-online racers into the searchable set.
+  for (const online of listOnlinePlayers()) {
+    if (rows.some((r) => r.pubkey === online.pubkey)) continue;
+    rows.push({ pubkey: online.pubkey, name: online.name, lastSeen: online.at || Date.now() });
+  }
+  const match = (r) => {
+    if (!q) return true;
+    if (r.name.toLowerCase().includes(q)) return true;
+    if (pkHint && (r.pubkey === pkHint || r.pubkey.startsWith(pkHint) || r.pubkey.includes(pkHint))) {
+      return true;
+    }
+    return r.pubkey.startsWith(q) || r.pubkey.includes(q);
+  };
   if (!q) {
     return rows.sort((a, b) => b.lastSeen - a.lastSeen).slice(0, 40);
   }
   return rows
-    .filter((r) => {
-      if (r.name.toLowerCase().includes(q)) return true;
-      if (pkHint && (r.pubkey === pkHint || r.pubkey.startsWith(pkHint) || r.pubkey.includes(pkHint))) {
-        return true;
-      }
-      return r.pubkey.startsWith(q) || r.pubkey.includes(q);
-    })
+    .filter(match)
     .sort((a, b) => {
       const an = a.name.toLowerCase().startsWith(q) ? 0 : 1;
       const bn = b.name.toLowerCase().startsWith(q) ? 0 : 1;
