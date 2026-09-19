@@ -345,6 +345,9 @@ export class Game {
   private el = {
     speed: document.getElementById("speed")!,
     gear: document.getElementById("gear")!,
+    tachometer: document.getElementById("tachometer"),
+    tachFill: document.getElementById("tach-fill"),
+    tachNeedle: document.getElementById("tach-needle"),
     lap: document.getElementById("lap")!,
     time: document.getElementById("time")!,
     best: document.getElementById("best")!,
@@ -5634,6 +5637,7 @@ export class Game {
     this.lastHudAt = hudNow;
     this.el.speed.textContent = String(Math.round(this.player.kmh));
     this.el.gear.textContent = this.player.gearLabel;
+    this.updateTachometer();
     // Practice: current lap clock; race: total race time — frozen at 0 during grid hold
     const clockMs =
       this.gridHeld || this.raceStart === 0
@@ -5681,6 +5685,33 @@ export class Game {
         }
       }
     }
+  }
+
+  /** Semicircle tach above the speed — redline pulse when it’s time to upshift. */
+  private updateTachometer() {
+    const tach = this.el.tachometer;
+    if (!tach) return;
+    const kind = this.player?.mesh.userData.kind as string | undefined;
+    const show =
+      !!this.player && this.running && !this.finished && kind !== "bird";
+    tach.classList.toggle("hidden", !show);
+    tach.setAttribute("aria-hidden", show ? "false" : "true");
+    if (!show || !this.player) return;
+
+    const rpm = this.player.rpmNorm;
+    const fill = this.el.tachFill;
+    if (fill) {
+      const pct = Math.max(0, Math.min(100, rpm * 100));
+      fill.setAttribute("stroke-dasharray", `${pct} 100`);
+    }
+    const needle = this.el.tachNeedle;
+    if (needle) {
+      // Arc runs left→right; needle starts straight up at mid, sweeps ±90°.
+      const angle = -90 + Math.max(0, Math.min(1, rpm)) * 180;
+      needle.setAttribute("transform", `rotate(${angle} 80 78)`);
+    }
+    tach.classList.toggle("is-hot", rpm >= 0.7 && rpm < 0.82);
+    tach.classList.toggle("is-redline", rpm >= 0.82);
   }
 
   /** Sample live track path into 2D bounds — stays correct if the circuit changes. */

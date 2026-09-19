@@ -323,6 +323,19 @@ export class Vehicle {
     return Math.abs(this.state.speed) * 3.6;
   }
 
+  /**
+   * Normalized engine revs in the current gear (0 idle → ~1 redline).
+   * Matches the audio speed→RPM curve so the tach and engine note agree.
+   */
+  get rpmNorm(): number {
+    const gear = this.state.gear;
+    const kmh = this.kmh;
+    if (gear === "N") return kmh < 2 ? 0.18 : Math.min(1, kmh / 40);
+    const max =
+      gear === "R" ? GEAR_STATS.R.max * 3.6 : GEAR_STATS[gear].max * 3.6;
+    return Math.max(0, Math.min(1.05, kmh / Math.max(8, max)));
+  }
+
   get gearLabel(): string {
     return String(this.state.gear);
   }
