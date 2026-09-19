@@ -5776,8 +5776,8 @@ export class Game {
     this.ensureMinimapTrack();
 
     const dpr = Math.min(devicePixelRatio, 2);
-    const cssW = canvas.clientWidth || 148;
-    const cssH = canvas.clientHeight || 148;
+    const cssW = canvas.clientWidth || 190;
+    const cssH = canvas.clientHeight || 190;
     const w = Math.round(cssW * dpr);
     const h = Math.round(cssH * dpr);
     if (canvas.width !== w || canvas.height !== h) {

@@ -132,7 +132,7 @@ html.touch-mode [contenteditable="true"] {
   padding-left: 4.2rem;
 }
 
-/* Mute hides while racing — pull SATS RACER into the top-left corner */
+/* Mute hides while racing — pull the map into the top-left corner */
 body:has(#mute-btn.hidden) .hud-top {
   padding-top: 0.65rem;
   padding-left: 0.85rem;
@@ -140,10 +140,32 @@ body:has(#mute-btn.hidden) .hud-top {
 
 .hud-top-left {
   display: flex;
-  align-items: center;
-  gap: 0.85rem;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.55rem;
   min-width: 0;
   flex: 1 1 auto;
+}
+
+/* Track map — top-left (replaces the old SATS RACER brand) */
+.minimap {
+  position: relative;
+  left: auto;
+  bottom: auto;
+  top: auto;
+  width: 190px;
+  height: 190px;
+  flex: 0 0 auto;
+  border-radius: 6px;
+  border: 1px solid rgba(242, 245, 250, 0.28);
+  background: rgba(8, 12, 20, 0.72);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  z-index: 6;
+}
+
+.minimap.hidden {
+  display: none;
 }
 
 .hud-stats {
@@ -4617,25 +4639,6 @@ button:active {
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
 }
 
-/* Track map — bottom-left, sits above the speed dial */
-.minimap {
-  position: absolute;
-  left: 1.15rem;
-  bottom: 9.2rem;
-  width: 148px;
-  height: 148px;
-  border-radius: 6px;
-  border: 1px solid rgba(242, 245, 250, 0.28);
-  background: rgba(8, 12, 20, 0.72);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
-  pointer-events: none;
-  z-index: 6;
-}
-
-.minimap.hidden {
-  display: none;
-}
-
 @media (max-width: 640px) {
   .hud-top,
   .hud-bottom {
@@ -4651,10 +4654,8 @@ button:active {
   }
 
   .minimap {
-    width: 112px;
-    height: 112px;
-    bottom: 8.2rem;
-    left: 0.85rem;
+    width: 150px;
+    height: 150px;
   }
 
   .speed-dial {
@@ -4772,9 +4773,8 @@ html.touch-mode .hud-top {
   padding-right: max(1rem, env(safe-area-inset-right));
 }
 
-html.touch-mode .minimap,
 html.touch-mode .rearview-frame {
-  bottom: 11.4rem;
+  bottom: 8.6rem;
 }
 
 html.touch-mode .wall-block {
@@ -4821,10 +4821,12 @@ html.touch-mode .wall-block {
     padding-bottom: 5.2rem;
   }
 
-  html.touch-mode .minimap,
   html.touch-mode .rearview-frame {
-    bottom: 9.4rem;
-    width: 96px;
-    height: 96px;
+    bottom: 6.4rem;
+  }
+
+  html.touch-mode .minimap {
+    width: 120px;
+    height: 120px;
   }
 }
