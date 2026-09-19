@@ -161,6 +161,132 @@ body:has(#mute-btn.hidden) .hud-top {
   padding-bottom: 1.5rem;
 }
 
+.hud-drive {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.hud-drive-readouts {
+  display: flex;
+  align-items: flex-end;
+  gap: 1.1rem;
+}
+
+/* Semicircle tach — sits just above the speed so you see when to upshift */
+.tachometer {
+  position: relative;
+  width: 9.5rem;
+  height: 5.5rem;
+  margin: 0 0 -0.15rem 0.1rem;
+  filter: drop-shadow(0 4px 14px rgba(0, 0, 0, 0.45));
+}
+
+.tachometer.hidden {
+  display: none;
+}
+
+.tach-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+  overflow: visible;
+}
+
+.tach-track {
+  stroke: rgba(242, 245, 250, 0.18);
+  stroke-width: 9;
+  stroke-linecap: round;
+}
+
+.tach-redzone {
+  stroke: rgba(255, 59, 46, 0.55);
+  stroke-width: 9;
+  stroke-linecap: butt;
+  stroke-dasharray: 18 100;
+  stroke-dashoffset: -82;
+}
+
+.tach-fill {
+  stroke: #3dbbff;
+  stroke-width: 9;
+  stroke-linecap: round;
+  stroke-dasharray: 0 100;
+  transition: stroke 0.08s linear;
+}
+
+.tachometer.is-hot .tach-fill {
+  stroke: #ffc857;
+}
+
+.tachometer.is-redline .tach-fill {
+  stroke: #ff3b2e;
+  filter: drop-shadow(0 0 6px rgba(255, 59, 46, 0.75));
+}
+
+.tach-needle {
+  stroke: #fff;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+}
+
+.tach-hub {
+  fill: #fff;
+  stroke: rgba(8, 12, 20, 0.9);
+  stroke-width: 1.5;
+}
+
+.tach-meta {
+  position: absolute;
+  left: 50%;
+  bottom: 0.15rem;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.05rem;
+  pointer-events: none;
+}
+
+.tach-label {
+  font-family: var(--font-display);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  color: rgba(242, 245, 250, 0.55);
+}
+
+.tach-shift {
+  font-family: var(--font-display);
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.18em;
+  color: #ff3b2e;
+  opacity: 0;
+  transform: scale(0.92);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  text-shadow: 0 0 12px rgba(255, 59, 46, 0.65);
+}
+
+.tachometer.is-redline .tach-shift {
+  opacity: 1;
+  transform: scale(1);
+  animation: tach-shift-pulse 0.45s ease-in-out infinite alternate;
+}
+
+@keyframes tach-shift-pulse {
+  from {
+    opacity: 0.75;
+    filter: brightness(1);
+  }
+  to {
+    opacity: 1;
+    filter: brightness(1.25);
+  }
+}
+
 .brand {
   font-family: var(--font-display);
   font-weight: 900;
@@ -4475,11 +4601,11 @@ button:active {
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
 }
 
-/* Track map — bottom-left, sits above the speed readout */
+/* Track map — bottom-left, sits above the tach + speed readout */
 .minimap {
   position: absolute;
   left: 1.15rem;
-  bottom: 6.4rem;
+  bottom: 11.6rem;
   width: 148px;
   height: 148px;
   border-radius: 6px;
@@ -4511,8 +4637,13 @@ button:active {
   .minimap {
     width: 112px;
     height: 112px;
-    bottom: 5.4rem;
+    bottom: 10.2rem;
     left: 0.85rem;
+  }
+
+  .tachometer {
+    width: 7.8rem;
+    height: 4.5rem;
   }
 }
 
@@ -4628,7 +4759,7 @@ html.touch-mode .hud-top {
 
 html.touch-mode .minimap,
 html.touch-mode .rearview-frame {
-  bottom: 8.6rem;
+  bottom: 13.2rem;
 }
 
 html.touch-mode .wall-block {
@@ -4677,7 +4808,7 @@ html.touch-mode .wall-block {
 
   html.touch-mode .minimap,
   html.touch-mode .rearview-frame {
-    bottom: 6.4rem;
+    bottom: 10.8rem;
     width: 96px;
     height: 96px;
   }
