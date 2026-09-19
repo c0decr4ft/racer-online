@@ -1,9 +1,10 @@
 /**
  * Instant game invites: post one lobby invite per selected friend to the game
- * server (never fan-out to the whole friends list). Recipients poll GET.
+ * server (never fan-out to the whole friends list). Recipients poll GET with a
+ * registered inbox key (passwords are never returned without that key).
  * Deep-link join still uses ?room=&pass=.
  */
-import { getSession } from "../nostr/session";
+import { getSession, type NostrSession } from "../nostr/session";
 import { apiUrl } from "../net/apiBase";
 import { parseInvitePayload, type RaceInvitePayload } from "./dm";
 import { listFriends } from "./friends";
@@ -35,6 +36,14 @@ export type LobbyInviteRow = {
   at: number;
 };
 
+export const LOBBY_AUTH_KIND = 30078;
+export const LOBBY_AUTH_D_TAG = "racer-online:lobby-invites";
+
+const INBOX_KEY_STORAGE = "racer-lobby-inbox-key-v1";
+
+/** Avoid re-signing register on every 12s poll once this browser is bound. */
+const registeredPubkeys = new Set<string>();
+
 function normalizePubkey(raw: string): string {
   const hex = String(raw || "")
     .trim()
@@ -49,6 +58,74 @@ function sanitizeRoom(raw: string): string {
       .trim()
       .slice(0, 24) || "circuit"
   );
+}
+
+function randomInboxKey(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Durable per-browser inbox key — proves GET/ack ownership without per-poll signing. */
+export function getOrCreateLobbyInboxKey(): string {
+  try {
+    const existing = localStorage.getItem(INBOX_KEY_STORAGE);
+    if (existing && /^[0-9a-f]{64}$/i.test(existing.trim())) {
+      return existing.trim().toLowerCase();
+    }
+  } catch {
+    /* ignore */
+  }
+  const key = randomInboxKey();
+  try {
+    localStorage.setItem(INBOX_KEY_STORAGE, key);
+  } catch {
+    /* ignore */
+  }
+  return key;
+}
+
+function lobbyAuthTemplate(action: string) {
+  return {
+    kind: LOBBY_AUTH_KIND,
+    created_at: Math.floor(Date.now() / 1000),
+    content: JSON.stringify({ action, at: Date.now() }),
+    tags: [
+      ["d", LOBBY_AUTH_D_TAG],
+      ["t", "racer-online"],
+    ],
+  };
+}
+
+async function signLobbyAuth(session: NostrSession, action: string): Promise<unknown> {
+  return session.signer.signEvent(lobbyAuthTemplate(action));
+}
+
+/** Bind this browser's inbox key to the signed-in pubkey (one signature). */
+export async function registerLobbyInbox(session?: NostrSession | null): Promise<boolean> {
+  const s = session ?? getSession();
+  if (!s) return false;
+  const pk = normalizePubkey(s.pubkey);
+  if (!pk) return false;
+  if (registeredPubkeys.has(pk)) return true;
+  const url = apiUrl("/lobby-invites");
+  if (!url) return false;
+  const inboxKey = getOrCreateLobbyInboxKey();
+  try {
+    const event = await signLobbyAuth(s, "register");
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ action: "register", from: pk, inboxKey, event }),
+    });
+    if (!res.ok) return false;
+    const data = (await res.json().catch(() => null)) as { ok?: unknown } | null;
+    if (data?.ok !== true) return false;
+    registeredPubkeys.add(pk);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function buildInviteJoinUrl(invite: { room: string; password?: string; event?: boolean }): string {
@@ -109,6 +186,7 @@ export async function sendGameInvites(input: SendGameInvitesInput): Promise<{
   const url = apiUrl("/lobby-invites");
   if (!url) throw new Error("Game server unavailable — cannot send invites");
 
+  const event = await signLobbyAuth(session, "send");
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -122,6 +200,7 @@ export async function sendGameInvites(input: SendGameInvitesInput): Promise<{
       // Server accepts only this array — no "all friends" path.
       to: targets,
       friendPubkeys: targets,
+      event,
     }),
   });
   if (!res.ok) {
@@ -161,44 +240,74 @@ export async function fetchLobbyInvites(pubkey: string): Promise<LobbyInviteRow[
   const pk = normalizePubkey(pubkey);
   const url = apiUrl(`/lobby-invites?pubkey=${encodeURIComponent(pk)}`);
   if (!url || !pk) return [];
+  const inboxKey = getOrCreateLobbyInboxKey();
+  const ok = await registerLobbyInbox();
+  if (!ok) return [];
   try {
-    const res = await fetch(url, { cache: "no-store", headers: { Accept: "application/json" } });
-    if (!res.ok) return [];
-    const data = (await res.json()) as { invites?: unknown };
-    if (!Array.isArray(data.invites)) return [];
-    const out: LobbyInviteRow[] = [];
-    for (const row of data.invites) {
-      if (!row || typeof row !== "object") continue;
-      const r = row as Record<string, unknown>;
-      const id = String(r.id || "").trim();
-      const from = normalizePubkey(String(r.from || ""));
-      const room = sanitizeRoom(String(r.room || ""));
-      if (!id || !from || !room) continue;
-      out.push({
-        id,
-        from,
-        fromName: String(r.fromName || "RACER").slice(0, 24),
-        room,
-        password: String(r.password || "").slice(0, 32),
-        trackId: typeof r.trackId === "string" ? r.trackId : undefined,
-        at: typeof r.at === "number" && Number.isFinite(r.at) ? Math.round(r.at) : Date.now(),
+    const res = await fetch(url, {
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        "X-Lobby-Inbox-Key": inboxKey,
+      },
+    });
+    if (res.status === 401) {
+      registeredPubkeys.delete(pk);
+      const retried = await registerLobbyInbox();
+      if (!retried) return [];
+      const res2 = await fetch(url, {
+        cache: "no-store",
+        headers: {
+          Accept: "application/json",
+          "X-Lobby-Inbox-Key": inboxKey,
+        },
       });
+      if (!res2.ok) return [];
+      return parseInviteRows(await res2.json());
     }
-    return out;
+    if (!res.ok) return [];
+    return parseInviteRows(await res.json());
   } catch {
     return [];
   }
+}
+
+function parseInviteRows(data: unknown): LobbyInviteRow[] {
+  if (!data || typeof data !== "object") return [];
+  const invites = (data as { invites?: unknown }).invites;
+  if (!Array.isArray(invites)) return [];
+  const out: LobbyInviteRow[] = [];
+  for (const row of invites) {
+    if (!row || typeof row !== "object") continue;
+    const r = row as Record<string, unknown>;
+    const id = String(r.id || "").trim();
+    const from = normalizePubkey(String(r.from || ""));
+    const room = sanitizeRoom(String(r.room || ""));
+    if (!id || !from || !room) continue;
+    out.push({
+      id,
+      from,
+      fromName: String(r.fromName || "RACER").slice(0, 24),
+      room,
+      password: String(r.password || "").slice(0, 32),
+      trackId: typeof r.trackId === "string" ? r.trackId : undefined,
+      at: typeof r.at === "number" && Number.isFinite(r.at) ? Math.round(r.at) : Date.now(),
+    });
+  }
+  return out;
 }
 
 export async function ackLobbyInvite(pubkey: string, id: string): Promise<void> {
   const pk = normalizePubkey(pubkey);
   const url = apiUrl("/lobby-invites");
   if (!url || !pk || !id) return;
+  const inboxKey = getOrCreateLobbyInboxKey();
+  await registerLobbyInbox();
   try {
     await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ action: "ack", from: pk, id }),
+      body: JSON.stringify({ action: "ack", from: pk, id, inboxKey }),
     });
   } catch {
     /* ignore */
