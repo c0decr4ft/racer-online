@@ -2723,13 +2723,13 @@ input:focus-visible,
 /* ── Friends hub — same language as multiplayer views ─────────── */
 #social-hub .overlay-inner {
   padding: 0.75rem 1rem;
-  max-width: min(28rem, 96vw);
+  max-width: min(34rem, 96vw);
 }
 
 .social-panel {
-  width: min(100%, 26rem);
+  width: min(100%, 32rem);
   max-width: 100%;
-  max-height: min(88vh, 42rem);
+  max-height: min(92vh, 52rem);
   overflow: auto;
   overflow-x: hidden;
   display: flex;
@@ -2902,8 +2902,8 @@ button.btn-ghost.social-mini {
   display: flex;
   flex-direction: column;
   flex: 1;
-  min-height: 13rem;
-  max-height: min(48vh, 22rem);
+  min-height: min(52vh, 28rem);
+  max-height: min(68vh, 36rem);
   border: 1px solid var(--line);
   background:
     linear-gradient(180deg, rgba(8, 12, 20, 0.92), rgba(6, 10, 16, 0.88)),
@@ -2930,7 +2930,7 @@ button.btn-ghost.social-mini {
 
 .social-chat-stack > .social-chat-thread {
   flex: 1;
-  min-height: 13rem;
+  min-height: min(52vh, 28rem);
 }
 
 .social-chat-stack > #social-chat-back,
@@ -2947,13 +2947,13 @@ button.btn-ghost.social-mini {
 .social-chat-messages {
   display: flex;
   flex-direction: column;
-  gap: 0.45rem;
+  gap: 0.55rem;
   width: 100%;
   flex: 1;
   min-height: 0;
   overflow: auto;
   margin: 0;
-  padding: 0.75rem 0.65rem;
+  padding: 0.9rem 0.8rem;
   border: none;
   background: transparent;
 }
@@ -2968,13 +2968,13 @@ button.btn-ghost.social-mini {
 }
 
 .social-msg-bubble {
-  max-width: min(78%, 16rem);
-  padding: 0.5rem 0.65rem 0.4rem;
+  max-width: min(85%, 22rem);
+  padding: 0.62rem 0.8rem 0.5rem;
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: rgba(255, 255, 255, 0.08);
   font-family: var(--font-ui);
-  font-size: 0.92rem;
-  line-height: 1.35;
+  font-size: 1rem;
+  line-height: 1.4;
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
@@ -3031,10 +3031,10 @@ button.btn-ghost.social-mini {
 .social-chat-compose {
   display: grid;
   grid-template-columns: 1fr auto;
-  gap: 0.45rem;
+  gap: 0.5rem;
   width: 100%;
   align-items: stretch;
-  padding: 0.55rem;
+  padding: 0.7rem 0.65rem;
   border: none;
   background: transparent;
 }
@@ -3046,8 +3046,8 @@ button.btn-ghost.social-mini {
   background: transparent;
   color: var(--text);
   font-family: var(--font-ui);
-  font-size: 1.05rem;
-  padding: 0.55rem 0.4rem;
+  font-size: 1.12rem;
+  padding: 0.7rem 0.45rem;
   outline: none;
 }
 
