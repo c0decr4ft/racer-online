@@ -77,6 +77,7 @@ const LEADERBOARD_PATH = join(DIR, "leaderboard.json");
 const PRESENCE_PATH = join(DIR, "presence.json");
 const PLAYERS_PATH = join(DATA_DIR, "players.json");
 const FRIEND_REQUESTS_PATH = join(DATA_DIR, "friend-requests.json");
+const LOBBY_INVITES_PATH = join(DATA_DIR, "lobby-invites.json");
 const FEEDBACK_PATH = join(DATA_DIR, "feedback.json");
 const FEEDBACK_LEGACY_PATH = join(DIR, "feedback.json");
 /**
@@ -1490,6 +1491,90 @@ function friendRequestsForPubkey(pubkey) {
         : { pubkey: r.a, name: r.aName, at: r.at },
     );
   return { incoming, outgoing, accepted, friends };
+}
+
+/** Targeted lobby invites — one row per recipient (never fan-out to all friends). */
+const LOBBY_INVITE_MAX = 2_000;
+const LOBBY_INVITE_TTL_MS = 2 * 60 * 60 * 1000;
+
+function emptyLobbyInvites() {
+  return { invites: [] };
+}
+
+function loadLobbyInvites() {
+  try {
+    if (!existsSync(LOBBY_INVITES_PATH)) return emptyLobbyInvites();
+    return normalizeLobbyInvites(JSON.parse(readFileSync(LOBBY_INVITES_PATH, "utf8")));
+  } catch {
+    return emptyLobbyInvites();
+  }
+}
+
+function normalizeLobbyInvites(data) {
+  const store = emptyLobbyInvites();
+  if (!data || typeof data !== "object") return store;
+  const list = Array.isArray(data.invites) ? data.invites : [];
+  const now = Date.now();
+  const byId = new Map();
+  for (const row of list) {
+    if (!row || typeof row !== "object") continue;
+    const from = normalizePubkeyHex(row.from);
+    const to = normalizePubkeyHex(row.to);
+    if (!from || !to || from === to) continue;
+    const room = String(row.room || "")
+      .replace(/[^\w\- ]/g, "")
+      .trim()
+      .slice(0, 24);
+    if (!room) continue;
+    const at = typeof row.at === "number" && Number.isFinite(row.at) ? Math.round(row.at) : now;
+    if (now - at > LOBBY_INVITE_TTL_MS) continue;
+    const id =
+      typeof row.id === "string" && row.id.trim()
+        ? row.id.trim().slice(0, 80)
+        : `${from.slice(0, 8)}-${to.slice(0, 8)}-${at}-${room}`;
+    byId.set(id, {
+      id,
+      from,
+      to,
+      fromName: sanitizePlayerName(row.fromName),
+      room,
+      password: String(row.password || "").slice(0, 32),
+      trackId: typeof row.trackId === "string" ? row.trackId.slice(0, 40) : "",
+      at,
+    });
+  }
+  store.invites = [...byId.values()].sort((a, b) => b.at - a.at).slice(0, LOBBY_INVITE_MAX);
+  return store;
+}
+
+function saveLobbyInvites(store) {
+  const body = normalizeLobbyInvites(store);
+  try {
+    if (DATA_DIR !== DIR) mkdirSync(DATA_DIR, { recursive: true });
+    writeFileSync(LOBBY_INVITES_PATH, JSON.stringify(body, null, 2));
+  } catch (err) {
+    console.warn(`[lobby-invites] write failed:`, LOBBY_INVITES_PATH, err?.message || err);
+  }
+  return body;
+}
+
+let lobbyInvitesStore = loadLobbyInvites();
+
+function lobbyInvitesForPubkey(pubkey) {
+  const pk = normalizePubkeyHex(pubkey);
+  if (!pk) return [];
+  lobbyInvitesStore = normalizeLobbyInvites(lobbyInvitesStore);
+  return lobbyInvitesStore.invites
+    .filter((r) => r.to === pk)
+    .map((r) => ({
+      id: r.id,
+      from: r.from,
+      fromName: r.fromName,
+      room: r.room,
+      password: r.password,
+      trackId: r.trackId,
+      at: r.at,
+    }));
 }
 
 /** Upsert directory row — keep the better display name and newest lastSeen. */
@@ -3157,6 +3242,98 @@ const httpServer = createServer(async (req, res) => {
     }
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: true, ...friendRequestsForPubkey(pubkey), source: "server" }));
+    return;
+  }
+
+  if (url.pathname === "/api/lobby-invites" && req.method === "GET") {
+    if (tooMany(res, req, "lobby-invites", 60, 60_000)) return;
+    const pubkey = normalizePubkeyHex(url.searchParams.get("pubkey") || "");
+    if (!pubkey) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "bad pubkey" }));
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true, invites: lobbyInvitesForPubkey(pubkey), source: "server" }));
+    return;
+  }
+
+  if (url.pathname === "/api/lobby-invites" && req.method === "POST") {
+    if (tooMany(res, req, "lobby-invites-write", 30, 60_000)) return;
+    const body = await readBody(req, 16 * 1024);
+    if (body === null) {
+      res.writeHead(413, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "payload too large" }));
+      return;
+    }
+    try {
+      const data = JSON.parse(body || "{}");
+      const action = String(data.action || "send").trim().toLowerCase();
+      const from = normalizePubkeyHex(data.from);
+      if (!from) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "bad pubkey" }));
+        return;
+      }
+      const now = Date.now();
+
+      if (action === "ack") {
+        const id = String(data.id || "").trim().slice(0, 80);
+        if (!id) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "bad id" }));
+          return;
+        }
+        // Only the recipient can clear their invite.
+        lobbyInvitesStore.invites = lobbyInvitesStore.invites.filter(
+          (r) => !(r.id === id && r.to === from),
+        );
+        lobbyInvitesStore = saveLobbyInvites(lobbyInvitesStore);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, invites: lobbyInvitesForPubkey(from) }));
+        return;
+      }
+
+      // action === "send" — exact recipient list only (never expand to all friends).
+      const fromName = sanitizePlayerName(data.fromName);
+      const room = String(data.room || "")
+        .replace(/[^\w\- ]/g, "")
+        .trim()
+        .slice(0, 24);
+      const password = String(data.password || "").slice(0, 32);
+      const trackId = typeof data.trackId === "string" ? data.trackId.slice(0, 40) : "";
+      const rawTargets = Array.isArray(data.to)
+        ? data.to
+        : Array.isArray(data.friendPubkeys)
+          ? data.friendPubkeys
+          : [];
+      const targets = [
+        ...new Set(rawTargets.map((t) => normalizePubkeyHex(t)).filter((pk) => pk && pk !== from)),
+      ].slice(0, 6);
+      if (!room || !targets.length) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "room and at least one recipient required" }));
+        return;
+      }
+      const created = [];
+      for (const to of targets) {
+        const id = `${from.slice(0, 8)}-${to.slice(0, 8)}-${now}-${room}`;
+        // Replace any prior pending invite from this host to this peer for same room.
+        lobbyInvitesStore.invites = lobbyInvitesStore.invites.filter(
+          (r) => !(r.from === from && r.to === to && r.room === room),
+        );
+        const row = { id, from, to, fromName, room, password, trackId, at: now };
+        lobbyInvitesStore.invites.push(row);
+        created.push({ id, to });
+      }
+      lobbyInvitesStore = saveLobbyInvites(lobbyInvitesStore);
+      touchPlayerDirectory(from, fromName, now);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, sent: created.length, created, source: "server" }));
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "bad json" }));
+    }
     return;
   }
 

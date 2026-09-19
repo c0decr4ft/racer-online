@@ -39,6 +39,8 @@ import {
 import {
   armAllSchedules,
   buildInviteJoinUrl,
+  ackLobbyInvite,
+  fetchLobbyInvites,
   onInviteJoin,
   rememberInviteFromDm,
 } from "./organize";
@@ -62,6 +64,7 @@ let stopInbox: (() => void) | null = null;
 let threadMessages: DmMessage[] = [];
 let searchTimer: number | null = null;
 let requestPollTimer: number | null = null;
+let lobbyPollTimer: number | null = null;
 let searchSeq = 0;
 
 function el<T extends HTMLElement>(id: string): T | null {
@@ -195,9 +198,54 @@ function stopRequestPoll(): void {
 function startRequestPoll(): void {
   stopRequestPoll();
   void syncFriendRequestsFromServer();
+  void syncLobbyInvitesFromServer();
   requestPollTimer = window.setInterval(() => {
     void syncFriendRequestsFromServer();
+    void syncLobbyInvitesFromServer();
   }, 12_000);
+}
+
+function stopLobbyPoll(): void {
+  if (lobbyPollTimer != null) {
+    window.clearInterval(lobbyPollTimer);
+    lobbyPollTimer = null;
+  }
+}
+
+function startLobbyPoll(): void {
+  stopLobbyPoll();
+  void syncLobbyInvitesFromServer();
+  lobbyPollTimer = window.setInterval(() => {
+    void syncLobbyInvitesFromServer();
+  }, 12_000);
+}
+
+/** Server-targeted lobby invites — only the recipients listed by the host. */
+async function syncLobbyInvitesFromServer(): Promise<void> {
+  const session = getSession();
+  if (!session) return;
+  const invites = await fetchLobbyInvites(session.pubkey);
+  for (const inv of invites) {
+    if (inv.from === session.pubkey.toLowerCase()) continue;
+    const notifId = `lobby:${inv.id}`;
+    if (!claimNotification(session.pubkey, notifId)) continue;
+    if (!callbacks?.isRacing?.()) {
+      const who = inv.fromName || shortNpub(inv.from);
+      callbacks?.showToast(`${who} has sent you a ${inv.room} lobby request`);
+      // Offer a one-click join in the social invite banner when present.
+      const banner = el("social-invite-banner");
+      if (banner) {
+        banner.classList.remove("hidden");
+        banner.innerHTML = `<span>${escapeHtml(who)} invited you to <strong>${escapeHtml(inv.room)}</strong></span>
+          <button type="button" class="social-mini" data-lobby-join="${escapeHtml(inv.id)}">JOIN</button>`;
+        banner.querySelector<HTMLButtonElement>("[data-lobby-join]")?.addEventListener("click", () => {
+          banner.classList.add("hidden");
+          void ackLobbyInvite(session.pubkey, inv.id);
+          callbacks?.onJoinInvite({ room: inv.room, password: inv.password });
+        });
+      }
+    }
+  }
 }
 
 /** Pull friend requests from the game server (JSON only — no extension prompts). */
@@ -788,19 +836,22 @@ export function initSocialUi(cbs: SocialHubCallbacks): void {
     syncPresenceFromSession();
     if (!session) {
       stopRequestPoll();
+      stopLobbyPoll();
       closeSocialHub();
       chatPeer = null;
       stopThread?.();
       stopThread = null;
     } else {
-      // Restore durable requests/friends as soon as login is ready — not only
-      // when the Friends hub opens — so updates never wipe the inbox.
       void syncFriendRequestsFromServer();
+      startLobbyPoll();
     }
   });
 
   syncPresenceFromSession();
-  if (getSession()) void syncFriendRequestsFromServer();
+  if (getSession()) {
+    void syncFriendRequestsFromServer();
+    startLobbyPoll();
+  }
 }
 
 export function inviteLinkFor(room: string, password: string): string {

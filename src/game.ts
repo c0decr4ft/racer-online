@@ -869,6 +869,7 @@ export class Game {
       const btn = (e.target as HTMLElement | null)?.closest<HTMLButtonElement>("button[data-invite-pk]");
       if (!btn) return;
       e.preventDefault();
+      e.stopPropagation();
       const pk = (btn.dataset.invitePk || "").toLowerCase();
       if (!/^[0-9a-f]{64}$/.test(pk)) return;
       if (this.mpInviteSelected.has(pk)) this.mpInviteSelected.delete(pk);
@@ -1498,7 +1499,21 @@ export class Game {
   }
 
   private selectedMpInviteFriends(): string[] {
-    return [...this.mpInviteSelected];
+    // Trust only buttons currently marked selected in the create panel — never
+    // expand to the full friends list.
+    const list = document.getElementById("mp-send-friends-list");
+    const fromDom = list
+      ? [...list.querySelectorAll<HTMLButtonElement>("button.mp-send-friend.is-selected[data-invite-pk]")]
+          .map((b) => (b.dataset.invitePk || "").toLowerCase())
+          .filter((pk) => /^[0-9a-f]{64}$/.test(pk))
+      : [];
+    const allowed = new Set(fromDom);
+    // Keep Set in sync with the visible selection.
+    for (const pk of [...this.mpInviteSelected]) {
+      if (!allowed.has(pk)) this.mpInviteSelected.delete(pk);
+    }
+    for (const pk of fromDom) this.mpInviteSelected.add(pk);
+    return [...new Set(fromDom)];
   }
 
   private async createMultiplayerRoom() {
@@ -1530,7 +1545,14 @@ export class Game {
 
     const inviteTargets = this.selectedMpInviteFriends();
     if (inviteTargets.length) {
-      this.el.mpCreateStatus.textContent = `Sending lobby request to ${inviteTargets.length} friend${inviteTargets.length === 1 ? "" : "s"}…`;
+      const session = getSession();
+      const names = session
+        ? inviteTargets.map((pk) => {
+            const f = listFriends(session.pubkey).find((row) => row.pubkey === pk);
+            return (f?.name || "FRIEND").toUpperCase();
+          })
+        : [];
+      this.el.mpCreateStatus.textContent = `Inviting ${names.join(", ") || `${inviteTargets.length} friend(s)`}…`;
       try {
         const result = await sendGameInvites({
           room,
@@ -1541,7 +1563,9 @@ export class Game {
         });
         if (result.sent > 0) {
           this.showToast(
-            `Sent ${result.sent} ${room} lobby request${result.sent === 1 ? "" : "s"} · first 6 in get a seat`,
+            result.sent === 1
+              ? `Lobby request sent to ${names[0] || "friend"}`
+              : `Lobby request sent to ${result.sent} friends`,
           );
           this.mpInviteSelected.clear();
           this.refreshMpFriendInviteUi();

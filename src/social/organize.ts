@@ -1,9 +1,11 @@
 /**
- * Instant game invites: DM friends a lobby join payload, then host creates the room.
+ * Instant game invites: post one lobby invite per selected friend to the game
+ * server (never fan-out to the whole friends list). Recipients poll GET.
  * Deep-link join still uses ?room=&pass=.
  */
 import { getSession } from "../nostr/session";
-import { invitePlaintext, parseInvitePayload, sendDm, type RaceInvitePayload } from "./dm";
+import { apiUrl } from "../net/apiBase";
+import { parseInvitePayload, type RaceInvitePayload } from "./dm";
 import { listFriends } from "./friends";
 
 export type GameInvite = {
@@ -19,8 +21,18 @@ export type SendGameInvitesInput = {
   password: string;
   trackId?: string;
   fromName?: string;
-  /** Explicit friend pubkeys to DM — never defaults to everyone. */
+  /** Explicit friend pubkeys to invite — never defaults to everyone. */
   friendPubkeys: string[];
+};
+
+export type LobbyInviteRow = {
+  id: string;
+  from: string;
+  fromName: string;
+  room: string;
+  password: string;
+  trackId?: string;
+  at: number;
 };
 
 function normalizePubkey(raw: string): string {
@@ -76,7 +88,7 @@ export function clearInviteQuery(): void {
   history.replaceState(null, "", url.pathname + url.search + url.hash);
 }
 
-/** Send immediate lobby invites to friends (no future schedule). */
+/** Send lobby invites to exactly the listed friends (server-targeted). */
 export async function sendGameInvites(input: SendGameInvitesInput): Promise<{
   sent: number;
   failed: string[];
@@ -87,31 +99,50 @@ export async function sendGameInvites(input: SendGameInvitesInput): Promise<{
   const room = sanitizeRoom(input.room);
   const me = session.pubkey.toLowerCase();
   const known = new Set(listFriends(session.pubkey).map((f) => f.pubkey));
-  // Only the callers' explicit picks — never blast the whole friends list.
+  // Exact picks only — never expand to the full friends list.
   const targets = [...new Set((input.friendPubkeys || []).map(normalizePubkey).filter(Boolean))].filter(
     (pk) => pk !== me && known.has(pk),
   );
   if (!targets.length) throw new Error("Pick at least one friend");
 
   const password = String(input.password || "").slice(0, 32);
-  const plaintext = invitePlaintext({
-    room,
-    password,
-    at: Date.now(),
-    trackId: input.trackId,
-    fromName: input.fromName,
-  });
+  const url = apiUrl("/lobby-invites");
+  if (!url) throw new Error("Game server unavailable — cannot send invites");
 
-  const failed: string[] = [];
-  let sent = 0;
-  for (const pk of targets) {
-    try {
-      await sendDm(pk, plaintext);
-      sent += 1;
-    } catch {
-      failed.push(pk);
-    }
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({
+      action: "send",
+      from: me,
+      fromName: String(input.fromName || "RACER").slice(0, 24),
+      room,
+      password,
+      trackId: input.trackId,
+      // Server accepts only this array — no "all friends" path.
+      to: targets,
+      friendPubkeys: targets,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    const msg =
+      err && typeof err === "object" && typeof (err as { error?: unknown }).error === "string"
+        ? (err as { error: string }).error
+        : "Could not send invites";
+    throw new Error(msg);
   }
+  const data = (await res.json()) as { sent?: unknown; created?: unknown };
+  const sent = typeof data.sent === "number" ? data.sent : targets.length;
+  const created = Array.isArray(data.created) ? data.created : [];
+  const delivered = new Set(
+    created
+      .map((row) =>
+        row && typeof row === "object" ? normalizePubkey(String((row as { to?: unknown }).to || "")) : "",
+      )
+      .filter(Boolean),
+  );
+  const failed = targets.filter((pk) => delivered.size > 0 && !delivered.has(pk));
 
   return {
     sent,
@@ -124,6 +155,54 @@ export async function sendGameInvites(input: SendGameInvitesInput): Promise<{
       fromPubkey: me,
     },
   };
+}
+
+export async function fetchLobbyInvites(pubkey: string): Promise<LobbyInviteRow[]> {
+  const pk = normalizePubkey(pubkey);
+  const url = apiUrl(`/lobby-invites?pubkey=${encodeURIComponent(pk)}`);
+  if (!url || !pk) return [];
+  try {
+    const res = await fetch(url, { cache: "no-store", headers: { Accept: "application/json" } });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { invites?: unknown };
+    if (!Array.isArray(data.invites)) return [];
+    const out: LobbyInviteRow[] = [];
+    for (const row of data.invites) {
+      if (!row || typeof row !== "object") continue;
+      const r = row as Record<string, unknown>;
+      const id = String(r.id || "").trim();
+      const from = normalizePubkey(String(r.from || ""));
+      const room = sanitizeRoom(String(r.room || ""));
+      if (!id || !from || !room) continue;
+      out.push({
+        id,
+        from,
+        fromName: String(r.fromName || "RACER").slice(0, 24),
+        room,
+        password: String(r.password || "").slice(0, 32),
+        trackId: typeof r.trackId === "string" ? r.trackId : undefined,
+        at: typeof r.at === "number" && Number.isFinite(r.at) ? Math.round(r.at) : Date.now(),
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+export async function ackLobbyInvite(pubkey: string, id: string): Promise<void> {
+  const pk = normalizePubkey(pubkey);
+  const url = apiUrl("/lobby-invites");
+  if (!url || !pk || !id) return;
+  try {
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ action: "ack", from: pk, id }),
+    });
+  } catch {
+    /* ignore */
+  }
 }
 
 export function inviteFromPlaintext(plaintext: string): RaceInvitePayload | null {
