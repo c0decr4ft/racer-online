@@ -4,7 +4,7 @@ import { GAME_VERSION } from "./version";
 export const PAGES_ROOT = "/racer-online/";
 
 export type PlayableVersion = {
-  /** Two-part id matching GAME_VERSION, e.g. `1.4` */
+  /** Semver id matching GAME_VERSION, e.g. `1.0.0` */
   id: string;
   /** Absolute path under the host, e.g. `/racer-online/` or `/racer-online/v1.4/` */
   path: string;
