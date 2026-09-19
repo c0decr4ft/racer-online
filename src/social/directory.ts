@@ -56,63 +56,114 @@ function queryPubkeyHint(query: string): string {
   return "";
 }
 
+function matchesQuery(player: { pubkey: string; name: string }, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  if (player.name.toLowerCase().includes(q)) return true;
+  const pkHint = queryPubkeyHint(query);
+  if (pkHint && (player.pubkey === pkHint || player.pubkey.startsWith(pkHint) || player.pubkey.includes(pkHint))) {
+    return true;
+  }
+  return player.pubkey.startsWith(q) || player.pubkey.includes(q);
+}
+
+async function fetchJson(url: string, ms = 8_000): Promise<unknown | null> {
+  const ctrl = new AbortController();
+  const timer = window.setTimeout(() => ctrl.abort(), ms);
+  try {
+    const res = await fetch(url, {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+      signal: ctrl.signal,
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 /** Explicit directory write — more reliable than waiting for the next presence heartbeat. */
 export async function registerPlayer(pubkey: string, name: string): Promise<boolean> {
   const url = apiUrl("/players");
   const pk = normalizePubkey(pubkey);
   if (!url || !pk) return false;
   try {
+    const ctrl = new AbortController();
+    const timer = window.setTimeout(() => ctrl.abort(), 6_000);
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify({ pubkey: pk, name: sanitizeName(name) }),
+      signal: ctrl.signal,
     });
+    window.clearTimeout(timer);
     return res.ok;
   } catch {
     return false;
   }
 }
 
+function parseDirectoryRows(raw: unknown): DirectoryPlayer[] {
+  if (!Array.isArray(raw)) return [];
+  const out: DirectoryPlayer[] = [];
+  for (const row of raw) {
+    if (!row || typeof row !== "object") continue;
+    const r = row as { pubkey?: unknown; name?: unknown; lastSeen?: unknown; at?: unknown };
+    const pubkey = normalizePubkey(r.pubkey);
+    if (!pubkey) continue;
+    const lastSeenRaw = r.lastSeen ?? r.at;
+    out.push({
+      pubkey,
+      name: sanitizeName(r.name),
+      lastSeen:
+        typeof lastSeenRaw === "number" && Number.isFinite(lastSeenRaw) ? Math.round(lastSeenRaw) : 0,
+    });
+  }
+  return out;
+}
+
+function parseOnlineRows(raw: unknown): OnlinePlayer[] {
+  if (!Array.isArray(raw)) return [];
+  const out: OnlinePlayer[] = [];
+  for (const row of raw) {
+    if (!row || typeof row !== "object") continue;
+    const r = row as { pubkey?: unknown; name?: unknown; at?: unknown };
+    const pubkey = normalizePubkey(r.pubkey);
+    if (!pubkey) continue;
+    out.push({
+      pubkey,
+      name: sanitizeName(r.name),
+      at: typeof r.at === "number" && Number.isFinite(r.at) ? Math.round(r.at) : undefined,
+    });
+  }
+  return out;
+}
+
 async function playersFromLeaderboard(query: string): Promise<DirectoryPlayer[]> {
   const url = apiUrl("/leaderboard");
   if (!url) return [];
-  try {
-    const res = await fetch(url, { cache: "no-store", headers: { Accept: "application/json" } });
-    if (!res.ok) return [];
-    const data = (await res.json()) as { byTrack?: Record<string, unknown> };
-    const byTrack = data.byTrack && typeof data.byTrack === "object" ? data.byTrack : {};
-    const map = new Map<string, DirectoryPlayer>();
-    for (const entries of Object.values(byTrack)) {
-      if (!Array.isArray(entries)) continue;
-      for (const row of entries) {
-        if (!row || typeof row !== "object") continue;
-        const r = row as { pubkey?: unknown; name?: unknown; at?: unknown };
-        const pubkey = normalizePubkey(r.pubkey);
-        if (!pubkey) continue;
-        const lastSeen =
-          typeof r.at === "number" && Number.isFinite(r.at) ? Math.round(r.at) : 0;
-        const prev = map.get(pubkey);
-        if (!prev || lastSeen >= prev.lastSeen) {
-          map.set(pubkey, { pubkey, name: sanitizeName(r.name), lastSeen });
-        }
+  const data = (await fetchJson(url, 6_000)) as { byTrack?: Record<string, unknown> } | null;
+  if (!data) return [];
+  const byTrack = data.byTrack && typeof data.byTrack === "object" ? data.byTrack : {};
+  const map = new Map<string, DirectoryPlayer>();
+  for (const entries of Object.values(byTrack)) {
+    if (!Array.isArray(entries)) continue;
+    for (const row of entries) {
+      if (!row || typeof row !== "object") continue;
+      const r = row as { pubkey?: unknown; name?: unknown; at?: unknown };
+      const pubkey = normalizePubkey(r.pubkey);
+      if (!pubkey) continue;
+      const lastSeen = typeof r.at === "number" && Number.isFinite(r.at) ? Math.round(r.at) : 0;
+      const prev = map.get(pubkey);
+      if (!prev || lastSeen >= prev.lastSeen) {
+        map.set(pubkey, { pubkey, name: sanitizeName(r.name), lastSeen });
       }
     }
-    const q = query.trim().toLowerCase();
-    const pkHint = queryPubkeyHint(query);
-    let rows = [...map.values()];
-    if (q) {
-      rows = rows.filter((r) => {
-        if (r.name.toLowerCase().includes(q)) return true;
-        if (pkHint && (r.pubkey === pkHint || r.pubkey.startsWith(pkHint) || r.pubkey.includes(pkHint))) {
-          return true;
-        }
-        return r.pubkey.startsWith(q) || r.pubkey.includes(q);
-      });
-    }
-    return rows.sort((a, b) => b.lastSeen - a.lastSeen).slice(0, 40);
-  } catch {
-    return [];
   }
+  return [...map.values()].filter((r) => matchesQuery(r, query));
 }
 
 function mergeDirectoryPlayers(...lists: DirectoryPlayer[][]): DirectoryPlayer[] {
@@ -128,60 +179,40 @@ function mergeDirectoryPlayers(...lists: DirectoryPlayer[][]): DirectoryPlayer[]
 
 export async function searchPlayers(query = ""): Promise<DirectoryResult> {
   const q = query.trim().slice(0, 64);
-  const url = apiUrl(`/players?q=${encodeURIComponent(q)}`);
-  if (!url) {
-    const fromBoard = await playersFromLeaderboard(q);
-    return { players: fromBoard, online: [], source: fromBoard.length ? "server" : "empty" };
+  const playersUrl = apiUrl(`/players?q=${encodeURIComponent(q)}`);
+  if (!playersUrl) {
+    return { players: [], online: [], source: "empty" };
   }
-  try {
-    const res = await fetch(url, { cache: "no-store", headers: { Accept: "application/json" } });
-    if (!res.ok) {
-      const fromBoard = await playersFromLeaderboard(q);
-      return { players: fromBoard, online: [], source: fromBoard.length ? "server" : "empty" };
-    }
-    const data = (await res.json()) as {
-      players?: unknown;
-      online?: unknown;
+
+  // Players API first (fast). Board fallback is parallel + timed so a slow
+  // empty leaderboard can never leave Find stuck on "Searching…".
+  const [playersRaw, boardRows] = await Promise.all([
+    fetchJson(playersUrl, 8_000),
+    playersFromLeaderboard(q),
+  ]);
+
+  if (!playersRaw || typeof playersRaw !== "object") {
+    const fromBoard = boardRows;
+    return {
+      players: fromBoard.slice(0, 40),
+      online: [],
+      source: fromBoard.length ? "server" : "empty",
     };
-    const players: DirectoryPlayer[] = [];
-    if (Array.isArray(data.players)) {
-      for (const row of data.players) {
-        if (!row || typeof row !== "object") continue;
-        const r = row as { pubkey?: unknown; name?: unknown; lastSeen?: unknown };
-        const pubkey = normalizePubkey(r.pubkey);
-        if (!pubkey) continue;
-        players.push({
-          pubkey,
-          name: sanitizeName(r.name),
-          lastSeen:
-            typeof r.lastSeen === "number" && Number.isFinite(r.lastSeen)
-              ? Math.round(r.lastSeen)
-              : 0,
-        });
-      }
-    }
-    const online: OnlinePlayer[] = [];
-    if (Array.isArray(data.online)) {
-      for (const row of data.online) {
-        if (!row || typeof row !== "object") continue;
-        const r = row as { pubkey?: unknown; name?: unknown; at?: unknown };
-        const pubkey = normalizePubkey(r.pubkey);
-        if (!pubkey) continue;
-        online.push({
-          pubkey,
-          name: sanitizeName(r.name),
-          at: typeof r.at === "number" && Number.isFinite(r.at) ? Math.round(r.at) : undefined,
-        });
-      }
-    }
-    // Always union with board racers so Find works even when the directory is thin.
-    const fromBoard = await playersFromLeaderboard(q);
-    const merged = mergeDirectoryPlayers(fromBoard, players);
-    return { players: merged, online, source: "server" };
-  } catch {
-    const fromBoard = await playersFromLeaderboard(q);
-    return { players: fromBoard, online: [], source: fromBoard.length ? "server" : "empty" };
   }
+
+  const data = playersRaw as { players?: unknown; online?: unknown };
+  const players = parseDirectoryRows(data.players);
+  const online = parseOnlineRows(data.online);
+  const onlineAsDir: DirectoryPlayer[] = online
+    .filter((p) => matchesQuery(p, q))
+    .map((p) => ({
+      pubkey: p.pubkey,
+      name: p.name,
+      lastSeen: p.at ?? Date.now(),
+    }));
+
+  const merged = mergeDirectoryPlayers(boardRows, onlineAsDir, players);
+  return { players: merged, online, source: "server" };
 }
 
 export async function fetchOnlinePlayers(): Promise<OnlinePlayer[]> {
