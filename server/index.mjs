@@ -76,6 +76,7 @@ const DATA_DIR = (() => {
 const LEADERBOARD_PATH = join(DIR, "leaderboard.json");
 const PRESENCE_PATH = join(DIR, "presence.json");
 const PLAYERS_PATH = join(DATA_DIR, "players.json");
+const FRIEND_REQUESTS_PATH = join(DATA_DIR, "friend-requests.json");
 const FEEDBACK_PATH = join(DATA_DIR, "feedback.json");
 const FEEDBACK_LEGACY_PATH = join(DIR, "feedback.json");
 /**
@@ -1265,6 +1266,95 @@ function savePlayers(store) {
 }
 
 let playersDir = loadPlayers();
+
+/** Server-mediated friend requests — no NIP-17 encrypt/sign (avoids extension permission storms). */
+const FRIEND_REQUEST_MAX = 2_000;
+const FRIEND_ACCEPT_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+
+function emptyFriendRequests() {
+  return { pending: [], accepts: [] };
+}
+
+function loadFriendRequests() {
+  try {
+    if (!existsSync(FRIEND_REQUESTS_PATH)) return emptyFriendRequests();
+    const raw = JSON.parse(readFileSync(FRIEND_REQUESTS_PATH, "utf8"));
+    return normalizeFriendRequests(raw);
+  } catch {
+    return emptyFriendRequests();
+  }
+}
+
+function normalizeFriendRequests(data) {
+  const store = emptyFriendRequests();
+  if (!data || typeof data !== "object") return store;
+  const pending = Array.isArray(data.pending) ? data.pending : [];
+  const accepts = Array.isArray(data.accepts) ? data.accepts : [];
+  const now = Date.now();
+  for (const row of pending) {
+    if (!row || typeof row !== "object") continue;
+    const from = normalizePubkeyHex(row.from);
+    const to = normalizePubkeyHex(row.to);
+    if (!from || !to || from === to) continue;
+    store.pending.push({
+      from,
+      to,
+      fromName: sanitizePlayerName(row.fromName),
+      at: typeof row.at === "number" && Number.isFinite(row.at) ? Math.round(row.at) : now,
+    });
+  }
+  for (const row of accepts) {
+    if (!row || typeof row !== "object") continue;
+    const from = normalizePubkeyHex(row.from);
+    const to = normalizePubkeyHex(row.to);
+    if (!from || !to || from === to) continue;
+    const at = typeof row.at === "number" && Number.isFinite(row.at) ? Math.round(row.at) : now;
+    if (now - at > FRIEND_ACCEPT_TTL_MS) continue;
+    store.accepts.push({
+      from,
+      to,
+      fromName: sanitizePlayerName(row.fromName),
+      at,
+    });
+  }
+  const pendMap = new Map();
+  for (const row of store.pending.sort((a, b) => a.at - b.at)) {
+    pendMap.set(`${row.from}:${row.to}`, row);
+  }
+  store.pending = [...pendMap.values()]
+    .sort((a, b) => b.at - a.at)
+    .slice(0, FRIEND_REQUEST_MAX);
+  store.accepts = store.accepts.sort((a, b) => b.at - a.at).slice(0, FRIEND_REQUEST_MAX);
+  return store;
+}
+
+function saveFriendRequests(store) {
+  const body = normalizeFriendRequests(store);
+  try {
+    if (DATA_DIR !== DIR) mkdirSync(DATA_DIR, { recursive: true });
+    writeFileSync(FRIEND_REQUESTS_PATH, JSON.stringify(body, null, 2));
+  } catch (err) {
+    console.warn(`[friend-requests] write failed:`, FRIEND_REQUESTS_PATH, err?.message || err);
+  }
+  return body;
+}
+
+let friendRequestsStore = loadFriendRequests();
+
+function friendRequestsForPubkey(pubkey) {
+  const pk = normalizePubkeyHex(pubkey);
+  if (!pk) return { incoming: [], outgoing: [], accepted: [] };
+  const incoming = friendRequestsStore.pending
+    .filter((r) => r.to === pk)
+    .map((r) => ({ pubkey: r.from, name: r.fromName, at: r.at }));
+  const outgoing = friendRequestsStore.pending
+    .filter((r) => r.from === pk)
+    .map((r) => ({ pubkey: r.to, name: r.fromName, at: r.at }));
+  const accepted = friendRequestsStore.accepts
+    .filter((r) => r.to === pk)
+    .map((r) => ({ pubkey: r.from, name: r.fromName, at: r.at }));
+  return { incoming, outgoing, accepted };
+}
 
 /** Upsert directory row — keep the better display name and newest lastSeen. */
 function touchPlayerDirectory(pubkey, name, now = Date.now()) {
@@ -2906,6 +2996,113 @@ const httpServer = createServer(async (req, res) => {
           source: "server",
         }),
       );
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "bad json" }));
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/friend-requests" && req.method === "GET") {
+    if (tooMany(res, req, "friend-requests", 60, 60_000)) return;
+    friendRequestsStore = normalizeFriendRequests(friendRequestsStore);
+    const pubkey = normalizePubkeyHex(url.searchParams.get("pubkey") || "");
+    if (!pubkey) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "bad pubkey" }));
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true, ...friendRequestsForPubkey(pubkey), source: "server" }));
+    return;
+  }
+
+  if (url.pathname === "/api/friend-requests" && req.method === "POST") {
+    if (tooMany(res, req, "friend-requests-write", 30, 60_000)) return;
+    const body = await readBody(req, 4 * 1024);
+    if (body === null) {
+      res.writeHead(413, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "payload too large" }));
+      return;
+    }
+    try {
+      const data = JSON.parse(body || "{}");
+      const action = String(data.action || "").trim().toLowerCase();
+      const from = normalizePubkeyHex(data.from);
+      const to = normalizePubkeyHex(data.to);
+      const fromName = sanitizePlayerName(data.fromName);
+      if (!from || !to || from === to) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "bad pubkeys" }));
+        return;
+      }
+      const now = Date.now();
+      if (action === "request") {
+        const reverse = friendRequestsStore.pending.find((r) => r.from === to && r.to === from);
+        if (reverse) {
+          friendRequestsStore.pending = friendRequestsStore.pending.filter(
+            (r) => !(r.from === to && r.to === from) && !(r.from === from && r.to === to),
+          );
+          friendRequestsStore.accepts.push({ from, to, fromName, at: now });
+          friendRequestsStore.accepts.push({
+            from: to,
+            to: from,
+            fromName: reverse.fromName,
+            at: now,
+          });
+          friendRequestsStore = saveFriendRequests(friendRequestsStore);
+          touchPlayerDirectory(from, fromName, now);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, mutual: true, ...friendRequestsForPubkey(from) }));
+          return;
+        }
+        friendRequestsStore.pending = friendRequestsStore.pending.filter(
+          (r) => !(r.from === from && r.to === to),
+        );
+        friendRequestsStore.pending.push({ from, to, fromName, at: now });
+        friendRequestsStore = saveFriendRequests(friendRequestsStore);
+        touchPlayerDirectory(from, fromName, now);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, ...friendRequestsForPubkey(from) }));
+        return;
+      }
+      if (action === "accept") {
+        const pending = friendRequestsStore.pending.find((r) => r.from === to && r.to === from);
+        if (!pending) {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "no pending request" }));
+          return;
+        }
+        friendRequestsStore.pending = friendRequestsStore.pending.filter(
+          (r) => !(r.from === to && r.to === from) && !(r.from === from && r.to === to),
+        );
+        friendRequestsStore.accepts.push({ from, to, fromName, at: now });
+        friendRequestsStore = saveFriendRequests(friendRequestsStore);
+        touchPlayerDirectory(from, fromName, now);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, ...friendRequestsForPubkey(from) }));
+        return;
+      }
+      if (action === "decline") {
+        friendRequestsStore.pending = friendRequestsStore.pending.filter(
+          (r) => !(r.from === to && r.to === from),
+        );
+        friendRequestsStore = saveFriendRequests(friendRequestsStore);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, ...friendRequestsForPubkey(from) }));
+        return;
+      }
+      if (action === "clear-accept") {
+        friendRequestsStore.accepts = friendRequestsStore.accepts.filter(
+          (r) => !(r.from === to && r.to === from),
+        );
+        friendRequestsStore = saveFriendRequests(friendRequestsStore);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, ...friendRequestsForPubkey(from) }));
+        return;
+      }
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "bad action" }));
     } catch {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "bad json" }));

@@ -21,14 +21,19 @@ import {
 } from "./friends";
 import { searchPlayers, registerPlayer, type DirectoryPlayer } from "./directory";
 import {
-  friendAcceptPlaintext,
   friendRequestName,
-  friendRequestPlaintext,
   sendDm,
   subscribeInbox,
   subscribeThread,
   type DmMessage,
 } from "./dm";
+import {
+  clearFriendAccept,
+  fetchFriendRequests,
+  postFriendAccept,
+  postFriendDecline,
+  postFriendRequest,
+} from "./friendRequestsApi";
 import {
   armAllSchedules,
   buildInviteJoinUrl,
@@ -54,6 +59,7 @@ let stopThread: (() => void) | null = null;
 let stopInbox: (() => void) | null = null;
 let threadMessages: DmMessage[] = [];
 let searchTimer: number | null = null;
+let requestPollTimer: number | null = null;
 
 function el<T extends HTMLElement>(id: string): T | null {
   return document.getElementById(id) as T | null;
@@ -170,6 +176,61 @@ function restartInbox(): void {
   });
 }
 
+/** Only decrypt DMs when the user opens Chat — never on Find / add-friend. */
+function ensureInboxRunning(): void {
+  if (stopInbox) return;
+  restartInbox();
+}
+
+function stopRequestPoll(): void {
+  if (requestPollTimer != null) {
+    window.clearInterval(requestPollTimer);
+    requestPollTimer = null;
+  }
+}
+
+function startRequestPoll(): void {
+  stopRequestPoll();
+  void syncFriendRequestsFromServer();
+  requestPollTimer = window.setInterval(() => {
+    void syncFriendRequestsFromServer();
+  }, 12_000);
+}
+
+/** Pull friend requests from the game server (JSON only — no extension prompts). */
+async function syncFriendRequestsFromServer(): Promise<void> {
+  const session = getSession();
+  if (!session) return;
+  const snap = await fetchFriendRequests(session.pubkey);
+  if (!snap) return;
+  let changed = false;
+  for (const row of snap.incoming) {
+    upsertIncomingRequest(session.pubkey, { pubkey: row.pubkey, name: row.name });
+    changed = true;
+  }
+  for (const row of snap.outgoing) {
+    upsertOutgoingRequest(session.pubkey, { pubkey: row.pubkey, name: row.name });
+  }
+  for (const row of snap.accepted) {
+    if (!isFriend(session.pubkey, row.pubkey)) {
+      addFriend(session.pubkey, { pubkey: row.pubkey, name: row.name });
+      if (!callbacks?.isRacing?.()) {
+        callbacks?.showToast(`${row.name} accepted your friend request`);
+      }
+      changed = true;
+    }
+    void clearFriendAccept(session.pubkey, row.pubkey, myDisplayName());
+  }
+  if (changed) {
+    if (activeTab === "requests") renderRequests();
+    if (activeTab === "friends") renderFriends();
+    if (activeTab === "chat") renderChatPeers();
+    updateRequestBadge();
+  } else {
+    updateRequestBadge();
+  }
+}
+
 /** Pull Nostr / directory names so friend chips never stick on "RACER". */
 export async function refreshFriendDisplayNames(ownerPubkey?: string): Promise<Friend[]> {
   const session = getSession();
@@ -227,13 +288,19 @@ function showSocialView(tab: Tab): void {
     if (q.length >= 2) void runSearch(q);
     else clearFindList();
   }
-  if (tab === "requests") renderRequests();
+  if (tab === "requests") {
+    void syncFriendRequestsFromServer().then(() => renderRequests());
+  }
   if (tab === "friends") renderFriends();
   if (tab === "chat") {
+    ensureInboxRunning();
     renderChatPeers();
     syncChatWithLabel();
   }
-  if (tab === "entry") updateRequestBadge();
+  if (tab === "entry") {
+    void syncFriendRequestsFromServer();
+    updateRequestBadge();
+  }
   updateRequestBadge();
 }
 
@@ -380,9 +447,7 @@ function bindRowActions(root: HTMLElement): void {
         } else if (action === "accept") {
           void acceptFriendRequest(pubkey, name);
         } else if (action === "decline") {
-          dismissIncomingRequest(session.pubkey, pubkey);
-          callbacks?.showToast(`Declined ${name}`);
-          renderRequests();
+          void declineFriendRequest(pubkey, name);
         }
       };
     });
@@ -396,27 +461,41 @@ async function sendFriendRequest(pubkey: string, name: string): Promise<void> {
     callbacks?.showToast("Already friends");
     return;
   }
-  try {
-    await sendDm(pubkey, friendRequestPlaintext(myDisplayName()));
+  const snap = await postFriendRequest(session.pubkey, pubkey, myDisplayName());
+  if (!snap) {
+    callbacks?.showToast("Could not send request — try again");
+    return;
+  }
+  if (snap.accepted.some((r) => r.pubkey === pubkey.toLowerCase()) || isFriend(session.pubkey, pubkey)) {
+    addFriend(session.pubkey, { pubkey, name });
+    callbacks?.showToast(`You and ${name} are friends`);
+  } else {
     upsertOutgoingRequest(session.pubkey, { pubkey, name });
     callbacks?.showToast(`Friend request sent to ${name}`);
-    void refreshActiveLists();
-  } catch (err) {
-    callbacks?.showToast(err instanceof Error ? err.message : "Request failed");
   }
+  void refreshActiveLists();
 }
 
 async function acceptFriendRequest(pubkey: string, name: string): Promise<void> {
   const session = getSession();
   if (!session) return;
   addFriend(session.pubkey, { pubkey, name });
-  try {
-    await sendDm(pubkey, friendAcceptPlaintext(myDisplayName()));
-  } catch {
-    /* still friends locally */
+  const snap = await postFriendAccept(session.pubkey, pubkey, myDisplayName());
+  if (!snap) {
+    callbacks?.showToast(`Friends with ${name} on this device — sync failed`);
+  } else {
+    callbacks?.showToast(`You and ${name} are friends`);
   }
-  callbacks?.showToast(`You and ${name} are friends`);
   void refreshActiveLists();
+}
+
+async function declineFriendRequest(pubkey: string, name: string): Promise<void> {
+  const session = getSession();
+  if (!session) return;
+  dismissIncomingRequest(session.pubkey, pubkey);
+  void postFriendDecline(session.pubkey, pubkey, myDisplayName());
+  callbacks?.showToast(`Declined ${name}`);
+  renderRequests();
 }
 
 async function refreshActiveLists(): Promise<void> {
@@ -475,6 +554,7 @@ function openChatWith(friend: Friend): void {
     callbacks?.showToast("You can only chat with accepted friends");
     return;
   }
+  ensureInboxRunning();
   chatPeer = friend;
   showSocialView("chat");
   renderChatPeers();
@@ -577,7 +657,10 @@ export function openSocialHub(): void {
   document.getElementById("dev-dash")?.classList.add("hidden");
   hub.classList.remove("hidden");
   syncPresenceFromSession();
-  restartInbox();
+  // Do NOT start the encrypted DM inbox here — that decrypt storm asks for
+  // many extension permissions. Friend requests use the game server; Chat
+  // starts the inbox only when opened.
+  startRequestPoll();
   showSocialView("entry");
   const session = getSession();
   if (session) {
@@ -594,6 +677,7 @@ export function closeSocialHub(): void {
   stopThread = null;
   stopInbox?.();
   stopInbox = null;
+  stopRequestPoll();
   chatPeer = null;
   showSocialView("entry");
 }
@@ -646,6 +730,7 @@ export function initSocialUi(cbs: SocialHubCallbacks): void {
   onSessionChange((session) => {
     syncPresenceFromSession();
     if (!session) {
+      stopRequestPoll();
       closeSocialHub();
       chatPeer = null;
       stopThread?.();
