@@ -345,7 +345,7 @@ export class Game {
   private el = {
     speed: document.getElementById("speed")!,
     gear: document.getElementById("gear")!,
-    tachometer: document.getElementById("tachometer"),
+    speedDial: document.getElementById("speed-dial"),
     tachFill: document.getElementById("tach-fill"),
     tachNeedle: document.getElementById("tach-needle"),
     lap: document.getElementById("lap")!,
@@ -5687,31 +5687,42 @@ export class Game {
     }
   }
 
-  /** Semicircle tach above the speed — redline pulse when it’s time to upshift. */
+  /** Needle tracks gear revs; SHIFT only when a higher gear exists (not in 5th). */
   private updateTachometer() {
-    const tach = this.el.tachometer;
-    if (!tach) return;
-    const kind = this.player?.mesh.userData.kind as string | undefined;
-    const show =
-      !!this.player && this.running && !this.finished && kind !== "bird";
-    tach.classList.toggle("hidden", !show);
-    tach.setAttribute("aria-hidden", show ? "false" : "true");
-    if (!show || !this.player) return;
+    const dial = this.el.speedDial;
+    if (!dial || !this.player) return;
+    const kind = this.player.mesh.userData.kind as string | undefined;
+    const hasGears = kind !== "bird";
+    dial.classList.toggle("is-no-gears", !hasGears);
 
-    const rpm = this.player.rpmNorm;
+    const gear = this.player.state.gear;
+    const topGear = gear === 5;
+    // Soften the top-end curve so cruise in 5th doesn't sit pegged at redline.
+    let rpm = this.player.rpmNorm;
+    if (topGear) {
+      // Map 0→1 onto 0→~0.88 so top gear can show headroom without a false SHIFT.
+      rpm = Math.min(0.92, rpm * 0.88);
+    } else if (gear === 4) {
+      // Nudge upshift cue a bit earlier in 4th (clearer than waiting for the limiter).
+      rpm = Math.min(1.05, rpm * 1.04);
+    }
+
     const fill = this.el.tachFill;
     if (fill) {
-      const pct = Math.max(0, Math.min(100, rpm * 100));
+      const pct = hasGears ? Math.max(0, Math.min(100, rpm * 100)) : 0;
       fill.setAttribute("stroke-dasharray", `${pct} 100`);
     }
     const needle = this.el.tachNeedle;
     if (needle) {
-      // Arc runs left→right; needle starts straight up at mid, sweeps ±90°.
-      const angle = -90 + Math.max(0, Math.min(1, rpm)) * 180;
-      needle.setAttribute("transform", `rotate(${angle} 80 78)`);
+      const t = hasGears ? Math.max(0, Math.min(1, rpm)) : 0;
+      const angle = -90 + t * 180;
+      needle.setAttribute("transform", `rotate(${angle} 100 102)`);
     }
-    tach.classList.toggle("is-hot", rpm >= 0.7 && rpm < 0.82);
-    tach.classList.toggle("is-redline", rpm >= 0.82);
+
+    const canUpshift = hasGears && typeof gear === "number" && gear >= 1 && gear < 5;
+    dial.classList.toggle("is-top-gear", topGear || !canUpshift);
+    dial.classList.toggle("is-hot", canUpshift && rpm >= 0.68 && rpm < 0.8);
+    dial.classList.toggle("is-redline", canUpshift && rpm >= 0.8);
   }
 
   /** Sample live track path into 2D bounds — stays correct if the circuit changes. */
