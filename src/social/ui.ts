@@ -13,6 +13,7 @@ import {
   isWeakFriendName,
   listFriends,
   listIncomingRequests,
+  listOutgoingRequests,
   removeFriend,
   updateFriendName,
   upsertIncomingRequest,
@@ -33,6 +34,7 @@ import {
   postFriendAccept,
   postFriendDecline,
   postFriendRequest,
+  syncLocalFriendState,
 } from "./friendRequestsApi";
 import {
   armAllSchedules,
@@ -202,25 +204,43 @@ function startRequestPoll(): void {
 async function syncFriendRequestsFromServer(): Promise<void> {
   const session = getSession();
   if (!session) return;
-  const snap = await fetchFriendRequests(session.pubkey);
+  const me = session.pubkey;
+  const name = myDisplayName();
+
+  // Heal first: push this browser's local inbox so a server redeploy can't wipe it.
+  const healed = await syncLocalFriendState({
+    from: me,
+    fromName: name,
+    outgoing: listOutgoingRequests(me),
+    incoming: listIncomingRequests(me),
+    friends: listFriends(me).map((f) => ({ pubkey: f.pubkey, name: f.name, at: f.addedAt })),
+  });
+  const snap = healed ?? (await fetchFriendRequests(me));
   if (!snap) return;
+
   let changed = false;
   for (const row of snap.incoming) {
-    upsertIncomingRequest(session.pubkey, { pubkey: row.pubkey, name: row.name });
+    upsertIncomingRequest(me, { pubkey: row.pubkey, name: row.name });
     changed = true;
   }
   for (const row of snap.outgoing) {
-    upsertOutgoingRequest(session.pubkey, { pubkey: row.pubkey, name: row.name });
+    upsertOutgoingRequest(me, { pubkey: row.pubkey, name: row.name });
+  }
+  for (const row of snap.friends) {
+    if (!isFriend(me, row.pubkey)) {
+      addFriend(me, { pubkey: row.pubkey, name: row.name });
+      changed = true;
+    }
   }
   for (const row of snap.accepted) {
-    if (!isFriend(session.pubkey, row.pubkey)) {
-      addFriend(session.pubkey, { pubkey: row.pubkey, name: row.name });
+    if (!isFriend(me, row.pubkey)) {
+      addFriend(me, { pubkey: row.pubkey, name: row.name });
       if (!callbacks?.isRacing?.()) {
         callbacks?.showToast(`${row.name} accepted your friend request`);
       }
       changed = true;
     }
-    void clearFriendAccept(session.pubkey, row.pubkey, myDisplayName());
+    void clearFriendAccept(me, row.pubkey, name);
   }
   if (changed) {
     if (activeTab === "requests") renderRequests();
@@ -772,10 +792,15 @@ export function initSocialUi(cbs: SocialHubCallbacks): void {
       chatPeer = null;
       stopThread?.();
       stopThread = null;
+    } else {
+      // Restore durable requests/friends as soon as login is ready — not only
+      // when the Friends hub opens — so updates never wipe the inbox.
+      void syncFriendRequestsFromServer();
     }
   });
 
   syncPresenceFromSession();
+  if (getSession()) void syncFriendRequestsFromServer();
 }
 
 export function inviteLinkFor(room: string, password: string): string {

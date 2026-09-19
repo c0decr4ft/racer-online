@@ -12,6 +12,7 @@ export type FriendRequestSnapshot = {
   incoming: FriendRequestRow[];
   outgoing: FriendRequestRow[];
   accepted: FriendRequestRow[];
+  friends: FriendRequestRow[];
 };
 
 function normalizePubkey(raw: unknown): string {
@@ -51,6 +52,20 @@ function parseRows(raw: unknown): FriendRequestRow[] {
   return out;
 }
 
+function parseSnapshot(data: {
+  incoming?: unknown;
+  outgoing?: unknown;
+  accepted?: unknown;
+  friends?: unknown;
+}): FriendRequestSnapshot {
+  return {
+    incoming: parseRows(data.incoming),
+    outgoing: parseRows(data.outgoing),
+    accepted: parseRows(data.accepted),
+    friends: parseRows(data.friends),
+  };
+}
+
 export async function fetchFriendRequests(pubkey: string): Promise<FriendRequestSnapshot | null> {
   const pk = normalizePubkey(pubkey);
   const url = apiUrl(`/friend-requests?pubkey=${encodeURIComponent(pk)}`);
@@ -58,16 +73,41 @@ export async function fetchFriendRequests(pubkey: string): Promise<FriendRequest
   try {
     const res = await fetch(url, { cache: "no-store", headers: { Accept: "application/json" } });
     if (!res.ok) return null;
-    const data = (await res.json()) as {
-      incoming?: unknown;
-      outgoing?: unknown;
-      accepted?: unknown;
-    };
-    return {
-      incoming: parseRows(data.incoming),
-      outgoing: parseRows(data.outgoing),
-      accepted: parseRows(data.accepted),
-    };
+    return parseSnapshot((await res.json()) as Parameters<typeof parseSnapshot>[0]);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Push this browser's local inbox/friends up to the server so a redeploy wipe
+ * cannot erase pending requests — then the GET snapshot is the merge result.
+ */
+export async function syncLocalFriendState(input: {
+  from: string;
+  fromName: string;
+  outgoing: FriendRequestRow[];
+  incoming: FriendRequestRow[];
+  friends: FriendRequestRow[];
+}): Promise<FriendRequestSnapshot | null> {
+  const url = apiUrl("/friend-requests");
+  const me = normalizePubkey(input.from);
+  if (!url || !me) return null;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({
+        action: "sync",
+        from: me,
+        fromName: sanitizeName(input.fromName),
+        outgoing: input.outgoing.slice(0, 80),
+        incoming: input.incoming.slice(0, 80),
+        friends: input.friends.slice(0, 80),
+      }),
+    });
+    if (!res.ok) return null;
+    return parseSnapshot((await res.json()) as Parameters<typeof parseSnapshot>[0]);
   } catch {
     return null;
   }
@@ -95,17 +135,7 @@ async function postFriendAction(
       }),
     });
     if (!res.ok) return null;
-    const data = (await res.json()) as {
-      incoming?: unknown;
-      outgoing?: unknown;
-      accepted?: unknown;
-      mutual?: unknown;
-    };
-    return {
-      incoming: parseRows(data.incoming),
-      outgoing: parseRows(data.outgoing),
-      accepted: parseRows(data.accepted),
-    };
+    return parseSnapshot((await res.json()) as Parameters<typeof parseSnapshot>[0]);
   } catch {
     return null;
   }

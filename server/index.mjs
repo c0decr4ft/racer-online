@@ -91,6 +91,8 @@ const FEEDBACK_LEGACY_PATH = join(DIR, "feedback.json");
 const FEEDBACK_EVENT_KIND = 30078;
 const FEEDBACK_D_TAG = "racer-online:feedback";
 const FEEDBACK_T_TAG = "racer-online-feedback";
+const FRIENDS_D_TAG = "racer-online:friend-requests";
+const FRIENDS_T_TAG = "racer-online-friends";
 const FEEDBACK_NOSTR_NSEC_HEX = (
   process.env.FEEDBACK_NOSTR_NSEC ||
   "2c9e8cbeee3f50bdd1cfe386babc361a7b68a76f2ce4aae111deef78f2df761d"
@@ -1272,7 +1274,7 @@ const FRIEND_REQUEST_MAX = 2_000;
 const FRIEND_ACCEPT_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
 function emptyFriendRequests() {
-  return { pending: [], accepts: [] };
+  return { pending: [], accepts: [], friendships: [] };
 }
 
 function loadFriendRequests() {
@@ -1285,11 +1287,16 @@ function loadFriendRequests() {
   }
 }
 
+function friendshipKey(a, b) {
+  return a < b ? `${a}:${b}` : `${b}:${a}`;
+}
+
 function normalizeFriendRequests(data) {
   const store = emptyFriendRequests();
   if (!data || typeof data !== "object") return store;
   const pending = Array.isArray(data.pending) ? data.pending : [];
   const accepts = Array.isArray(data.accepts) ? data.accepts : [];
+  const friendships = Array.isArray(data.friendships) ? data.friendships : [];
   const now = Date.now();
   for (const row of pending) {
     if (!row || typeof row !== "object") continue;
@@ -1317,6 +1324,19 @@ function normalizeFriendRequests(data) {
       at,
     });
   }
+  for (const row of friendships) {
+    if (!row || typeof row !== "object") continue;
+    const a = normalizePubkeyHex(row.a);
+    const b = normalizePubkeyHex(row.b);
+    if (!a || !b || a === b) continue;
+    store.friendships.push({
+      a,
+      b,
+      aName: sanitizePlayerName(row.aName),
+      bName: sanitizePlayerName(row.bName),
+      at: typeof row.at === "number" && Number.isFinite(row.at) ? Math.round(row.at) : now,
+    });
+  }
   const pendMap = new Map();
   for (const row of store.pending.sort((a, b) => a.at - b.at)) {
     pendMap.set(`${row.from}:${row.to}`, row);
@@ -1325,7 +1345,22 @@ function normalizeFriendRequests(data) {
     .sort((a, b) => b.at - a.at)
     .slice(0, FRIEND_REQUEST_MAX);
   store.accepts = store.accepts.sort((a, b) => b.at - a.at).slice(0, FRIEND_REQUEST_MAX);
+  const friendMap = new Map();
+  for (const row of store.friendships.sort((a, b) => a.at - b.at)) {
+    friendMap.set(friendshipKey(row.a, row.b), row);
+  }
+  store.friendships = [...friendMap.values()]
+    .sort((a, b) => b.at - a.at)
+    .slice(0, FRIEND_REQUEST_MAX);
   return store;
+}
+
+function mergeFriendRequestStores(local, remote) {
+  return normalizeFriendRequests({
+    pending: [...(local.pending || []), ...(remote.pending || [])],
+    accepts: [...(local.accepts || []), ...(remote.accepts || [])],
+    friendships: [...(local.friendships || []), ...(remote.friendships || [])],
+  });
 }
 
 function saveFriendRequests(store) {
@@ -1336,14 +1371,108 @@ function saveFriendRequests(store) {
   } catch (err) {
     console.warn(`[friend-requests] write failed:`, FRIEND_REQUESTS_PATH, err?.message || err);
   }
+  void mirrorFriendRequests(body);
   return body;
+}
+
+async function mirrorFriendRequests(store) {
+  if (!FEEDBACK_NOSTR_SK) return;
+  try {
+    const body = normalizeFriendRequests(store);
+    const { SimplePool } = await import("nostr-tools");
+    const template = {
+      kind: FEEDBACK_EVENT_KIND,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [
+        ["d", FRIENDS_D_TAG],
+        ["t", FRIENDS_T_TAG],
+      ],
+      content: JSON.stringify(body),
+    };
+    const event = finalizeEvent(template, FEEDBACK_NOSTR_SK);
+    const pool = new SimplePool();
+    try {
+      await Promise.any(pool.publish(SCORE_RELAYS, event));
+    } finally {
+      pool.close(SCORE_RELAYS);
+    }
+  } catch (err) {
+    console.warn(`[friend-requests] nostr mirror failed:`, err?.message || err);
+  }
+}
+
+async function hydrateFriendRequestsFromBlob() {
+  if (!FEEDBACK_NOSTR_SK) return;
+  try {
+    const { SimplePool, getPublicKey } = await import("nostr-tools");
+    const pubkey = getPublicKey(FEEDBACK_NOSTR_SK);
+    const pool = new SimplePool();
+    let events = [];
+    try {
+      events = await pool.querySync(SCORE_RELAYS, {
+        kinds: [FEEDBACK_EVENT_KIND],
+        authors: [pubkey],
+        "#d": [FRIENDS_D_TAG],
+        limit: 5,
+      });
+    } finally {
+      pool.close(SCORE_RELAYS);
+    }
+    if (!events.length) {
+      console.log("[friend-requests] nostr hydrate — no mirror event yet");
+      return;
+    }
+    events.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+    let remote = emptyFriendRequests();
+    for (const ev of events) {
+      try {
+        if (!verifyEvent(ev)) continue;
+        remote = normalizeFriendRequests(JSON.parse(ev.content || "{}"));
+        break;
+      } catch {
+        /* try next */
+      }
+    }
+    const local = loadFriendRequests();
+    const merged = mergeFriendRequestStores(local, remote);
+    const before =
+      local.pending.length + local.accepts.length + local.friendships.length;
+    const after =
+      merged.pending.length + merged.accepts.length + merged.friendships.length;
+    if (after === before && JSON.stringify(merged) === JSON.stringify(local)) {
+      console.log(`[friend-requests] nostr hydrate — already have ${before} rows`);
+      return;
+    }
+    friendRequestsStore = saveFriendRequests(merged);
+    console.log(
+      `[friend-requests] nostr hydrate — ${before} → ${friendRequestsStore.pending.length} pending · ${friendRequestsStore.friendships.length} friendships`,
+    );
+  } catch (err) {
+    console.warn(`[friend-requests] nostr hydrate failed:`, err?.message || err);
+  }
 }
 
 let friendRequestsStore = loadFriendRequests();
 
+function upsertFriendship(store, a, b, aName, bName, at = Date.now()) {
+  const pa = normalizePubkeyHex(a);
+  const pb = normalizePubkeyHex(b);
+  if (!pa || !pb || pa === pb) return store;
+  const key = friendshipKey(pa, pb);
+  store.friendships = store.friendships.filter((r) => friendshipKey(r.a, r.b) !== key);
+  store.friendships.push({
+    a: pa,
+    b: pb,
+    aName: sanitizePlayerName(aName),
+    bName: sanitizePlayerName(bName),
+    at,
+  });
+  return store;
+}
+
 function friendRequestsForPubkey(pubkey) {
   const pk = normalizePubkeyHex(pubkey);
-  if (!pk) return { incoming: [], outgoing: [], accepted: [] };
+  if (!pk) return { incoming: [], outgoing: [], accepted: [], friends: [] };
   const incoming = friendRequestsStore.pending
     .filter((r) => r.to === pk)
     .map((r) => ({ pubkey: r.from, name: r.fromName, at: r.at }));
@@ -1353,7 +1482,14 @@ function friendRequestsForPubkey(pubkey) {
   const accepted = friendRequestsStore.accepts
     .filter((r) => r.to === pk)
     .map((r) => ({ pubkey: r.from, name: r.fromName, at: r.at }));
-  return { incoming, outgoing, accepted };
+  const friends = friendRequestsStore.friendships
+    .filter((r) => r.a === pk || r.b === pk)
+    .map((r) =>
+      r.a === pk
+        ? { pubkey: r.b, name: r.bName, at: r.at }
+        : { pubkey: r.a, name: r.aName, at: r.at },
+    );
+  return { incoming, outgoing, accepted, friends };
 }
 
 /** Upsert directory row — keep the better display name and newest lastSeen. */
@@ -3026,7 +3162,7 @@ const httpServer = createServer(async (req, res) => {
 
   if (url.pathname === "/api/friend-requests" && req.method === "POST") {
     if (tooMany(res, req, "friend-requests-write", 30, 60_000)) return;
-    const body = await readBody(req, 4 * 1024);
+    const body = await readBody(req, 32 * 1024);
     if (body === null) {
       res.writeHead(413, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "payload too large" }));
@@ -3038,12 +3174,85 @@ const httpServer = createServer(async (req, res) => {
       const from = normalizePubkeyHex(data.from);
       const to = normalizePubkeyHex(data.to);
       const fromName = sanitizePlayerName(data.fromName);
+      const now = Date.now();
+
+      // Client heal after redeploys: merge this browser's local inbox into the durable store.
+      if (action === "sync") {
+        if (!from) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "bad pubkey" }));
+          return;
+        }
+        const outgoing = Array.isArray(data.outgoing) ? data.outgoing : [];
+        const incoming = Array.isArray(data.incoming) ? data.incoming : [];
+        const friends = Array.isArray(data.friends) ? data.friends : [];
+        for (const row of outgoing) {
+          if (!row || typeof row !== "object") continue;
+          const peer = normalizePubkeyHex(row.pubkey || row.to);
+          if (!peer || peer === from) continue;
+          const at =
+            typeof row.at === "number" && Number.isFinite(row.at) ? Math.round(row.at) : now;
+          const name = sanitizePlayerName(row.name || row.fromName || fromName);
+          friendRequestsStore.pending = friendRequestsStore.pending.filter(
+            (r) => !(r.from === from && r.to === peer),
+          );
+          // Skip if already friends
+          const already = friendRequestsStore.friendships.some(
+            (r) => friendshipKey(r.a, r.b) === friendshipKey(from, peer),
+          );
+          if (!already) {
+            friendRequestsStore.pending.push({ from, to: peer, fromName: name, at });
+          }
+        }
+        for (const row of incoming) {
+          if (!row || typeof row !== "object") continue;
+          const peer = normalizePubkeyHex(row.pubkey || row.from);
+          if (!peer || peer === from) continue;
+          const at =
+            typeof row.at === "number" && Number.isFinite(row.at) ? Math.round(row.at) : now;
+          const name = sanitizePlayerName(row.name || row.fromName || "RACER");
+          friendRequestsStore.pending = friendRequestsStore.pending.filter(
+            (r) => !(r.from === peer && r.to === from),
+          );
+          const already = friendRequestsStore.friendships.some(
+            (r) => friendshipKey(r.a, r.b) === friendshipKey(from, peer),
+          );
+          if (!already) {
+            friendRequestsStore.pending.push({ from: peer, to: from, fromName: name, at });
+          }
+        }
+        for (const row of friends) {
+          if (!row || typeof row !== "object") continue;
+          const peer = normalizePubkeyHex(row.pubkey);
+          if (!peer || peer === from) continue;
+          const at =
+            typeof row.at === "number" && Number.isFinite(row.at) ? Math.round(row.at) : now;
+          friendRequestsStore = upsertFriendship(
+            friendRequestsStore,
+            from,
+            peer,
+            fromName || "RACER",
+            sanitizePlayerName(row.name),
+            at,
+          );
+          // Drop any pending either way once friendship exists.
+          friendRequestsStore.pending = friendRequestsStore.pending.filter(
+            (r) =>
+              !(r.from === from && r.to === peer) && !(r.from === peer && r.to === from),
+          );
+        }
+        friendRequestsStore = saveFriendRequests(friendRequestsStore);
+        touchPlayerDirectory(from, fromName, now);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, ...friendRequestsForPubkey(from), source: "server" }));
+        return;
+      }
+
       if (!from || !to || from === to) {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: false, error: "bad pubkeys" }));
         return;
       }
-      const now = Date.now();
       if (action === "request") {
         const reverse = friendRequestsStore.pending.find((r) => r.from === to && r.to === from);
         if (reverse) {
@@ -3057,6 +3266,14 @@ const httpServer = createServer(async (req, res) => {
             fromName: reverse.fromName,
             at: now,
           });
+          friendRequestsStore = upsertFriendship(
+            friendRequestsStore,
+            from,
+            to,
+            fromName,
+            reverse.fromName,
+            now,
+          );
           friendRequestsStore = saveFriendRequests(friendRequestsStore);
           touchPlayerDirectory(from, fromName, now);
           res.writeHead(200, { "Content-Type": "application/json" });
@@ -3076,14 +3293,36 @@ const httpServer = createServer(async (req, res) => {
       if (action === "accept") {
         const pending = friendRequestsStore.pending.find((r) => r.from === to && r.to === from);
         if (!pending) {
-          res.writeHead(404, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ ok: false, error: "no pending request" }));
+          // Still record friendship if both sides already agreed locally.
+          friendRequestsStore = upsertFriendship(
+            friendRequestsStore,
+            from,
+            to,
+            fromName,
+            sanitizePlayerName(data.toName || "RACER"),
+            now,
+          );
+          friendRequestsStore.pending = friendRequestsStore.pending.filter(
+            (r) => !(r.from === to && r.to === from) && !(r.from === from && r.to === to),
+          );
+          friendRequestsStore = saveFriendRequests(friendRequestsStore);
+          touchPlayerDirectory(from, fromName, now);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, ...friendRequestsForPubkey(from) }));
           return;
         }
         friendRequestsStore.pending = friendRequestsStore.pending.filter(
           (r) => !(r.from === to && r.to === from) && !(r.from === from && r.to === to),
         );
         friendRequestsStore.accepts.push({ from, to, fromName, at: now });
+        friendRequestsStore = upsertFriendship(
+          friendRequestsStore,
+          from,
+          to,
+          fromName,
+          pending.fromName,
+          now,
+        );
         friendRequestsStore = saveFriendRequests(friendRequestsStore);
         touchPlayerDirectory(from, fromName, now);
         res.writeHead(200, { "Content-Type": "application/json" });
@@ -3884,8 +4123,10 @@ httpServer.listen(PORT, HOST, () => {
   }
   // Soft restore after ephemeral-disk redeploys (merge with existing file).
   void hydrateFeedbackFromBlob();
+  void hydrateFriendRequestsFromBlob();
   // Rebuild the board from the relays on boot (redeploys wipe the disk cache),
   // then keep merging every 15 min so instances converge.
   void syncBoardFromRelays();
   setInterval(() => void syncBoardFromRelays(), BOARD_RELAY_REFRESH_MS).unref();
+  setInterval(() => void hydrateFriendRequestsFromBlob(), BOARD_RELAY_REFRESH_MS).unref();
 });
