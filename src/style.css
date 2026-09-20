@@ -2255,6 +2255,100 @@ body:has(#mute-btn.hidden) .hud-top {
   margin-top: 0.35rem;
 }
 
+.dev-live-status {
+  margin: 0 0 0.45rem;
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: 0.88rem;
+  letter-spacing: 0.06em;
+}
+
+.dev-live-feed {
+  width: 100%;
+  max-height: 16rem;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  margin: 0 0 0.35rem;
+  padding: 0.15rem 0.1rem 0.35rem;
+}
+
+.dev-live-feed .dev-tip-empty {
+  margin: 0.35rem 0;
+}
+
+.dev-live-block {
+  border-bottom: 1px solid rgba(242, 245, 250, 0.12);
+  padding: 0.45rem 0.15rem 0.55rem;
+}
+
+.dev-live-block:last-child {
+  border-bottom: none;
+}
+
+.dev-live-block-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.3rem;
+  font-family: var(--font-display);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.dev-live-block-title .dev-live-phase {
+  color: var(--accent-soft);
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+}
+
+.dev-live-meta {
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: 0.8rem;
+  margin-bottom: 0.35rem;
+  letter-spacing: 0.04em;
+}
+
+.dev-live-racers {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.dev-live-racers li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-family: var(--font-ui);
+  font-size: 0.95rem;
+}
+
+.dev-live-racers .dev-live-kind {
+  color: var(--muted);
+  font-family: var(--font-display);
+  font-size: 0.68rem;
+  letter-spacing: 0.12em;
+}
+
+.dev-live-dot {
+  display: inline-block;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: #2fd16f;
+  box-shadow: 0 0 8px rgba(47, 209, 111, 0.65);
+  margin-right: 0.4rem;
+  vertical-align: middle;
+}
+
 .dev-feedback-list {
   max-height: 12rem;
 }

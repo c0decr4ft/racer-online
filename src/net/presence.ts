@@ -35,6 +35,18 @@ export type PresenceBucket = { key: string; count: number; at: number };
 export type PresenceSample = { at: number; count: number };
 export type PresenceOnlinePlayer = { pubkey: string; name: string; at?: number };
 
+export type PresenceRoomRacer = { id: string; name: string; kind: "car" | "bike" };
+
+export type PresenceRoom = {
+  room: string;
+  players: number;
+  phase: string;
+  maxPlayers: number;
+  trackId?: string;
+  eventMode?: string;
+  racers?: PresenceRoomRacer[];
+};
+
 export type PresenceSnapshot = {
   now: number;
   buckets: PresenceBucket[];
@@ -43,6 +55,7 @@ export type PresenceSnapshot = {
   source: "online" | "server" | "local";
   racing?: number;
   online?: PresenceOnlinePlayer[];
+  rooms?: PresenceRoom[];
 };
 
 /** Optional signed-in identity attached to heartbeats (directory + online list). */
@@ -261,6 +274,52 @@ function parseOnlinePlayers(raw: unknown): PresenceOnlinePlayer[] | undefined {
   return out;
 }
 
+function parsePresenceRooms(raw: unknown): PresenceRoom[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: PresenceRoom[] = [];
+  for (const row of raw) {
+    if (!row || typeof row !== "object") continue;
+    const r = row as {
+      room?: unknown;
+      players?: unknown;
+      phase?: unknown;
+      maxPlayers?: unknown;
+      trackId?: unknown;
+      eventMode?: unknown;
+      racers?: unknown;
+    };
+    if (typeof r.room !== "string" || !r.room.trim()) continue;
+    const racers: PresenceRoomRacer[] = [];
+    if (Array.isArray(r.racers)) {
+      for (const entry of r.racers) {
+        if (!entry || typeof entry !== "object") continue;
+        const e = entry as { id?: unknown; name?: unknown; kind?: unknown };
+        racers.push({
+          id: typeof e.id === "string" ? e.id : "",
+          name: typeof e.name === "string" && e.name.trim() ? e.name.trim().slice(0, 24) : "RACER",
+          kind: e.kind === "bike" ? "bike" : "car",
+        });
+      }
+    }
+    out.push({
+      room: r.room.trim().slice(0, 48),
+      players:
+        typeof r.players === "number" && Number.isFinite(r.players)
+          ? Math.max(0, Math.round(r.players))
+          : racers.length,
+      phase: typeof r.phase === "string" ? r.phase : "lobby",
+      maxPlayers:
+        typeof r.maxPlayers === "number" && Number.isFinite(r.maxPlayers)
+          ? Math.max(1, Math.round(r.maxPlayers))
+          : 6,
+      trackId: typeof r.trackId === "string" ? r.trackId : undefined,
+      eventMode: typeof r.eventMode === "string" ? r.eventMode : undefined,
+      racers,
+    });
+  }
+  return out;
+}
+
 function snapshotFromServerPayload(data: unknown): PresenceSnapshot | null {
   if (!data || typeof data !== "object") return null;
   const obj = data as {
@@ -270,6 +329,7 @@ function snapshotFromServerPayload(data: unknown): PresenceSnapshot | null {
     updatedAt?: unknown;
     racing?: unknown;
     online?: unknown;
+    rooms?: unknown;
     ok?: unknown;
   };
   if (typeof obj.now !== "number" || !Number.isFinite(obj.now)) return null;
@@ -325,6 +385,7 @@ function snapshotFromServerPayload(data: unknown): PresenceSnapshot | null {
         ? Math.max(0, Math.round(obj.racing))
         : undefined,
     online: parseOnlinePlayers(obj.online),
+    rooms: parsePresenceRooms(obj.rooms),
   };
 }
 
