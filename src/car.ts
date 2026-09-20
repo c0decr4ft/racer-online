@@ -677,70 +677,6 @@ export function createBird(
   return bird;
 }
 
-/**
- * Low-poly walker for the Canyon Cut underground maze.
- * Pivot at the feet (y≈0) so the mesh sits on the maze floor.
- */
-export function createHuman(
-  bodyColor = 0xe4eaf2,
-  _raceNumber = 7,
-  accentColor = 0xff3b2e,
-  _opts?: CreateVehicleOpts,
-): THREE.Group {
-  const human = new THREE.Group();
-  const skin = paintMat(0xc9956c, { metal: 0.04, rough: 0.78, emit: 0.03 });
-  const shirt = paintMat(bodyColor, { metal: 0.06, rough: 0.68, emit: 0.05 });
-  const pants = paintMat(0x2a3340, { metal: 0.08, rough: 0.72, emit: 0.02 });
-  const accent = paintMat(accentColor, { metal: 0.12, rough: 0.55, emit: 0.1 });
-  const dark = mat(0x1a1f28, { metal: 0.12, rough: 0.78 });
-
-  // Feet / shoes on the ground plane
-  box(human, 0.16, 0.1, 0.28, dark, -0.12, 0.05, 0.04);
-  box(human, 0.16, 0.1, 0.28, dark, 0.12, 0.05, 0.04);
-
-  const leftLeg = new THREE.Group();
-  leftLeg.name = "leg-left";
-  leftLeg.position.set(-0.12, 0.9, 0);
-  box(leftLeg, 0.15, 0.72, 0.17, pants, 0, -0.36, 0);
-  human.add(leftLeg);
-
-  const rightLeg = new THREE.Group();
-  rightLeg.name = "leg-right";
-  rightLeg.position.set(0.12, 0.9, 0);
-  box(rightLeg, 0.15, 0.72, 0.17, pants, 0, -0.36, 0);
-  human.add(rightLeg);
-
-  // Hips + torso
-  box(human, 0.44, 0.14, 0.28, pants, 0, 0.95, 0);
-  box(human, 0.46, 0.08, 0.3, accent, 0, 1.04, 0);
-  box(human, 0.44, 0.58, 0.3, shirt, 0, 1.38, 0);
-
-  // Arms (parented for a light swing)
-  const leftArm = new THREE.Group();
-  leftArm.position.set(-0.3, 1.55, 0);
-  box(leftArm, 0.12, 0.52, 0.12, skin, 0, -0.22, 0);
-  human.add(leftArm);
-  const rightArm = new THREE.Group();
-  rightArm.position.set(0.3, 1.55, 0);
-  box(rightArm, 0.12, 0.52, 0.12, skin, 0, -0.22, 0);
-  human.add(rightArm);
-
-  // Head
-  box(human, 0.3, 0.32, 0.28, skin, 0, 1.88, 0.02);
-  box(human, 0.32, 0.1, 0.32, dark, 0, 2.06, 0);
-  box(human, 0.05, 0.05, 0.04, dark, -0.08, 1.9, 0.13);
-  box(human, 0.05, 0.05, 0.04, dark, 0.08, 1.9, 0.13);
-
-  human.userData.kind = "human";
-  human.userData.legs = [leftLeg, rightLeg];
-  human.userData.arms = [leftArm, rightArm];
-  human.userData.steerCount = 0;
-  human.userData.bodyColor = bodyColor;
-  human.userData.accentColor = accentColor;
-  paintable(human, shirt, accent);
-  return human;
-}
-
 export function createVehicle(
   kind: VehicleKind,
   bodyColor = 0xd0d7e0,
@@ -750,7 +686,6 @@ export function createVehicle(
 ): THREE.Group {
   if (kind === "bike") return createBike(bodyColor, raceNumber, accentColor, opts);
   if (kind === "bird") return createBird(bodyColor, raceNumber, accentColor, opts);
-  if (kind === "human") return createHuman(bodyColor, raceNumber, accentColor, opts);
   return createCar(bodyColor, raceNumber, accentColor, opts);
 }
 
