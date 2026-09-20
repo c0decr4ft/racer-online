@@ -1489,7 +1489,8 @@ function friendRequestsForPubkey(pubkey) {
       r.a === pk
         ? { pubkey: r.b, name: r.bName, at: r.at }
         : { pubkey: r.a, name: r.aName, at: r.at },
-    );
+    )
+    .filter((r) => r.pubkey && r.pubkey !== pk);
   return { incoming, outgoing, accepted, friends };
 }
 
@@ -3369,7 +3370,9 @@ const httpServer = createServer(async (req, res) => {
           if (!peer || peer === from) continue;
           const at =
             typeof row.at === "number" && Number.isFinite(row.at) ? Math.round(row.at) : now;
-          const name = sanitizePlayerName(row.name || row.fromName || fromName);
+          // fromName must be THIS user's display name — never the peer's name.
+          // Using row.name here used to rewrite pending requests as the peer,
+          // so the acceptor stored the friend labeled as themselves.
           friendRequestsStore.pending = friendRequestsStore.pending.filter(
             (r) => !(r.from === from && r.to === peer),
           );
@@ -3378,7 +3381,7 @@ const httpServer = createServer(async (req, res) => {
             (r) => friendshipKey(r.a, r.b) === friendshipKey(from, peer),
           );
           if (!already) {
-            friendRequestsStore.pending.push({ from, to: peer, fromName: name, at });
+            friendRequestsStore.pending.push({ from, to: peer, fromName, at });
           }
         }
         for (const row of incoming) {
@@ -3404,12 +3407,32 @@ const httpServer = createServer(async (req, res) => {
           if (!peer || peer === from) continue;
           const at =
             typeof row.at === "number" && Number.isFinite(row.at) ? Math.round(row.at) : now;
+          let peerName = sanitizePlayerName(row.name);
+          // Don't poison the peer's label with our own display name.
+          if (peerName && fromName && peerName.toLowerCase() === fromName.toLowerCase()) {
+            peerName = "RACER";
+          }
+          const existing = friendRequestsStore.friendships.find(
+            (r) => friendshipKey(r.a, r.b) === friendshipKey(from, peer),
+          );
+          // Prefer an already-known real peer name over a weak heal.
+          if (existing) {
+            const knownPeer =
+              existing.a === from ? existing.bName : existing.aName;
+            if (
+              knownPeer &&
+              knownPeer !== "RACER" &&
+              (!peerName || peerName === "RACER")
+            ) {
+              peerName = knownPeer;
+            }
+          }
           friendRequestsStore = upsertFriendship(
             friendRequestsStore,
             from,
             peer,
             fromName || "RACER",
-            sanitizePlayerName(row.name),
+            peerName,
             at,
           );
           // Drop any pending either way once friendship exists.

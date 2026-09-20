@@ -78,6 +78,14 @@ function myDisplayName(): string {
   return (profile?.displayName || profile?.name || "RACER").slice(0, 24);
 }
 
+/** Prefer a real peer label — never store our own display name as theirs. */
+function peerLabel(pubkey: string, candidate: string): string {
+  const mine = myDisplayName().trim().toLowerCase();
+  const cleaned = String(candidate || "").trim();
+  if (!cleaned || cleaned.toLowerCase() === mine) return shortNpub(pubkey);
+  return cleaned.slice(0, 24);
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -150,7 +158,7 @@ function restartInbox(): void {
         return;
       }
       if (msg.friendAccept) {
-        const name = friendRequestName(msg.plaintext);
+        const name = peerLabel(msg.from, friendRequestName(msg.plaintext));
         addFriend(session.pubkey, { pubkey: msg.from, name });
         void refreshFriendDisplayNames(session.pubkey).then(() => void refreshActiveLists());
         if (shouldToast(session.pubkey, msg) && !callbacks?.isRacing?.()) {
@@ -281,16 +289,27 @@ async function syncFriendRequestsFromServer(): Promise<void> {
     upsertOutgoingRequest(me, { pubkey: row.pubkey, name: row.name });
   }
   for (const row of snap.friends) {
+    if (row.pubkey === me.toLowerCase()) continue;
+    const label = peerLabel(row.pubkey, row.name);
     if (!isFriend(me, row.pubkey)) {
-      addFriend(me, { pubkey: row.pubkey, name: row.name });
+      addFriend(me, { pubkey: row.pubkey, name: label });
       changed = true;
+    } else if (label !== shortNpub(row.pubkey)) {
+      // Heal friends that were wrongly saved under our own display name.
+      const cur = listFriends(me).find((f) => f.pubkey === row.pubkey);
+      if (cur && cur.name.trim().toLowerCase() === name.trim().toLowerCase()) {
+        updateFriendName(me, row.pubkey, label);
+        changed = true;
+      }
     }
   }
   for (const row of snap.accepted) {
+    if (row.pubkey === me.toLowerCase()) continue;
+    const label = peerLabel(row.pubkey, row.name);
     if (!isFriend(me, row.pubkey)) {
-      addFriend(me, { pubkey: row.pubkey, name: row.name });
+      addFriend(me, { pubkey: row.pubkey, name: label });
       if (!callbacks?.isRacing?.()) {
-        callbacks?.showToast(`${row.name} accepted your friend request`);
+        callbacks?.showToast(`${label} accepted your friend request`);
       }
       changed = true;
     }
@@ -578,7 +597,7 @@ async function sendFriendRequest(pubkey: string, name: string): Promise<void> {
     return;
   }
   if (snap.accepted.some((r) => r.pubkey === pubkey.toLowerCase()) || isFriend(session.pubkey, pubkey)) {
-    addFriend(session.pubkey, { pubkey, name });
+    addFriend(session.pubkey, { pubkey, name: peerLabel(pubkey, name) });
     callbacks?.showToast(`You and ${name} are friends`);
   } else {
     upsertOutgoingRequest(session.pubkey, { pubkey, name });
@@ -590,13 +609,15 @@ async function sendFriendRequest(pubkey: string, name: string): Promise<void> {
 async function acceptFriendRequest(pubkey: string, name: string): Promise<void> {
   const session = getSession();
   if (!session) return;
-  addFriend(session.pubkey, { pubkey, name });
+  const label = peerLabel(pubkey, name);
+  addFriend(session.pubkey, { pubkey, name: label });
   const snap = await postFriendAccept(session.pubkey, pubkey, myDisplayName());
   if (!snap) {
-    callbacks?.showToast(`Friends with ${name} on this device — sync failed`);
+    callbacks?.showToast(`Friends with ${label} on this device — sync failed`);
   } else {
-    callbacks?.showToast(`You and ${name} are friends`);
+    callbacks?.showToast(`You and ${label} are friends`);
   }
+  void refreshFriendDisplayNames(session.pubkey).then(() => void refreshActiveLists());
   void refreshActiveLists();
 }
 
@@ -640,7 +661,24 @@ function renderChatPeers(): void {
   const peers = el("social-chat-peers");
   const session = getSession();
   if (!peers || !session) return;
-  const friends = listFriends(session.pubkey);
+  const me = session.pubkey.toLowerCase();
+  const mine = myDisplayName().trim().toLowerCase();
+  const seen = new Set<string>();
+  const friends = listFriends(session.pubkey).filter((f) => {
+    if (!f.pubkey || f.pubkey === me || seen.has(f.pubkey)) return false;
+    seen.add(f.pubkey);
+    return true;
+  });
+  // Heal chips that still show our own name from the old sync bug.
+  for (const f of friends) {
+    if (f.name.trim().toLowerCase() === mine) {
+      updateFriendName(session.pubkey, f.pubkey, shortNpub(f.pubkey));
+      f.name = shortNpub(f.pubkey);
+      void refreshFriendDisplayNames(session.pubkey).then(() => {
+        if (activeTab === "chat") renderChatPeers();
+      });
+    }
+  }
   peers.innerHTML = friends.length
     ? friends
         .map(
