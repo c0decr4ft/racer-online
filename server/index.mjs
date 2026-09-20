@@ -2161,6 +2161,7 @@ async function removeClientFromRoom(room, client, ws) {
       player: client.name,
       playerId: client.id,
     });
+    closeSpectators(room, "room closed");
     rooms.delete(client.room);
   } else {
     if (room.hostId === client.id) {
@@ -2325,6 +2326,150 @@ function broadcast(room, msg, except) {
     if (except && c.id === except) continue;
     if (c.ws.readyState === 1) c.ws.send(raw);
   }
+  for (const s of room.spectators?.values?.() ?? []) {
+    if (except && s.id === except) continue;
+    if (s.ws.readyState === 1) s.ws.send(raw);
+  }
+}
+
+/** Send binary/JSON to every live spectator in a room. */
+function broadcastSpectators(room, data) {
+  if (!room.spectators?.size) return;
+  for (const s of room.spectators.values()) {
+    if (s.ws.readyState === 1) s.ws.send(data);
+  }
+}
+
+function closeSpectators(room, reason = "room closed") {
+  if (!room.spectators?.size) return;
+  for (const s of [...room.spectators.values()]) {
+    try {
+      send(s.ws, { t: "error", message: reason });
+      s.ws.close();
+    } catch {
+      /* ignore */
+    }
+  }
+  room.spectators.clear();
+}
+
+/**
+ * DEV-only live spectate — join a room without a player slot / password.
+ * Requires a fresh signed DEV_PUBKEY auth event (same as the tips dashboard).
+ */
+function admitSpectator(ws, msg) {
+  try {
+    verifyDevEvent(msg.event);
+  } catch (err) {
+    const message = String(err?.message || err).slice(0, 120);
+    send(ws, { t: "error", message });
+    try {
+      ws.close();
+    } catch {
+      /* ignore */
+    }
+    return null;
+  }
+  const roomName = sanitizeRoomName(msg.room);
+  const room = rooms.get(roomName);
+  if (!room || room.clients.size === 0) {
+    send(ws, { t: "error", message: "room not found" });
+    try {
+      ws.close();
+    } catch {
+      /* ignore */
+    }
+    return null;
+  }
+  if (!room.spectators) room.spectators = new Map();
+  const id = randomUUID().slice(0, 8);
+  let targetId = typeof msg.targetId === "string" ? msg.targetId.trim() : "";
+  if (targetId && !room.clients.has(targetId)) {
+    // Fall back to name match from the live feed.
+    const byName = [...room.clients.values()].find(
+      (c) => c.name.toLowerCase() === targetId.toLowerCase(),
+    );
+    targetId = byName?.id || "";
+  }
+  if (!targetId) {
+    targetId = room.clients.keys().next().value || "";
+  }
+  const spectator = { id, name: "DEV", room: roomName, ws, targetId };
+  room.spectators.set(id, spectator);
+
+  const players = roomPlayers(room);
+  const you = players.find((p) => p.id === targetId) || players[0] || {
+    id,
+    name: "DEV",
+    color: 0xff3b2e,
+    accent: 0xff3b2e,
+    x: 0,
+    z: 0,
+    h: 0,
+    s: 0,
+    g: "N",
+    lap: 1,
+    kind: room.kind === "bike" ? "bike" : "car",
+  };
+
+  send(ws, {
+    t: "welcome",
+    spectator: true,
+    spectateTargetId: targetId,
+    id,
+    room: roomName,
+    players,
+    you,
+    hostId: room.hostId,
+    trackId: room.trackId,
+    kind: room.kind,
+    weather: room.weather,
+    maxPlayers: room.maxPlayers,
+    phase: room.phase,
+    raceMode: room.eventMode || "race",
+    event: eventInfo(room),
+    battleCubes:
+      room.eventMode === "battle" && room.phase === "racing"
+        ? [...room.battleCubes.values()].map((c) => ({
+            id: c.id,
+            x: c.x,
+            z: c.z,
+            sats: c.sats,
+            tier: c.tier,
+            takenBy: c.takenBy || "",
+          }))
+        : undefined,
+  });
+
+  // Mid-race: tell the spectator the race is already going (client skips lobby).
+  if (room.phase === "racing" || room.phase === "finished" || room.phase === "starting") {
+    send(ws, {
+      t: "start",
+      at: room.raceStartedAt || Date.now(),
+      trackId: room.trackId,
+      kind: room.kind,
+      weather: room.weather,
+      battleCubes:
+        room.eventMode === "battle"
+          ? [...room.battleCubes.values()]
+              .filter((c) => !c.takenBy)
+              .map((c) => ({
+                id: c.id,
+                x: c.x,
+                z: c.z,
+                sats: c.sats,
+                tier: c.tier,
+              }))
+          : undefined,
+    });
+    // Immediate pose snapshot so chase-cam has cars before the next 30Hz tick.
+    if (room.clients.size > 0 && ws.readyState === 1) {
+      ws.send(encodeStateBinary(roomPlayers(room), Date.now(), room.wreckedIds));
+    }
+  }
+
+  console.log(`[spectate] DEV → ${roomName} target=${targetId || "—"} (${room.clients.size}p · ${room.phase})`);
+  return spectator;
 }
 
 function shuffledVoteTracks() {
@@ -2690,6 +2835,8 @@ function admitClient(ws, msg, mode) {
       fireContactLast: new Map(),
       allWreckResetAt: 0,
       clients: new Map(),
+      /** DEV live spectate — not counted in maxPlayers / not racing. */
+      spectators: new Map(),
       // Event Mode: buy-in gate + winner-takes-the-pot (Race) or cube shares (Battle)
       isEvent: !!msg.event,
       eventMode: msg.event
@@ -3656,6 +3803,8 @@ wss.on("connection", (ws) => {
   ws._socket?.setNoDelay?.(true);
   /** @type {Client | null} */
   let client = null;
+  /** @type {{ id: string, name: string, room: string, ws: import("ws").WebSocket, targetId: string } | null} */
+  let spectator = null;
 
   ws.on("error", (err) => {
     console.warn("[ws] socket error:", err?.message || err);
@@ -3700,11 +3849,20 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    if (msg.t === "spectate") {
+      if (client || spectator) return;
+      spectator = admitSpectator(ws, msg);
+      return;
+    }
+
     if (msg.t === "create" || msg.t === "join") {
-      if (client) return;
+      if (client || spectator) return;
       client = admitClient(ws, msg, msg.t === "create" ? "create" : "join");
       return;
     }
+
+    // Spectators only need ping / disconnect — ignore gameplay messages.
+    if (spectator) return;
 
     if (!client) {
       send(ws, { t: "error", message: "join first" });
@@ -4227,6 +4385,13 @@ wss.on("connection", (ws) => {
   });
 
   ws.on("close", () => {
+    if (spectator) {
+      const room = rooms.get(spectator.room);
+      room?.spectators?.delete(spectator.id);
+      console.log(`[spectate] DEV left ${spectator.room}`);
+      spectator = null;
+      return;
+    }
     if (!client) return;
     const room = rooms.get(client.room);
     if (!room) {
@@ -4250,12 +4415,16 @@ setInterval(() => {
       tickWreckFire(room, NET_TICK_MS);
       if (room.allWreckResetAt && Date.now() >= room.allWreckResetAt) runFieldReset(room);
     }
-    // Solo room: no remotes to feed — skip the 30Hz binary broadcast.
-    if (room.clients.size <= 1) continue;
+    const hasSpectators = (room.spectators?.size ?? 0) > 0;
+    // Solo room: no remotes to feed — skip unless a DEV spectator needs the feed.
+    if (room.clients.size <= 1 && !hasSpectators) continue;
     const raw = encodeStateBinary(roomPlayers(room), at, room.wreckedIds);
-    for (const c of room.clients.values()) {
-      if (c.ws.readyState === 1) c.ws.send(raw);
+    if (room.clients.size > 1) {
+      for (const c of room.clients.values()) {
+        if (c.ws.readyState === 1) c.ws.send(raw);
+      }
     }
+    broadcastSpectators(room, raw);
   }
 }, NET_TICK_MS);
 

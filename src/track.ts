@@ -7,8 +7,10 @@ import {
   trackHasUnderpass,
   type TrackDef,
 } from "./trackDefs";
+import { plantUndergroundMaze, type UndergroundMaze } from "./undergroundMaze";
 
 export type { TrackDef };
+export type { UndergroundMaze };
 export {
   TRACKS,
   DEFAULT_TRACK_ID,
@@ -36,6 +38,8 @@ export type TrackData = {
   heightAt?: (t: number) => number;
   /** dy/ds along the centerline (for visual pitch). */
   gradeAt?: (t: number) => number;
+  /** Canyon Cut — underground labyrinth (bird↔human). */
+  undergroundMaze?: UndergroundMaze;
 };
 
 /** Shared with car headlights — asphalt receives beams; forest stays on layer 0 only. */
@@ -1527,6 +1531,8 @@ function plantBiomeProps(
     plantCanyonWalls(group, path, clearance, dummy, bounds);
     // Secret infield lodge — cars can't leave the ribbon; bird can fly inside.
     plantCanyonSecretLodge(group, path, clearance, bounds);
+    // Underground labyrinth — bird enters the shaft → human (and reverse on exit).
+    plantCanyonUndergroundMaze(group, path, clearance, bounds);
   }
 
   // Summit Pass — volumetric peaks on a horizon ring (readable from the circuit)
@@ -2981,6 +2987,42 @@ function plantCanyonSecretLodge(
   }
 
   group.add(lodge);
+}
+
+/**
+ * Place the underground maze in the canyon infield, offset from the lodge
+ * so the surface shaft is a distinct discoverable pit.
+ */
+function plantCanyonUndergroundMaze(
+  group: THREE.Group,
+  path: THREE.CatmullRomCurve3,
+  clearance: PathClearance,
+  bounds: ReturnType<typeof pathBounds>,
+) {
+  let cx = bounds.cx + 18;
+  let cz = bounds.cz - 14;
+  if (!clearance.insideLoop(cx, cz) || !clearance.clearOf(cx, cz, 16)) {
+    const pts = collectSpacedInfieldPoints(path, clearance, bounds, {
+      count: 36,
+      minSep: 12,
+      clearFoot: 14,
+    });
+    if (!pts.length) return;
+    // Prefer a point away from AABB center (lodge usually sits near mid).
+    let best = pts[0]!;
+    let bestD = -1;
+    for (const p of pts) {
+      const d = (p.x - bounds.cx) ** 2 + (p.z - bounds.cz) ** 2;
+      if (d > bestD) {
+        bestD = d;
+        best = p;
+      }
+    }
+    cx = best.x;
+    cz = best.z;
+  }
+  if (!clearance.insideLoop(cx, cz) || !clearance.clearOf(cx, cz, 12)) return;
+  plantUndergroundMaze(group, cx, cz);
 }
 
 /** Spread points across the infield — full-loop grid + min spacing (not AABB-center only). */
@@ -5651,6 +5693,7 @@ export function createTrack(
     },
     heightAt: grade?.heightAt,
     gradeAt: grade?.gradeAt,
+    undergroundMaze: group.userData.undergroundMaze as UndergroundMaze | undefined,
   };
 }
 

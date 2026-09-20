@@ -460,6 +460,8 @@ export type WelcomeInfo = {
   maxPlayers: number;
   phase: LobbyPhase;
   raceMode?: EventGameMode;
+  spectator?: boolean;
+  spectateTargetId?: string;
 };
 
 export type NetHandlers = {
@@ -569,7 +571,11 @@ export type RoomConnectOpts = {
   eventGameMode?: EventGameMode;
   /** True when joining via Event Mode — server rejects cross-type joins. */
   eventMode?: boolean;
-  mode: "create" | "join";
+  mode: "create" | "join" | "spectate";
+  /** DEV spectate — signed auth event (kind 30078). */
+  event?: unknown;
+  /** DEV spectate — preferred racer id (or name fallback on server). */
+  targetId?: string;
 };
 
 export class NetClient {
@@ -597,6 +603,10 @@ export class NetClient {
   private clockReady = false;
   latency = 0;
   connected = false;
+  /** DEV live spectate — no pose uplink / no racer slot. */
+  spectator = false;
+  /** Preferred chase-cam target from the DEV live feed. */
+  spectateTargetId = "";
   room = "";
   hostId = "";
   trackId = "";
@@ -706,6 +716,17 @@ export class NetClient {
     this.connect({ ...opts, mode: "join" });
   }
 
+  /** DEV-only — attach to a live room as a spectator (signed auth event). */
+  spectateRoom(opts: { room: string; targetId?: string; event: unknown }) {
+    this.connect({
+      name: "DEV",
+      room: opts.room,
+      targetId: opts.targetId,
+      event: opts.event,
+      mode: "spectate",
+    });
+  }
+
   private connect(opts: RoomConnectOpts) {
     this.disconnect();
     this.pending = opts;
@@ -737,7 +758,13 @@ export class NetClient {
       return;
     }
 
-    this.handlers.onStatus(opts.mode === "create" ? "Creating room…" : "Joining room…");
+    const status =
+      opts.mode === "create"
+        ? "Creating room…"
+        : opts.mode === "spectate"
+          ? "Joining live feed…"
+          : "Joining room…";
+    this.handlers.onStatus(status);
     this.openSocket(url, opts, proxied && proxied !== url ? proxied : null, gen);
   }
 
@@ -760,7 +787,13 @@ export class NetClient {
       }
       settled = true;
       this.connected = true;
-      this.handlers.onStatus(opts.mode === "create" ? "Creating room…" : "Joining room…");
+      const status =
+        opts.mode === "create"
+          ? "Creating room…"
+          : opts.mode === "spectate"
+            ? "Joining live feed…"
+            : "Joining room…";
+      this.handlers.onStatus(status);
       const payload =
         opts.mode === "create"
           ? {
@@ -782,7 +815,14 @@ export class NetClient {
                   }
                 : undefined,
             }
-          : {
+          : opts.mode === "spectate"
+            ? {
+                t: "spectate" as const,
+                room: opts.room || "circuit",
+                targetId: opts.targetId || "",
+                event: opts.event,
+              }
+            : {
               t: "join" as const,
               name: opts.name,
               room: opts.room || "circuit",
@@ -830,13 +870,17 @@ export class NetClient {
         this.phase = msg.phase;
         this.event = msg.event ?? null;
         this.raceMode = normalizeWireRaceMode(msg.raceMode ?? msg.event?.mode);
+        this.spectator = !!msg.spectator;
+        this.spectateTargetId = msg.spectateTargetId || "";
         this.myBuyIn = null;
         this.pending = null;
         this.roster.clear();
         this.clockReady = false;
         this.rememberPlayers(msg.players);
         this.rememberPlayer(msg.you);
-        this.handlers.onStatus(`Lobby · ${msg.room}`);
+        this.handlers.onStatus(
+          this.spectator ? `Watching · ${msg.room}` : `Lobby · ${msg.room}`,
+        );
         this.handlers.onWelcome({
           id: msg.id,
           room: msg.room,
@@ -849,6 +893,8 @@ export class NetClient {
           maxPlayers: msg.maxPlayers,
           phase: msg.phase,
           raceMode: this.raceMode,
+          spectator: this.spectator,
+          spectateTargetId: this.spectateTargetId || undefined,
         });
       } else if (msg.t === "join") {
         this.rememberPlayer(msg.player);
@@ -1056,6 +1102,8 @@ export class NetClient {
     this.myBuyIn = null;
     this.finishSent = false;
     this.pending = null;
+    this.spectator = false;
+    this.spectateTargetId = "";
     this.roster.clear();
     this.clockReady = false;
     this.clockOffset = 0;
@@ -1083,6 +1131,7 @@ export class NetClient {
 
   /** Local wall-explode — server freezes this racer on fire (no field reset). */
   reportCrash() {
+    if (this.spectator) return;
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.myId) return;
     if (this.phase !== "racing") return;
     this.ws.send(JSON.stringify({ t: "crash" }));
@@ -1091,6 +1140,7 @@ export class NetClient {
   /** Report a local finish once; the server decides and broadcasts the winner. */
   reportFinish(timeMs: number, bestLapMs: number) {
     if (
+      this.spectator ||
       this.finishSent ||
       !this.ws ||
       this.ws.readyState !== WebSocket.OPEN ||
@@ -1196,6 +1246,7 @@ export class NetClient {
       lap: number;
     },
   ) {
+    if (this.spectator) return;
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.myId) return;
     if (this.phase !== "racing" && this.phase !== "finished") return;
     this.pendingPose = pose;
