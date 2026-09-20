@@ -4453,49 +4453,6 @@ button.btn-ghost.social-mini {
   box-shadow: none;
 }
 
-/* Limited-time drop — sixth home button while GREEN HELL is live */
-.menu-actions .limited-drop-btn {
-  border-color: #2fd16f;
-  background: linear-gradient(180deg, #2a9b55, #1a6b38);
-  box-shadow:
-    0 0 0 1px rgba(255, 255, 255, 0.1) inset,
-    0 10px 28px rgba(47, 209, 111, 0.35);
-  letter-spacing: 0.22em;
-  animation: limited-drop-pulse 1.8s ease-in-out infinite alternate;
-}
-
-.menu-actions .limited-drop-btn:hover {
-  filter: brightness(1.1);
-}
-
-.menu-actions .limited-drop-btn.hidden,
-.limited-drop-hint.hidden {
-  display: none !important;
-}
-
-.limited-drop-hint {
-  margin: -0.15rem 0 0;
-  text-align: center;
-  font-family: var(--font-ui);
-  font-size: 0.82rem;
-  letter-spacing: 0.08em;
-  color: #7dcea0;
-  line-height: 1.35;
-}
-
-@keyframes limited-drop-pulse {
-  from {
-    box-shadow:
-      0 0 0 1px rgba(255, 255, 255, 0.08) inset,
-      0 8px 22px rgba(47, 209, 111, 0.28);
-  }
-  to {
-    box-shadow:
-      0 0 0 1px rgba(255, 255, 255, 0.14) inset,
-      0 12px 34px rgba(47, 209, 111, 0.48);
-  }
-}
-
 /* Course picker — minimap-style silhouettes only (no text labels) */
 .map-select-panel {
   max-width: min(36rem, 94vw);

@@ -14,13 +14,11 @@ export {
   DEFAULT_TRACK_ID,
   DRIFT_TRACK_ID,
   TUTORIAL_TRACK_ID,
-  LIMITED_TRACK_ID,
   getTrackDef,
   randomTrackId,
   isTrackId,
   isDriftTrack,
   isTutorialTrack,
-  isLimitedTrack,
   trackHasUnderpass,
 } from "./trackDefs";
 

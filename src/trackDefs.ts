@@ -579,130 +579,6 @@ export function isTutorialTrack(id: string): boolean {
   return id === TUTORIAL_TRACK_ID;
 }
 
-/**
- * Nürburgring GP-Strecke — digitized from the official GP layout map.
- * Clockwise from SF (south): Yokohama-S (T1) → Mercedes-Arena omega (T2–4) →
- * Dunlop-Kehre (T7) → Michael-Schumacher-S → Warsteiner → ADVAN-Bogen →
- * NGK-Schikane → Coca-Cola (T15) → SF. Alpine Eifel surroundings.
- * Limited drop only (GREEN HELL) — not in normal map select / random.
- */
-const NURBURGRING_POINTS: readonly (readonly [number, number])[] = [
-  [220.0, -222.0],
-  [184.8, -222.0],
-  [149.6, -222.0],
-  [114.4, -216.45],
-  [79.2, -203.5],
-  [61.6, -192.4],
-  [44.0, -181.3],
-  [30.8, -168.35],
-  [17.6, -155.4],
-  [4.4, -125.8],
-  [8.8, -96.2],
-  [30.8, -74.0],
-  [61.6, -59.2],
-  [92.4, -51.8],
-  [123.2, -44.4],
-  [149.6, -29.6],
-  [171.6, -7.4],
-  [184.8, 14.8],
-  [188.1, 35.61],
-  [191.4, 56.43],
-  [212.34, 77.52],
-  [222.82, 102.12],
-  [206.36, 126.73],
-  [172.7, 142.89],
-  [135.3, 142.89],
-  [101.64, 126.73],
-  [85.18, 102.12],
-  [95.66, 77.52],
-  [116.6, 56.43],
-  [105.38, 45.88],
-  [87.89, 32.19],
-  [70.4, 18.5],
-  [35.2, 18.5],
-  [0.0, 14.8],
-  [-35.2, 7.4],
-  [-70.4, -3.7],
-  [-90.2, -9.25],
-  [-110.0, -14.8],
-  [-149.6, -14.8],
-  [-169.4, -9.25],
-  [-189.2, -3.7],
-  [-206.8, 7.4],
-  [-224.4, 18.5],
-  [-239.8, 31.45],
-  [-255.2, 44.4],
-  [-266.2, 59.2],
-  [-277.2, 74.0],
-  [-286.0, 103.6],
-  [-272.8, 133.2],
-  [-255.2, 144.3],
-  [-237.6, 155.4],
-  [-215.6, 157.25],
-  [-193.6, 159.1],
-  [-173.8, 151.7],
-  [-154.0, 144.3],
-  [-138.6, 131.35],
-  [-123.2, 118.4],
-  [-105.6, 103.6],
-  [-96.8, 107.3],
-  [-88.0, 129.5],
-  [-74.8, 155.4],
-  [-57.2, 177.6],
-  [-35.2, 192.4],
-  [-8.8, 199.8],
-  [22.0, 203.5],
-  [52.8, 207.2],
-  [88.0, 207.2],
-  [123.2, 203.5],
-  [158.4, 196.1],
-  [193.6, 181.3],
-  [209.0, 170.2],
-  [224.4, 159.1],
-  [242.0, 146.15],
-  [259.6, 133.2],
-  [272.8, 118.4],
-  [286.0, 103.6],
-  [294.8, 86.95],
-  [303.6, 70.3],
-  [310.2, 51.8],
-  [316.8, 33.3],
-  [319.0, 14.8],
-  [321.2, -3.7],
-  [321.2, -22.2],
-  [321.2, -40.7],
-  [316.8, -59.2],
-  [312.4, -77.7],
-  [294.8, -107.3],
-  [268.4, -125.8],
-  [237.6, -133.2],
-  [211.2, -129.5],
-  [189.2, -118.4],
-  [180.4, -99.9],
-  [193.6, -85.1],
-  [215.6, -85.1],
-  [233.2, -99.9],
-  [242.0, -118.4],
-  [255.2, -140.6],
-  [272.8, -166.5],
-  [286.0, -192.4],
-  [290.4, -210.9],
-  [281.6, -222.0],
-];
-
-export const LIMITED_TRACK_ID = "nurburgring";
-
-export const LIMITED_TRACK: TrackDef = {
-  id: LIMITED_TRACK_ID,
-  name: "Nürburgring",
-  biome: "alpine",
-  points: NURBURGRING_POINTS,
-};
-
-export function isLimitedTrack(id: string): boolean {
-  return id === LIMITED_TRACK_ID;
-}
-
 const YARD_DRIFT: readonly (readonly [number, number])[] = [
   // SF straight — eastbound
   [48, -52],
@@ -811,7 +687,6 @@ export function randomTrackId(avoid?: string): string {
 export function getTrackDef(id: string): TrackDef {
   if (id === DRIFT_TRACK_ID) return DRIFT_TRACK;
   if (id === TUTORIAL_TRACK_ID) return TUTORIAL_TRACK;
-  if (id === LIMITED_TRACK_ID) return LIMITED_TRACK;
   const found = TRACKS.find((t) => t.id === id);
   return found ?? TRACKS[0]!;
 }
@@ -820,7 +695,6 @@ export function isTrackId(id: string): boolean {
   return (
     isDriftTrack(id) ||
     isTutorialTrack(id) ||
-    isLimitedTrack(id) ||
     TRACKS.some((t) => t.id === id)
   );
 }
