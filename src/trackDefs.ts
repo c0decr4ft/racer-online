@@ -579,6 +579,108 @@ export function isTutorialTrack(id: string): boolean {
   return id === TUTORIAL_TRACK_ID;
 }
 
+/**
+ * Nürburgring (Nordschleife) — stylized Green Hell silhouette for limited drops.
+ * Clockwise from SF (south): Hatzenbach west bite → Flugplatz north bulge →
+ * long Döttinger Höhe on the east → Tiergarten back to SF. Forested Eifel vibe.
+ * Not in TRACKS (map select / random); only via GREEN HELL while the drop is live.
+ */
+const NURBURGRING_POINTS: readonly (readonly [number, number])[] = [
+  [0.0, -172.72],
+  [-14.24, -170.2],
+  [-27.82, -165.21],
+  [-40.48, -158.57],
+  [-52.28, -151.33],
+  [-63.64, -144.5],
+  [-75.09, -138.6],
+  [-86.98, -133.49],
+  [-99.15, -128.35],
+  [-110.79, -121.99],
+  [-120.5, -113.33],
+  [-126.73, -101.79],
+  [-128.32, -87.68],
+  [-125.06, -72.08],
+  [-118.01, -56.55],
+  [-109.37, -42.61],
+  [-102.02, -31.17],
+  [-98.73, -22.29],
+  [-101.34, -15.1],
+  [-110.23, -8.16],
+  [-124.18, -0.0],
+  [-140.91, 10.43],
+  [-157.58, 23.47],
+  [-171.22, 38.66],
+  [-179.92, 54.98],
+  [-183.05, 71.31],
+  [-181.07, 86.77],
+  [-175.18, 100.96],
+  [-166.73, 113.93],
+  [-156.81, 125.96],
+  [-145.98, 137.29],
+  [-134.34, 147.92],
+  [-121.74, 157.59],
+  [-108.08, 165.87],
+  [-93.41, 172.41],
+  [-78.02, 177.16],
+  [-62.32, 180.38],
+  [-46.61, 182.61],
+  [-31.05, 184.39],
+  [-15.57, 186.06],
+  [-0.0, 187.52],
+  [15.76, 188.29],
+  [31.6, 187.66],
+  [47.21, 184.93],
+  [62.09, 179.71],
+  [75.75, 171.99],
+  [87.88, 162.21],
+  [98.41, 151.03],
+  [107.51, 139.16],
+  [115.47, 127.15],
+  [122.58, 115.29],
+  [128.97, 103.6],
+  [134.62, 91.98],
+  [139.38, 80.33],
+  [143.14, 68.59],
+  [145.87, 56.82],
+  [147.71, 45.14],
+  [148.9, 33.62],
+  [149.74, 22.3],
+  [150.43, 11.13],
+  [151.2, 0.0],
+  [151.74, -11.23],
+  [151.61, -22.58],
+  [150.62, -34.01],
+  [148.65, -45.42],
+  [145.66, -56.74],
+  [141.72, -67.91],
+  [136.86, -78.88],
+  [131.12, -89.59],
+  [124.46, -99.97],
+  [116.87, -109.91],
+  [108.35, -119.31],
+  [98.98, -128.13],
+  [88.88, -136.4],
+  [78.14, -144.22],
+  [66.8, -151.67],
+  [54.81, -158.64],
+  [42.07, -164.82],
+  [28.57, -169.65],
+  [14.43, -172.47],
+];
+
+export const LIMITED_TRACK_ID = "nurburgring";
+
+export const LIMITED_TRACK: TrackDef = {
+  id: LIMITED_TRACK_ID,
+  name: "Nürburgring",
+  biome: "alpine",
+  points: NURBURGRING_POINTS,
+};
+
+export function isLimitedTrack(id: string): boolean {
+  return id === LIMITED_TRACK_ID;
+}
+
 const YARD_DRIFT: readonly (readonly [number, number])[] = [
   // SF straight — eastbound
   [48, -52],
@@ -649,6 +751,7 @@ export const DEFAULT_TRACK_ID = TRACKS[0]!.id;
 export function getTrackDef(id: string): TrackDef {
   if (id === DRIFT_TRACK_ID) return DRIFT_TRACK;
   if (id === TUTORIAL_TRACK_ID) return TUTORIAL_TRACK;
+  if (id === LIMITED_TRACK_ID) return LIMITED_TRACK;
   const found = TRACKS.find((t) => t.id === id);
   return found ?? TRACKS[0]!;
 }
@@ -659,6 +762,11 @@ export function randomTrackId(): string {
 }
 
 export function isTrackId(id: string): boolean {
-  return isDriftTrack(id) || isTutorialTrack(id) || TRACKS.some((t) => t.id === id);
+  return (
+    isDriftTrack(id) ||
+    isTutorialTrack(id) ||
+    isLimitedTrack(id) ||
+    TRACKS.some((t) => t.id === id)
+  );
 }
 
