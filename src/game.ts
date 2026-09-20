@@ -24,6 +24,7 @@ import {
 } from "./track";
 import {
   collideMazeWalls,
+  pointInGoal,
   pointInMazeBounds,
   pointInShaft,
 } from "./undergroundMaze";
@@ -310,6 +311,10 @@ export class Game {
   private roomSpectating = false;
   /** Preferred chase target from the live feed click. */
   private preferredSpectateTargetId: string | null = null;
+  /** One-shot toast when the maze goal chamber is reached. */
+  private mazeGoalReached = false;
+  /** Fog snapshot so underground can dim the surface fog temporarily. */
+  private mazeFogBackup: { color: number; near: number; far: number } | null = null;
   private lobbyPlayers: PlayerPose[] = [];
   private mpCreateTrackId = DEFAULT_TRACK_ID;
   /** Rooms are car/bike only — dev garage extras never leave the local garage. */
@@ -674,7 +679,10 @@ export class Game {
         if (this.expectingSpectate) {
           this.expectingSpectate = false;
           this.preferredSpectateTargetId = null;
-          this.openDevDash();
+          const live = document.getElementById("dev-live-status");
+          if (live) live.textContent = `Watch failed — ${message}`;
+          document.getElementById("dev-dash")?.classList.remove("hidden");
+          this.startDevLiveFeed();
         }
         this.setNetStatus(message, "bad");
         this.setMpFormStatus(message);
@@ -2468,6 +2476,8 @@ export class Game {
     const wasRoomSpectating = this.roomSpectating;
     this.roomSpectating = false;
     this.preferredSpectateTargetId = null;
+    this.mazeGoalReached = false;
+    this.restoreMazeFog();
     this.lobbyPlayers = [];
     this.onlineFinishPending = false;
     this.stopSpectate();
@@ -2662,13 +2672,13 @@ export class Game {
     const rooms = snap.rooms ?? [];
     const racing = snap.racing ?? rooms.reduce((n, r) => n + (r.players || 0), 0);
     const tabs = snap.now;
-    if (status) {
+    if (status && !this.expectingSpectate) {
       const bits = [
         `${tabs} tab${tabs === 1 ? "" : "s"}`,
         `${online.length} signed-in`,
         `${racing} in rooms`,
       ];
-      status.textContent = `${bits.join(" · ")} · ${snap.source}`;
+      status.textContent = `${bits.join(" · ")} · ${snap.source} · click a racer to watch live`;
     }
 
     feed.innerHTML = "";
@@ -2680,10 +2690,24 @@ export class Game {
       return;
     }
 
+    // name(lower) → room racer for watch links from the signed-in list
+    const watchByName = new Map<string, { room: string; id: string; name: string }>();
+    for (const room of rooms) {
+      for (const r of room.racers || []) {
+        watchByName.set(r.name.toLowerCase(), { room: room.room, id: r.id, name: r.name });
+      }
+    }
+
     if (rooms.length) {
       for (const room of rooms) {
         feed.appendChild(this.buildDevLiveRoomBlock(room));
       }
+    } else {
+      const hint = document.createElement("p");
+      hint.className = "dev-tip-empty";
+      hint.textContent =
+        "No active multiplayer rooms — players must be in Multiplayer / Event Mode to watch.";
+      feed.appendChild(hint);
     }
 
     if (online.length) {
@@ -2695,22 +2719,28 @@ export class Game {
       block.appendChild(title);
       const meta = document.createElement("p");
       meta.className = "dev-live-meta";
-      meta.textContent = "Heartbeating on the site (lobby or home)";
+      meta.textContent = "Click a name that is IN ROOM to chase-cam their race";
       block.appendChild(meta);
       const list = document.createElement("ul");
       list.className = "dev-live-racers";
-      // Mark who is already in a room so the signed-in list stays useful.
-      const inRoom = new Set(
-        rooms.flatMap((r) => (r.racers || []).map((p) => p.name.toLowerCase())),
-      );
       for (const player of online) {
         const li = document.createElement("li");
         const name = document.createElement("span");
+        name.className = "dev-live-name";
         name.textContent = player.name;
         const side = document.createElement("span");
         side.className = "dev-live-kind";
-        const racingHere = inRoom.has(player.name.toLowerCase());
-        side.textContent = racingHere ? "IN ROOM" : "ONLINE";
+        const watch = watchByName.get(player.name.toLowerCase());
+        if (watch) {
+          side.textContent = "WATCH";
+          li.classList.add("is-watchable");
+          li.title = `Watch ${watch.name} live`;
+          li.addEventListener("click", () => {
+            void this.beginDevSpectate(watch.room, watch.id, watch.name);
+          });
+        } else {
+          side.textContent = "ONLINE";
+        }
         li.append(name, side);
         list.appendChild(li);
       }
@@ -2747,7 +2777,7 @@ export class Game {
     meta.className = "dev-live-meta";
     const trackName = room.trackId ? getTrackDef(room.trackId).name : "—";
     const mode = room.eventMode && room.eventMode !== "race" ? ` · ${room.eventMode}` : "";
-    meta.textContent = `${room.players}/${room.maxPlayers} · ${trackName}${mode}`;
+    meta.textContent = `${room.players}/${room.maxPlayers} · ${trackName}${mode} · click name to watch`;
     block.appendChild(meta);
 
     const list = document.createElement("ul");
@@ -2766,17 +2796,15 @@ export class Game {
       name.textContent = racer.name;
       const kind = document.createElement("span");
       kind.className = "dev-live-kind";
-      kind.textContent = racer.kind.toUpperCase();
+      kind.textContent = "WATCH";
       li.append(name, kind);
-      // Click a racer name to watch their race live (DEV auth spectate).
-      const watchable = room.phase === "racing" || room.phase === "finished" || room.phase === "starting" || room.phase === "lobby";
-      if (watchable && racer.id) {
-        li.classList.add("is-watchable");
-        li.title = "Watch live";
-        li.addEventListener("click", () => {
-          void this.beginDevSpectate(room.room, racer.id, racer.name);
-        });
-      }
+      li.classList.add("is-watchable");
+      li.title = `Watch ${racer.name} live`;
+      li.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        void this.beginDevSpectate(room.room, racer.id, racer.name);
+      });
       list.appendChild(li);
     }
     block.appendChild(list);
@@ -2785,28 +2813,29 @@ export class Game {
 
   /** DEV live feed → attach as spectator and chase-cam the chosen racer. */
   private async beginDevSpectate(roomName: string, targetId: string, targetName: string) {
+    const liveStatus = document.getElementById("dev-live-status");
+    const setLive = (text: string) => {
+      if (liveStatus) liveStatus.textContent = text;
+      this.setNetStatus(text, /fail|error|not |Could|Sign/i.test(text) ? "bad" : "ok");
+    };
+
     const session = getSession();
     if (!session) {
-      this.setNetStatus("Sign in with the DEV account to watch", "bad");
+      setLive("Sign in with the DEV account to watch");
       return;
     }
     if (!(await this.devAccessAllowed())) {
-      this.setNetStatus("DEV account required to watch live", "bad");
+      setLive("DEV account required to watch live");
       return;
     }
     let event: unknown;
     try {
       event = await signDevAuth(session.signer);
     } catch (err) {
-      this.setNetStatus(
-        `Could not sign watch auth — ${err instanceof Error ? err.message : err}`,
-        "bad",
-      );
+      setLive(`Could not sign watch auth — ${err instanceof Error ? err.message : err}`);
       return;
     }
 
-    this.stopDevLiveFeed();
-    document.getElementById("dev-dash")?.classList.add("hidden");
     this.expectingLobby = false;
     this.expectingSpectate = true;
     this.roomSpectating = false;
@@ -2814,7 +2843,7 @@ export class Game {
     this.online = false;
     this.inLobby = false;
     this.net.disconnect();
-    this.setNetStatus(`Watching ${targetName}…`, "ok");
+    setLive(`Connecting to watch ${targetName} in ${roomName}…`);
     this.net.spectateRoom({
       room: roomName,
       targetId,
@@ -3385,18 +3414,16 @@ export class Game {
       this.net.kind = kind;
       this.net.weather = normalizeWeatherMode(info.weather);
       if (info.raceMode) this.net.raceMode = info.raceMode;
+      this.stopDevLiveFeed();
+      document.getElementById("dev-dash")?.classList.add("hidden");
       this.el.overlay.classList.add("hidden");
       this.el.multiplayer.classList.add("hidden");
-      document.getElementById("dev-dash")?.classList.add("hidden");
+      this.el.netStatus.classList.remove("hidden");
       this.setNetStatus(
-        info.phase === "lobby" ? `Waiting · ${info.room}` : `Watching · ${info.room}`,
+        info.phase === "lobby" ? `Waiting for race · ${info.room}` : `Watching · ${info.room}`,
         "ok",
       );
       this.syncMuteBtn();
-      // Mid-race: server also sends `start` immediately after welcome.
-      if (info.phase === "lobby") {
-        this.el.netStatus.classList.remove("hidden");
-      }
       return;
     }
 
@@ -5216,6 +5243,7 @@ export class Game {
     if (!maze) {
       this.player.flyMinY = 1.2;
       this.player.mazeClimb = false;
+      this.restoreMazeFog();
       return;
     }
     const p = this.player.state.position;
@@ -5226,12 +5254,48 @@ export class Game {
       p.z >= maze.bounds.minZ &&
       p.z <= maze.bounds.maxZ;
     const overShaft = pointInShaft(maze, p.x, p.z);
+    const underground = inXZ && p.y < 1.5;
     if (kind === "bird") {
-      this.player.flyMinY = overShaft || (inXZ && p.y < 3) ? maze.floorY + 0.35 : 1.2;
+      this.player.flyMinY = overShaft || underground ? maze.floorY + 0.35 : 1.2;
     } else if (kind === "human") {
       this.player.mazeFloorY = maze.floorY;
       this.player.mazeClimb = overShaft;
+      if (!this.mazeGoalReached && pointInGoal(maze, p.x, p.z)) {
+        this.mazeGoalReached = true;
+        this.showToast("Maze cleared — climb the gold shaft to fly again");
+      }
     }
+    if ((kind === "human" || (kind === "bird" && underground)) && underground) {
+      this.applyMazeFog();
+    } else {
+      this.restoreMazeFog();
+    }
+  }
+
+  private applyMazeFog() {
+    const fog = this.scene.fog;
+    if (!(fog instanceof THREE.Fog)) return;
+    if (!this.mazeFogBackup) {
+      this.mazeFogBackup = {
+        color: fog.color.getHex(),
+        near: fog.near,
+        far: fog.far,
+      };
+    }
+    fog.color.setHex(0x1a1410);
+    fog.near = 8;
+    fog.far = 42;
+  }
+
+  private restoreMazeFog() {
+    if (!this.mazeFogBackup) return;
+    const fog = this.scene.fog;
+    if (fog instanceof THREE.Fog) {
+      fog.color.setHex(this.mazeFogBackup.color);
+      fog.near = this.mazeFogBackup.near;
+      fog.far = this.mazeFogBackup.far;
+    }
+    this.mazeFogBackup = null;
   }
 
   /** Bird enters maze volume → human; human leaves → bird. */
@@ -5244,10 +5308,12 @@ export class Game {
     const inside = pointInMazeBounds(maze, p.x, p.y, p.z);
     if (kind === "bird" && inside && p.y < maze.ceilingY + 0.5) {
       this.swapMazeForm("human");
-      this.showToast("Human form — walk the maze · Space climbs the shaft");
+      this.showToast("Human form — find the gold chamber · Space climbs shafts");
     } else if (kind === "human" && !inside) {
       this.swapMazeForm("bird");
       this.showToast("Bird form — fly free");
+      this.mazeGoalReached = false;
+      this.restoreMazeFog();
     }
   }
 
@@ -5260,7 +5326,7 @@ export class Game {
       p.x = hit.x;
       p.z = hit.z;
     }
-    // Keep under the ceiling unless climbing the shaft.
+    // Keep under the ceiling unless climbing a shaft.
     if (!pointInShaft(maze, p.x, p.z)) {
       p.y = Math.min(p.y, maze.ceilingY - 0.35);
     }
@@ -5274,7 +5340,6 @@ export class Game {
     const heading = this.player.state.heading;
     const maze = this.track.undergroundMaze;
     if (next === "human" && maze) {
-      // Land on the floor near the shaft / current xz.
       pos.x = THREE.MathUtils.clamp(pos.x, maze.bounds.minX + 1, maze.bounds.maxX - 1);
       pos.z = THREE.MathUtils.clamp(pos.z, maze.bounds.minZ + 1, maze.bounds.maxZ - 1);
       if (pointInShaft(maze, pos.x, pos.z)) {
@@ -5295,7 +5360,6 @@ export class Game {
     this.player.mazeFloorY = maze?.floorY ?? 0;
     this.player.flyMinY = next === "bird" ? (maze ? maze.floorY + 0.35 : 1.2) : 1.2;
     this.resetSticky(this.player);
-    // Keep practice mode while scouting.
     if (!this.online) {
       this.practice = true;
       this.solo = false;
@@ -6404,16 +6468,19 @@ export class Game {
   private updateCamera(dt: number) {
     if (this.spectating) {
       const remote = this.spectateTargetId ? this.remotes.get(this.spectateTargetId) : undefined;
-      if (!remote || remote.wrecked || this.wreckedIds.has(remote.id)) {
+      const dead =
+        !remote ||
+        (!this.roomSpectating && (remote.wrecked || this.wreckedIds.has(remote.id)));
+      if (dead) {
         if (!this.cycleSpectateTarget(1)) {
           this.updateCameraOnPlayer(dt);
         }
         return;
       }
-      const x = remote.mesh.position.x;
-      const y = remote.mesh.position.y;
-      const z = remote.mesh.position.z;
-      const heading = remote.mesh.rotation.y;
+      const x = remote!.mesh.position.x;
+      const y = remote!.mesh.position.y;
+      const z = remote!.mesh.position.z;
+      const heading = remote!.mesh.rotation.y;
       // Match player chase feel — slight speed bias omitted (remote s not always fresh).
       const back = 14;
       const height = 5.0 + y;
@@ -6457,12 +6524,36 @@ export class Game {
       return;
     }
 
-    const back = human ? 4.2 : bird ? 16 : 12 + Math.min(Math.abs(s.speed) * 0.07, 6);
-    const height = human
-      ? 2.1 + gy
-      : bird
-        ? 6.5 + gy
-        : 4.4 + Math.min(Math.abs(s.speed) * 0.028, 1.8) + gy;
+    // Maze human — first-person eyes so the chase cam never clips corridor walls.
+    if (human) {
+      this.player.mesh.visible = false;
+      const eye = 1.55;
+      const lookDist = 10;
+      this._camIdeal.set(
+        s.position.x + Math.sin(s.heading) * 0.2,
+        gy + eye,
+        s.position.z + Math.cos(s.heading) * 0.2,
+      );
+      const k = dt <= 0 ? 1 : 1 - Math.exp(-14 * dt);
+      this.camPos.lerp(this._camIdeal, k);
+      this.camera.position.copy(this.camPos);
+      this._camLookTarget.set(
+        s.position.x + Math.sin(s.heading) * lookDist,
+        gy + eye - 0.05,
+        s.position.z + Math.cos(s.heading) * lookDist,
+      );
+      this.camLook.lerp(this._camLookTarget, dt <= 0 ? 1 : 1 - Math.exp(-16 * dt));
+      this.camera.lookAt(this.camLook);
+      return;
+    }
+    if (this.player.mesh.userData.kind !== "human") {
+      this.player.mesh.visible = true;
+    }
+
+    const back = bird ? 16 : 12 + Math.min(Math.abs(s.speed) * 0.07, 6);
+    const height = bird
+      ? 6.5 + gy
+      : 4.4 + Math.min(Math.abs(s.speed) * 0.028, 1.8) + gy;
     this._camIdeal.set(
       s.position.x - Math.sin(s.heading) * back,
       height,
@@ -6473,9 +6564,9 @@ export class Game {
     this.camera.position.copy(this.camPos);
 
     this._camLookTarget.set(
-      s.position.x + Math.sin(s.heading) * (human ? 5 : bird ? 14 : 10),
-      (human ? 1.35 : bird ? 0.4 : 1.4) + gy,
-      s.position.z + Math.cos(s.heading) * (human ? 5 : bird ? 14 : 10),
+      s.position.x + Math.sin(s.heading) * (bird ? 14 : 10),
+      (bird ? 0.4 : 1.4) + gy,
+      s.position.z + Math.cos(s.heading) * (bird ? 14 : 10),
     );
     this.camLook.lerp(this._camLookTarget, dt <= 0 ? 1 : 1 - Math.exp(-8 * dt));
     this.camera.lookAt(this.camLook);

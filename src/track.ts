@@ -2999,16 +2999,17 @@ function plantCanyonUndergroundMaze(
   clearance: PathClearance,
   bounds: ReturnType<typeof pathBounds>,
 ) {
-  let cx = bounds.cx + 18;
-  let cz = bounds.cz - 14;
-  if (!clearance.insideLoop(cx, cz) || !clearance.clearOf(cx, cz, 16)) {
+  let cx = bounds.cx + 22;
+  let cz = bounds.cz - 18;
+  // ~70m labyrinth — need a wide clear infield pocket.
+  const needClear = 38;
+  if (!clearance.insideLoop(cx, cz) || !clearance.clearOf(cx, cz, needClear)) {
     const pts = collectSpacedInfieldPoints(path, clearance, bounds, {
-      count: 36,
-      minSep: 12,
-      clearFoot: 14,
+      count: 48,
+      minSep: 14,
+      clearFoot: needClear,
     });
     if (!pts.length) return;
-    // Prefer a point away from AABB center (lodge usually sits near mid).
     let best = pts[0]!;
     let bestD = -1;
     for (const p of pts) {
@@ -3021,7 +3022,7 @@ function plantCanyonUndergroundMaze(
     cx = best.x;
     cz = best.z;
   }
-  if (!clearance.insideLoop(cx, cz) || !clearance.clearOf(cx, cz, 12)) return;
+  if (!clearance.insideLoop(cx, cz) || !clearance.clearOf(cx, cz, 28)) return;
   plantUndergroundMaze(group, cx, cz);
 }
 
