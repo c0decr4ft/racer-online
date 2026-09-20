@@ -747,13 +747,13 @@ export class Game {
     // Bind menu actions first — syncMuteBtn/onHomeOrBoard must not abort handler wiring
     // if a removed overlay ref throws (that previously left every homepage button dead).
     document.getElementById("start-btn")!.onclick = () => {
-      void this.bootFromMenu({ trackId: randomTrackId() });
+      void this.bootFromMenu({ trackId: randomTrackId(this.trackId) });
     };
     document.getElementById("test-drive-btn")!.onclick = () => {
       void this.unlockAndMaybeMenuMusic().then(() => this.openMapSelect());
     };
     document.getElementById("solo-race-btn")!.onclick = () => {
-      void this.bootFromMenu({ solo: true, trackId: randomTrackId() });
+      void this.bootFromMenu({ solo: true, trackId: randomTrackId(this.trackId) });
     };
     document.getElementById("limited-drop-btn")!.onclick = () => {
       if (!isLimitedDropLive()) {
@@ -787,7 +787,9 @@ export class Game {
       void this.audio.unlock().then(() => {
         this.audio.stopRaceAudio();
         const trackId =
-          this.online || this.solo || this.practice ? this.trackId : randomTrackId();
+          this.online || this.solo || this.practice
+            ? this.trackId
+            : randomTrackId(this.trackId);
         this.startRace({
           solo: this.solo,
           practice: this.practice,
