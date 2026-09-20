@@ -677,6 +677,60 @@ export function createBird(
   return bird;
 }
 
+/**
+ * Low-poly walker for the Canyon Cut underground maze.
+ * Same +Z facing convention; legs animate via userData.legs.
+ */
+export function createHuman(
+  bodyColor = 0xe4eaf2,
+  _raceNumber = 7,
+  accentColor = 0xff3b2e,
+  _opts?: CreateVehicleOpts,
+): THREE.Group {
+  const human = new THREE.Group();
+  const skin = paintMat(0xc9956c, { metal: 0.05, rough: 0.75, emit: 0.02 });
+  const shirt = paintMat(bodyColor, { metal: 0.08, rough: 0.65, emit: 0.04 });
+  const pants = paintMat(0x2a3340, { metal: 0.1, rough: 0.7, emit: 0.02 });
+  const accent = paintMat(accentColor, { metal: 0.15, rough: 0.55, emit: 0.08 });
+  const dark = mat(0x1a1f28, { metal: 0.15, rough: 0.75 });
+
+  // Torso
+  box(human, 0.42, 0.55, 0.28, shirt, 0, 1.15, 0);
+  // Head
+  box(human, 0.28, 0.3, 0.26, skin, 0, 1.62, 0.02);
+  box(human, 0.3, 0.08, 0.3, dark, 0, 1.78, 0); // hair
+  // Eyes
+  box(human, 0.05, 0.05, 0.04, dark, -0.07, 1.64, 0.12);
+  box(human, 0.05, 0.05, 0.04, dark, 0.07, 1.64, 0.12);
+  // Arms
+  box(human, 0.12, 0.48, 0.12, skin, -0.3, 1.1, 0);
+  box(human, 0.12, 0.48, 0.12, skin, 0.3, 1.1, 0);
+  // Belt accent
+  box(human, 0.44, 0.08, 0.3, accent, 0, 0.88, 0);
+
+  const leftLeg = new THREE.Group();
+  leftLeg.name = "leg-left";
+  leftLeg.position.set(-0.12, 0.88, 0);
+  box(leftLeg, 0.14, 0.7, 0.16, pants, 0, -0.35, 0);
+  box(leftLeg, 0.16, 0.1, 0.26, dark, 0, -0.72, 0.04);
+  human.add(leftLeg);
+
+  const rightLeg = new THREE.Group();
+  rightLeg.name = "leg-right";
+  rightLeg.position.set(0.12, 0.88, 0);
+  box(rightLeg, 0.14, 0.7, 0.16, pants, 0, -0.35, 0);
+  box(rightLeg, 0.16, 0.1, 0.26, dark, 0, -0.72, 0.04);
+  human.add(rightLeg);
+
+  human.userData.kind = "human";
+  human.userData.legs = [leftLeg, rightLeg];
+  human.userData.steerCount = 0;
+  human.userData.bodyColor = bodyColor;
+  human.userData.accentColor = accentColor;
+  paintable(human, shirt, accent);
+  return human;
+}
+
 export function createVehicle(
   kind: VehicleKind,
   bodyColor = 0xd0d7e0,
@@ -686,6 +740,7 @@ export function createVehicle(
 ): THREE.Group {
   if (kind === "bike") return createBike(bodyColor, raceNumber, accentColor, opts);
   if (kind === "bird") return createBird(bodyColor, raceNumber, accentColor, opts);
+  if (kind === "human") return createHuman(bodyColor, raceNumber, accentColor, opts);
   return createCar(bodyColor, raceNumber, accentColor, opts);
 }
 

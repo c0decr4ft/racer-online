@@ -123,6 +123,13 @@ export type ClientMsg =
       /** True when joining via Event Mode — must match the room's type. */
       event?: boolean;
     }
+  /** DEV-only live spectate — signed auth event, no player slot. */
+  | {
+      t: "spectate";
+      room: string;
+      targetId?: string;
+      event: unknown;
+    }
   | {
       t: "pose";
       x: number;
@@ -166,6 +173,10 @@ export type ServerMsg =
       event?: EventRoomInfo | null;
       /** Room race rules — race / battle. */
       raceMode?: EventGameMode;
+      /** DEV live spectate — no racer slot. */
+      spectator?: boolean;
+      spectateTargetId?: string;
+      battleCubes?: BattleCubeWire[];
     }
   | { t: "join"; player: PlayerPose }
   | { t: "leave"; id: string; hostId?: string }

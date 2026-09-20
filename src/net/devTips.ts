@@ -154,6 +154,11 @@ function devAuthTemplate() {
   };
 }
 
+/** Fresh signed DEV auth event — tips, feedback, and live spectate. */
+export async function signDevAuth(signer: DevSigner) {
+  return signer.signEvent(devAuthTemplate());
+}
+
 async function postDev(path: string, signer: DevSigner, extra?: Record<string, unknown>): Promise<DevTipsSummary> {
   const url = apiUrl(path);
   if (!url) throw new Error("server unreachable");
