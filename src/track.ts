@@ -1525,6 +1525,8 @@ function plantBiomeProps(
   // Canyon Cut — continuous cliff walls hugging both sides of the ribbon
   if (biome.props === "canyon") {
     plantCanyonWalls(group, path, clearance, dummy, bounds);
+    // Secret infield lodge — cars can't leave the ribbon; bird can fly inside.
+    plantCanyonSecretLodge(group, path, clearance, bounds);
   }
 
   // Summit Pass — volumetric peaks on a horizon ring (readable from the circuit)
@@ -2794,6 +2796,191 @@ function plantCanyonWalls(
     mesas.computeBoundingSphere();
     group.add(mesas);
   }
+}
+
+/**
+ * Cool little adobe lodge in the Canyon Cut infield.
+ * Track walls keep cars on the ribbon — only bird mode can fly out here and
+ * walk the hollow interior through the doorway.
+ */
+function plantCanyonSecretLodge(
+  group: THREE.Group,
+  path: THREE.CatmullRomCurve3,
+  clearance: PathClearance,
+  bounds: ReturnType<typeof pathBounds>,
+) {
+  let cx = bounds.cx;
+  let cz = bounds.cz;
+  if (!clearance.insideLoop(cx, cz) || !clearance.clearOf(cx, cz, 12)) {
+    const pts = collectSpacedInfieldPoints(path, clearance, bounds, {
+      count: 48,
+      minSep: 10,
+      clearFoot: 8,
+    });
+    if (!pts.length) return;
+    cx = 0;
+    cz = 0;
+    for (const p of pts) {
+      cx += p.x;
+      cz += p.z;
+    }
+    cx /= pts.length;
+    cz /= pts.length;
+  }
+  if (!clearance.insideLoop(cx, cz) || !clearance.clearOf(cx, cz, 10)) return;
+
+  const lodge = new THREE.Group();
+  lodge.name = "canyon-secret-lodge";
+  lodge.position.set(cx, 0, cz);
+  // Face the door toward +Z (toward typical SF / open basin)
+  lodge.rotation.y = 0;
+
+  const adobe = new THREE.MeshStandardMaterial({
+    color: 0xc47a3a,
+    roughness: 0.94,
+    metalness: 0.04,
+    flatShading: true,
+  });
+  const adobeDark = new THREE.MeshStandardMaterial({
+    color: 0x9a5528,
+    roughness: 0.96,
+    metalness: 0.03,
+    flatShading: true,
+  });
+  const adobeLight = new THREE.MeshStandardMaterial({
+    color: 0xd4924a,
+    roughness: 0.92,
+    metalness: 0.04,
+    flatShading: true,
+  });
+  const timber = new THREE.MeshStandardMaterial({
+    color: 0x4a3020,
+    roughness: 0.88,
+    metalness: 0.05,
+    flatShading: true,
+  });
+  const floorMat = new THREE.MeshStandardMaterial({
+    color: 0xb86a32,
+    roughness: 0.98,
+    metalness: 0.02,
+    flatShading: true,
+  });
+  const rugMat = new THREE.MeshStandardMaterial({
+    color: 0x8b2e1f,
+    roughness: 0.9,
+    metalness: 0.02,
+    flatShading: true,
+  });
+  const lampMat = new THREE.MeshStandardMaterial({
+    color: 0xffe0a0,
+    emissive: 0xffc060,
+    emissiveIntensity: 1.4,
+    roughness: 0.4,
+    metalness: 0.1,
+  });
+  lampMat.userData.nightLamp = true;
+  lampMat.userData.emissiveDay = 1.4;
+  lampMat.userData.emissiveNight = 4.2;
+
+  const box = (
+    parent: THREE.Object3D,
+    w: number,
+    h: number,
+    d: number,
+    mat: THREE.Material,
+    x: number,
+    y: number,
+    z: number,
+  ) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    m.position.set(x, y, z);
+    m.castShadow = true;
+    m.receiveShadow = true;
+    parent.add(m);
+    return m;
+  };
+
+  // Exterior footprint ~14×11 — hollow shell with south doorway
+  const W = 14;
+  const D = 11;
+  const wallT = 0.7;
+  const wallH = 5.2;
+  const doorW = 3.4;
+  const doorH = 3.6;
+
+  // Raised floor pad
+  box(lodge, W + 0.6, 0.28, D + 0.6, adobeDark, 0, 0.14, 0);
+  // Interior floor
+  box(lodge, W - wallT * 2 - 0.05, 0.12, D - wallT * 2 - 0.05, floorMat, 0, 0.32, 0);
+
+  // North / east / west solid walls
+  box(lodge, W, wallH, wallT, adobe, 0, wallH * 0.5 + 0.28, -D * 0.5 + wallT * 0.5);
+  box(lodge, wallT, wallH, D, adobeLight, -W * 0.5 + wallT * 0.5, wallH * 0.5 + 0.28, 0);
+  box(lodge, wallT, wallH, D, adobeLight, W * 0.5 - wallT * 0.5, wallH * 0.5 + 0.28, 0);
+
+  // South wall split around doorway (opening faces +Z)
+  const southZ = D * 0.5 - wallT * 0.5;
+  const sideW = (W - doorW) * 0.5;
+  box(lodge, sideW, wallH, wallT, adobe, -W * 0.5 + sideW * 0.5, wallH * 0.5 + 0.28, southZ);
+  box(lodge, sideW, wallH, wallT, adobe, W * 0.5 - sideW * 0.5, wallH * 0.5 + 0.28, southZ);
+  // Lintel above door
+  box(lodge, doorW + 0.2, wallH - doorH, wallT, adobeDark, 0, doorH + (wallH - doorH) * 0.5 + 0.28, southZ);
+
+  // Timber door frame
+  box(lodge, 0.22, doorH, 0.28, timber, -doorW * 0.5, doorH * 0.5 + 0.28, southZ + 0.15);
+  box(lodge, 0.22, doorH, 0.28, timber, doorW * 0.5, doorH * 0.5 + 0.28, southZ + 0.15);
+  box(lodge, doorW + 0.44, 0.22, 0.28, timber, 0, doorH + 0.28, southZ + 0.15);
+
+  // Flat mesa roof with overhang + light parapet
+  box(lodge, W + 1.4, 0.45, D + 1.4, adobeDark, 0, wallH + 0.5, 0);
+  box(lodge, W + 0.9, 0.55, 0.35, adobe, 0, wallH + 0.95, -D * 0.5 - 0.2);
+  box(lodge, W + 0.9, 0.55, 0.35, adobe, 0, wallH + 0.95, D * 0.5 + 0.2);
+  box(lodge, 0.35, 0.55, D + 0.9, adobe, -W * 0.5 - 0.2, wallH + 0.95, 0);
+  box(lodge, 0.35, 0.55, D + 0.9, adobe, W * 0.5 + 0.2, wallH + 0.95, 0);
+
+  // Window slits (emissive slits) on side walls
+  const win = (x: number, z: number) => {
+    const pane = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.1, 1.6), lampMat);
+    pane.position.set(x, 2.4, z);
+    lodge.add(pane);
+  };
+  win(-W * 0.5 + wallT * 0.5 - 0.02, -2.2);
+  win(-W * 0.5 + wallT * 0.5 - 0.02, 2.2);
+  win(W * 0.5 - wallT * 0.5 + 0.02, -2.2);
+  win(W * 0.5 - wallT * 0.5 + 0.02, 2.2);
+
+  // Interior: rug, table, crates, hanging lamp
+  box(lodge, 4.2, 0.06, 3.2, rugMat, 0, 0.42, -0.6);
+  box(lodge, 2.4, 0.7, 1.1, timber, 0, 0.8, -1.8);
+  box(lodge, 0.9, 0.9, 0.9, adobeDark, -3.6, 0.85, -2.8);
+  box(lodge, 0.7, 0.7, 0.7, adobeDark, -3.4, 1.55, -2.8);
+  box(lodge, 0.85, 0.85, 0.85, adobeDark, 3.5, 0.8, 2.4);
+
+  const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.45, 0.45), lampMat);
+  lamp.position.set(0, 4.2, 0);
+  lodge.add(lamp);
+  const glow = new THREE.PointLight(0xffc070, 0.55, 14, 2);
+  glow.position.set(0, 3.6, 0);
+  glow.castShadow = false;
+  lodge.add(glow);
+
+  // Short approach stones outside the door (visual only)
+  for (let i = 0; i < 5; i++) {
+    const s = 0.55 + (i % 2) * 0.2;
+    box(lodge, s, 0.12, s * 0.85, adobeDark, (i % 2 === 0 ? -0.7 : 0.7) * 0.5, 0.06, D * 0.5 + 1.2 + i * 1.05);
+  }
+
+  // Corner buttresses — mesa vibe
+  for (const [bx, bz] of [
+    [-W * 0.5 - 0.35, -D * 0.5 - 0.35],
+    [W * 0.5 + 0.35, -D * 0.5 - 0.35],
+    [-W * 0.5 - 0.35, D * 0.5 + 0.35],
+    [W * 0.5 + 0.35, D * 0.5 + 0.35],
+  ] as const) {
+    box(lodge, 1.1, wallH * 0.85, 1.1, adobeDark, bx, wallH * 0.42, bz);
+  }
+
+  group.add(lodge);
 }
 
 /** Spread points across the infield — full-loop grid + min spacing (not AABB-center only). */
