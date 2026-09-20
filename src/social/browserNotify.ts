@@ -29,8 +29,6 @@ export function notifyLobbyInvite(opts: {
 }): void {
   if (!browserNotifySupported()) return;
   if (Notification.permission !== "granted") return;
-  // Only ping the OS when the tab is backgrounded / unfocused.
-  if (!document.hidden && document.hasFocus()) return;
   try {
     const n = new Notification("SATS RACER — Lobby invite", {
       body: `${opts.who} invited you to ${opts.room}`,

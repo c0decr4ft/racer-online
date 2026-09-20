@@ -67,6 +67,10 @@ let threadMessages: DmMessage[] = [];
 let searchTimer: number | null = null;
 let requestPollTimer: number | null = null;
 let lobbyPollTimer: number | null = null;
+let bannerHideTimer: number | null = null;
+let activeBannerInviteId: string | null = null;
+
+const LOBBY_BANNER_MS = 10_000;
 let searchSeq = 0;
 
 function el<T extends HTMLElement>(id: string): T | null {
@@ -230,12 +234,22 @@ function startLobbyPoll(): void {
   }, 4_000);
 }
 
-/** Drop-down JOIN bar — works from home, Friends, MP menus (not only Chat). */
+/** Drop-down JOIN bar — once per invite, stays ~10s (does not re-flash on poll). */
 function presentLobbyInviteBanner(inv: LobbyInviteRow, who: string): void {
   const session = getSession();
   if (!session) return;
   const banner = el("social-invite-banner");
   if (!banner) return;
+  // Already on screen for this invite — leave it alone.
+  if (activeBannerInviteId === inv.id && !banner.classList.contains("hidden")) return;
+  // Already shown (or dismissed) this invite once this session.
+  if (!claimNotification(session.pubkey, `lobby-banner:${inv.id}`)) return;
+
+  if (bannerHideTimer != null) {
+    window.clearTimeout(bannerHideTimer);
+    bannerHideTimer = null;
+  }
+  activeBannerInviteId = inv.id;
   banner.classList.remove("hidden");
   banner.replaceChildren();
   const text = document.createElement("span");
@@ -245,7 +259,7 @@ function presentLobbyInviteBanner(inv: LobbyInviteRow, who: string): void {
   join.className = "social-mini";
   join.textContent = "JOIN";
   join.addEventListener("click", () => {
-    banner.classList.add("hidden");
+    hideLobbyInviteBanner();
     void ackLobbyInvite(session.pubkey, inv.id);
     callbacks?.onJoinInvite({ room: inv.room, password: inv.password });
   });
@@ -254,16 +268,28 @@ function presentLobbyInviteBanner(inv: LobbyInviteRow, who: string): void {
   dismiss.className = "btn-ghost social-mini";
   dismiss.textContent = "LATER";
   dismiss.addEventListener("click", () => {
-    banner.classList.add("hidden");
+    hideLobbyInviteBanner();
   });
   banner.append(text, join, dismiss);
-  // Retrigger slide-down when a new invite replaces the previous one.
   banner.style.animation = "none";
   void banner.offsetWidth;
   banner.style.animation = "";
+
+  bannerHideTimer = window.setTimeout(() => {
+    if (activeBannerInviteId === inv.id) hideLobbyInviteBanner();
+  }, LOBBY_BANNER_MS);
 }
 
-/** Server-targeted lobby invites — banner + browser notify, independent of Chat. */
+function hideLobbyInviteBanner(): void {
+  if (bannerHideTimer != null) {
+    window.clearTimeout(bannerHideTimer);
+    bannerHideTimer = null;
+  }
+  activeBannerInviteId = null;
+  el("social-invite-banner")?.classList.add("hidden");
+}
+
+/** Server-targeted lobby invites — one in-page banner OR a Chrome ping if the tab is hidden. */
 async function syncLobbyInvitesFromServer(): Promise<void> {
   const session = getSession();
   if (!session) return;
@@ -273,22 +299,21 @@ async function syncLobbyInvitesFromServer(): Promise<void> {
   if (!invites.length) return;
 
   const racing = !!callbacks?.isRacing?.();
-  // Always keep the newest invite on the drop-down bar when not mid-race.
-  if (!racing) {
-    const newest = invites[invites.length - 1]!;
-    const who = newest.fromName || shortNpub(newest.from);
-    presentLobbyInviteBanner(newest, who);
-  }
+  const tabAway = document.hidden || !document.hasFocus();
 
   for (const inv of invites) {
     const notifId = `lobby:${inv.id}`;
     if (!claimNotification(session.pubkey, notifId)) continue;
     const who = inv.fromName || shortNpub(inv.from);
-    // OS notification when the tab is backgrounded (Chrome / etc.).
-    notifyLobbyInvite({ who, room: inv.room, tag: notifId });
-    if (!racing) {
-      callbacks?.showToast(`${who} has sent you a ${inv.room} lobby request`);
+
+    if (tabAway) {
+      // Off the game tab — ping Chrome / the OS once.
+      notifyLobbyInvite({ who, room: inv.room, tag: notifId });
+      continue;
     }
+    if (racing) continue;
+    // On the page — slide the JOIN bar down once for ~10 seconds.
+    presentLobbyInviteBanner(inv, who);
   }
 }
 
@@ -925,7 +950,7 @@ export function initSocialUi(cbs: SocialHubCallbacks): void {
       stopRequestPoll();
       stopLobbyPoll();
       closeSocialHub();
-      el("social-invite-banner")?.classList.add("hidden");
+      hideLobbyInviteBanner();
       chatPeer = null;
       stopThread?.();
       stopThread = null;
