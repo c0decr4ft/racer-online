@@ -1185,6 +1185,13 @@ function presenceSnapshot(store) {
       players: room.clients.size,
       phase: room.phase,
       maxPlayers: room.maxPlayers,
+      trackId: room.trackId || "",
+      eventMode: room.eventMode || "race",
+      racers: [...room.clients.values()].map((c) => ({
+        id: c.id,
+        name: c.name || "RACER",
+        kind: c.kind === "bike" ? "bike" : "car",
+      })),
     })),
     online: listOnlinePlayers(nowAt),
   };

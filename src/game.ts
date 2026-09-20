@@ -74,6 +74,10 @@ import {
   type DevActivityEntry,
   type DevFeedbackMessage,
 } from "./net/devTips";
+import {
+  fetchPresence,
+  type PresenceSnapshot,
+} from "./net/presence";
 
 /** QRCode is only needed for payment/login QRs — lazy-load it off the hot path. */
 const qrCode = () => import("qrcode");
@@ -318,6 +322,9 @@ export class Game {
   private devPubkeyFetched = false;
   /** Feedback inbox: reveal dismissed (read) messages when true. */
   private devShowReadFeedback = false;
+  /** Live player feed poll while the DEV dashboard is open. */
+  private devLivePollTimer: ReturnType<typeof setInterval> | null = null;
+  private devLivePollInFlight = false;
 
   private lap = 1;
   private lastT = 0;
@@ -2557,12 +2564,168 @@ export class Game {
     // Paint empty-state immediately so ACTIVITY is never a blank hole while loading.
     this.renderDevActivity([]);
     void this.renderDevDash();
+    this.startDevLiveFeed();
   }
 
   private closeDevDash() {
+    this.stopDevLiveFeed();
     document.getElementById("dev-dash")?.classList.add("hidden");
     this.el.overlay.classList.remove("hidden");
     this.syncMuteBtn();
+  }
+
+  private startDevLiveFeed() {
+    this.stopDevLiveFeed();
+    void this.refreshDevLiveFeed();
+    this.devLivePollTimer = setInterval(() => {
+      if (document.getElementById("dev-dash")?.classList.contains("hidden")) {
+        this.stopDevLiveFeed();
+        return;
+      }
+      void this.refreshDevLiveFeed();
+    }, 4_000);
+  }
+
+  private stopDevLiveFeed() {
+    if (this.devLivePollTimer != null) {
+      clearInterval(this.devLivePollTimer);
+      this.devLivePollTimer = null;
+    }
+    this.devLivePollInFlight = false;
+  }
+
+  private async refreshDevLiveFeed() {
+    if (this.devLivePollInFlight) return;
+    this.devLivePollInFlight = true;
+    try {
+      const snap = await fetchPresence();
+      this.renderDevLiveFeed(snap);
+    } catch {
+      const status = document.getElementById("dev-live-status");
+      if (status) status.textContent = "Live feed unavailable";
+    } finally {
+      this.devLivePollInFlight = false;
+    }
+  }
+
+  private renderDevLiveFeed(snap: PresenceSnapshot) {
+    const status = document.getElementById("dev-live-status");
+    const feed = document.getElementById("dev-live-feed");
+    if (!feed) return;
+
+    const online = snap.online ?? [];
+    const rooms = snap.rooms ?? [];
+    const racing = snap.racing ?? rooms.reduce((n, r) => n + (r.players || 0), 0);
+    const tabs = snap.now;
+    if (status) {
+      const bits = [
+        `${tabs} tab${tabs === 1 ? "" : "s"}`,
+        `${online.length} signed-in`,
+        `${racing} in rooms`,
+      ];
+      status.textContent = `${bits.join(" · ")} · ${snap.source}`;
+    }
+
+    feed.innerHTML = "";
+    if (!online.length && !rooms.length) {
+      const empty = document.createElement("p");
+      empty.className = "dev-tip-empty";
+      empty.textContent = "No players online right now.";
+      feed.appendChild(empty);
+      return;
+    }
+
+    if (rooms.length) {
+      for (const room of rooms) {
+        feed.appendChild(this.buildDevLiveRoomBlock(room));
+      }
+    }
+
+    if (online.length) {
+      const block = document.createElement("div");
+      block.className = "dev-live-block";
+      const title = document.createElement("div");
+      title.className = "dev-live-block-title";
+      title.innerHTML = `<span><span class="dev-live-dot" aria-hidden="true"></span>SIGNED IN</span><span class="dev-live-phase">${online.length}</span>`;
+      block.appendChild(title);
+      const meta = document.createElement("p");
+      meta.className = "dev-live-meta";
+      meta.textContent = "Heartbeating on the site (lobby or home)";
+      block.appendChild(meta);
+      const list = document.createElement("ul");
+      list.className = "dev-live-racers";
+      // Mark who is already in a room so the signed-in list stays useful.
+      const inRoom = new Set(
+        rooms.flatMap((r) => (r.racers || []).map((p) => p.name.toLowerCase())),
+      );
+      for (const player of online) {
+        const li = document.createElement("li");
+        const name = document.createElement("span");
+        name.textContent = player.name;
+        const side = document.createElement("span");
+        side.className = "dev-live-kind";
+        const racingHere = inRoom.has(player.name.toLowerCase());
+        side.textContent = racingHere ? "IN ROOM" : "ONLINE";
+        li.append(name, side);
+        list.appendChild(li);
+      }
+      block.appendChild(list);
+      feed.appendChild(block);
+    }
+  }
+
+  private buildDevLiveRoomBlock(room: {
+    room: string;
+    players: number;
+    phase: string;
+    maxPlayers: number;
+    trackId?: string;
+    eventMode?: string;
+    racers?: { id: string; name: string; kind: "car" | "bike" }[];
+  }): HTMLDivElement {
+    const block = document.createElement("div");
+    block.className = "dev-live-block";
+    const title = document.createElement("div");
+    title.className = "dev-live-block-title";
+    const left = document.createElement("span");
+    const dot = document.createElement("span");
+    dot.className = "dev-live-dot";
+    dot.setAttribute("aria-hidden", "true");
+    left.append(dot, document.createTextNode(room.room));
+    const phaseEl = document.createElement("span");
+    phaseEl.className = "dev-live-phase";
+    phaseEl.textContent = (room.phase || "lobby").toUpperCase();
+    title.append(left, phaseEl);
+    block.appendChild(title);
+
+    const meta = document.createElement("p");
+    meta.className = "dev-live-meta";
+    const trackName = room.trackId ? getTrackDef(room.trackId).name : "—";
+    const mode = room.eventMode && room.eventMode !== "race" ? ` · ${room.eventMode}` : "";
+    meta.textContent = `${room.players}/${room.maxPlayers} · ${trackName}${mode}`;
+    block.appendChild(meta);
+
+    const list = document.createElement("ul");
+    list.className = "dev-live-racers";
+    const racers = room.racers?.length
+      ? room.racers
+      : Array.from({ length: room.players }, (_, i) => ({
+          id: String(i),
+          name: `Player ${i + 1}`,
+          kind: "car" as const,
+        }));
+    for (const racer of racers) {
+      const li = document.createElement("li");
+      const name = document.createElement("span");
+      name.textContent = racer.name;
+      const kind = document.createElement("span");
+      kind.className = "dev-live-kind";
+      kind.textContent = racer.kind.toUpperCase();
+      li.append(name, kind);
+      list.appendChild(li);
+    }
+    block.appendChild(list);
+    return block;
   }
 
   private async renderDevDash() {
