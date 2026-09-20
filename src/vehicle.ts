@@ -220,9 +220,9 @@ export class Vehicle {
 
   private updateHumanWalk(dt: number, input: InputState) {
     const s = this.state;
-    const walkSpeed = input.handbrake > 0.5 ? 9.5 : 5.8;
-    const turnSpeed = 2.6;
-    const climbSpeed = 6.5;
+    const walkSpeed = input.handbrake > 0.5 ? 8.5 : 5.2;
+    const turnSpeed = 2.4;
+    const climbSpeed = 6.2;
 
     s.heading += input.steer * turnSpeed * dt;
     const forward = input.throttle - input.brake;
@@ -234,19 +234,18 @@ export class Vehicle {
     if (this.mazeClimb && input.jump) {
       s.position.y += climbSpeed * dt;
     } else if (input.descend) {
-      s.position.y = Math.max(this.mazeFloorY + 0.05, s.position.y - 4 * dt);
+      s.position.y = Math.max(this.mazeFloorY, s.position.y - 4 * dt);
     } else if (!this.mazeClimb) {
-      // Snap / fall to maze floor outside the shaft.
-      const targetY = this.mazeFloorY + 0.05;
-      if (s.position.y > targetY + 0.05) {
-        s.position.y = Math.max(targetY, s.position.y - 14 * dt);
+      const targetY = this.mazeFloorY;
+      if (s.position.y > targetY + 0.04) {
+        s.position.y = Math.max(targetY, s.position.y - 16 * dt);
       } else {
         s.position.y = targetY;
       }
     }
 
     s.speed = forward * walkSpeed;
-    s.steerAngle = input.steer * 0.2;
+    s.steerAngle = input.steer * 0.15;
     s.gear = "N";
     s.driftSlip = 0;
     s.groundPitch = 0;
@@ -257,16 +256,21 @@ export class Vehicle {
 
   private animateHumanLegs(dt: number, effort: number) {
     const legs = this.mesh.userData.legs as THREE.Object3D[] | undefined;
+    const arms = this.mesh.userData.arms as THREE.Object3D[] | undefined;
     if (!legs?.length) return;
     if (effort < 0.05) {
       if (legs[0]) legs[0].rotation.x = 0;
       if (legs[1]) legs[1].rotation.x = 0;
+      if (arms?.[0]) arms[0].rotation.x = 0;
+      if (arms?.[1]) arms[1].rotation.x = 0;
       return;
     }
-    this.humanLegPhase += dt * (8 + effort * 6);
-    const swing = Math.sin(this.humanLegPhase) * 0.55;
+    this.humanLegPhase += dt * (7 + effort * 5);
+    const swing = Math.sin(this.humanLegPhase) * 0.45;
     if (legs[0]) legs[0].rotation.x = swing;
     if (legs[1]) legs[1].rotation.x = -swing;
+    if (arms?.[0]) arms[0].rotation.x = -swing * 0.7;
+    if (arms?.[1]) arms[1].rotation.x = swing * 0.7;
   }
 
   private birdWingPhase = 0;

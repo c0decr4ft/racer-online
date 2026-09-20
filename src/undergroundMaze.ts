@@ -107,8 +107,8 @@ function buildShaft(
   const collar = (dx: number, dz: number, w: number, d: number) => {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, shaftH, d), stone);
     m.position.set(localX + dx, shaftMidY, localZ + dz);
-    m.castShadow = true;
-    m.receiveShadow = true;
+    m.castShadow = false;
+    m.receiveShadow = false;
     root.add(m);
   };
   collar(0, -shaftHalf - wallT * 0.5, shaftHalf * 2 + wallT * 2, wallT);
@@ -127,19 +127,22 @@ function buildShaft(
     rimMat,
   );
   rim.position.set(localX, 0.25, localZ);
-  rim.receiveShadow = true;
+  rim.castShadow = false;
+  rim.receiveShadow = false;
   root.add(rim);
   const pit = new THREE.Mesh(
     new THREE.BoxGeometry(shaftHalf * 2, 0.22, shaftHalf * 2),
     floorMat,
   );
   pit.position.set(localX, 0.06, localZ);
+  pit.castShadow = false;
+  pit.receiveShadow = false;
   root.add(pit);
 }
 
 /**
  * Large stone labyrinth under Canyon Cut.
- * Entrance shaft → human walk → goal chamber / exit shaft → bird again.
+ * Kept light-cheap on purpose — dozens of PointLights were frying the desert track.
  */
 export function plantUndergroundMaze(
   group: THREE.Group,
@@ -164,43 +167,43 @@ export function plantUndergroundMaze(
   root.position.set(originX - totalW * 0.5, 0, originZ - totalD * 0.5);
 
   const stone = new THREE.MeshStandardMaterial({
-    color: 0x6a6358,
-    roughness: 0.92,
-    metalness: 0.05,
-    flatShading: true,
-  });
-  const stoneDark = new THREE.MeshStandardMaterial({
-    color: 0x3f3a34,
-    roughness: 0.95,
+    color: 0x7a7368,
+    roughness: 0.9,
     metalness: 0.04,
     flatShading: true,
   });
+  const stoneDark = new THREE.MeshStandardMaterial({
+    color: 0x4a453e,
+    roughness: 0.94,
+    metalness: 0.03,
+    flatShading: true,
+  });
   const floorMat = new THREE.MeshStandardMaterial({
-    color: 0x35302a,
-    roughness: 0.98,
+    color: 0x3e3832,
+    roughness: 0.97,
     metalness: 0.02,
     flatShading: true,
   });
   const torchMat = new THREE.MeshStandardMaterial({
     color: 0xffc070,
     emissive: 0xff8a30,
-    emissiveIntensity: 3.5,
-    roughness: 0.35,
-    metalness: 0.1,
+    emissiveIntensity: 2.8,
+    roughness: 0.4,
+    metalness: 0.08,
   });
   torchMat.userData.nightLamp = true;
-  torchMat.userData.emissiveDay = 3.5;
-  torchMat.userData.emissiveNight = 5;
+  torchMat.userData.emissiveDay = 2.8;
+  torchMat.userData.emissiveNight = 4;
   const goalMat = new THREE.MeshStandardMaterial({
     color: 0xffd060,
     emissive: 0xffb020,
-    emissiveIntensity: 4.5,
-    roughness: 0.3,
-    metalness: 0.25,
+    emissiveIntensity: 3.8,
+    roughness: 0.35,
+    metalness: 0.2,
   });
   goalMat.userData.nightLamp = true;
-  goalMat.userData.emissiveDay = 4.5;
-  goalMat.userData.emissiveNight = 6;
+  goalMat.userData.emissiveDay = 3.8;
+  goalMat.userData.emissiveNight = 5;
 
   const walls: MazeWall[] = [];
   const addWall = (
@@ -215,8 +218,9 @@ export function plantUndergroundMaze(
   ) => {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
     m.position.set(x, y, z);
-    m.castShadow = true;
-    m.receiveShadow = true;
+    // Shadows off — maze must not light/shadow the desert ribbon above.
+    m.castShadow = false;
+    m.receiveShadow = false;
     parent.add(m);
     const wx = root.position.x + x;
     const wz = root.position.z + z;
@@ -229,19 +233,13 @@ export function plantUndergroundMaze(
     return m;
   };
 
-  // Soft fill so corridors aren't pitch black between torches.
-  const fill = new THREE.AmbientLight(0xffc090, 0.55);
-  root.add(fill);
-  const hemi = new THREE.HemisphereLight(0xffe0b0, 0x1a1210, 0.7);
-  hemi.position.set(totalW * 0.5, floorY + 6, totalD * 0.5);
-  root.add(hemi);
-
   const floor = new THREE.Mesh(
     new THREE.BoxGeometry(totalW + 1.4, 0.4, totalD + 1.4),
     floorMat,
   );
   floor.position.set(totalW * 0.5, floorY - 0.18, totalD * 0.5);
-  floor.receiveShadow = true;
+  floor.castShadow = false;
+  floor.receiveShadow = false;
   root.add(floor);
 
   const ceilY = ceilingY + 0.22;
@@ -271,7 +269,7 @@ export function plantUndergroundMaze(
     }
   }
 
-  // Ceiling — holes at entrance (0,0) and exit/goal
+  // Ceiling panels — holes at entrance + exit
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
       if ((c === 0 && r === 0) || (c === goalC && r === goalR)) continue;
@@ -281,7 +279,8 @@ export function plantUndergroundMaze(
         stoneDark,
       );
       panel.position.set(x, ceilY, z);
-      panel.receiveShadow = true;
+      panel.castShadow = false;
+      panel.receiveShadow = false;
       root.add(panel);
     }
   }
@@ -290,57 +289,56 @@ export function plantUndergroundMaze(
   const enterLocal = cellCenter(0, 0);
   const exitLocal = cellCenter(goalC, goalR);
 
-  buildShaft(
-    root,
-    enterLocal.x,
-    enterLocal.z,
-    shaftHalf,
-    WALL_T,
-    ceilingY,
-    stone,
-    floorMat,
-    0x4a4540,
-  );
-  buildShaft(
-    root,
-    exitLocal.x,
-    exitLocal.z,
-    shaftHalf,
-    WALL_T,
-    ceilingY,
-    stone,
-    floorMat,
-    0x8a6a20,
-  );
+  buildShaft(root, enterLocal.x, enterLocal.z, shaftHalf, WALL_T, ceilingY, stone, floorMat, 0x4a4540);
+  buildShaft(root, exitLocal.x, exitLocal.z, shaftHalf, WALL_T, ceilingY, stone, floorMat, 0x8a6a20);
 
-  // Goal chamber marker — glowing pedestal (the ending)
+  // Goal chamber
   const goalPedestal = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.9, 1.4), goalMat);
   goalPedestal.position.set(exitLocal.x, floorY + 0.55, exitLocal.z);
+  goalPedestal.castShadow = false;
   root.add(goalPedestal);
   const goalOrb = new THREE.Mesh(new THREE.SphereGeometry(0.45, 12, 10), goalMat);
   goalOrb.position.set(exitLocal.x, floorY + 1.45, exitLocal.z);
+  goalOrb.castShadow = false;
   root.add(goalOrb);
-  const goalLight = new THREE.PointLight(0xffc040, 55, 28, 1.6);
-  goalLight.position.set(exitLocal.x, floorY + 2.4, exitLocal.z);
-  root.add(goalLight);
 
-  // Torches every other cell — enough fill for a big maze
-  const torchAt = (c: number, r: number) => {
+  // Emissive torch props everywhere — real PointLights only at a few hubs
+  // (too many lights were hitching / flashing the whole canyon desert above).
+  const torchMeshAt = (c: number, r: number) => {
     const { x, z } = cellCenter(c, r);
-    const flame = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.4, 0.2), torchMat);
-    flame.position.set(x, floorY + 2.25, z);
+    const flame = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.42, 0.22), torchMat);
+    flame.position.set(x, floorY + 2.2, z);
+    flame.castShadow = false;
     root.add(flame);
-    const light = new THREE.PointLight(0xff9a40, 38, 18, 1.7);
-    light.position.set(x, floorY + 2.35, z);
-    root.add(light);
   };
   for (let r = 0; r < ROWS; r += 2) {
     for (let c = 0; c < COLS; c += 2) {
-      torchAt(c, r);
+      torchMeshAt(c, r);
     }
   }
-  torchAt(0, 0);
-  torchAt(goalC, goalR);
+
+  // Cap at a handful of PointLights — enough for corridors, safe for the desert FPS.
+  const litCells: [number, number][] = [
+    [0, 0],
+    [7, 7],
+    [goalC, goalR],
+    [3, 11],
+    [11, 3],
+    [14, 7],
+    [7, 0],
+    [0, 14],
+  ];
+  for (const [c, r] of litCells) {
+    const { x, z } = cellCenter(c, r);
+    const light = new THREE.PointLight(0xffa050, 22, 16, 2);
+    light.position.set(x, floorY + 2.3, z);
+    light.castShadow = false;
+    root.add(light);
+  }
+  const goalLight = new THREE.PointLight(0xffc040, 28, 20, 2);
+  goalLight.position.set(exitLocal.x, floorY + 2.5, exitLocal.z);
+  goalLight.castShadow = false;
+  root.add(goalLight);
 
   group.add(root);
 
@@ -373,7 +371,7 @@ export function plantUndergroundMaze(
     walls,
     spawn: {
       x: root.position.x + enterLocal.x,
-      y: floorY + 0.05,
+      y: floorY,
       z: root.position.z + enterLocal.z,
     },
   };
@@ -393,8 +391,7 @@ export function pointInMazeBounds(
 }
 
 export function pointInShaft(maze: UndergroundMaze, x: number, z: number): boolean {
-  const shafts = [maze.shaft, maze.exitShaft];
-  for (const s of shafts) {
+  for (const s of [maze.shaft, maze.exitShaft]) {
     if (x >= s.minX && x <= s.maxX && z >= s.minZ && z <= s.maxZ) return true;
   }
   return false;
