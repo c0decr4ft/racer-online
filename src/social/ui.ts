@@ -43,8 +43,10 @@ import {
   fetchLobbyInvites,
   onInviteJoin,
   rememberInviteFromDm,
+  type LobbyInviteRow,
 } from "./organize";
 import { claimNotification, markNotificationSeen } from "./seenNotifs";
+import { ensureBrowserNotifyPermission, notifyLobbyInvite } from "./browserNotify";
 
 export type SocialHubCallbacks = {
   onJoinInvite: (invite: { room: string; password: string; eventMode?: boolean }) => void;
@@ -225,39 +227,67 @@ function startLobbyPoll(): void {
   void syncLobbyInvitesFromServer();
   lobbyPollTimer = window.setInterval(() => {
     void syncLobbyInvitesFromServer();
-  }, 12_000);
+  }, 4_000);
 }
 
-/** Server-targeted lobby invites — only the recipients listed by the host. */
+/** Drop-down JOIN bar — works from home, Friends, MP menus (not only Chat). */
+function presentLobbyInviteBanner(inv: LobbyInviteRow, who: string): void {
+  const session = getSession();
+  if (!session) return;
+  const banner = el("social-invite-banner");
+  if (!banner) return;
+  banner.classList.remove("hidden");
+  banner.replaceChildren();
+  const text = document.createElement("span");
+  text.textContent = `${who} invited you to ${inv.room}`;
+  const join = document.createElement("button");
+  join.type = "button";
+  join.className = "social-mini";
+  join.textContent = "JOIN";
+  join.addEventListener("click", () => {
+    banner.classList.add("hidden");
+    void ackLobbyInvite(session.pubkey, inv.id);
+    callbacks?.onJoinInvite({ room: inv.room, password: inv.password });
+  });
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.className = "btn-ghost social-mini";
+  dismiss.textContent = "LATER";
+  dismiss.addEventListener("click", () => {
+    banner.classList.add("hidden");
+  });
+  banner.append(text, join, dismiss);
+  // Retrigger slide-down when a new invite replaces the previous one.
+  banner.style.animation = "none";
+  void banner.offsetWidth;
+  banner.style.animation = "";
+}
+
+/** Server-targeted lobby invites — banner + browser notify, independent of Chat. */
 async function syncLobbyInvitesFromServer(): Promise<void> {
   const session = getSession();
   if (!session) return;
-  const invites = await fetchLobbyInvites(session.pubkey);
+  const invites = (await fetchLobbyInvites(session.pubkey))
+    .filter((inv) => inv.from !== session.pubkey.toLowerCase())
+    .sort((a, b) => a.at - b.at);
+  if (!invites.length) return;
+
+  const racing = !!callbacks?.isRacing?.();
+  // Always keep the newest invite on the drop-down bar when not mid-race.
+  if (!racing) {
+    const newest = invites[invites.length - 1]!;
+    const who = newest.fromName || shortNpub(newest.from);
+    presentLobbyInviteBanner(newest, who);
+  }
+
   for (const inv of invites) {
-    if (inv.from === session.pubkey.toLowerCase()) continue;
     const notifId = `lobby:${inv.id}`;
     if (!claimNotification(session.pubkey, notifId)) continue;
-    if (!callbacks?.isRacing?.()) {
-      const who = inv.fromName || shortNpub(inv.from);
+    const who = inv.fromName || shortNpub(inv.from);
+    // OS notification when the tab is backgrounded (Chrome / etc.).
+    notifyLobbyInvite({ who, room: inv.room, tag: notifId });
+    if (!racing) {
       callbacks?.showToast(`${who} has sent you a ${inv.room} lobby request`);
-      // Offer a one-click join in the social invite banner when present.
-      const banner = el("social-invite-banner");
-      if (banner) {
-        banner.classList.remove("hidden");
-        banner.replaceChildren();
-        const text = document.createElement("span");
-        text.textContent = `${who} invited you to ${inv.room}`;
-        const join = document.createElement("button");
-        join.type = "button";
-        join.className = "social-mini";
-        join.textContent = "JOIN";
-        join.addEventListener("click", () => {
-          banner.classList.add("hidden");
-          void ackLobbyInvite(session.pubkey, inv.id);
-          callbacks?.onJoinInvite({ room: inv.room, password: inv.password });
-        });
-        banner.append(text, join);
-      }
     }
   }
 }
@@ -845,9 +875,13 @@ export function initSocialUi(cbs: SocialHubCallbacks): void {
   });
 
   document.getElementById("home-friends-btn")?.addEventListener("click", () => {
+    ensureBrowserNotifyPermission();
     void ensureNostrLogin("Sign in with Nostr to find friends and chat").then((session) => {
       if (session) openSocialHub();
     });
+  });
+  document.getElementById("multiplayer-btn")?.addEventListener("click", () => {
+    ensureBrowserNotifyPermission();
   });
   document.getElementById("social-back-btn")?.addEventListener("click", () => closeSocialHub());
 
@@ -878,12 +912,20 @@ export function initSocialUi(cbs: SocialHubCallbacks): void {
     void sendChat(e);
   });
 
+  // Pull invites immediately when returning to the tab.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && getSession()) {
+      void syncLobbyInvitesFromServer();
+    }
+  });
+
   onSessionChange((session) => {
     syncPresenceFromSession();
     if (!session) {
       stopRequestPoll();
       stopLobbyPoll();
       closeSocialHub();
+      el("social-invite-banner")?.classList.add("hidden");
       chatPeer = null;
       stopThread?.();
       stopThread = null;
