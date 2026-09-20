@@ -2341,44 +2341,71 @@ input:focus-visible,
   vertical-align: middle;
 }
 
-/* Transient in-race notices (player left, …) — top-left under the HUD */
+/* Transient notices — top-center, clear of the map + pause */
 .toast-stack {
   position: fixed;
-  top: 4.75rem;
-  left: 0.85rem;
+  top: max(0.85rem, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 30;
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
+  align-items: center;
+  gap: 0.45rem;
   pointer-events: none;
-  max-width: min(70vw, 18rem);
+  width: min(92vw, 26rem);
 }
 
 .toast {
-  padding: 0.45rem 0.75rem;
-  border: 1px solid var(--line);
-  background: rgba(8, 12, 18, 0.88);
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  width: fit-content;
+  max-width: 100%;
+  padding: 0.65rem 1rem 0.65rem 0.85rem;
+  border: 1px solid rgba(242, 245, 250, 0.2);
+  border-left: 3px solid var(--accent, #ff3b2e);
+  background:
+    linear-gradient(90deg, rgba(255, 59, 46, 0.14), transparent 42%),
+    rgba(8, 12, 18, 0.92);
+  box-shadow:
+    0 10px 28px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
   color: var(--text);
-  font-family: "Rajdhani", sans-serif;
-  font-size: 0.85rem;
-  letter-spacing: 0.05em;
-  animation: toast-in 0.25s ease both;
+  font-family: var(--font-ui);
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1.3;
+  text-align: left;
+  animation: toast-in 0.28s cubic-bezier(0.2, 0.85, 0.25, 1) both;
+}
+
+.toast::before {
+  content: "";
+  flex: 0 0 0.45rem;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: var(--accent, #ff3b2e);
+  box-shadow: 0 0 10px var(--glow, rgba(255, 59, 46, 0.55));
 }
 
 .toast.toast-out {
   opacity: 0;
-  transform: translateX(-0.5rem);
-  transition: opacity 0.4s ease, transform 0.4s ease;
+  transform: translateY(-0.55rem) scale(0.98);
+  transition: opacity 0.35s ease, transform 0.35s ease;
 }
 
 @keyframes toast-in {
   from {
     opacity: 0;
-    transform: translateX(-0.5rem);
+    transform: translateY(-0.65rem) scale(0.96);
   }
   to {
     opacity: 1;
-    transform: translateX(0);
+    transform: translateY(0) scale(1);
   }
 }
 
@@ -3381,7 +3408,7 @@ button.btn-ghost.social-mini {
 
 .social-invite-banner {
   position: fixed;
-  top: 4.5rem;
+  top: max(0.85rem, env(safe-area-inset-top));
   left: 50%;
   transform: translateX(-50%);
   z-index: 60;
@@ -3390,12 +3417,24 @@ button.btn-ghost.social-mini {
   justify-content: space-between;
   gap: 0.85rem;
   width: min(28rem, calc(100vw - 1.5rem));
-  padding: 0.75rem 0.95rem;
-  border: 1px solid var(--line);
-  background: rgba(8, 12, 18, 0.94);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+  padding: 0.75rem 0.95rem 0.75rem 0.9rem;
+  border: 1px solid rgba(242, 245, 250, 0.2);
+  border-left: 3px solid var(--accent, #ff3b2e);
+  background:
+    linear-gradient(90deg, rgba(255, 59, 46, 0.16), transparent 48%),
+    rgba(8, 12, 18, 0.94);
+  box-shadow:
+    0 12px 32px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
   font-family: var(--font-ui);
   font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  animation: toast-in 0.28s cubic-bezier(0.2, 0.85, 0.25, 1) both;
+}
+
+.social-invite-banner .social-mini {
+  flex-shrink: 0;
 }
 
 .social-invite-banner.hidden {
