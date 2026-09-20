@@ -272,6 +272,9 @@ export class Vehicle {
 
   private syncMesh(dt?: number) {
     const s = this.state;
+    // Keep yaw bounded so multiplayer peers don't lerp the long way around.
+    while (s.heading > Math.PI) s.heading -= Math.PI * 2;
+    while (s.heading < -Math.PI) s.heading += Math.PI * 2;
     this.mesh.position.copy(s.position);
     this.mesh.position.y = s.position.y + VISUAL_RIDE_Y;
     this.mesh.rotation.order = "YXZ";
