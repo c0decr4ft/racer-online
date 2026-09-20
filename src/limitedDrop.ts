@@ -23,7 +23,7 @@ export type LimitedDropConfig = {
  */
 export const LIMITED_DROP: LimitedDropConfig = {
   buttonLabel: "GREEN HELL",
-  tagline: "Limited Nürburgring drop",
+  tagline: "Limited Nürburgring GP drop",
   trackId: LIMITED_DROP_TRACK_ID,
   startsAt: "2026-09-20T00:00:00.000Z",
   endsAt: "2026-10-20T00:00:00.000Z",
