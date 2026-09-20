@@ -22,12 +22,6 @@ import {
   isDriftTrack,
   isTutorialTrack,
 } from "./track";
-import {
-  collideMazeWalls,
-  pointInGoal,
-  pointInMazeBounds,
-  pointInShaft,
-} from "./undergroundMaze";
 import { TutorialCoach } from "./tutorial";
 import { drawTrackPreview } from "./mapPreview";
 import { Input, type InputState } from "./input";
@@ -311,11 +305,6 @@ export class Game {
   private roomSpectating = false;
   /** Preferred chase target from the live feed click. */
   private preferredSpectateTargetId: string | null = null;
-  /** One-shot toast when the maze goal chamber is reached. */
-  private mazeGoalReached = false;
-  /** Fog snapshot so underground can dim the surface fog temporarily. */
-  private mazeFogBackup: { color: number; near: number; far: number } | null = null;
-  private mazeFogActive = false;
   private lobbyPlayers: PlayerPose[] = [];
   private mpCreateTrackId = DEFAULT_TRACK_ID;
   /** Rooms are car/bike only — dev garage extras never leave the local garage. */
@@ -1125,8 +1114,7 @@ export class Game {
       const hints: Record<VehicleKind, string> = {
         car: "Car selected — same speed as bikes, AI rivals become cars",
         bike: "Bike selected — same speed as cars, AI rivals become bikes",
-        bird: "Bird mode — WASD · Space up · C down · V look down · Shift boost · Canyon maze shaft → human",
-        human: "Human form — maze only (transforms automatically)",
+        bird: "Bird mode — WASD · Space up · C down · V look down · Shift boost",
       };
       hint.textContent = hints[this.garage.kind];
     }
@@ -2477,8 +2465,6 @@ export class Game {
     const wasRoomSpectating = this.roomSpectating;
     this.roomSpectating = false;
     this.preferredSpectateTargetId = null;
-    this.mazeGoalReached = false;
-    this.restoreMazeFog();
     this.lobbyPlayers = [];
     this.onlineFinishPending = false;
     this.stopSpectate();
@@ -3791,11 +3777,6 @@ export class Game {
     const next = loadGarage();
     if (isDriftTrack(this.trackId)) next.kind = "car";
     const currentKind = (this.player?.mesh.userData.kind as VehicleKind | undefined) ?? null;
-    // Don't yank a maze human back to bird when garage still says bird.
-    if (!force && currentKind === "human" && next.kind === "bird") {
-      this.garage = next;
-      return;
-    }
     const currentPrimary = (this.player?.mesh.userData.bodyColor as number | undefined) ?? null;
     const currentAccent = (this.player?.mesh.userData.accentColor as number | undefined) ?? null;
     const unchanged =
@@ -3854,8 +3835,8 @@ export class Game {
     this.tutorial = !!opts.tutorial;
     this.practice = !!opts.practice || this.tutorial;
     this.solo = (!!opts.solo && !this.online) || this.tutorial;
-    // Bird / maze human are scout tools — practice (no finish/walls explode), keep AI cars visible.
-    if (!this.online && isDevGarageKind(this.garage.kind) && !this.tutorial) {
+    // Bird is a scout tool — practice (no finish/walls explode), keep AI cars visible.
+    if (!this.online && this.garage.kind === "bird" && !this.tutorial) {
       this.practice = true;
       this.solo = false;
     }
@@ -4069,7 +4050,7 @@ export class Game {
       return;
     }
     const kind = this.player.mesh.userData.kind as string;
-    if (kind === "bird" || kind === "human") {
+    if (kind === "bird") {
       this.audio.stopDriveEngine();
       return;
     }
@@ -4293,7 +4274,6 @@ export class Game {
             launch * (this.godMode ? GOD_MODE_AI_POWER : 1) * cityGod;
           for (const r of this.rivals) r.godBoost = aiPower;
 
-          this.prepareMazePilot();
           this.player.update(dt, input);
           this.tickTutorial(dtReal, input, false);
           if (this.onlineWrecked || this.roomSpectating) {
@@ -4306,17 +4286,10 @@ export class Game {
           this.tickDriveAudio(input.throttle);
           if (this.onlineWrecked || this.roomSpectating) {
             this.player.syncCollision();
-          } else if (
-            this.player.mesh.userData.kind === "bird" ||
-            this.player.mesh.userData.kind === "human"
-          ) {
-            this.tickMazeForm();
-            if (this.player.mesh.userData.kind === "bird") {
-              this.clampBirdToWorld();
-              this.projectSticky(this.player, this.player.state.position);
-            } else if (this.player.mesh.userData.kind === "human") {
-              this.applyHumanMazeMotion();
-            }
+          } else if (this.player.mesh.userData.kind === "bird") {
+            // Free-fly scout — no track walls; clamp at map ground edge.
+            this.clampBirdToWorld();
+            this.projectSticky(this.player, this.player.state.position);
           } else {
             const onWall = this.keepOnTrack(this.player);
             this.notePlayerWallHit(onWall, dt);
@@ -5194,9 +5167,8 @@ export class Game {
   }
 
   private updateWrongWay(align: number, speed: number) {
-    // Bird / maze human never show WRONG WAY — free scout, not racing the line.
-    const kind = this.player?.mesh.userData.kind;
-    if (kind === "bird" || kind === "human") {
+    // Bird scout never shows WRONG WAY — you're free-flying, not racing the line.
+    if (this.player?.mesh.userData.kind === "bird") {
       this.el.wrongWay.classList.add("hidden");
       return;
     }
@@ -5235,142 +5207,6 @@ export class Game {
       this.player.state.speed = 0;
       this.player.syncCollision();
     }
-  }
-
-  /** Lower bird floor / arm human climb when over the canyon maze. */
-  private prepareMazePilot() {
-    const maze = this.track.undergroundMaze;
-    if (!this.player) return;
-    if (!maze) {
-      this.player.flyMinY = 1.2;
-      this.player.mazeClimb = false;
-      this.restoreMazeFog();
-      return;
-    }
-    const p = this.player.state.position;
-    const kind = this.player.mesh.userData.kind as string;
-    const inXZ =
-      p.x >= maze.bounds.minX &&
-      p.x <= maze.bounds.maxX &&
-      p.z >= maze.bounds.minZ &&
-      p.z <= maze.bounds.maxZ;
-    const overShaft = pointInShaft(maze, p.x, p.z);
-    const underground = inXZ && p.y < 1.5;
-    if (kind === "bird") {
-      this.player.flyMinY = overShaft || underground ? maze.floorY + 0.35 : 1.2;
-    } else if (kind === "human") {
-      this.player.mazeFloorY = maze.floorY;
-      this.player.mazeClimb = overShaft;
-      if (!this.mazeGoalReached && pointInGoal(maze, p.x, p.z)) {
-        this.mazeGoalReached = true;
-        this.showToast("Maze cleared — climb the gold shaft to fly again");
-      }
-    }
-    if (kind === "human" && underground) {
-      this.applyMazeFog();
-    } else if (this.mazeFogActive) {
-      this.restoreMazeFog();
-    }
-  }
-
-  private applyMazeFog() {
-    const fog = this.scene.fog;
-    if (!(fog instanceof THREE.Fog)) return;
-    if (!this.mazeFogBackup) {
-      this.mazeFogBackup = {
-        color: fog.color.getHex(),
-        near: fog.near,
-        far: fog.far,
-      };
-    }
-    fog.color.setHex(0x1a1410);
-    fog.near = 10;
-    fog.far = 48;
-    this.mazeFogActive = true;
-  }
-
-  private restoreMazeFog() {
-    if (!this.mazeFogBackup) {
-      this.mazeFogActive = false;
-      return;
-    }
-    const fog = this.scene.fog;
-    if (fog instanceof THREE.Fog) {
-      fog.color.setHex(this.mazeFogBackup.color);
-      fog.near = this.mazeFogBackup.near;
-      fog.far = this.mazeFogBackup.far;
-    }
-    this.mazeFogBackup = null;
-    this.mazeFogActive = false;
-  }
-
-  /** Bird enters maze volume → human; human leaves → bird. */
-  private tickMazeForm() {
-    const maze = this.track.undergroundMaze;
-    if (!maze || !this.player || this.online) return;
-    const kind = this.player.mesh.userData.kind as string;
-    if (kind !== "bird" && kind !== "human") return;
-    const p = this.player.state.position;
-    const inside = pointInMazeBounds(maze, p.x, p.y, p.z);
-    if (kind === "bird" && inside && p.y < maze.ceilingY + 0.5) {
-      this.swapMazeForm("human");
-      this.showToast("Human form — find the gold chamber · Space climbs shafts");
-    } else if (kind === "human" && !inside) {
-      this.swapMazeForm("bird");
-      this.showToast("Bird form — fly free");
-      this.mazeGoalReached = false;
-      this.restoreMazeFog();
-    }
-  }
-
-  private applyHumanMazeMotion() {
-    const maze = this.track.undergroundMaze;
-    if (!maze || !this.player) return;
-    const p = this.player.state.position;
-    if (!pointInShaft(maze, p.x, p.z)) {
-      const hit = collideMazeWalls(maze, p.x, p.z, 0.38);
-      p.x = hit.x;
-      p.z = hit.z;
-    }
-    // Keep under the ceiling unless climbing a shaft.
-    if (!pointInShaft(maze, p.x, p.z)) {
-      p.y = Math.min(p.y, maze.ceilingY - 0.35);
-    }
-    this.player.syncCollision();
-  }
-
-  /** Swap bird ↔ human mesh in place (garage stays bird). */
-  private swapMazeForm(next: "bird" | "human") {
-    if (!this.player) return;
-    const pos = this.player.state.position.clone();
-    const heading = this.player.state.heading;
-    const maze = this.track.undergroundMaze;
-    if (next === "human" && maze) {
-      pos.x = THREE.MathUtils.clamp(pos.x, maze.bounds.minX + 1, maze.bounds.maxX - 1);
-      pos.z = THREE.MathUtils.clamp(pos.z, maze.bounds.minZ + 1, maze.bounds.maxZ - 1);
-      if (pointInShaft(maze, pos.x, pos.z)) {
-        pos.x = maze.spawn.x;
-        pos.z = maze.spawn.z;
-      }
-      pos.y = maze.floorY;
-    } else if (next === "bird") {
-      pos.y = Math.max(pos.y, 2.2);
-    }
-
-    this.disposeVehicleMesh(this.player);
-    const mesh = createVehicle(next, this.garage.primary, 7, this.garage.accent, {
-      headlights: next === "bird",
-    });
-    this.scene.add(mesh);
-    this.player = new Vehicle(mesh, pos, heading, true);
-    this.player.mazeFloorY = maze?.floorY ?? 0;
-    this.player.flyMinY = next === "bird" ? (maze ? maze.floorY + 0.35 : 1.2) : 1.2;
-    this.resetSticky(this.player);
-    if (!this.online) {
-      this.practice = true;
-      this.solo = false;
-    }
-    this.snapCamera();
   }
 
   private updateLaps() {
@@ -6184,7 +6020,7 @@ export class Game {
     const dial = this.el.speedDial;
     if (!dial || !this.player) return;
     const kind = this.player.mesh.userData.kind as string | undefined;
-    const hasGears = kind !== "bird" && kind !== "human";
+    const hasGears = kind !== "bird";
     dial.classList.toggle("is-no-gears", !hasGears);
 
     const gear = this.player.state.gear;
@@ -6513,9 +6349,7 @@ export class Game {
   private updateCameraOnPlayer(dt: number) {
     const s = this.player.state;
     const gy = s.position.y;
-    const kind = this.player.mesh.userData.kind as string;
-    const bird = kind === "bird";
-    const human = kind === "human";
+    const bird = this.player.mesh.userData.kind === "bird";
 
     // Hold V in bird mode — straight-down survey view over the bird.
     if (bird && this.birdLookDown) {
@@ -6529,46 +6363,6 @@ export class Game {
       this.camera.lookAt(this.camLook);
       return;
     }
-
-    // Maze human — close over-shoulder chase (visible body) with wall pull-in.
-    if (human) {
-      this.player.mesh.visible = true;
-      const maze = this.track.undergroundMaze;
-      let back = 2.6;
-      let height = 1.75 + gy;
-      let lookY = 1.35 + gy;
-      // Pull camera in if the chase point sits inside a corridor wall.
-      if (maze) {
-        for (let i = 0; i < 4; i++) {
-          const cx = s.position.x - Math.sin(s.heading) * back;
-          const cz = s.position.z - Math.cos(s.heading) * back;
-          const hit = collideMazeWalls(maze, cx, cz, 0.55);
-          const dx = hit.x - cx;
-          const dz = hit.z - cz;
-          if (dx * dx + dz * dz < 1e-6) break;
-          back = Math.max(0.9, back * 0.72);
-        }
-        height = Math.min(height, maze.ceilingY - 0.35);
-        lookY = Math.min(lookY, maze.ceilingY - 0.5);
-      }
-      this._camIdeal.set(
-        s.position.x - Math.sin(s.heading) * back,
-        height,
-        s.position.z - Math.cos(s.heading) * back,
-      );
-      const k = dt <= 0 ? 1 : 1 - Math.exp(-12 * dt);
-      this.camPos.lerp(this._camIdeal, k);
-      this.camera.position.copy(this.camPos);
-      this._camLookTarget.set(
-        s.position.x + Math.sin(s.heading) * 6,
-        lookY,
-        s.position.z + Math.cos(s.heading) * 6,
-      );
-      this.camLook.lerp(this._camLookTarget, dt <= 0 ? 1 : 1 - Math.exp(-14 * dt));
-      this.camera.lookAt(this.camLook);
-      return;
-    }
-    this.player.mesh.visible = true;
 
     const back = bird ? 16 : 12 + Math.min(Math.abs(s.speed) * 0.07, 6);
     const height = bird

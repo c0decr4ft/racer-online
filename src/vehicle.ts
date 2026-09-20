@@ -123,10 +123,6 @@ export class Vehicle {
       this.updateBirdFly(dt, input);
       return;
     }
-    if (this.mesh.userData.kind === "human") {
-      this.updateHumanWalk(dt, input);
-      return;
-    }
     const s = this.state;
     this.shiftTimer = Math.max(0, this.shiftTimer - dt);
 
@@ -177,10 +173,7 @@ export class Vehicle {
   /**
    * Dev bird free-fly — WASD move/turn, Space up, C down. No track physics.
    * Shift holds for a faster scout pass.
-   * `flyMinY` is lowered over the canyon maze shaft so you can dive in.
    */
-  flyMinY = 1.2;
-
   private updateBirdFly(dt: number, input: InputState) {
     const s = this.state;
     const boost = input.handbrake > 0.5 ? 2.4 : 1;
@@ -197,7 +190,7 @@ export class Vehicle {
     // A/D already used for yaw via steer; no strafe — keeps look/move simple.
     if (input.jump) s.position.y += vertSpeed * dt;
     if (input.descend) s.position.y -= vertSpeed * dt;
-    s.position.y = Math.max(this.flyMinY, Math.min(220, s.position.y));
+    s.position.y = Math.max(1.2, Math.min(220, s.position.y));
 
     s.speed = forward * moveSpeed;
     s.steerAngle = input.steer * 0.35;
@@ -207,70 +200,6 @@ export class Vehicle {
 
     this.syncMesh(dt);
     this.animateBirdWings(dt, Math.abs(forward) + (input.jump || input.descend ? 1 : 0));
-  }
-
-  /**
-   * Maze walker — WASD move/turn, Space climb (shaft), C crouch a touch.
-   * Wall collision is applied by the game after this step.
-   */
-  mazeFloorY = 0;
-  mazeClimb = false;
-
-  private humanLegPhase = 0;
-
-  private updateHumanWalk(dt: number, input: InputState) {
-    const s = this.state;
-    const walkSpeed = input.handbrake > 0.5 ? 8.5 : 5.2;
-    const turnSpeed = 2.4;
-    const climbSpeed = 6.2;
-
-    s.heading += input.steer * turnSpeed * dt;
-    const forward = input.throttle - input.brake;
-    const sin = Math.sin(s.heading);
-    const cos = Math.cos(s.heading);
-    s.position.x += sin * forward * walkSpeed * dt;
-    s.position.z += cos * forward * walkSpeed * dt;
-
-    if (this.mazeClimb && input.jump) {
-      s.position.y += climbSpeed * dt;
-    } else if (input.descend) {
-      s.position.y = Math.max(this.mazeFloorY, s.position.y - 4 * dt);
-    } else if (!this.mazeClimb) {
-      const targetY = this.mazeFloorY;
-      if (s.position.y > targetY + 0.04) {
-        s.position.y = Math.max(targetY, s.position.y - 16 * dt);
-      } else {
-        s.position.y = targetY;
-      }
-    }
-
-    s.speed = forward * walkSpeed;
-    s.steerAngle = input.steer * 0.15;
-    s.gear = "N";
-    s.driftSlip = 0;
-    s.groundPitch = 0;
-
-    this.syncMesh(dt);
-    this.animateHumanLegs(dt, Math.abs(forward));
-  }
-
-  private animateHumanLegs(dt: number, effort: number) {
-    const legs = this.mesh.userData.legs as THREE.Object3D[] | undefined;
-    const arms = this.mesh.userData.arms as THREE.Object3D[] | undefined;
-    if (!legs?.length) return;
-    if (effort < 0.05) {
-      if (legs[0]) legs[0].rotation.x = 0;
-      if (legs[1]) legs[1].rotation.x = 0;
-      if (arms?.[0]) arms[0].rotation.x = 0;
-      if (arms?.[1]) arms[1].rotation.x = 0;
-      return;
-    }
-    this.humanLegPhase += dt * (7 + effort * 5);
-    const swing = Math.sin(this.humanLegPhase) * 0.45;
-    if (legs[0]) legs[0].rotation.x = swing;
-    if (legs[1]) legs[1].rotation.x = -swing;
-    if (arms?.[0]) arms[0].rotation.x = -swing * 0.7;
-    if (arms?.[1]) arms[1].rotation.x = swing * 0.7;
   }
 
   private birdWingPhase = 0;
@@ -350,7 +279,7 @@ export class Vehicle {
     this.mesh.position.y = s.position.y + VISUAL_RIDE_Y;
     this.mesh.rotation.order = "YXZ";
     this.mesh.rotation.y = s.heading + this.driftYaw;
-    if (this.mesh.userData.kind === "human" || this.mesh.userData.kind === "bird") {
+    if (this.mesh.userData.kind === "bird") {
       this.mesh.rotation.z = 0;
       this.mesh.rotation.x = 0;
       this.leanSmooth = 0;

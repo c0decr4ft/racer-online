@@ -1,6 +1,6 @@
 /** Player garage — vehicle kind + paint saved locally. */
 
-export type VehicleKind = "car" | "bike" | "bird" | "human";
+export type VehicleKind = "car" | "bike" | "bird";
 
 export type GarageLoadout = {
   kind: VehicleKind;
@@ -33,16 +33,15 @@ function clampColor(n: number): number {
 
 export function normalizeKind(raw: unknown): VehicleKind {
   const kind = String(raw ?? "").toLowerCase();
-  // Bird is the only remaining garage-selectable dev extra (UI-gated in game.ts).
-  // Human is maze-only and never persisted from the garage.
-  // Legacy truck / tank / f1 saves fall back to car.
+  // Bird is the only remaining dev-profile garage extra (UI-gated in game.ts).
+  // Legacy truck / tank / f1 / human saves fall back to car.
   if (kind === "bike" || kind === "bird") return kind;
   return "car";
 }
 
 /** Dev-only garage rides — never race online; UI-gated to DEV_PUBKEY. */
 export function isDevGarageKind(kind: VehicleKind): boolean {
-  return kind === "bird" || kind === "human";
+  return kind === "bird";
 }
 
 export function loadGarage(): GarageLoadout {
