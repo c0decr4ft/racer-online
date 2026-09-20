@@ -315,6 +315,7 @@ export class Game {
   private mazeGoalReached = false;
   /** Fog snapshot so underground can dim the surface fog temporarily. */
   private mazeFogBackup: { color: number; near: number; far: number } | null = null;
+  private mazeFogActive = false;
   private lobbyPlayers: PlayerPose[] = [];
   private mpCreateTrackId = DEFAULT_TRACK_ID;
   /** Rooms are car/bike only — dev garage extras never leave the local garage. */
@@ -5265,9 +5266,9 @@ export class Game {
         this.showToast("Maze cleared — climb the gold shaft to fly again");
       }
     }
-    if ((kind === "human" || (kind === "bird" && underground)) && underground) {
+    if (kind === "human" && underground) {
       this.applyMazeFog();
-    } else {
+    } else if (this.mazeFogActive) {
       this.restoreMazeFog();
     }
   }
@@ -5283,12 +5284,16 @@ export class Game {
       };
     }
     fog.color.setHex(0x1a1410);
-    fog.near = 8;
-    fog.far = 42;
+    fog.near = 10;
+    fog.far = 48;
+    this.mazeFogActive = true;
   }
 
   private restoreMazeFog() {
-    if (!this.mazeFogBackup) return;
+    if (!this.mazeFogBackup) {
+      this.mazeFogActive = false;
+      return;
+    }
     const fog = this.scene.fog;
     if (fog instanceof THREE.Fog) {
       fog.color.setHex(this.mazeFogBackup.color);
@@ -5296,6 +5301,7 @@ export class Game {
       fog.far = this.mazeFogBackup.far;
     }
     this.mazeFogBackup = null;
+    this.mazeFogActive = false;
   }
 
   /** Bird enters maze volume → human; human leaves → bird. */
@@ -5346,7 +5352,7 @@ export class Game {
         pos.x = maze.spawn.x;
         pos.z = maze.spawn.z;
       }
-      pos.y = maze.floorY + 0.05;
+      pos.y = maze.floorY;
     } else if (next === "bird") {
       pos.y = Math.max(pos.y, 2.2);
     }
@@ -6524,31 +6530,45 @@ export class Game {
       return;
     }
 
-    // Maze human — first-person eyes so the chase cam never clips corridor walls.
+    // Maze human — close over-shoulder chase (visible body) with wall pull-in.
     if (human) {
-      this.player.mesh.visible = false;
-      const eye = 1.55;
-      const lookDist = 10;
+      this.player.mesh.visible = true;
+      const maze = this.track.undergroundMaze;
+      let back = 2.6;
+      let height = 1.75 + gy;
+      let lookY = 1.35 + gy;
+      // Pull camera in if the chase point sits inside a corridor wall.
+      if (maze) {
+        for (let i = 0; i < 4; i++) {
+          const cx = s.position.x - Math.sin(s.heading) * back;
+          const cz = s.position.z - Math.cos(s.heading) * back;
+          const hit = collideMazeWalls(maze, cx, cz, 0.55);
+          const dx = hit.x - cx;
+          const dz = hit.z - cz;
+          if (dx * dx + dz * dz < 1e-6) break;
+          back = Math.max(0.9, back * 0.72);
+        }
+        height = Math.min(height, maze.ceilingY - 0.35);
+        lookY = Math.min(lookY, maze.ceilingY - 0.5);
+      }
       this._camIdeal.set(
-        s.position.x + Math.sin(s.heading) * 0.2,
-        gy + eye,
-        s.position.z + Math.cos(s.heading) * 0.2,
+        s.position.x - Math.sin(s.heading) * back,
+        height,
+        s.position.z - Math.cos(s.heading) * back,
       );
-      const k = dt <= 0 ? 1 : 1 - Math.exp(-14 * dt);
+      const k = dt <= 0 ? 1 : 1 - Math.exp(-12 * dt);
       this.camPos.lerp(this._camIdeal, k);
       this.camera.position.copy(this.camPos);
       this._camLookTarget.set(
-        s.position.x + Math.sin(s.heading) * lookDist,
-        gy + eye - 0.05,
-        s.position.z + Math.cos(s.heading) * lookDist,
+        s.position.x + Math.sin(s.heading) * 6,
+        lookY,
+        s.position.z + Math.cos(s.heading) * 6,
       );
-      this.camLook.lerp(this._camLookTarget, dt <= 0 ? 1 : 1 - Math.exp(-16 * dt));
+      this.camLook.lerp(this._camLookTarget, dt <= 0 ? 1 : 1 - Math.exp(-14 * dt));
       this.camera.lookAt(this.camLook);
       return;
     }
-    if (this.player.mesh.userData.kind !== "human") {
-      this.player.mesh.visible = true;
-    }
+    this.player.mesh.visible = true;
 
     const back = bird ? 16 : 12 + Math.min(Math.abs(s.speed) * 0.07, 6);
     const height = bird

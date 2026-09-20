@@ -9,4 +9,4 @@
  *   1.0.0 → 1.0.1 → 1.0.2 → …
  * Use minor/major only for intentional larger releases (1.1.0, 2.0.0, …).
  */
-export const GAME_VERSION = "1.0.20";
+export const GAME_VERSION = "1.0.21";

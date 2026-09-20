@@ -118,6 +118,10 @@ export const BIOMES: Record<BiomeId, BiomeStyle> = {
     density: 0.35,
     vegetation: "cactus",
     props: "canyon",
+    sky: 0xc8a878,
+    fog: 0xc4a070,
+    hemiSky: 0xffe8c8,
+    hemiGround: 0x8a5530,
   },
   urban: {
     id: "urban",
