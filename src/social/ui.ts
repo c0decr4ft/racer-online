@@ -46,7 +46,12 @@ import {
   type LobbyInviteRow,
 } from "./organize";
 import { claimNotification, markNotificationSeen } from "./seenNotifs";
-import { ensureBrowserNotifyPermission, notifyLobbyInvite } from "./browserNotify";
+import {
+  browserNotifySupported,
+  ensureBrowserNotifyPermission,
+  notifyLobbyInvite,
+} from "./browserNotify";
+import { lobbyInviteDeliveryMode } from "./lobbyInviteDelivery";
 
 export type SocialHubCallbacks = {
   onJoinInvite: (invite: { room: string; password: string; eventMode?: boolean }) => void;
@@ -271,6 +276,8 @@ function presentLobbyInviteBanner(inv: LobbyInviteRow, who: string): void {
     hideLobbyInviteBanner();
   });
   banner.append(text, join, dismiss);
+  // Banner counts as delivery — block a later OS ping for the same invite.
+  markNotificationSeen(session.pubkey, `lobby:${inv.id}`);
   banner.style.animation = "none";
   void banner.offsetWidth;
   banner.style.animation = "";
@@ -300,19 +307,20 @@ async function syncLobbyInvitesFromServer(): Promise<void> {
 
   const racing = !!callbacks?.isRacing?.();
   const tabAway = document.hidden || !document.hasFocus();
+  const canOsNotify = browserNotifySupported() && Notification.permission === "granted";
 
   for (const inv of invites) {
     const notifId = `lobby:${inv.id}`;
-    if (!claimNotification(session.pubkey, notifId)) continue;
     const who = inv.fromName || shortNpub(inv.from);
-
-    if (tabAway) {
-      // Off the game tab — ping Chrome / the OS once.
+    const mode = lobbyInviteDeliveryMode({ racing, tabAway, canOsNotify });
+    // Never claim before a real delivery — mid-race / no-permission background
+    // polls used to burn localStorage ids and the invite never surfaced again.
+    if (mode === "defer") continue;
+    if (mode === "os-notify") {
+      if (!claimNotification(session.pubkey, notifId)) continue;
       notifyLobbyInvite({ who, room: inv.room, tag: notifId });
       continue;
     }
-    if (racing) continue;
-    // On the page — slide the JOIN bar down once for ~10 seconds.
     presentLobbyInviteBanner(inv, who);
   }
 }
