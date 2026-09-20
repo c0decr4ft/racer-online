@@ -19,9 +19,15 @@ import {
   getTrackDef,
   DRIFT_TRACK_ID,
   TUTORIAL_TRACK_ID,
+  LIMITED_TRACK_ID,
   isDriftTrack,
   isTutorialTrack,
 } from "./track";
+import {
+  LIMITED_DROP,
+  isLimitedDropLive,
+  limitedDropCountdownLabel,
+} from "./limitedDrop";
 import { TutorialCoach } from "./tutorial";
 import { drawTrackPreview } from "./mapPreview";
 import { Input, type InputState } from "./input";
@@ -749,6 +755,14 @@ export class Game {
     document.getElementById("solo-race-btn")!.onclick = () => {
       void this.bootFromMenu({ solo: true, trackId: randomTrackId() });
     };
+    document.getElementById("limited-drop-btn")!.onclick = () => {
+      if (!isLimitedDropLive()) {
+        this.syncLimitedDropBtn();
+        return;
+      }
+      void this.bootFromMenu({ trackId: LIMITED_TRACK_ID });
+    };
+    this.syncLimitedDropBtn();
     document.getElementById("multiplayer-btn")!.onclick = () => {
       void this.unlockAndMaybeMenuMusic()
         .then(() => ensureNostrLogin("Sign in with Nostr to race on Sats Racer"))
@@ -2468,7 +2482,33 @@ export class Game {
     this.shadowNeedsWarmup = true;
     this.audio.playMenuMusic();
     this.syncMuteBtn();
+    this.syncLimitedDropBtn();
     setVehicleHeadlights(this.player?.mesh, false);
+  }
+
+  /** Show / hide the sixth home button for the limited-time GREEN HELL drop. */
+  private syncLimitedDropBtn() {
+    const btn = document.getElementById("limited-drop-btn") as HTMLButtonElement | null;
+    const hint = document.getElementById("limited-drop-hint");
+    const live = isLimitedDropLive();
+    if (btn) {
+      btn.classList.toggle("hidden", !live);
+      btn.setAttribute("aria-hidden", live ? "false" : "true");
+      btn.textContent = LIMITED_DROP.buttonLabel;
+      btn.disabled = !live;
+    }
+    if (hint) {
+      if (live) {
+        const left = limitedDropCountdownLabel();
+        hint.textContent = left
+          ? `${LIMITED_DROP.tagline} · ${left}`
+          : LIMITED_DROP.tagline;
+        hint.classList.remove("hidden");
+      } else {
+        hint.textContent = "";
+        hint.classList.add("hidden");
+      }
+    }
   }
 
   private renderBoardList(entries: LeaderboardEntry[]) {
