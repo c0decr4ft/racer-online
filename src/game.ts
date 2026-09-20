@@ -1731,17 +1731,20 @@ export class Game {
     }
   }
 
-  /** Small transient notice, top-left — e.g. a racer leaving mid-race. */
+  /** Compact race notice — top-center stack, max 3 visible. */
   private showToast(text: string) {
     const stack = document.getElementById("toast-stack");
     if (!stack) return;
-    while (stack.children.length >= 4) stack.firstElementChild?.remove();
+    const cleaned = String(text || "").trim();
+    if (!cleaned) return;
+    while (stack.children.length >= 3) stack.firstElementChild?.remove();
     const toast = document.createElement("div");
     toast.className = "toast";
-    toast.textContent = text;
+    toast.setAttribute("role", "status");
+    toast.textContent = cleaned;
     stack.appendChild(toast);
-    setTimeout(() => toast.classList.add("toast-out"), 2600);
-    setTimeout(() => toast.remove(), 3100);
+    setTimeout(() => toast.classList.add("toast-out"), 2800);
+    setTimeout(() => toast.remove(), 3300);
   }
 
   /** Public toast for social hub / deep-link notices. */
