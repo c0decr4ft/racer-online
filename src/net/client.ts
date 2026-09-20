@@ -214,16 +214,14 @@ export class RemotePlayer {
 
     this.fire?.update(dt);
 
-    // Adaptive jitter buffer: on good links the remote renders just ~1.2 ticks
-    // behind (~40ms at 30Hz — much more present than the old 2.2-tick floor),
-    // while jitter still widens the buffer on bad links. Occasional underruns
-    // are covered by dead reckoning + correction smoothing.
-    const minDelay = NET_TICK_MS * 1.2;
-    const interpDelay = THREE.MathUtils.clamp(minDelay + this.jitterMs * 2.5, minDelay, 300);
-    // Ease the delay (~3 Hz): otherwise every jitter EMA wobble re-times the
+    // Adaptive jitter buffer: on good links stay tight; on hitchy/asymmetric
+    // links (fast PC ↔ slow PC) widen so sparse poses still lerp smoothly.
+    const minDelay = NET_TICK_MS * 1.6;
+    const interpDelay = THREE.MathUtils.clamp(minDelay + this.jitterMs * 3.2, minDelay, 480);
+    // Ease the delay (~2.5 Hz): otherwise every jitter EMA wobble re-times the
     // render point and the remote visibly rubber-bands.
     if (this.delaySmooth === 0) this.delaySmooth = interpDelay;
-    if (dt > 0) this.delaySmooth += (interpDelay - this.delaySmooth) * Math.min(1, dt * 3);
+    if (dt > 0) this.delaySmooth += (interpDelay - this.delaySmooth) * Math.min(1, dt * 2.5);
     const renderAt = now - this.delaySmooth;
     let x: number;
     let z: number;
@@ -349,7 +347,9 @@ export class RemotePlayer {
       this.prevTH = h;
     }
     if (dt > 0) {
-      const decay = Math.exp(-dt / 0.14);
+      // Slightly longer glide on corrections — sparse poses from a slow peer
+      // otherwise snap every time a late packet lands.
+      const decay = Math.exp(-dt / 0.2);
       this.errX *= decay;
       this.errZ *= decay;
       this.errH *= decay;
@@ -571,6 +571,16 @@ export class NetClient {
   private myId = "";
   /** Wall-clock of the last pose uplink (steadier than a dt accumulator). */
   private lastPoseAt = 0;
+  /** Latest local pose — pumped at 30Hz even if the render loop is hitching. */
+  private pendingPose: {
+    x: number;
+    z: number;
+    h: number;
+    s: number;
+    g: string;
+    lap: number;
+  } | null = null;
+  private posePumpTimer: ReturnType<typeof setInterval> | null = null;
   private pingAt = 0;
   private handlers: NetHandlers;
   private pending: RoomConnectOpts | null = null;
@@ -1002,6 +1012,8 @@ export class NetClient {
   private softClose(ws: WebSocket, gen: number) {
     if (gen !== this.connGen) return;
     this.stopPingLoop();
+    this.stopPosePump();
+    this.pendingPose = null;
     this.connected = false;
     this.ws = null;
     this.pending = null;
@@ -1018,6 +1030,8 @@ export class NetClient {
   disconnect() {
     this.connGen++;
     this.stopPingLoop();
+    this.stopPosePump();
+    this.pendingPose = null;
     if (this.refundWait) {
       clearTimeout(this.refundWait.timer);
       this.refundWait.resolve(null);
@@ -1164,7 +1178,7 @@ export class NetClient {
     });
   }
 
-  /** Call from render loop; sends at ~30Hz on a wall clock (frame dt accumulators clump on stalls). */
+  /** Queue pose from the render loop; a 30Hz pump keeps uplink steady on hitchy FPS. */
   maybeSendPose(
     _dt: number,
     pose: {
@@ -1178,8 +1192,36 @@ export class NetClient {
   ) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.myId) return;
     if (this.phase !== "racing" && this.phase !== "finished") return;
+    this.pendingPose = pose;
+    this.ensurePosePump();
+    this.flushPendingPose();
+  }
+
+  private ensurePosePump() {
+    if (this.posePumpTimer != null) return;
+    const gen = this.connGen;
+    this.posePumpTimer = setInterval(() => {
+      if (gen !== this.connGen || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        this.stopPosePump();
+        return;
+      }
+      if (this.phase !== "racing" && this.phase !== "finished") return;
+      this.flushPendingPose();
+    }, NET_TICK_MS);
+  }
+
+  private stopPosePump() {
+    if (this.posePumpTimer != null) {
+      clearInterval(this.posePumpTimer);
+      this.posePumpTimer = null;
+    }
+  }
+
+  private flushPendingPose() {
+    const pose = this.pendingPose;
+    if (!pose || !this.ws || this.ws.readyState !== WebSocket.OPEN || !this.myId) return;
     const now = performance.now();
-    if (now - this.lastPoseAt < NET_TICK_MS) return;
+    if (now - this.lastPoseAt < NET_TICK_MS * 0.9) return;
     this.lastPoseAt = now;
     this.ws.send(
       JSON.stringify({
