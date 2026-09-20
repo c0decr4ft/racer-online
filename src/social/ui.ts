@@ -807,9 +807,9 @@ function renderChatMessages(): void {
             const btn = mine
               ? ""
               : `<button type="button" class="social-mini" data-invite-id="${m.id}">JOIN</button>`;
-            return `<div class="social-msg${mine ? " is-mine" : ""}"><div class="social-msg-bubble social-msg-invite"><span class="social-msg-text">${escapeHtml(body)}</span>${btn}<span class="social-msg-meta">${escapeHtml(time)}</span></div></div>`;
+            return `<div class="social-msg${mine ? " is-mine" : ""}"><div class="social-msg-bubble social-msg-invite"><span class="social-msg-meta">${escapeHtml(time)}</span><span class="social-msg-text">${escapeHtml(body)}</span>${btn}</div></div>`;
           }
-          return `<div class="social-msg${mine ? " is-mine" : ""}"><div class="social-msg-bubble"><span class="social-msg-text">${escapeHtml(m.plaintext)}</span><span class="social-msg-meta">${escapeHtml(time)}</span></div></div>`;
+          return `<div class="social-msg${mine ? " is-mine" : ""}"><div class="social-msg-bubble"><span class="social-msg-meta">${escapeHtml(time)}</span><span class="social-msg-text">${escapeHtml(m.plaintext)}</span></div></div>`;
         })
         .join("")
     : `<p class="social-empty">No messages yet — say hi</p>`;
