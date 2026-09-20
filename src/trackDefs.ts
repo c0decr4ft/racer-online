@@ -770,17 +770,50 @@ export function trackHasUnderpass(def: TrackDef): boolean {
 
 export const DEFAULT_TRACK_ID = TRACKS[0]!.id;
 
+/** Shuffle-bag so Start Race cycles all courses before repeating. */
+let trackBag: string[] = [];
+
+function reshuffleTrackBag(avoid?: string): void {
+  trackBag = TRACKS.map((t) => t.id);
+  for (let i = trackBag.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = trackBag[i]!;
+    trackBag[i] = trackBag[j]!;
+    trackBag[j] = tmp;
+  }
+  // Don't deal the avoided id first (menu backdrop is usually Forest Loop).
+  if (avoid && trackBag.length > 1 && trackBag[trackBag.length - 1] === avoid) {
+    const j = Math.floor(Math.random() * (trackBag.length - 1));
+    const tmp = trackBag[trackBag.length - 1]!;
+    trackBag[trackBag.length - 1] = trackBag[j]!;
+    trackBag[j] = tmp;
+  }
+}
+
+/**
+ * Next casual course. Draws from a shuffled bag of every TRACKS entry so the
+ * same two maps don't keep winning coin-flips; optional `avoid` skips an
+ * immediate repeat of the current / menu track.
+ */
+export function randomTrackId(avoid?: string): string {
+  if (trackBag.length === 0) reshuffleTrackBag(avoid);
+  let next = trackBag.pop()!;
+  if (avoid && next === avoid && trackBag.length > 0) {
+    trackBag.unshift(next);
+    next = trackBag.pop()!;
+  } else if (avoid && next === avoid) {
+    reshuffleTrackBag(avoid);
+    next = trackBag.pop()!;
+  }
+  return next;
+}
+
 export function getTrackDef(id: string): TrackDef {
   if (id === DRIFT_TRACK_ID) return DRIFT_TRACK;
   if (id === TUTORIAL_TRACK_ID) return TUTORIAL_TRACK;
   if (id === LIMITED_TRACK_ID) return LIMITED_TRACK;
   const found = TRACKS.find((t) => t.id === id);
   return found ?? TRACKS[0]!;
-}
-
-export function randomTrackId(): string {
-  const i = Math.floor(Math.random() * TRACKS.length);
-  return TRACKS[i]!.id;
 }
 
 export function isTrackId(id: string): boolean {
