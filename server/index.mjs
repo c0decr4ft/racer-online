@@ -3810,7 +3810,10 @@ wss.on("connection", (ws) => {
       // Sanity clamps — the client is untrusted; keep poses inside plausible bounds.
       p.x = Math.max(-20_000, Math.min(20_000, +msg.x || 0));
       p.z = Math.max(-20_000, Math.min(20_000, +msg.z || 0));
-      p.h = Math.max(-10, Math.min(10, +msg.h || 0));
+      let h = +msg.h || 0;
+      while (h > Math.PI) h -= Math.PI * 2;
+      while (h < -Math.PI) h += Math.PI * 2;
+      p.h = h;
       p.s = Math.max(-150, Math.min(150, +msg.s || 0)); // ±540 km/h ceiling
       p.g = String(msg.g || "1").slice(0, 2);
       p.lap = Math.max(1, Math.min(99, msg.lap | 0));
