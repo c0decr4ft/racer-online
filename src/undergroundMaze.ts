@@ -20,8 +20,12 @@ export type UndergroundMaze = {
   };
   floorY: number;
   ceilingY: number;
-  /** Open vertical shaft (XZ) — climb out / fly in. */
+  /** Entrance shaft (fly in / climb out). */
   shaft: { minX: number; maxX: number; minZ: number; maxZ: number };
+  /** Exit / ending shaft — climb out after reaching the goal chamber. */
+  exitShaft: { minX: number; maxX: number; minZ: number; maxZ: number };
+  /** Goal chamber center (ending). */
+  goal: { x: number; z: number; radius: number };
   walls: MazeWall[];
   /** Spawn human here when transforming from bird. */
   spawn: { x: number; y: number; z: number };
@@ -84,45 +88,95 @@ function carveMaze(cols: number, rows: number, seed: number): Cell[][] {
   return grid;
 }
 
+function buildShaft(
+  root: THREE.Group,
+  localX: number,
+  localZ: number,
+  shaftHalf: number,
+  wallT: number,
+  ceilingY: number,
+  stone: THREE.Material,
+  floorMat: THREE.Material,
+  rimColor: number,
+) {
+  const shaftTop = 1.35;
+  const shaftBottom = ceilingY;
+  const shaftH = shaftTop - shaftBottom;
+  const shaftMidY = (shaftTop + shaftBottom) * 0.5;
+
+  const collar = (dx: number, dz: number, w: number, d: number) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, shaftH, d), stone);
+    m.position.set(localX + dx, shaftMidY, localZ + dz);
+    m.castShadow = true;
+    m.receiveShadow = true;
+    root.add(m);
+  };
+  collar(0, -shaftHalf - wallT * 0.5, shaftHalf * 2 + wallT * 2, wallT);
+  collar(0, shaftHalf + wallT * 0.5, shaftHalf * 2 + wallT * 2, wallT);
+  collar(-shaftHalf - wallT * 0.5, 0, wallT, shaftHalf * 2);
+  collar(shaftHalf + wallT * 0.5, 0, wallT, shaftHalf * 2);
+
+  const rimMat = new THREE.MeshStandardMaterial({
+    color: rimColor,
+    roughness: 0.9,
+    metalness: 0.08,
+    flatShading: true,
+  });
+  const rim = new THREE.Mesh(
+    new THREE.BoxGeometry(shaftHalf * 2 + 2.4, 0.5, shaftHalf * 2 + 2.4),
+    rimMat,
+  );
+  rim.position.set(localX, 0.25, localZ);
+  rim.receiveShadow = true;
+  root.add(rim);
+  const pit = new THREE.Mesh(
+    new THREE.BoxGeometry(shaftHalf * 2, 0.22, shaftHalf * 2),
+    floorMat,
+  );
+  pit.position.set(localX, 0.06, localZ);
+  root.add(pit);
+}
+
 /**
- * Hollow stone labyrinth under Canyon Cut.
- * Bird flies the surface shaft down; crossing into the volume becomes human.
+ * Large stone labyrinth under Canyon Cut.
+ * Entrance shaft → human walk → goal chamber / exit shaft → bird again.
  */
 export function plantUndergroundMaze(
   group: THREE.Group,
   originX: number,
   originZ: number,
 ): UndergroundMaze {
-  const COLS = 7;
-  const ROWS = 7;
-  const CELL = 4.2;
-  const WALL_T = 0.55;
-  const floorY = -11.5;
-  const roomH = 3.4;
+  const COLS = 15;
+  const ROWS = 15;
+  const CELL = 4.6;
+  const WALL_T = 0.6;
+  const floorY = -12.5;
+  const roomH = 3.8;
   const ceilingY = floorY + roomH;
   const maze = carveMaze(COLS, ROWS, 0xc4a70a1);
+  const goalC = COLS - 1;
+  const goalR = ROWS - 1;
 
   const root = new THREE.Group();
   root.name = "underground-maze";
-  // Center the grid on origin
   const totalW = COLS * CELL;
   const totalD = ROWS * CELL;
   root.position.set(originX - totalW * 0.5, 0, originZ - totalD * 0.5);
 
   const stone = new THREE.MeshStandardMaterial({
-    color: 0x5a5348,
-    roughness: 0.94,
-    metalness: 0.06,
+    color: 0x6a6358,
+    roughness: 0.92,
+    metalness: 0.05,
     flatShading: true,
   });
   const stoneDark = new THREE.MeshStandardMaterial({
-    color: 0x3a3530,
-    roughness: 0.96,
+    color: 0x3f3a34,
+    roughness: 0.95,
     metalness: 0.04,
     flatShading: true,
   });
   const floorMat = new THREE.MeshStandardMaterial({
-    color: 0x2e2a26,
+    color: 0x35302a,
     roughness: 0.98,
     metalness: 0.02,
     flatShading: true,
@@ -130,13 +184,23 @@ export function plantUndergroundMaze(
   const torchMat = new THREE.MeshStandardMaterial({
     color: 0xffc070,
     emissive: 0xff8a30,
-    emissiveIntensity: 2.2,
+    emissiveIntensity: 3.5,
     roughness: 0.35,
     metalness: 0.1,
   });
   torchMat.userData.nightLamp = true;
-  torchMat.userData.emissiveDay = 2.2;
-  torchMat.userData.emissiveNight = 3.5;
+  torchMat.userData.emissiveDay = 3.5;
+  torchMat.userData.emissiveNight = 5;
+  const goalMat = new THREE.MeshStandardMaterial({
+    color: 0xffd060,
+    emissive: 0xffb020,
+    emissiveIntensity: 4.5,
+    roughness: 0.3,
+    metalness: 0.25,
+  });
+  goalMat.userData.nightLamp = true;
+  goalMat.userData.emissiveDay = 4.5;
+  goalMat.userData.emissiveNight = 6;
 
   const walls: MazeWall[] = [];
   const addWall = (
@@ -154,7 +218,6 @@ export function plantUndergroundMaze(
     m.castShadow = true;
     m.receiveShadow = true;
     parent.add(m);
-    // Local → world XZ AABB (root is only translated)
     const wx = root.position.x + x;
     const wz = root.position.z + z;
     walls.push({
@@ -166,31 +229,34 @@ export function plantUndergroundMaze(
     return m;
   };
 
-  // Floor slab
+  // Soft fill so corridors aren't pitch black between torches.
+  const fill = new THREE.AmbientLight(0xffc090, 0.55);
+  root.add(fill);
+  const hemi = new THREE.HemisphereLight(0xffe0b0, 0x1a1210, 0.7);
+  hemi.position.set(totalW * 0.5, floorY + 6, totalD * 0.5);
+  root.add(hemi);
+
   const floor = new THREE.Mesh(
-    new THREE.BoxGeometry(totalW + 1.2, 0.35, totalD + 1.2),
+    new THREE.BoxGeometry(totalW + 1.4, 0.4, totalD + 1.4),
     floorMat,
   );
-  floor.position.set(totalW * 0.5, floorY - 0.15, totalD * 0.5);
+  floor.position.set(totalW * 0.5, floorY - 0.18, totalD * 0.5);
   floor.receiveShadow = true;
   root.add(floor);
 
-  // Ceiling (with shaft hole punched later as gap — we leave cell 0,0 north open upward)
-  const ceilY = ceilingY + 0.2;
-  const ceilThickness = 0.5;
-
+  const ceilY = ceilingY + 0.22;
+  const ceilThickness = 0.55;
   const cellCenter = (c: number, r: number) => ({
     x: (c + 0.5) * CELL,
     z: (r + 0.5) * CELL,
   });
 
-  // Outer shell walls
+  // Outer shell
   addWall(root, totalW + WALL_T * 2, roomH, WALL_T, stoneDark, totalW * 0.5, floorY + roomH * 0.5, -WALL_T * 0.5);
   addWall(root, totalW + WALL_T * 2, roomH, WALL_T, stoneDark, totalW * 0.5, floorY + roomH * 0.5, totalD + WALL_T * 0.5);
   addWall(root, WALL_T, roomH, totalD + WALL_T * 2, stoneDark, -WALL_T * 0.5, floorY + roomH * 0.5, totalD * 0.5);
   addWall(root, WALL_T, roomH, totalD + WALL_T * 2, stoneDark, totalW + WALL_T * 0.5, floorY + roomH * 0.5, totalD * 0.5);
 
-  // Interior walls — east & south edges only (avoids double-drawing shared walls)
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
       const cell = maze[r]![c]!;
@@ -205,13 +271,13 @@ export function plantUndergroundMaze(
     }
   }
 
-  // Ceiling panels — skip shaft over entrance cell (0,0)
+  // Ceiling — holes at entrance (0,0) and exit/goal
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
-      if (c === 0 && r === 0) continue;
+      if ((c === 0 && r === 0) || (c === goalC && r === goalR)) continue;
       const { x, z } = cellCenter(c, r);
       const panel = new THREE.Mesh(
-        new THREE.BoxGeometry(CELL + 0.05, ceilThickness, CELL + 0.05),
+        new THREE.BoxGeometry(CELL + 0.06, ceilThickness, CELL + 0.06),
         stoneDark,
       );
       panel.position.set(x, ceilY, z);
@@ -220,86 +286,95 @@ export function plantUndergroundMaze(
     }
   }
 
-  // Vertical shaft from surface down into cell (0,0)
-  const shaftLocal = cellCenter(0, 0);
-  const shaftHalf = CELL * 0.38;
-  const shaftTop = 1.2;
-  const shaftBottom = ceilingY;
-  const shaftH = shaftTop - shaftBottom;
-  const shaftMidY = (shaftTop + shaftBottom) * 0.5;
+  const shaftHalf = CELL * 0.36;
+  const enterLocal = cellCenter(0, 0);
+  const exitLocal = cellCenter(goalC, goalR);
 
-  // Shaft collar walls (4 sides) from ceiling up to surface
-  const collar = (dx: number, dz: number, w: number, d: number) => {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(w, shaftH, d), stone);
-    m.position.set(shaftLocal.x + dx, shaftMidY, shaftLocal.z + dz);
-    m.castShadow = true;
-    m.receiveShadow = true;
-    root.add(m);
-  };
-  collar(0, -shaftHalf - WALL_T * 0.5, shaftHalf * 2 + WALL_T * 2, WALL_T);
-  collar(0, shaftHalf + WALL_T * 0.5, shaftHalf * 2 + WALL_T * 2, WALL_T);
-  collar(-shaftHalf - WALL_T * 0.5, 0, WALL_T, shaftHalf * 2);
-  collar(shaftHalf + WALL_T * 0.5, 0, WALL_T, shaftHalf * 2);
-
-  // Surface stone ring / hatch
-  const rim = new THREE.Mesh(
-    new THREE.BoxGeometry(shaftHalf * 2 + 2.2, 0.45, shaftHalf * 2 + 2.2),
-    stoneDark,
-  );
-  rim.position.set(shaftLocal.x, 0.22, shaftLocal.z);
-  rim.receiveShadow = true;
-  root.add(rim);
-  // Hollow the rim visually with a darker pit lip
-  const pit = new THREE.Mesh(
-    new THREE.BoxGeometry(shaftHalf * 2, 0.2, shaftHalf * 2),
+  buildShaft(
+    root,
+    enterLocal.x,
+    enterLocal.z,
+    shaftHalf,
+    WALL_T,
+    ceilingY,
+    stone,
     floorMat,
+    0x4a4540,
   );
-  pit.position.set(shaftLocal.x, 0.05, shaftLocal.z);
-  root.add(pit);
+  buildShaft(
+    root,
+    exitLocal.x,
+    exitLocal.z,
+    shaftHalf,
+    WALL_T,
+    ceilingY,
+    stone,
+    floorMat,
+    0x8a6a20,
+  );
 
-  // Torches along a few corridors
+  // Goal chamber marker — glowing pedestal (the ending)
+  const goalPedestal = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.9, 1.4), goalMat);
+  goalPedestal.position.set(exitLocal.x, floorY + 0.55, exitLocal.z);
+  root.add(goalPedestal);
+  const goalOrb = new THREE.Mesh(new THREE.SphereGeometry(0.45, 12, 10), goalMat);
+  goalOrb.position.set(exitLocal.x, floorY + 1.45, exitLocal.z);
+  root.add(goalOrb);
+  const goalLight = new THREE.PointLight(0xffc040, 55, 28, 1.6);
+  goalLight.position.set(exitLocal.x, floorY + 2.4, exitLocal.z);
+  root.add(goalLight);
+
+  // Torches every other cell — enough fill for a big maze
   const torchAt = (c: number, r: number) => {
     const { x, z } = cellCenter(c, r);
-    const flame = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.35, 0.18), torchMat);
-    flame.position.set(x, floorY + 2.1, z);
+    const flame = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.4, 0.2), torchMat);
+    flame.position.set(x, floorY + 2.25, z);
     root.add(flame);
-    const light = new THREE.PointLight(0xff9a40, 1.6, 14, 2);
-    light.position.set(x, floorY + 2.2, z);
+    const light = new THREE.PointLight(0xff9a40, 38, 18, 1.7);
+    light.position.set(x, floorY + 2.35, z);
     root.add(light);
   };
+  for (let r = 0; r < ROWS; r += 2) {
+    for (let c = 0; c < COLS; c += 2) {
+      torchAt(c, r);
+    }
+  }
   torchAt(0, 0);
-  torchAt(3, 2);
-  torchAt(6, 6);
-  torchAt(2, 5);
-  torchAt(5, 1);
+  torchAt(goalC, goalR);
 
   group.add(root);
 
-  const worldShaft = {
-    minX: root.position.x + shaftLocal.x - shaftHalf,
-    maxX: root.position.x + shaftLocal.x + shaftHalf,
-    minZ: root.position.z + shaftLocal.z - shaftHalf,
-    maxZ: root.position.z + shaftLocal.z + shaftHalf,
-  };
+  const worldShaft = (lx: number, lz: number) => ({
+    minX: root.position.x + lx - shaftHalf,
+    maxX: root.position.x + lx + shaftHalf,
+    minZ: root.position.z + lz - shaftHalf,
+    maxZ: root.position.z + lz + shaftHalf,
+  });
 
-  const pad = 0.8;
+  const pad = 1.0;
   const data: UndergroundMaze = {
     bounds: {
       minX: root.position.x - pad,
       maxX: root.position.x + totalW + pad,
       minY: floorY - 0.5,
-      maxY: 0.85,
+      maxY: 0.95,
       minZ: root.position.z - pad,
       maxZ: root.position.z + totalD + pad,
     },
     floorY,
     ceilingY,
-    shaft: worldShaft,
+    shaft: worldShaft(enterLocal.x, enterLocal.z),
+    exitShaft: worldShaft(exitLocal.x, exitLocal.z),
+    goal: {
+      x: root.position.x + exitLocal.x,
+      z: root.position.z + exitLocal.z,
+      radius: CELL * 0.55,
+    },
     walls,
     spawn: {
-      x: root.position.x + shaftLocal.x,
-      y: floorY + 0.95,
-      z: root.position.z + shaftLocal.z,
+      x: root.position.x + enterLocal.x,
+      y: floorY + 0.05,
+      z: root.position.z + enterLocal.z,
     },
   };
 
@@ -318,8 +393,17 @@ export function pointInMazeBounds(
 }
 
 export function pointInShaft(maze: UndergroundMaze, x: number, z: number): boolean {
-  const s = maze.shaft;
-  return x >= s.minX && x <= s.maxX && z >= s.minZ && z <= s.maxZ;
+  const shafts = [maze.shaft, maze.exitShaft];
+  for (const s of shafts) {
+    if (x >= s.minX && x <= s.maxX && z >= s.minZ && z <= s.maxZ) return true;
+  }
+  return false;
+}
+
+export function pointInGoal(maze: UndergroundMaze, x: number, z: number): boolean {
+  const dx = x - maze.goal.x;
+  const dz = z - maze.goal.z;
+  return dx * dx + dz * dz <= maze.goal.radius * maze.goal.radius;
 }
 
 /** Resolve horizontal slide against maze wall AABBs. */
