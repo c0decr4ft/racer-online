@@ -10,6 +10,11 @@ import {
   BATTLE_PICKUP_RADIUS,
   BATTLE_PICKUP_POSE_SLACK,
 } from "../shared/battleCubes.mjs";
+import {
+  planDualPaySurplusRefund,
+  DUAL_PAY_SURPLUS_REFUND_KIND,
+  isTipSweepablePayout,
+} from "./dualPayBuyIn.mjs";
 import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, copyFileSync } from "node:fs";
 import { dirname, join, extname, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -441,6 +446,8 @@ async function sweepPendingTipTokens() {
   let swept = 0;
   for (const r of list) {
     if (!r || r.mock || r.collected || r.claimedAt || !r.tipToken || !(Number(r.tipSats) > 0)) continue;
+    // Player buy-in refund custody must never be burned into the tip wallet.
+    if (!isTipSweepablePayout(r)) continue;
     try {
       const net = await payments.receiveTipToken(r.tipToken, Number(r.tipSats));
       r.collected = true;
@@ -2778,6 +2785,134 @@ function markBuyInPaid(room, clientId, netSats) {
   return true;
 }
 
+/**
+ * Second payment path landed after the seat was already credited (or the payer
+ * left). Pull those sats back out of the pot so they cannot pad a later claim.
+ *
+ * @param {Room} room
+ * @param {number} netSats
+ * @param {{ clientId?: string, player?: string, ws?: import('ws').WebSocket | null }} [meta]
+ * @returns {Promise<{ token: string, refundSats: number } | null>}
+ */
+async function refundDualPaySurplusDeposit(room, netSats, meta = {}) {
+  const plan = planDualPaySurplusRefund({ credited: false, netSats });
+  if (!plan.refund || !room?.potId) return null;
+  const wanted = plan.refundSats;
+  try {
+    const perSendFee = Math.max(0, await payments.sendFeeSats(room.potId).catch(() => 0));
+    const bal = await Promise.resolve()
+      .then(() => payments.potBalanceSats?.(room.potId))
+      .then((v) => (Number.isFinite(v) ? v : 0))
+      .catch(() => 0);
+    const refundSats = Math.max(0, Math.min(wanted, bal - perSendFee));
+    if (refundSats <= 0) {
+      potLog(room, "error", `dual-pay surplus refund failed: pot empty (wanted ${wanted}, bal ${bal})`);
+      appendActivity({
+        type: "payment",
+        kind: "payment-failed",
+        detail: `Dual-pay surplus stuck in pot · ${room.name} · ${wanted} sats (balance ${bal})`,
+        level: "error",
+        ok: false,
+        room: room.name,
+        player: meta.player,
+      });
+      return null;
+    }
+    const { token } = await payments.sendToken(refundSats, {
+      includeFees: true,
+      potId: room.potId,
+    });
+    recordPayout({
+      room: room.name,
+      potId: room.potId,
+      winnerId: meta.clientId || "dual-pay",
+      winnerPubkey: null,
+      potSats: refundSats,
+      winnerSats: 0,
+      tipSats: refundSats,
+      tipPercent: 100,
+      feeSats: Math.max(0, wanted - refundSats),
+      collected: false,
+      collectedAt: null,
+      tipToken: token,
+      mock: payments.mock,
+      kind: DUAL_PAY_SURPLUS_REFUND_KIND,
+    });
+    const delivered = meta.ws
+      ? send(meta.ws, {
+          t: "buyInRefund",
+          ok: true,
+          token,
+          sats: refundSats,
+          mock: payments.mock,
+          dualPay: true,
+        })
+      : false;
+    potLog(
+      room,
+      delivered ? "info" : "warn",
+      `dual-pay surplus refund · ${meta.player || meta.clientId || "payer"} · ${refundSats} sats${delivered ? "" : " (custodied)"}`,
+    );
+    console.log(
+      `[event] ${room.name} dual-pay surplus refund ${refundSats} sats` +
+        (delivered ? "" : " — custodied in payouts"),
+    );
+    if (!delivered) {
+      console.error(
+        `[event] EMERGENCY dual-pay surplus token for ${meta.player || meta.clientId || "payer"} — redeem once:`,
+        token,
+      );
+      appendActivity({
+        type: "payment",
+        kind: "payment-failed",
+        detail: `Dual-pay surplus refund custodied · ${room.name} · ${refundSats} sats — check payouts / server log`,
+        level: "error",
+        ok: false,
+        room: room.name,
+        player: meta.player,
+      });
+    }
+    return { token, refundSats };
+  } catch (err) {
+    potLog(
+      room,
+      "error",
+      `dual-pay surplus refund failed: ${String(err?.message || err).slice(0, 160)}`,
+    );
+    appendActivity({
+      type: "payment",
+      kind: "payment-failed",
+      detail: `Dual-pay surplus refund failed · ${room.name}: ${String(err?.message || err).slice(0, 140)}`,
+      level: "error",
+      ok: false,
+      room: room.name,
+      player: meta.player,
+    });
+    return null;
+  }
+}
+
+/**
+ * Credit a live unpaid buy-in, or refund the deposit when the seat was already
+ * paid (dual Cashu+LN / double paste) or the payer is gone.
+ * @param {Room} room
+ * @param {string} clientId
+ * @param {number} netSats
+ * @param {{ ws?: import('ws').WebSocket | null }} [opts]
+ */
+async function creditBuyInOrRefundSurplus(room, clientId, netSats, opts = {}) {
+  if (markBuyInPaid(room, clientId, netSats)) {
+    return { credited: true, refund: null };
+  }
+  const client = room.clients?.get(clientId);
+  const refund = await refundDualPaySurplusDeposit(room, netSats, {
+    clientId,
+    player: client?.name,
+    ws: opts.ws || client?.ws || null,
+  });
+  return { credited: false, refund };
+}
+
 /** Find (room, clientId) for a payment-request id across event rooms. */
 function findBuyInByHash(paymentHash) {
   for (const room of rooms.values()) {
@@ -3110,15 +3245,41 @@ const httpServer = createServer(async (req, res) => {
       const netSats = Array.isArray(fresh) && fresh.length
         ? fresh.reduce((a, p) => a + Number(p.amount), 0)
         : found.room.buyInSats;
-      markBuyInPaid(found.room, found.clientId, netSats);
+      const outcome = await creditBuyInOrRefundSurplus(found.room, found.clientId, netSats);
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true }));
+      res.end(
+        JSON.stringify(
+          outcome.credited
+            ? { ok: true }
+            : {
+                ok: true,
+                refunded: true,
+                token: outcome.refund?.token || undefined,
+                sats: outcome.refund?.refundSats || 0,
+              },
+        ),
+      );
     } catch (err) {
       const buyIn = found?.clientId ? found.room.buyIns.get(found.clientId) : null;
       if (found?.room && buyIn && payments.alreadyReceived?.(buyIn.paymentHash, found.room.potId)) {
-        markBuyInPaid(found.room, found.clientId, found.room.buyInSats);
+        const outcome = await creditBuyInOrRefundSurplus(
+          found.room,
+          found.clientId,
+          found.room.buyInSats,
+        );
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: true }));
+        res.end(
+          JSON.stringify(
+            outcome.credited
+              ? { ok: true }
+              : {
+                  ok: true,
+                  refunded: true,
+                  token: outcome.refund?.token || undefined,
+                  sats: outcome.refund?.refundSats || 0,
+                },
+          ),
+        );
         return;
       }
       if (found?.room) {
@@ -3169,7 +3330,13 @@ const httpServer = createServer(async (req, res) => {
         const retryAt = Math.round(Number(data.retryAt));
         const list = loadPayouts();
         const rec = list.find(
-          (r) => r && Number(r.at) === retryAt && !r.collected && Number(r.tipSats) > 0 && !r.mock,
+          (r) =>
+            r &&
+            Number(r.at) === retryAt &&
+            !r.collected &&
+            Number(r.tipSats) > 0 &&
+            !r.mock &&
+            isTipSweepablePayout(r),
         );
         if (!rec) {
           res.writeHead(404, { "Content-Type": "application/json" });
@@ -4089,6 +4256,13 @@ wss.on("connection", (ws) => {
       if (!room.isEvent || room.phase !== "lobby" || payments.mock) return;
       const buyIn = room.buyIns.get(client.id);
       if (!buyIn || buyIn.paidAt) return;
+      // Serialize paste vs a concurrent Lightning settle / second paste so we
+      // never burn two tokens into the pot for one seat without a surplus path.
+      if (buyIn.receiving) return;
+      buyIn.receiving = true;
+      const payerId = client.id;
+      const payerName = client.name;
+      const payerWs = ws;
       void (async () => {
         try {
           const fresh = await payments.receiveToken({
@@ -4096,10 +4270,20 @@ wss.on("connection", (ws) => {
             token: String(msg.token || ""),
           });
           await depositProofs(fresh, room.potId);
-          markBuyInPaid(room, client.id, fresh.reduce((a, p) => a + Number(p.amount), 0));
+          const netSats = fresh.reduce((a, p) => a + Number(p.amount), 0);
+          const outcome = await creditBuyInOrRefundSurplus(room, payerId, netSats, { ws: payerWs });
+          if (!outcome.credited && !outcome.refund) {
+            send(payerWs, {
+              t: "notice",
+              text: "extra payment landed in the pot — contact host if you were not refunded",
+            });
+          }
         } catch (err) {
-          potLog(room, "error", `pasted token rejected for ${client.name}: ${String(err?.message || err).slice(0, 160)}`);
-          send(ws, { t: "notice", text: `token rejected — ${String(err?.message || err).slice(0, 100)}` });
+          potLog(room, "error", `pasted token rejected for ${payerName}: ${String(err?.message || err).slice(0, 160)}`);
+          send(payerWs, { t: "notice", text: `token rejected — ${String(err?.message || err).slice(0, 100)}` });
+        } finally {
+          const live = room.buyIns.get(payerId);
+          if (live) live.receiving = false;
         }
       })();
       return;
@@ -4435,11 +4619,32 @@ setInterval(() => {
   for (const room of rooms.values()) {
     if (!room.isEvent || room.phase !== "lobby") continue;
     for (const [id, buyIn] of room.buyIns) {
-      if (buyIn.paidAt > 0) continue;
-      void payments.settleIfPaid(buyIn.paymentHash).then((settled) => {
+      // Still redeem PAID Lightning quotes after a Cashu paste already credited
+      // the seat — otherwise sats sit at the mint. Surplus is refunded below.
+      if (buyIn.receiving) continue;
+      if (buyIn.paidAt > 0 && buyIn.lnSurplusRefunded) continue;
+      void payments.settleIfPaid(buyIn.paymentHash).then(async (settled) => {
         if (!settled || rooms.get(room.name) !== room) return;
-        if (buyIn.paidAt > 0) return;
-        markBuyInPaid(room, id, settled.netSats);
+        const netSats = settled.netSats;
+        const client = room.clients.get(id);
+        // Seat already paid (paste / NUT-18 won) — LN mint must not pad the pot.
+        if (buyIn.paidAt > 0) {
+          if (buyIn.lnSurplusRefunded) return;
+          buyIn.lnSurplusRefunded = true;
+          const refund = await refundDualPaySurplusDeposit(room, netSats, {
+            clientId: id,
+            player: client?.name,
+            ws: client?.ws || null,
+          });
+          if (!refund) {
+            potLog(room, "error", `Lightning dual-pay surplus with no refund path · ${netSats} sats`);
+          }
+          return;
+        }
+        const outcome = await creditBuyInOrRefundSurplus(room, id, netSats);
+        if (!outcome.credited && !outcome.refund) {
+          potLog(room, "error", `Lightning buy-in surplus with no refund path · ${netSats} sats`);
+        }
       }).catch((err) => {
         console.warn("[event] settleIfPaid failed:", err?.message || err);
         potLog(room, "warn", `Lightning settle poll failed: ${String(err?.message || err).slice(0, 160)}`);
