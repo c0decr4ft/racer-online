@@ -15,7 +15,8 @@
     "start": "node server/index.mjs",
     "start:prod": "node server/index.mjs",
     "start:local": "npm run dev:online",
-    "test:full": "node scripts/full-suite.mjs"
+    "test:full": "node scripts/full-suite.mjs",
+    "test:room-teardown": "RACER_PAYMENTS_MOCK=1 node scripts/verify-room-teardown.mjs"
   },
   "devDependencies": {
     "@types/qrcode": "^1.5.6",

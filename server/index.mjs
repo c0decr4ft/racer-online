@@ -2162,7 +2162,9 @@ async function removeClientFromRoom(room, client, ws) {
       playerId: client.id,
     });
     closeSpectators(room, "room closed");
-    rooms.delete(client.room);
+    // Refund / leftover awaits above span real mint I/O — somebody may have
+    // recreated this name in the meantime. Only ever drop OUR room.
+    if (rooms.get(client.room) === room) rooms.delete(client.room);
   } else {
     if (room.hostId === client.id) {
       room.hostId = room.clients.keys().next().value;
@@ -2814,7 +2816,10 @@ function admitClient(ws, msg, mode) {
       }
       return null;
     }
-    // Replace empty/stale leftover rooms so recreate always works
+    // Replace empty/stale leftover rooms so recreate always works. The old room
+    // may still be finishing a refund — cut its spectators loose here, its own
+    // teardown no longer owns this name.
+    if (room) closeSpectators(room, "room closed");
     room = {
       name: roomName,
       password,
