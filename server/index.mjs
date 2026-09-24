@@ -4503,6 +4503,15 @@ httpServer.listen(PORT, HOST, () => {
   // Soft restore after ephemeral-disk redeploys (merge with existing file).
   void hydrateFeedbackFromBlob();
   void hydrateFriendRequestsFromBlob();
+  // Sweep uncollected tip bearer tokens from payouts.json into the tip wallet
+  // before history pruning can age them out (DEV tips dashboard is not required).
+  void sweepPendingTipTokens()
+    .then((n) => {
+      if (n > 0) console.log(`[dev] boot tip sweep — collected ${n} pending tip token(s)`);
+    })
+    .catch((err) => {
+      console.warn("[dev] boot tip sweep failed:", err?.message || err);
+    });
   // Rebuild the board from the relays on boot (redeploys wipe the disk cache),
   // then keep merging every 15 min so instances converge.
   void syncBoardFromRelays();
