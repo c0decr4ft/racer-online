@@ -16,7 +16,15 @@
  * straight into the tip wallet so a bearer token never sits around to be
  * double-spent.
  */
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  readdirSync,
+  renameSync,
+  unlinkSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -928,39 +936,95 @@ export async function depositProofs(freshProofs, potId) {
   await persistPotProofs(freshProofs, "", potId);
 }
 
+/**
+ * Atomic replace so a crash / ENOSPC mid-write cannot leave truncated JSON that
+ * later recordPayout/savePayouts treat as [] and permanently wipe tipToken rows.
+ */
+function atomicWriteFileSync(path, contents) {
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tmp, contents);
+  try {
+    renameSync(tmp, path);
+  } catch (err) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* ignore */
+    }
+    throw err;
+  }
+}
+
+/**
+ * Read payouts.json. Missing file → empty list. Existing but unreadable /
+ * non-array → corrupt (callers must not "heal" by writing []).
+ */
+function readPayoutsFile() {
+  if (!existsSync(PAYOUTS_PATH)) return { ok: true, list: [], missing: true };
+  try {
+    const list = JSON.parse(readFileSync(PAYOUTS_PATH, "utf8"));
+    if (!Array.isArray(list)) return { ok: false, corrupt: true };
+    return { ok: true, list };
+  } catch {
+    return { ok: false, corrupt: true };
+  }
+}
+
 /** Append a payout attempt to the audit log (gitignored). */
 export function recordPayout(record) {
-  let list = [];
-  try {
-    if (existsSync(PAYOUTS_PATH)) list = JSON.parse(readFileSync(PAYOUTS_PATH, "utf8"));
-  } catch {
-    list = [];
+  const read = readPayoutsFile();
+  // File exists but won't parse — never heal with [] (that drops tipToken custody).
+  if (!read.ok) {
+    const detail =
+      "payouts.json corrupt — refusing to append (would wipe uncollected tipToken custody)";
+    console.error(`[payouts] ${detail}`);
+    appendActivity({ type: "payment", kind: "cashu-persist", detail, level: "error", ok: false });
+    return;
   }
-  if (!Array.isArray(list)) list = [];
+  const list = read.list;
   list.push({ at: Date.now(), ...record });
   try {
-    writeFileSync(PAYOUTS_PATH, JSON.stringify(list.slice(-200), null, 2));
-  } catch {
-    /* ignore */
+    atomicWriteFileSync(PAYOUTS_PATH, JSON.stringify(list.slice(-200), null, 2));
+  } catch (err) {
+    const detail = `payouts.json persist failed — tip custody at risk: ${String(err?.message || err).slice(0, 160)}`;
+    console.error(`[payouts] ${detail}`);
+    appendActivity({ type: "payment", kind: "cashu-persist", detail, level: "error", ok: false });
   }
 }
 
 /** Read the payout audit log (tips live here). */
 export function loadPayouts() {
-  try {
-    if (!existsSync(PAYOUTS_PATH)) return [];
-    const list = JSON.parse(readFileSync(PAYOUTS_PATH, "utf8"));
-    return Array.isArray(list) ? list : [];
-  } catch {
+  const read = readPayoutsFile();
+  if (!read.ok) {
+    console.error(
+      "[payouts] payouts.json corrupt — returning empty view without destroying file",
+    );
     return [];
   }
+  return read.list;
 }
 
 /** Persist the payout audit log (e.g. after marking tips collected). */
 export function savePayouts(list) {
+  // Caller may have loaded [] after a corrupt read — never overwrite custody bytes.
+  if (existsSync(PAYOUTS_PATH)) {
+    const read = readPayoutsFile();
+    if (!read.ok) {
+      const detail =
+        "payouts.json corrupt — refusing savePayouts overwrite (tipToken custody intact on disk)";
+      console.error(`[payouts] ${detail}`);
+      appendActivity({ type: "payment", kind: "cashu-persist", detail, level: "error", ok: false });
+      return;
+    }
+  }
   try {
-    writeFileSync(PAYOUTS_PATH, JSON.stringify((Array.isArray(list) ? list : []).slice(-200), null, 2));
-  } catch {
-    /* ignore */
+    atomicWriteFileSync(
+      PAYOUTS_PATH,
+      JSON.stringify((Array.isArray(list) ? list : []).slice(-200), null, 2),
+    );
+  } catch (err) {
+    const detail = `payouts.json persist failed — tip custody at risk: ${String(err?.message || err).slice(0, 160)}`;
+    console.error(`[payouts] ${detail}`);
+    appendActivity({ type: "payment", kind: "cashu-persist", detail, level: "error", ok: false });
   }
 }
