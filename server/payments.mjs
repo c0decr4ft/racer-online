@@ -16,7 +16,7 @@
  * straight into the tip wallet so a bearer token never sits around to be
  * double-spent.
  */
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -185,10 +185,29 @@ function loadStore(path) {
   };
 }
 
+/**
+ * Atomic replace so a crash / ENOSPC mid-write cannot leave a truncated JSON
+ * that later load/append paths treat as empty and permanently wipe.
+ */
+function atomicWriteFileSync(path, contents) {
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tmp, contents);
+  try {
+    renameSync(tmp, path);
+  } catch (err) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* ignore */
+    }
+    throw err;
+  }
+}
+
 function saveStore(path, store) {
   try {
     // v4 proofs use bigint amounts — JSON can't serialize them without a replacer
-    writeFileSync(
+    atomicWriteFileSync(
       path,
       JSON.stringify(store, (key, v) => (typeof v === "bigint" ? v.toString() : v), 2),
     );
@@ -201,6 +220,11 @@ function saveStore(path, store) {
   }
 }
 
+/** True when the wallet file exists but cannot be parsed as a proof store. */
+function storeFileCorrupt(path) {
+  return existsSync(path) && peekStore(path) == null;
+}
+
 function proofsSum(proofs) {
   return (proofs || []).reduce((a, p) => a + Number(p.amount), 0);
 }
@@ -210,6 +234,11 @@ async function persistPotProofs(freshProofs, paymentHash, potId) {
   if (PAYMENTS_MOCK || !Array.isArray(freshProofs) || !freshProofs.length) return;
   const path = potFile(potId);
   await withStoreLock(path, async () => {
+    // Unreadable existing file → refuse. loadStore() would return emptyStore and
+    // the following save would permanently replace recoverable custody bytes.
+    if (storeFileCorrupt(path)) {
+      throw new Error("pot file corrupt — refusing to deposit over unreadable custody");
+    }
     const store = loadStore(path);
     const id = String(paymentHash || "");
     if (id && (store.receivedIds || []).includes(id)) return;
@@ -374,6 +403,19 @@ async function appendPotLog(potId, entry, meta = {}) {
   const path = potFile(id);
   await withStoreLock(path, async () => {
     const peeked = peekStore(path);
+    // File exists but won't parse — never "heal" by writing emptyStore (that
+    // permanently destroys any remaining recoverable pot bytes).
+    if (!peeked && existsSync(path)) {
+      console.error(`[cashu] refusing pot log write — unreadable custody file: ${path}`);
+      appendActivity({
+        type: "payment",
+        kind: "cashu-persist",
+        detail: `Pot log skipped — unreadable pot file ${id}`,
+        level: "error",
+        ok: false,
+      });
+      return;
+    }
     const store = peeked
       ? {
           mintUrl: peeked.mintUrl || CASHU_MINT_URL,
@@ -786,6 +828,9 @@ async function cashuReceiveToken({ amountSats, token }) {
 async function sendTokenFromStore(path, amountSats, { includeFees = false } = {}) {
   const wallet = await getWallet();
   return withStoreLock(path, async () => {
+    if (storeFileCorrupt(path)) {
+      throw new Error("wallet file corrupt — refusing to send over unreadable custody");
+    }
     const store = loadStore(path);
     const total = proofsSum(store.proofs);
     if (total < amountSats) throw new Error(`wallet short (${total} < ${amountSats} sats)`);
@@ -817,6 +862,9 @@ async function cashuCollectTip(amountSats, potId) {
   try {
     const fresh = await cashuReceiveToken({ amountSats: 1, token });
     await withStoreLock(TIPS_PATH, async () => {
+      if (storeFileCorrupt(TIPS_PATH)) {
+        throw new Error("tip wallet corrupt — refusing to deposit over unreadable custody");
+      }
       const store = loadTipStore();
       store.proofs.push(...fresh);
       saveTipStore(store);
@@ -842,6 +890,9 @@ async function cashuCollectTip(amountSats, potId) {
 async function cashuReceiveTipToken(token) {
   const fresh = await cashuReceiveToken({ amountSats: 1, token: String(token || "").trim() });
   await withStoreLock(TIPS_PATH, async () => {
+    if (storeFileCorrupt(TIPS_PATH)) {
+      throw new Error("tip wallet corrupt — refusing to deposit over unreadable custody");
+    }
     const store = loadTipStore();
     store.proofs.push(...fresh);
     saveTipStore(store);
@@ -853,6 +904,9 @@ async function cashuReceiveTipToken(token) {
 async function cashuWithdrawTip(amountSats) {
   const store = loadTipStore();
   if (store.pendingWithdraw?.token) return store.pendingWithdraw;
+  if (storeFileCorrupt(TIPS_PATH)) {
+    throw new Error("tip wallet corrupt — refusing to withdraw over unreadable custody");
+  }
   const amt = Math.max(0, Math.round(Number(amountSats) || 0));
   if (amt <= 0) throw new Error("nothing to withdraw");
   const { token } = await sendTokenFromStore(TIPS_PATH, amt, { includeFees: true });
