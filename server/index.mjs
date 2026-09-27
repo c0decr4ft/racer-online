@@ -60,6 +60,14 @@ const STATE_BIN_TYPE = 1;
 const MAP_VOTE_MS = 20_000;
 /** After finish, unclaimed battle shares → developer tip leftover. */
 const BATTLE_CLAIM_ABANDON_MS = 10 * 60_000;
+/**
+ * Client countdown is 3→2→1→GO at 1s/step (`src/game.ts` COUNTDOWN_STEPS).
+ * Event Mode must not accept `finish` until that hold elapses — otherwise any
+ * paid racer can crown themselves at GO and claimPot the pot.
+ */
+const RACE_COUNTDOWN_MS = 3_000;
+/** Must match `src/game.ts` TOTAL_LAPS — finish only after lap uplink past this. */
+const TOTAL_LAPS = 3;
 const MAX_PLAYERS = 6;
 const PLAYER_COLORS = [0xe4eaf2, 0xe23b2e, 0x2a66f0, 0xf0c020, 0x1dbf6a, 0xb44dff, 0xff6b9d, 0x00d4ff];
 const DIR = dirname(fileURLToPath(import.meta.url));
@@ -4056,6 +4064,15 @@ wss.on("connection", (ws) => {
     if (msg.t === "finish") {
       if (room.phase !== "racing" || room.winnerId) return;
       if (room.wreckedIds?.has(client.id)) return;
+      // Event Mode (real sats): refuse client-trusted early finishes. A bare
+      // `{t:"finish"}` at GO used to set winnerId and let claimPot drain the
+      // WTA race pot (or lock Battle shares) with zero track progress.
+      if (room.isEvent && (room.potSats > 0 || room.eventMode === "battle")) {
+        const startedAt = room.raceStartedAt || 0;
+        if (!startedAt || Date.now() < startedAt + RACE_COUNTDOWN_MS) return;
+        // Honest clients stream pose.lap; finish fires only once lap > TOTAL_LAPS.
+        if ((client.pose.lap | 0) <= TOTAL_LAPS) return;
+      }
       const timeMs = Math.max(1_000, Math.min(3_600_000, Math.round(Number(msg.timeMs) || 0)));
       declareRaceWinner(room, client, timeMs);
       return;

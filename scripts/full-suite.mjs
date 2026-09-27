@@ -428,7 +428,11 @@ async function main() {
     const [evS, evGS] = await Promise.all([evStartP, evGuestStartP]);
     assert("event:start-after-paid", !!evS && !!evGS, "");
 
-    // Host wins → raceResult carries the pot (2 racers × 100 sats)
+    // Host wins → raceResult carries the pot (2 racers × 100 sats).
+    // Event Mode rejects finish until countdown elapses and pose.lap > 3.
+    await new Promise((r) => setTimeout(r, 3_100));
+    evHost.ws.send(JSON.stringify({ t: "pose", x: 0, z: 0, h: 0, s: 20, g: "1", lap: 4 }));
+    await new Promise((r) => setTimeout(r, 80));
     const evResultP = waitForWsEvent(evHost.ws, "raceResult", 4000);
     evHost.ws.send(JSON.stringify({ t: "finish", timeMs: 65432, bestLapMs: 21000 }));
     const evResult = await evResultP;
