@@ -68,6 +68,12 @@ const BATTLE_CLAIM_ABANDON_MS = 10 * 60_000;
 const RACE_COUNTDOWN_MS = 3_000;
 /** Must match `src/game.ts` TOTAL_LAPS — finish only after lap uplink past this. */
 const TOTAL_LAPS = 3;
+/**
+ * Minimum dwell between successive Event Mode lap advances (after GO).
+ * Blocks `pose.lap` jumps / instant 1→4 spoofs; ~half a short-track lap at
+ * top speed so legitimate racers are not false-rejected.
+ */
+const EVENT_MIN_LAP_MS = 6_000;
 const MAX_PLAYERS = 6;
 const PLAYER_COLORS = [0xe4eaf2, 0xe23b2e, 0x2a66f0, 0xf0c020, 0x1dbf6a, 0xb44dff, 0xff6b9d, 0x00d4ff];
 const DIR = dirname(fileURLToPath(import.meta.url));
@@ -269,7 +275,7 @@ function normalizeSessionId(raw) {
 }
 
 /** @typedef {{ id: string, name: string, color: number, accent: number, kind: string, pubkey?: string, x: number, z: number, h: number, s: number, g: string, lap: number }} Pose */
-/** @typedef {{ id: string, name: string, color: number, room: string, ws: import('ws').WebSocket, pose: Pose, lastPoseAt: number }} Client */
+/** @typedef {{ id: string, name: string, color: number, room: string, ws: import('ws').WebSocket, pose: Pose, lastPoseAt: number, lapAdvanceAt?: Record<number, number> }} Client */
 /** @typedef {{ trackId: string, order: number }} TrackVote */
 /** @typedef {{ paymentHash: string, paymentRequest: string, bolt11?: string, paidAt: number, netSats?: number }} BuyIn */
 /** @typedef {{ at: number, level: 'info' | 'warn' | 'error', msg: string }} PotLogEntry */
@@ -1866,6 +1872,34 @@ function wireRaceMode(room) {
   return room.eventMode === "battle" ? "battle" : "race";
 }
 
+/** Event Mode rooms that put real sats at stake on finish. */
+function eventFinishNeedsProgress(room) {
+  return !!(room?.isEvent && (room.potSats > 0 || room.eventMode === "battle"));
+}
+
+/**
+ * Event Mode finish gate: countdown hold + stepwise lap advances with dwell.
+ * Pose `lap` alone is client-trusted; requiring +1 steps timed after GO stops
+ * instant `lap:4` spoofs from crowning a pot thief.
+ * @param {Room} room
+ * @param {Client} client
+ */
+function eventFinishProgressOk(room, client) {
+  const startedAt = room.raceStartedAt || 0;
+  if (!startedAt) return false;
+  const goAt = startedAt + RACE_COUNTDOWN_MS;
+  if (Date.now() < goAt) return false;
+  if ((client.pose.lap | 0) <= TOTAL_LAPS) return false;
+  const advances = client.lapAdvanceAt || {};
+  let prevAt = goAt;
+  for (let lap = 2; lap <= TOTAL_LAPS + 1; lap++) {
+    const at = advances[lap];
+    if (!Number.isFinite(at) || at < prevAt + EVENT_MIN_LAP_MS) return false;
+    prevAt = at;
+  }
+  return true;
+}
+
 /**
  * Shared race-end path for the finish line.
  * @param {Room} room
@@ -2249,6 +2283,7 @@ function runFieldReset(room) {
     c.pose.s = 0;
     c.pose.lap = 1;
     c.pose.g = "1";
+    c.lapAdvanceAt = {};
   }
   broadcast(room, { t: "fieldReset", reason: "allWrecked" });
   console.log(`[wreck] ${room.name} field reset`);
@@ -3925,6 +3960,11 @@ wss.on("connection", (ws) => {
       room.voteEndsAt = 0;
       room.raceStartedAt = Date.now();
       clearWrecks(room);
+      // Fresh lap-progress ledger for Event Mode finish gates.
+      for (const c of room.clients.values()) {
+        c.lapAdvanceAt = {};
+        c.pose.lap = 1;
+      }
       room.battleCubes = new Map();
       room.battleEarnings = new Map();
       room.battleClaimable = new Map();
@@ -3989,7 +4029,25 @@ wss.on("connection", (ws) => {
       p.h = h;
       p.s = Math.max(-150, Math.min(150, +msg.s || 0)); // ±540 km/h ceiling
       p.g = String(msg.g || "1").slice(0, 2);
-      p.lap = Math.max(1, Math.min(99, msg.lap | 0));
+      const reportedLap = Math.max(1, Math.min(99, msg.lap | 0));
+      if (eventFinishNeedsProgress(room) && room.phase === "racing") {
+        // Event pots: only accept +1 lap steps and stamp when each advance
+        // first appears after GO — jumps like lap:1→4 are ignored.
+        const prevLap = Math.max(1, p.lap | 0);
+        if (reportedLap === prevLap + 1) {
+          p.lap = reportedLap;
+          const goAt = (room.raceStartedAt || 0) + RACE_COUNTDOWN_MS;
+          if (now >= goAt) {
+            client.lapAdvanceAt ??= {};
+            if (!client.lapAdvanceAt[reportedLap]) client.lapAdvanceAt[reportedLap] = now;
+          }
+        } else if (reportedLap <= prevLap) {
+          p.lap = prevLap;
+        }
+        // else: jump > +1 ignored (keep prevLap)
+      } else {
+        p.lap = reportedLap;
+      }
       // Ignore client kind — room class is locked by the host at create.
       p.kind = room.kind;
       if (Number.isFinite(Number(msg.color)) && Number(msg.color) > 0) {
@@ -4065,14 +4123,9 @@ wss.on("connection", (ws) => {
       if (room.phase !== "racing" || room.winnerId) return;
       if (room.wreckedIds?.has(client.id)) return;
       // Event Mode (real sats): refuse client-trusted early finishes. A bare
-      // `{t:"finish"}` at GO used to set winnerId and let claimPot drain the
-      // WTA race pot (or lock Battle shares) with zero track progress.
-      if (room.isEvent && (room.potSats > 0 || room.eventMode === "battle")) {
-        const startedAt = room.raceStartedAt || 0;
-        if (!startedAt || Date.now() < startedAt + RACE_COUNTDOWN_MS) return;
-        // Honest clients stream pose.lap; finish fires only once lap > TOTAL_LAPS.
-        if ((client.pose.lap | 0) <= TOTAL_LAPS) return;
-      }
+      // `{t:"finish"}` (or one-shot `lap:4` spoof after countdown) used to set
+      // winnerId and let claimPot drain the WTA race pot.
+      if (eventFinishNeedsProgress(room) && !eventFinishProgressOk(room, client)) return;
       const timeMs = Math.max(1_000, Math.min(3_600_000, Math.round(Number(msg.timeMs) || 0)));
       declareRaceWinner(room, client, timeMs);
       return;

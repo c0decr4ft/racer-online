@@ -1,6 +1,7 @@
 /**
  * Regression: Event Mode must reject client-trusted early finishes so a paid
- * racer cannot crown themselves at GO and claimPot the WTA pot.
+ * racer cannot crown themselves and claimPot the WTA pot — including one-shot
+ * `pose.lap` spoofs after the countdown.
  *
  * Usage: node scripts/verify-event-fake-finish.mjs
  */
@@ -14,6 +15,7 @@ const ROOT = join(DIR, "..");
 const PORT = 8798;
 const BASE = `http://127.0.0.1:${PORT}`;
 const COUNTDOWN_MS = 3_000;
+const MIN_LAP_MS = 6_000;
 
 function assert(cond, msg) {
   if (!cond) throw new Error(msg);
@@ -58,6 +60,10 @@ function openSocket() {
     ws.once("open", () => resolve(ws));
     ws.once("error", reject);
   });
+}
+
+function sendPose(ws, lap) {
+  ws.send(JSON.stringify({ t: "pose", x: lap, z: lap, h: 0, s: 20, g: "1", lap }));
 }
 
 async function main() {
@@ -123,10 +129,8 @@ async function main() {
   const startP = waitFor(host, "start", 4000);
   const guestStartP = waitFor(guest, "start", 4000);
   host.send(JSON.stringify({ t: "start" }));
-  const started = await startP;
-  const guestStarted = await guestStartP;
-  assert(started, "host got start");
-  assert(guestStarted, "guest got start");
+  assert(await startP, "host got start");
+  assert(await guestStartP, "guest got start");
 
   // 1) Finish during countdown — must NOT crown a winner.
   {
@@ -135,25 +139,20 @@ async function main() {
     assert(!(await early), "finish rejected during countdown");
   }
 
-  // 2) After countdown but without completing 3 laps — still reject.
   await new Promise((r) => setTimeout(r, COUNTDOWN_MS + 200));
+
+  // 2) One-shot lap:4 spoof after countdown — still reject (PR130 bypass).
   {
-    host.send(JSON.stringify({ t: "pose", x: 0, z: 0, h: 0, s: 10, g: "1", lap: 2 }));
+    sendPose(host, 4);
     await new Promise((r) => setTimeout(r, 80));
     const early = waitFor(host, "raceResult", 900);
     host.send(JSON.stringify({ t: "finish", timeMs: 5000, bestLapMs: 2000 }));
-    assert(!(await early), "finish rejected before lap > 3");
+    assert(!(await early), "finish rejected for one-shot lap:4 spoof");
   }
 
-  // 3) Completed lap uplink → finish accepted.
+  // 3) Stepwise laps without dwell — still reject.
   {
-    host.send(JSON.stringify({ t: "pose", x: 1, z: 1, h: 0, s: 10, g: "1", lap: 4 }));
-    await new Promise((r) => setTimeout(r, 80));
-    const resultP = waitFor(host, "raceResult", 2000);
-    host.send(JSON.stringify({ t: "finish", timeMs: 65000, bestLapMs: 20000 }));
-    const result = await resultP;
-    assert(result?.winnerId === hostWelcome.id, `expected host win, got ${result?.winnerId}`);
-    assert(result?.event?.potSats > 0, "event pot present on result");
+    // Need a fresh race: leave + recreate would be heavy; instead start a new room.
   }
 
   try {
@@ -163,6 +162,143 @@ async function main() {
   }
   try {
     guest.close();
+  } catch {
+    /* ignore */
+  }
+
+  // Fresh room for stepwise / dwell cases (prior host may have polluted lap state).
+  const room2 = `fake-finish2-${Date.now().toString(36)}`;
+  const host2 = await openSocket();
+  const guest2 = await openSocket();
+  const hw2P = waitFor(host2, "welcome", 4000);
+  host2.send(
+    JSON.stringify({
+      t: "create",
+      name: "Host2",
+      room: room2,
+      password: "pw",
+      maxPlayers: 4,
+      trackId: "forest-loop",
+      kind: "car",
+      color: 0xff0000,
+      accent: 0xffffff,
+      event: { buyInSats: 10, mode: "race" },
+    }),
+  );
+  const hw2 = await hw2P;
+  assert(hw2?.id, "host2 welcome");
+  const gw2P = waitFor(guest2, "welcome", 4000);
+  guest2.send(
+    JSON.stringify({
+      t: "join",
+      name: "Guest2",
+      room: room2,
+      password: "pw",
+      color: 0x00ff00,
+      accent: 0xffffff,
+      event: true,
+    }),
+  );
+  assert((await gw2P)?.id, "guest2 welcome");
+  await new Promise((r) => setTimeout(r, 5_500));
+  const s2 = waitFor(host2, "start", 4000);
+  const gs2 = waitFor(guest2, "start", 4000);
+  host2.send(JSON.stringify({ t: "start" }));
+  assert(await s2, "host2 start");
+  assert(await gs2, "guest2 start");
+  await new Promise((r) => setTimeout(r, COUNTDOWN_MS + 200));
+
+  // Instant stepwise 1→2→3→4 with no dwell — reject.
+  {
+    sendPose(host2, 2);
+    await new Promise((r) => setTimeout(r, 50));
+    sendPose(host2, 3);
+    await new Promise((r) => setTimeout(r, 50));
+    sendPose(host2, 4);
+    await new Promise((r) => setTimeout(r, 50));
+    const early = waitFor(host2, "raceResult", 900);
+    host2.send(JSON.stringify({ t: "finish", timeMs: 8000, bestLapMs: 2000 }));
+    assert(!(await early), "finish rejected for undwelled lap steps");
+  }
+
+  // Dwelled stepwise advances — accept.
+  {
+    // Lap 2 already stamped above without enough dwell from GO; wait out the
+    // remaining dwell from GO for lap 2, then restamp by… actually lap 2 is
+    // already set and won't re-stamp. Need fresh race.
+  }
+
+  try {
+    host2.close();
+  } catch {
+    /* ignore */
+  }
+  try {
+    guest2.close();
+  } catch {
+    /* ignore */
+  }
+
+  const room3 = `fake-finish3-${Date.now().toString(36)}`;
+  const host3 = await openSocket();
+  const guest3 = await openSocket();
+  const hw3P = waitFor(host3, "welcome", 4000);
+  host3.send(
+    JSON.stringify({
+      t: "create",
+      name: "Host3",
+      room: room3,
+      password: "pw",
+      maxPlayers: 4,
+      trackId: "forest-loop",
+      kind: "car",
+      color: 0xff0000,
+      accent: 0xffffff,
+      event: { buyInSats: 10, mode: "race" },
+    }),
+  );
+  const hw3 = await hw3P;
+  assert(hw3?.id, "host3 welcome");
+  const gw3P = waitFor(guest3, "welcome", 4000);
+  guest3.send(
+    JSON.stringify({
+      t: "join",
+      name: "Guest3",
+      room: room3,
+      password: "pw",
+      color: 0x00ff00,
+      accent: 0xffffff,
+      event: true,
+    }),
+  );
+  assert((await gw3P)?.id, "guest3 welcome");
+  await new Promise((r) => setTimeout(r, 5_500));
+  const s3 = waitFor(host3, "start", 4000);
+  const gs3 = waitFor(guest3, "start", 4000);
+  host3.send(JSON.stringify({ t: "start" }));
+  assert(await s3, "host3 start");
+  assert(await gs3, "guest3 start");
+  await new Promise((r) => setTimeout(r, COUNTDOWN_MS + MIN_LAP_MS + 100));
+
+  sendPose(host3, 2);
+  await new Promise((r) => setTimeout(r, MIN_LAP_MS + 100));
+  sendPose(host3, 3);
+  await new Promise((r) => setTimeout(r, MIN_LAP_MS + 100));
+  sendPose(host3, 4);
+  await new Promise((r) => setTimeout(r, 80));
+  const resultP = waitFor(host3, "raceResult", 2000);
+  host3.send(JSON.stringify({ t: "finish", timeMs: 65000, bestLapMs: 20000 }));
+  const result = await resultP;
+  assert(result?.winnerId === hw3.id, `expected host3 win, got ${result?.winnerId}`);
+  assert(result?.event?.potSats > 0, "event pot present on result");
+
+  try {
+    host3.close();
+  } catch {
+    /* ignore */
+  }
+  try {
+    guest3.close();
   } catch {
     /* ignore */
   }

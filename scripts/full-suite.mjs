@@ -429,9 +429,13 @@ async function main() {
     assert("event:start-after-paid", !!evS && !!evGS, "");
 
     // Host wins → raceResult carries the pot (2 racers × 100 sats).
-    // Event Mode rejects finish until countdown elapses and pose.lap > 3.
-    await new Promise((r) => setTimeout(r, 3_100));
-    evHost.ws.send(JSON.stringify({ t: "pose", x: 0, z: 0, h: 0, s: 20, g: "1", lap: 4 }));
+    // Event Mode requires countdown + stepwise lap advances with dwell.
+    await new Promise((r) => setTimeout(r, 3_100 + 6_000));
+    evHost.ws.send(JSON.stringify({ t: "pose", x: 0, z: 0, h: 0, s: 20, g: "1", lap: 2 }));
+    await new Promise((r) => setTimeout(r, 6_100));
+    evHost.ws.send(JSON.stringify({ t: "pose", x: 1, z: 1, h: 0, s: 20, g: "1", lap: 3 }));
+    await new Promise((r) => setTimeout(r, 6_100));
+    evHost.ws.send(JSON.stringify({ t: "pose", x: 2, z: 2, h: 0, s: 20, g: "1", lap: 4 }));
     await new Promise((r) => setTimeout(r, 80));
     const evResultP = waitForWsEvent(evHost.ws, "raceResult", 4000);
     evHost.ws.send(JSON.stringify({ t: "finish", timeMs: 65432, bestLapMs: 21000 }));
