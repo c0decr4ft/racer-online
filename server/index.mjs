@@ -10,6 +10,7 @@ import {
   BATTLE_PICKUP_RADIUS,
   BATTLE_PICKUP_POSE_SLACK,
 } from "../shared/battleCubes.mjs";
+import { hasFiniteTimestamp, tipRowIsCollected, tipRowShouldMarkClaimed } from "./tipPayoutFlags.mjs";
 import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, copyFileSync } from "node:fs";
 import { dirname, join, extname, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -471,11 +472,11 @@ function markCollectedTipsClaimed() {
   const now = Date.now();
   let changed = false;
   for (const r of list) {
-    if (!r || r.mock || r.claimedAt) continue;
-    if (r.collected === true || Number.isFinite(Number(r.collectedAt))) {
-      r.claimedAt = now;
-      changed = true;
-    }
+    // tipRowShouldMarkClaimed rejects collectedAt:null (Number(null)===0 trap)
+    // and any row that still holds tipToken custody for sweep.
+    if (!tipRowShouldMarkClaimed(r)) continue;
+    r.claimedAt = now;
+    changed = true;
   }
   if (changed) savePayouts(list);
 }
@@ -499,9 +500,11 @@ async function devTipsSummary() {
   const list = loadPayouts()
     .filter((r) => r && Number.isFinite(Number(r.tipSats)))
     .map((r) => {
+      // Pending tipToken rows use collectedAt:null — must not count as collected
+      // (Number(null)===0 is finite). claimedAt alone can still mean withdrawn.
       const collected =
-        r.collected === true || Number.isFinite(Number(r.collectedAt)) || Number.isFinite(Number(r.claimedAt));
-      const claimed = Number.isFinite(Number(r.claimedAt)) || (walletEmpty && collected && r.mock !== true);
+        tipRowIsCollected(r) || hasFiniteTimestamp(r.claimedAt);
+      const claimed = hasFiniteTimestamp(r.claimedAt) || (walletEmpty && collected && r.mock !== true);
       return {
         at: Number(r.at) || 0,
         room: String(r.room || ""),
