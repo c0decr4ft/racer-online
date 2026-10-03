@@ -23,6 +23,7 @@ import {
   verifyLobbyAuthEvent,
   normalizeInboxKey,
 } from "./lobbyInvites.mjs";
+import { verifyFriendAuthEvent } from "./friendAuth.mjs";
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -3716,6 +3717,25 @@ const httpServer = createServer(async (req, res) => {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: false, error: "bad pubkeys" }));
         return;
+      }
+      // Request / accept / unfriend / … change the social graph. Without a
+      // signature anyone can forge `unfriend` and durable-REMOVE + heal-wipe
+      // both clients for 90 days. Sync stays unsigned (poll heal; cannot sever).
+      if (
+        action === "request" ||
+        action === "accept" ||
+        action === "decline" ||
+        action === "unfriend" ||
+        action === "clear-accept"
+      ) {
+        try {
+          verifyFriendAuthEvent(data.event, from);
+        } catch (err) {
+          const status = Number(err?.status) || 400;
+          res.writeHead(status, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: String(err?.message || "auth failed") }));
+          return;
+        }
       }
       if (action === "request") {
         const reverse = friendRequestsStore.pending.find((r) => r.from === to && r.to === from);
