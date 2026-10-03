@@ -34,6 +34,7 @@ import {
   postFriendAccept,
   postFriendDecline,
   postFriendRequest,
+  postFriendUnfriend,
   syncLocalFriendState,
 } from "./friendRequestsApi";
 import {
@@ -353,8 +354,10 @@ async function syncFriendRequestsFromServer(): Promise<void> {
   for (const row of snap.outgoing) {
     upsertOutgoingRequest(me, { pubkey: row.pubkey, name: row.name });
   }
+  const serverFriends = new Set<string>();
   for (const row of snap.friends) {
     if (row.pubkey === me.toLowerCase()) continue;
+    serverFriends.add(row.pubkey);
     const label = peerLabel(row.pubkey, row.name);
     if (!isFriend(me, row.pubkey)) {
       addFriend(me, { pubkey: row.pubkey, name: label });
@@ -364,6 +367,22 @@ async function syncFriendRequestsFromServer(): Promise<void> {
       const cur = listFriends(me).find((f) => f.pubkey === row.pubkey);
       if (cur && cur.name.trim().toLowerCase() === name.trim().toLowerCase()) {
         updateFriendName(me, row.pubkey, label);
+        changed = true;
+      }
+    }
+  }
+  // After a successful heal-sync, drop local friends the server no longer lists
+  // (REMOVE / peer unfriend). Skip when heal failed so an empty fetch can't wipe
+  // the local list after a server redeploy.
+  if (healed) {
+    for (const f of listFriends(me)) {
+      if (!serverFriends.has(f.pubkey)) {
+        removeFriend(me, f.pubkey);
+        if (chatPeer?.pubkey === f.pubkey) {
+          chatPeer = null;
+          stopThread?.();
+          stopThread = null;
+        }
         changed = true;
       }
     }
@@ -625,14 +644,17 @@ function bindRowActions(root: HTMLElement): void {
         if (action === "request") {
           void sendFriendRequest(pubkey, name);
         } else if (action === "unfriend") {
-          removeFriend(session.pubkey, pubkey);
-          if (chatPeer?.pubkey === pubkey) {
-            chatPeer = null;
-            stopThread?.();
-            stopThread = null;
-          }
-          callbacks?.showToast(`Removed ${name}`);
-          void refreshActiveLists();
+          void (async () => {
+            removeFriend(session.pubkey, pubkey);
+            if (chatPeer?.pubkey === pubkey) {
+              chatPeer = null;
+              stopThread?.();
+              stopThread = null;
+            }
+            await postFriendUnfriend(session.pubkey, pubkey, myDisplayName());
+            callbacks?.showToast(`Removed ${name}`);
+            void refreshActiveLists();
+          })();
         } else if (action === "chat") {
           if (!isFriend(session.pubkey, pubkey)) {
             callbacks?.showToast("Accept a friend request before chatting");

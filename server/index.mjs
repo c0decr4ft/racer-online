@@ -1341,7 +1341,7 @@ const FRIEND_REQUEST_MAX = 2_000;
 const FRIEND_ACCEPT_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
 function emptyFriendRequests() {
-  return { pending: [], accepts: [], friendships: [] };
+  return { pending: [], accepts: [], friendships: [], severed: [] };
 }
 
 function loadFriendRequests() {
@@ -1358,12 +1358,16 @@ function friendshipKey(a, b) {
   return a < b ? `${a}:${b}` : `${b}:${a}`;
 }
 
+/** Keep unfriend blocks long enough that a peer's heal-sync cannot resurrect the bond. */
+const FRIEND_SEVERED_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+
 function normalizeFriendRequests(data) {
   const store = emptyFriendRequests();
   if (!data || typeof data !== "object") return store;
   const pending = Array.isArray(data.pending) ? data.pending : [];
   const accepts = Array.isArray(data.accepts) ? data.accepts : [];
   const friendships = Array.isArray(data.friendships) ? data.friendships : [];
+  const severed = Array.isArray(data.severed) ? data.severed : [];
   const now = Date.now();
   for (const row of pending) {
     if (!row || typeof row !== "object") continue;
@@ -1404,6 +1408,15 @@ function normalizeFriendRequests(data) {
       at: typeof row.at === "number" && Number.isFinite(row.at) ? Math.round(row.at) : now,
     });
   }
+  for (const row of severed) {
+    if (!row || typeof row !== "object") continue;
+    const a = normalizePubkeyHex(row.a);
+    const b = normalizePubkeyHex(row.b);
+    if (!a || !b || a === b) continue;
+    const at = typeof row.at === "number" && Number.isFinite(row.at) ? Math.round(row.at) : now;
+    if (now - at > FRIEND_SEVERED_TTL_MS) continue;
+    store.severed.push({ a, b, at });
+  }
   const pendMap = new Map();
   for (const row of store.pending.sort((a, b) => a.at - b.at)) {
     pendMap.set(`${row.from}:${row.to}`, row);
@@ -1419,6 +1432,15 @@ function normalizeFriendRequests(data) {
   store.friendships = [...friendMap.values()]
     .sort((a, b) => b.at - a.at)
     .slice(0, FRIEND_REQUEST_MAX);
+  const severMap = new Map();
+  for (const row of store.severed.sort((a, b) => a.at - b.at)) {
+    severMap.set(friendshipKey(row.a, row.b), row);
+  }
+  // Drop active friendships that are still marked severed (heal races).
+  store.friendships = store.friendships.filter((r) => !severMap.has(friendshipKey(r.a, r.b)));
+  store.severed = [...severMap.values()]
+    .sort((a, b) => b.at - a.at)
+    .slice(0, FRIEND_REQUEST_MAX);
   return store;
 }
 
@@ -1427,6 +1449,7 @@ function mergeFriendRequestStores(local, remote) {
     pending: [...(local.pending || []), ...(remote.pending || [])],
     accepts: [...(local.accepts || []), ...(remote.accepts || [])],
     friendships: [...(local.friendships || []), ...(remote.friendships || [])],
+    severed: [...(local.severed || []), ...(remote.severed || [])],
   });
 }
 
@@ -1521,11 +1544,27 @@ async function hydrateFriendRequestsFromBlob() {
 
 let friendRequestsStore = loadFriendRequests();
 
+function isSeveredFriendship(store, a, b) {
+  const key = friendshipKey(a, b);
+  return (store.severed || []).some((r) => friendshipKey(r.a, r.b) === key);
+}
+
+function clearSeveredFriendship(store, a, b) {
+  const pa = normalizePubkeyHex(a);
+  const pb = normalizePubkeyHex(b);
+  if (!pa || !pb) return store;
+  const key = friendshipKey(pa, pb);
+  store.severed = (store.severed || []).filter((r) => friendshipKey(r.a, r.b) !== key);
+  return store;
+}
+
 function upsertFriendship(store, a, b, aName, bName, at = Date.now()) {
   const pa = normalizePubkeyHex(a);
   const pb = normalizePubkeyHex(b);
   if (!pa || !pb || pa === pb) return store;
   const key = friendshipKey(pa, pb);
+  // Unfriend blocks heal-sync from resurrecting the pair until a fresh accept.
+  if (isSeveredFriendship(store, pa, pb)) return store;
   store.friendships = store.friendships.filter((r) => friendshipKey(r.a, r.b) !== key);
   store.friendships.push({
     a: pa,
@@ -1534,6 +1573,24 @@ function upsertFriendship(store, a, b, aName, bName, at = Date.now()) {
     bName: sanitizePlayerName(bName),
     at,
   });
+  return store;
+}
+
+/** REMOVE friend — drop the bond and block sync from putting it back. */
+function severFriendship(store, a, b, at = Date.now()) {
+  const pa = normalizePubkeyHex(a);
+  const pb = normalizePubkeyHex(b);
+  if (!pa || !pb || pa === pb) return store;
+  const key = friendshipKey(pa, pb);
+  store.friendships = (store.friendships || []).filter((r) => friendshipKey(r.a, r.b) !== key);
+  store.pending = (store.pending || []).filter(
+    (r) => !(r.from === pa && r.to === pb) && !(r.from === pb && r.to === pa),
+  );
+  store.accepts = (store.accepts || []).filter(
+    (r) => !(r.from === pa && r.to === pb) && !(r.from === pb && r.to === pa),
+  );
+  store.severed = (store.severed || []).filter((r) => friendshipKey(r.a, r.b) !== key);
+  store.severed.push({ a: pa, b: pb, at });
   return store;
 }
 
@@ -3673,6 +3730,8 @@ const httpServer = createServer(async (req, res) => {
             fromName: reverse.fromName,
             at: now,
           });
+          // Fresh mutual request overrides a prior REMOVE.
+          friendRequestsStore = clearSeveredFriendship(friendRequestsStore, from, to);
           friendRequestsStore = upsertFriendship(
             friendRequestsStore,
             from,
@@ -3699,6 +3758,8 @@ const httpServer = createServer(async (req, res) => {
       }
       if (action === "accept") {
         const pending = friendRequestsStore.pending.find((r) => r.from === to && r.to === from);
+        // Fresh accept overrides a prior REMOVE.
+        friendRequestsStore = clearSeveredFriendship(friendRequestsStore, from, to);
         if (!pending) {
           // Still record friendship if both sides already agreed locally.
           friendRequestsStore = upsertFriendship(
@@ -3741,6 +3802,14 @@ const httpServer = createServer(async (req, res) => {
           (r) => !(r.from === to && r.to === from),
         );
         friendRequestsStore = saveFriendRequests(friendRequestsStore);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, ...friendRequestsForPubkey(from) }));
+        return;
+      }
+      if (action === "unfriend") {
+        friendRequestsStore = severFriendship(friendRequestsStore, from, to, now);
+        friendRequestsStore = saveFriendRequests(friendRequestsStore);
+        touchPlayerDirectory(from, fromName, now);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: true, ...friendRequestsForPubkey(from) }));
         return;
