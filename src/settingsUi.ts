@@ -31,6 +31,7 @@ function setActive(group: HTMLElement | null, value: string) {
 function syncUi(settings: GameSettings) {
   setActive(document.getElementById("settings-graphics"), settings.graphics);
   setActive(document.getElementById("settings-effects"), settings.effects);
+  setActive(document.getElementById("settings-ghost"), settings.ghost ? "on" : "off");
   const slider = document.getElementById("settings-sound");
   const label = document.getElementById("settings-sound-value");
   if (slider instanceof HTMLInputElement) slider.value = String(settings.sound);
@@ -118,6 +119,15 @@ export function initSettingsUi(opts: { onApply: SettingsApplyFn }): void {
   };
   wireGroup("settings-graphics", "graphics");
   wireGroup("settings-effects", "effects");
+
+  const ghostGroup = document.getElementById("settings-ghost");
+  ghostGroup?.addEventListener("click", (e) => {
+    const t = e.target;
+    if (!(t instanceof HTMLButtonElement)) return;
+    const value = t.dataset.value;
+    if (value !== "on" && value !== "off") return;
+    commit({ ghost: value === "on" });
+  });
 
   const slider = document.getElementById("settings-sound");
   if (slider instanceof HTMLInputElement) {
