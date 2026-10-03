@@ -33,7 +33,10 @@ function syncPresenceIdentity(session: NostrSession | null, profile: NostrProfil
     setPresenceIdentity(null);
     return;
   }
-  const name = profile?.displayName || profile?.name || "RACER";
+  const raw = (profile?.displayName || profile?.name || "").trim();
+  const placeholder = !raw || /^racer$/i.test(raw) || /^nostr racer$/i.test(raw);
+  // Never heartbeat as bare "RACER" — two nameless accounts looked identical in the live feed.
+  const name = placeholder ? shortNpub(session.pubkey) : raw.slice(0, 24);
   setPresenceIdentity({ pubkey: session.pubkey, name });
   void sendHeartbeat();
   void registerPlayer(session.pubkey, name);
