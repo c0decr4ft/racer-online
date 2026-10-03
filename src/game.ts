@@ -18,11 +18,8 @@ import {
   DEFAULT_TRACK_ID,
   getTrackDef,
   DRIFT_TRACK_ID,
-  TUTORIAL_TRACK_ID,
   isDriftTrack,
-  isTutorialTrack,
 } from "./track";
-import { TutorialCoach } from "./tutorial";
 import { drawTrackPreview } from "./mapPreview";
 import { Input, type InputState } from "./input";
 import { isTouchPrimary, TouchControls, viewportSize } from "./touch";
@@ -265,9 +262,6 @@ export class Game {
   practice = false;
   /** Timed race with no AI rivals — empty track, wall explode on. */
   solo = false;
-  /** Guided Controls tutorial on Learner Loop (practice + solo + slow-mo). */
-  private tutorial = false;
-  private readonly tutorialCoach = new TutorialCoach();
   online = false;
   /** Event Mode lobby flow (Lightning buy-in gate + winner's pot) vs plain multiplayer. */
   private eventMode = false;
@@ -834,7 +828,6 @@ export class Game {
           solo: this.solo,
           practice: this.practice,
           trackId,
-          tutorial: this.tutorial,
         });
       });
     };
@@ -846,16 +839,11 @@ export class Game {
           practice: this.practice,
           solo: this.solo,
           trackId: this.trackId,
-          tutorial: this.tutorial,
         });
       });
     };
     document.getElementById("pause-home-btn")!.onclick = () => this.goHome();
     document.getElementById("finish-home-btn")!.onclick = () => this.goHome();
-    document.getElementById("tutorial-skip-btn")?.addEventListener("click", (e) => {
-      e.stopPropagation();
-      this.tutorialCoach.skip();
-    });
     this.el.pauseBtn.onclick = () => this.pause();
     this.el.spectateNextBtn.onclick = (e) => {
       e.stopPropagation();
@@ -2423,13 +2411,12 @@ export class Game {
     this.el.animalHit.classList.add("hidden");
   }
 
-  /** Menu Start / Test Drive / Solo / Tutorial — unlock audio, leave online, start session. */
+  /** Menu Start / Test Drive / Solo — unlock audio, leave online, start session. */
   private async bootFromMenu(
     opts: {
       practice?: boolean;
       solo?: boolean;
       trackId?: string;
-      tutorial?: boolean;
     } = {},
   ) {
     await this.audio.unlock();
@@ -2443,7 +2430,7 @@ export class Game {
     this.el.garage.classList.add("hidden");
     this.el.multiplayer.classList.add("hidden");
     document.getElementById("dev-dash")?.classList.add("hidden");
-    // Friends / help overlays sit above the race — clear them so tutorial isn't covered.
+    // Friends / help overlays sit above the race — clear them so the session isn't covered.
     closeSocialHub();
     closeControlsHelp();
     closeHomeInstructions();
@@ -2452,24 +2439,12 @@ export class Game {
     this.startRace(opts);
   }
 
-  /** Controls → START TUTORIAL — Learner Loop, solo practice, slowed coaching. */
-  startTutorial() {
-    void this.bootFromMenu({
-      practice: true,
-      solo: true,
-      trackId: TUTORIAL_TRACK_ID,
-      tutorial: true,
-    });
-  }
-
   private goHome() {
     this.running = false;
     this.finished = false;
     this.paused = false;
     this.practice = false;
     this.solo = false;
-    this.tutorial = false;
-    this.tutorialCoach.stop();
     this.online = false;
     this.inLobby = false;
     this.expectingLobby = false;
@@ -3632,7 +3607,7 @@ export class Game {
 
   /** Persist this race trail when it beats the stored best full-race time. */
   private commitGhostIfBest(timeMs: number) {
-    if (this.godMode || this.roomSpectating || this.tutorial) return;
+    if (this.godMode || this.roomSpectating) return;
     const kind = toGhostKind(this.player?.mesh.userData.kind ?? this.garage.kind);
     if (!kind) return;
     const samples = this.ghostRecorder.snapshot();
@@ -3913,40 +3888,30 @@ export class Game {
   /** @param opts.practice Test Drive — same world, no finish / podium.
    *  @param opts.solo Timed race with no AI rivals.
    *  @param opts.trackId Course to load; Start Race / Solo pass a random id.
-   *  @param opts.tutorial Guided Learner Loop from Controls.
    *  @param opts.weather Online only — host-committed room weather (never pickWeather). */
   startRace(opts: {
     practice?: boolean;
     solo?: boolean;
     trackId?: string;
-    tutorial?: boolean;
     weather?: WeatherMode;
   } = {}) {
-    this.tutorial = !!opts.tutorial;
-    this.practice = !!opts.practice || this.tutorial;
-    this.solo = (!!opts.solo && !this.online) || this.tutorial;
+    this.practice = !!opts.practice;
+    this.solo = !!opts.solo && !this.online;
     // Bird is a scout tool — practice (no finish/walls explode), keep AI cars visible.
-    if (!this.online && this.garage.kind === "bird" && !this.tutorial) {
+    if (!this.online && this.garage.kind === "bird") {
       this.practice = true;
       this.solo = false;
     }
-    const nextId =
-      opts.trackId ?? (this.tutorial ? TUTORIAL_TRACK_ID : this.trackId ?? DEFAULT_TRACK_ID);
+    const nextId = opts.trackId ?? this.trackId ?? DEFAULT_TRACK_ID;
     // Battle Event Mode only: thicker asphalt for item-box racing. Race / casual stay 1×.
-    // Tutorial gets a slightly wider ribbon so new drivers have room to breathe.
     const battleWide =
       this.online &&
       (this.net.event?.mode === "battle" || this.eventGameMode === "battle");
     this.setActiveTrack(nextId, {
       menu: false,
-      widthScale: battleWide ? BATTLE_TRACK_WIDTH_SCALE : this.tutorial ? 1.2 : 1,
+      widthScale: battleWide ? BATTLE_TRACK_WIDTH_SCALE : 1,
     });
     if (!this.online) this.applyGarageToWorld();
-    // Tutorial always uses a normal car — not bird.
-    if (this.tutorial && isDevGarageKind(this.garage.kind)) {
-      this.garage = { ...this.garage, kind: "car" };
-      this.applyGarageToWorld();
-    }
     this.setAiVisible(!this.solo && !this.online);
     this.el.overlay.classList.add("hidden");
     this.el.mapSelect.classList.add("hidden");
@@ -3995,11 +3960,8 @@ export class Game {
     this.weather.setParticlesEnabled(true);
     const raceWeather = this.online
       ? normalizeWeatherMode(opts.weather ?? this.net.weather)
-      : // Dev extras / drift / tutorial always scout/race in daylight
-        isDevGarageKind(this.garage.kind) ||
-          isDriftTrack(this.trackId) ||
-          isTutorialTrack(this.trackId) ||
-          this.tutorial
+      : // Dev extras / drift always scout/race in daylight
+        isDevGarageKind(this.garage.kind) || isDriftTrack(this.trackId)
         ? "dry"
         : pickWeather();
     if (this.online) this.net.weather = raceWeather;
@@ -4058,8 +4020,6 @@ export class Game {
     this.audio.stopRaceAudio();
     this.audio.unmute();
     this.syncMuteBtn();
-    if (this.tutorial) this.tutorialCoach.start();
-    else this.tutorialCoach.stop();
     if ((isDevGarageKind(this.garage.kind) && !this.online) || this.roomSpectating) {
       // Scout / live watch — skip 3-2-1 so poses flow immediately.
       this.clearCountdown();
@@ -4154,20 +4114,6 @@ export class Game {
       throttle,
       this.player.state.gear,
     );
-  }
-
-  private tickTutorial(dtReal: number, input: InputState, gridHeld: boolean) {
-    if (!this.tutorial || !this.player) return;
-    this.tutorialCoach.update({
-      dtReal,
-      gridHeld,
-      throttle: input.throttle,
-      brake: input.brake,
-      steer: input.steer,
-      shiftDelta: input.shiftDelta,
-      gear: this.player.state.gear,
-      kmh: this.player.kmh,
-    });
   }
 
   private get countingDown() {
@@ -4265,8 +4211,7 @@ export class Game {
       return;
     }
     const rawDeltaMs = now - this.lastFrame;
-    const dtReal = Math.min(rawDeltaMs / 1000, 0.05);
-    const dt = dtReal * (this.tutorial ? this.tutorialCoach.timeScale : 1);
+    const dt = Math.min(rawDeltaMs / 1000, 0.05);
     this.lastFrame = now;
     // FPS scaler: watch real frame pacing; under load drop minimap/rain — never
     // skip shadow-map rebuilds (that lagged behind the car and looked janky).
@@ -4316,7 +4261,6 @@ export class Game {
             practice: this.practice,
             solo: this.solo,
             trackId: this.trackId,
-            tutorial: this.tutorial,
           });
         }
       } else {
@@ -4324,7 +4268,6 @@ export class Game {
 
         if (this.gridHeld) {
           // Frozen on grid through 3-2-1. Network poses are ignored until GO.
-          this.tickTutorial(dtReal, inputPeek, true);
           this.updateHud();
           this.updateCamera(dt);
         } else {
@@ -4372,7 +4315,6 @@ export class Game {
           for (const r of this.rivals) r.godBoost = aiPower;
 
           this.player.update(dt, input);
-          this.tickTutorial(dtReal, input, false);
           if (this.onlineWrecked || this.roomSpectating) {
             this.player.state.speed = 0;
             this.player.state.steerAngle = 0;

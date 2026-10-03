@@ -559,26 +559,6 @@ export const TRACKS: TrackDef[] = [
  */
 export const DRIFT_TRACK_ID = "yard-drift";
 
-/** Short gentle oval — Controls → Tutorial only (not in map select). */
-export const TUTORIAL_TRACK_ID = "learner-loop";
-
-const LEARNER_LOOP: readonly (readonly [number, number])[] = buildPolarLoop(
-  36,
-  (th) => 78 + 18 * Math.cos(2 * th),
-  -Math.PI / 2,
-);
-
-export const TUTORIAL_TRACK: TrackDef = {
-  id: TUTORIAL_TRACK_ID,
-  name: "Learner Loop",
-  biome: "meadow",
-  points: LEARNER_LOOP,
-};
-
-export function isTutorialTrack(id: string): boolean {
-  return id === TUTORIAL_TRACK_ID;
-}
-
 const YARD_DRIFT: readonly (readonly [number, number])[] = [
   // SF straight — eastbound
   [48, -52],
@@ -686,16 +666,11 @@ export function randomTrackId(avoid?: string): string {
 
 export function getTrackDef(id: string): TrackDef {
   if (id === DRIFT_TRACK_ID) return DRIFT_TRACK;
-  if (id === TUTORIAL_TRACK_ID) return TUTORIAL_TRACK;
   const found = TRACKS.find((t) => t.id === id);
   return found ?? TRACKS[0]!;
 }
 
 export function isTrackId(id: string): boolean {
-  return (
-    isDriftTrack(id) ||
-    isTutorialTrack(id) ||
-    TRACKS.some((t) => t.id === id)
-  );
+  return isDriftTrack(id) || TRACKS.some((t) => t.id === id);
 }
 
