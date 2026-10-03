@@ -114,7 +114,7 @@ export async function syncLocalFriendState(input: {
 }
 
 async function postFriendAction(
-  action: "request" | "accept" | "decline" | "clear-accept",
+  action: "request" | "accept" | "decline" | "clear-accept" | "unfriend",
   from: string,
   to: string,
   fromName: string,
@@ -155,4 +155,8 @@ export function postFriendDecline(from: string, to: string, fromName: string) {
 
 export function clearFriendAccept(from: string, accepterPubkey: string, fromName: string) {
   return postFriendAction("clear-accept", from, accepterPubkey, fromName);
+}
+
+export function postFriendUnfriend(from: string, to: string, fromName: string) {
+  return postFriendAction("unfriend", from, to, fromName);
 }

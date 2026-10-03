@@ -14,6 +14,15 @@ import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, copyFileS
 import { dirname, join, extname, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import {
+  emptyLobbyInvites,
+  normalizeLobbyInvites,
+  lobbyInvitesForPubkey as listLobbyInvitesForPubkey,
+  inboxKeyAuthorized,
+  upsertInboxKey,
+  verifyLobbyAuthEvent,
+  normalizeInboxKey,
+} from "./lobbyInvites.mjs";
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -1332,7 +1341,7 @@ const FRIEND_REQUEST_MAX = 2_000;
 const FRIEND_ACCEPT_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
 function emptyFriendRequests() {
-  return { pending: [], accepts: [], friendships: [] };
+  return { pending: [], accepts: [], friendships: [], severed: [] };
 }
 
 function loadFriendRequests() {
@@ -1349,12 +1358,16 @@ function friendshipKey(a, b) {
   return a < b ? `${a}:${b}` : `${b}:${a}`;
 }
 
+/** Keep unfriend blocks long enough that a peer's heal-sync cannot resurrect the bond. */
+const FRIEND_SEVERED_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+
 function normalizeFriendRequests(data) {
   const store = emptyFriendRequests();
   if (!data || typeof data !== "object") return store;
   const pending = Array.isArray(data.pending) ? data.pending : [];
   const accepts = Array.isArray(data.accepts) ? data.accepts : [];
   const friendships = Array.isArray(data.friendships) ? data.friendships : [];
+  const severed = Array.isArray(data.severed) ? data.severed : [];
   const now = Date.now();
   for (const row of pending) {
     if (!row || typeof row !== "object") continue;
@@ -1395,6 +1408,15 @@ function normalizeFriendRequests(data) {
       at: typeof row.at === "number" && Number.isFinite(row.at) ? Math.round(row.at) : now,
     });
   }
+  for (const row of severed) {
+    if (!row || typeof row !== "object") continue;
+    const a = normalizePubkeyHex(row.a);
+    const b = normalizePubkeyHex(row.b);
+    if (!a || !b || a === b) continue;
+    const at = typeof row.at === "number" && Number.isFinite(row.at) ? Math.round(row.at) : now;
+    if (now - at > FRIEND_SEVERED_TTL_MS) continue;
+    store.severed.push({ a, b, at });
+  }
   const pendMap = new Map();
   for (const row of store.pending.sort((a, b) => a.at - b.at)) {
     pendMap.set(`${row.from}:${row.to}`, row);
@@ -1410,6 +1432,15 @@ function normalizeFriendRequests(data) {
   store.friendships = [...friendMap.values()]
     .sort((a, b) => b.at - a.at)
     .slice(0, FRIEND_REQUEST_MAX);
+  const severMap = new Map();
+  for (const row of store.severed.sort((a, b) => a.at - b.at)) {
+    severMap.set(friendshipKey(row.a, row.b), row);
+  }
+  // Drop active friendships that are still marked severed (heal races).
+  store.friendships = store.friendships.filter((r) => !severMap.has(friendshipKey(r.a, r.b)));
+  store.severed = [...severMap.values()]
+    .sort((a, b) => b.at - a.at)
+    .slice(0, FRIEND_REQUEST_MAX);
   return store;
 }
 
@@ -1418,6 +1449,7 @@ function mergeFriendRequestStores(local, remote) {
     pending: [...(local.pending || []), ...(remote.pending || [])],
     accepts: [...(local.accepts || []), ...(remote.accepts || [])],
     friendships: [...(local.friendships || []), ...(remote.friendships || [])],
+    severed: [...(local.severed || []), ...(remote.severed || [])],
   });
 }
 
@@ -1512,11 +1544,27 @@ async function hydrateFriendRequestsFromBlob() {
 
 let friendRequestsStore = loadFriendRequests();
 
+function isSeveredFriendship(store, a, b) {
+  const key = friendshipKey(a, b);
+  return (store.severed || []).some((r) => friendshipKey(r.a, r.b) === key);
+}
+
+function clearSeveredFriendship(store, a, b) {
+  const pa = normalizePubkeyHex(a);
+  const pb = normalizePubkeyHex(b);
+  if (!pa || !pb) return store;
+  const key = friendshipKey(pa, pb);
+  store.severed = (store.severed || []).filter((r) => friendshipKey(r.a, r.b) !== key);
+  return store;
+}
+
 function upsertFriendship(store, a, b, aName, bName, at = Date.now()) {
   const pa = normalizePubkeyHex(a);
   const pb = normalizePubkeyHex(b);
   if (!pa || !pb || pa === pb) return store;
   const key = friendshipKey(pa, pb);
+  // Unfriend blocks heal-sync from resurrecting the pair until a fresh accept.
+  if (isSeveredFriendship(store, pa, pb)) return store;
   store.friendships = store.friendships.filter((r) => friendshipKey(r.a, r.b) !== key);
   store.friendships.push({
     a: pa,
@@ -1525,6 +1573,24 @@ function upsertFriendship(store, a, b, aName, bName, at = Date.now()) {
     bName: sanitizePlayerName(bName),
     at,
   });
+  return store;
+}
+
+/** REMOVE friend — drop the bond and block sync from putting it back. */
+function severFriendship(store, a, b, at = Date.now()) {
+  const pa = normalizePubkeyHex(a);
+  const pb = normalizePubkeyHex(b);
+  if (!pa || !pb || pa === pb) return store;
+  const key = friendshipKey(pa, pb);
+  store.friendships = (store.friendships || []).filter((r) => friendshipKey(r.a, r.b) !== key);
+  store.pending = (store.pending || []).filter(
+    (r) => !(r.from === pa && r.to === pb) && !(r.from === pb && r.to === pa),
+  );
+  store.accepts = (store.accepts || []).filter(
+    (r) => !(r.from === pa && r.to === pb) && !(r.from === pb && r.to === pa),
+  );
+  store.severed = (store.severed || []).filter((r) => friendshipKey(r.a, r.b) !== key);
+  store.severed.push({ a: pa, b: pb, at });
   return store;
 }
 
@@ -1552,13 +1618,6 @@ function friendRequestsForPubkey(pubkey) {
 }
 
 /** Targeted lobby invites — one row per recipient (never fan-out to all friends). */
-const LOBBY_INVITE_MAX = 2_000;
-const LOBBY_INVITE_TTL_MS = 2 * 60 * 60 * 1000;
-
-function emptyLobbyInvites() {
-  return { invites: [] };
-}
-
 function loadLobbyInvites() {
   try {
     if (!existsSync(LOBBY_INVITES_PATH)) return emptyLobbyInvites();
@@ -1566,43 +1625,6 @@ function loadLobbyInvites() {
   } catch {
     return emptyLobbyInvites();
   }
-}
-
-function normalizeLobbyInvites(data) {
-  const store = emptyLobbyInvites();
-  if (!data || typeof data !== "object") return store;
-  const list = Array.isArray(data.invites) ? data.invites : [];
-  const now = Date.now();
-  const byId = new Map();
-  for (const row of list) {
-    if (!row || typeof row !== "object") continue;
-    const from = normalizePubkeyHex(row.from);
-    const to = normalizePubkeyHex(row.to);
-    if (!from || !to || from === to) continue;
-    const room = String(row.room || "")
-      .replace(/[^\w\- ]/g, "")
-      .trim()
-      .slice(0, 24);
-    if (!room) continue;
-    const at = typeof row.at === "number" && Number.isFinite(row.at) ? Math.round(row.at) : now;
-    if (now - at > LOBBY_INVITE_TTL_MS) continue;
-    const id =
-      typeof row.id === "string" && row.id.trim()
-        ? row.id.trim().slice(0, 80)
-        : `${from.slice(0, 8)}-${to.slice(0, 8)}-${at}-${room}`;
-    byId.set(id, {
-      id,
-      from,
-      to,
-      fromName: sanitizePlayerName(row.fromName),
-      room,
-      password: String(row.password || "").slice(0, 32),
-      trackId: typeof row.trackId === "string" ? row.trackId.slice(0, 40) : "",
-      at,
-    });
-  }
-  store.invites = [...byId.values()].sort((a, b) => b.at - a.at).slice(0, LOBBY_INVITE_MAX);
-  return store;
 }
 
 function saveLobbyInvites(store) {
@@ -1619,20 +1641,15 @@ function saveLobbyInvites(store) {
 let lobbyInvitesStore = loadLobbyInvites();
 
 function lobbyInvitesForPubkey(pubkey) {
-  const pk = normalizePubkeyHex(pubkey);
-  if (!pk) return [];
   lobbyInvitesStore = normalizeLobbyInvites(lobbyInvitesStore);
-  return lobbyInvitesStore.invites
-    .filter((r) => r.to === pk)
-    .map((r) => ({
-      id: r.id,
-      from: r.from,
-      fromName: r.fromName,
-      room: r.room,
-      password: r.password,
-      trackId: r.trackId,
-      at: r.at,
-    }));
+  return listLobbyInvitesForPubkey(lobbyInvitesStore, pubkey);
+}
+
+function readLobbyInboxKey(req, url) {
+  const header = req.headers["x-lobby-inbox-key"];
+  if (typeof header === "string" && header.trim()) return normalizeInboxKey(header);
+  if (Array.isArray(header) && header[0]) return normalizeInboxKey(header[0]);
+  return normalizeInboxKey(url.searchParams.get("inboxKey") || "");
 }
 
 /** Upsert directory row — keep the better display name and newest lastSeen. */
@@ -3456,6 +3473,14 @@ const httpServer = createServer(async (req, res) => {
       res.end(JSON.stringify({ ok: false, error: "bad pubkey" }));
       return;
     }
+    lobbyInvitesStore = normalizeLobbyInvites(lobbyInvitesStore);
+    const inboxKey = readLobbyInboxKey(req, url);
+    // Passwords gate private / Event Mode rooms — never return them without inbox proof.
+    if (!inboxKeyAuthorized(lobbyInvitesStore, pubkey, inboxKey)) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "inbox key required" }));
+      return;
+    }
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: true, invites: lobbyInvitesForPubkey(pubkey), source: "server" }));
     return;
@@ -3480,11 +3505,40 @@ const httpServer = createServer(async (req, res) => {
       }
       const now = Date.now();
 
+      if (action === "register") {
+        const inboxKey = normalizeInboxKey(data.inboxKey);
+        if (!inboxKey) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "bad inbox key" }));
+          return;
+        }
+        try {
+          verifyLobbyAuthEvent(data.event, from);
+        } catch (err) {
+          const status = Number(err?.status) || 400;
+          res.writeHead(status, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: String(err?.message || "auth failed") }));
+          return;
+        }
+        lobbyInvitesStore = upsertInboxKey(lobbyInvitesStore, from, inboxKey, now);
+        lobbyInvitesStore = saveLobbyInvites(lobbyInvitesStore);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, registered: true, source: "server" }));
+        return;
+      }
+
       if (action === "ack") {
         const id = String(data.id || "").trim().slice(0, 80);
+        const inboxKey = normalizeInboxKey(data.inboxKey) || readLobbyInboxKey(req, url);
         if (!id) {
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: false, error: "bad id" }));
+          return;
+        }
+        lobbyInvitesStore = normalizeLobbyInvites(lobbyInvitesStore);
+        if (!inboxKeyAuthorized(lobbyInvitesStore, from, inboxKey)) {
+          res.writeHead(401, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "inbox key required" }));
           return;
         }
         // Only the recipient can clear their invite.
@@ -3498,6 +3552,14 @@ const httpServer = createServer(async (req, res) => {
       }
 
       // action === "send" — exact recipient list only (never expand to all friends).
+      try {
+        verifyLobbyAuthEvent(data.event, from);
+      } catch (err) {
+        const status = Number(err?.status) || 400;
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: String(err?.message || "auth failed") }));
+        return;
+      }
       const fromName = sanitizePlayerName(data.fromName);
       const room = String(data.room || "")
         .replace(/[^\w\- ]/g, "")
@@ -3668,6 +3730,8 @@ const httpServer = createServer(async (req, res) => {
             fromName: reverse.fromName,
             at: now,
           });
+          // Fresh mutual request overrides a prior REMOVE.
+          friendRequestsStore = clearSeveredFriendship(friendRequestsStore, from, to);
           friendRequestsStore = upsertFriendship(
             friendRequestsStore,
             from,
@@ -3694,6 +3758,8 @@ const httpServer = createServer(async (req, res) => {
       }
       if (action === "accept") {
         const pending = friendRequestsStore.pending.find((r) => r.from === to && r.to === from);
+        // Fresh accept overrides a prior REMOVE.
+        friendRequestsStore = clearSeveredFriendship(friendRequestsStore, from, to);
         if (!pending) {
           // Still record friendship if both sides already agreed locally.
           friendRequestsStore = upsertFriendship(
@@ -3736,6 +3802,14 @@ const httpServer = createServer(async (req, res) => {
           (r) => !(r.from === to && r.to === from),
         );
         friendRequestsStore = saveFriendRequests(friendRequestsStore);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, ...friendRequestsForPubkey(from) }));
+        return;
+      }
+      if (action === "unfriend") {
+        friendRequestsStore = severFriendship(friendRequestsStore, from, to, now);
+        friendRequestsStore = saveFriendRequests(friendRequestsStore);
+        touchPlayerDirectory(from, fromName, now);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: true, ...friendRequestsForPubkey(from) }));
         return;

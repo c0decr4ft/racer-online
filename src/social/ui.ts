@@ -34,6 +34,7 @@ import {
   postFriendAccept,
   postFriendDecline,
   postFriendRequest,
+  postFriendUnfriend,
   syncLocalFriendState,
 } from "./friendRequestsApi";
 import {
@@ -41,12 +42,18 @@ import {
   buildInviteJoinUrl,
   ackLobbyInvite,
   fetchLobbyInvites,
+  registerLobbyInbox,
   onInviteJoin,
   rememberInviteFromDm,
   type LobbyInviteRow,
 } from "./organize";
 import { claimNotification, markNotificationSeen } from "./seenNotifs";
-import { ensureBrowserNotifyPermission, notifyLobbyInvite } from "./browserNotify";
+import {
+  browserNotifySupported,
+  ensureBrowserNotifyPermission,
+  notifyLobbyInvite,
+} from "./browserNotify";
+import { lobbyInviteDeliveryMode } from "./lobbyInviteDelivery";
 
 export type SocialHubCallbacks = {
   onJoinInvite: (invite: { room: string; password: string; eventMode?: boolean }) => void;
@@ -211,6 +218,7 @@ function stopRequestPoll(): void {
 
 function startRequestPoll(): void {
   stopRequestPoll();
+  void registerLobbyInbox();
   void syncFriendRequestsFromServer();
   void syncLobbyInvitesFromServer();
   requestPollTimer = window.setInterval(() => {
@@ -271,6 +279,8 @@ function presentLobbyInviteBanner(inv: LobbyInviteRow, who: string): void {
     hideLobbyInviteBanner();
   });
   banner.append(text, join, dismiss);
+  // Banner counts as delivery — block a later OS ping for the same invite.
+  markNotificationSeen(session.pubkey, `lobby:${inv.id}`);
   banner.style.animation = "none";
   void banner.offsetWidth;
   banner.style.animation = "";
@@ -300,19 +310,20 @@ async function syncLobbyInvitesFromServer(): Promise<void> {
 
   const racing = !!callbacks?.isRacing?.();
   const tabAway = document.hidden || !document.hasFocus();
+  const canOsNotify = browserNotifySupported() && Notification.permission === "granted";
 
   for (const inv of invites) {
     const notifId = `lobby:${inv.id}`;
-    if (!claimNotification(session.pubkey, notifId)) continue;
     const who = inv.fromName || shortNpub(inv.from);
-
-    if (tabAway) {
-      // Off the game tab — ping Chrome / the OS once.
+    const mode = lobbyInviteDeliveryMode({ racing, tabAway, canOsNotify });
+    // Never claim before a real delivery — mid-race / no-permission background
+    // polls used to burn localStorage ids and the invite never surfaced again.
+    if (mode === "defer") continue;
+    if (mode === "os-notify") {
+      if (!claimNotification(session.pubkey, notifId)) continue;
       notifyLobbyInvite({ who, room: inv.room, tag: notifId });
       continue;
     }
-    if (racing) continue;
-    // On the page — slide the JOIN bar down once for ~10 seconds.
     presentLobbyInviteBanner(inv, who);
   }
 }
@@ -343,8 +354,10 @@ async function syncFriendRequestsFromServer(): Promise<void> {
   for (const row of snap.outgoing) {
     upsertOutgoingRequest(me, { pubkey: row.pubkey, name: row.name });
   }
+  const serverFriends = new Set<string>();
   for (const row of snap.friends) {
     if (row.pubkey === me.toLowerCase()) continue;
+    serverFriends.add(row.pubkey);
     const label = peerLabel(row.pubkey, row.name);
     if (!isFriend(me, row.pubkey)) {
       addFriend(me, { pubkey: row.pubkey, name: label });
@@ -354,6 +367,22 @@ async function syncFriendRequestsFromServer(): Promise<void> {
       const cur = listFriends(me).find((f) => f.pubkey === row.pubkey);
       if (cur && cur.name.trim().toLowerCase() === name.trim().toLowerCase()) {
         updateFriendName(me, row.pubkey, label);
+        changed = true;
+      }
+    }
+  }
+  // After a successful heal-sync, drop local friends the server no longer lists
+  // (REMOVE / peer unfriend). Skip when heal failed so an empty fetch can't wipe
+  // the local list after a server redeploy.
+  if (healed) {
+    for (const f of listFriends(me)) {
+      if (!serverFriends.has(f.pubkey)) {
+        removeFriend(me, f.pubkey);
+        if (chatPeer?.pubkey === f.pubkey) {
+          chatPeer = null;
+          stopThread?.();
+          stopThread = null;
+        }
         changed = true;
       }
     }
@@ -615,14 +644,17 @@ function bindRowActions(root: HTMLElement): void {
         if (action === "request") {
           void sendFriendRequest(pubkey, name);
         } else if (action === "unfriend") {
-          removeFriend(session.pubkey, pubkey);
-          if (chatPeer?.pubkey === pubkey) {
-            chatPeer = null;
-            stopThread?.();
-            stopThread = null;
-          }
-          callbacks?.showToast(`Removed ${name}`);
-          void refreshActiveLists();
+          void (async () => {
+            removeFriend(session.pubkey, pubkey);
+            if (chatPeer?.pubkey === pubkey) {
+              chatPeer = null;
+              stopThread?.();
+              stopThread = null;
+            }
+            await postFriendUnfriend(session.pubkey, pubkey, myDisplayName());
+            callbacks?.showToast(`Removed ${name}`);
+            void refreshActiveLists();
+          })();
         } else if (action === "chat") {
           if (!isFriend(session.pubkey, pubkey)) {
             callbacks?.showToast("Accept a friend request before chatting");

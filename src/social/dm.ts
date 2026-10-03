@@ -3,7 +3,7 @@
  * Uses signer NIP-44 (extension / local / NIP-46). Relays only see gift wraps.
  */
 import type { NostrEvent, UnsignedEvent } from "nostr-tools";
-import { getEventHash } from "nostr-tools";
+import { getEventHash, verifyEvent } from "nostr-tools";
 import { createWrap } from "nostr-tools/nip59";
 import { getSession } from "../nostr/session";
 import { pool } from "../nostr/relays";
@@ -54,6 +54,16 @@ function normalizePubkey(raw: string): string {
     .trim()
     .toLowerCase();
   return /^[0-9a-f]{64}$/.test(hex) ? hex : "";
+}
+
+/**
+ * NIP-17: the kind:13 seal signer MUST match the unsigned kind:14 rumor author.
+ * Without this check, any sender can impersonate any pubkey by rewriting rumor.pubkey.
+ */
+export function nip17SealMatchesRumor(sealPubkey: string, rumorPubkey: string): boolean {
+  const seal = normalizePubkey(sealPubkey);
+  const rumor = normalizePubkey(rumorPubkey);
+  return !!seal && seal === rumor;
 }
 
 function sessionNip44(): Nip44 {
@@ -190,6 +200,12 @@ async function unwrapGiftWrap(event: NostrEvent, myPubkey: string): Promise<DmMe
   if (!seal || seal.kind !== SEAL_KIND || typeof seal.content !== "string" || typeof seal.pubkey !== "string") {
     return null;
   }
+  // Reject forged seals before attributing authorship.
+  try {
+    if (!verifyEvent(seal)) return null;
+  } catch {
+    return null;
+  }
 
   let rumor: {
     id?: string;
@@ -208,8 +224,10 @@ async function unwrapGiftWrap(event: NostrEvent, myPubkey: string): Promise<DmMe
   if (!rumor || rumor.kind !== RUMOR_KIND || typeof rumor.content !== "string" || typeof rumor.pubkey !== "string") {
     return null;
   }
+  // Spec-required: seal.pubkey === rumor.pubkey — otherwise any sender can impersonate.
+  if (!nip17SealMatchesRumor(seal.pubkey, rumor.pubkey)) return null;
 
-  const from = normalizePubkey(rumor.pubkey);
+  const from = normalizePubkey(seal.pubkey);
   const toTag = rumor.tags?.find((t) => Array.isArray(t) && t[0] === "p")?.[1];
   const to = normalizePubkey(toTag || "") || myPubkey;
   if (!from) return null;
