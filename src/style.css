@@ -3028,30 +3028,11 @@ button.btn-ghost.social-mini {
   color: var(--muted);
 }
 
-.social-chat-peers {
-  width: 100%;
-  max-width: 100%;
-  margin: 0.55rem 0 0;
-  grid-template-columns: repeat(auto-fill, minmax(5.6rem, 1fr));
-  gap: 0.5rem;
-}
-
-.social-chat-peers .garage-kind-btn {
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 0.78rem;
-  letter-spacing: 0.1em;
-  padding: 0.78rem 0.5rem;
-}
-
 .social-chat-view {
   flex: 1;
   min-height: 0;
   align-items: stretch !important;
-  gap: 0.65rem;
+  gap: 0.55rem;
   width: 100%;
 }
 
@@ -3064,7 +3045,7 @@ button.btn-ghost.social-mini {
 }
 
 .social-chat-peer-name {
-  margin: 0.25rem 0 0.45rem;
+  margin: 0.25rem 0 0;
   color: var(--text);
   font-family: var(--font-display);
   font-size: 1rem;
@@ -3077,8 +3058,97 @@ button.btn-ghost.social-mini {
   white-space: nowrap;
 }
 
+/* Friends column (left) + thread (right) — call-list style. */
+.social-chat-body {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(7.2rem, 9.25rem) minmax(0, 1fr);
+  gap: 0.55rem;
+  flex: 1;
+  min-height: 0;
+  align-items: stretch;
+}
+
+.social-chat-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: min(52vh, 28rem);
+  max-height: min(68vh, 36rem);
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: rgba(8, 12, 20, 0.88);
+  padding: 0.55rem 0.4rem;
+  overflow: hidden;
+}
+
+.social-chat-sidebar-label {
+  margin: 0 0 0.4rem;
+  color: var(--accent, #ffc857);
+  font-family: var(--font-display);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.social-chat-peers {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  width: 100%;
+  margin: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.social-chat-peers .garage-kind-btn,
+.social-chat-peers > button {
+  appearance: none;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0.7rem 0.4rem;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.social-chat-peers .garage-kind-btn:hover,
+.social-chat-peers > button:hover {
+  border-color: rgba(255, 200, 87, 0.45);
+}
+
+.social-chat-peers .garage-kind-btn.is-active,
+.social-chat-peers > button.is-active {
+  border-color: #ffc857;
+  background: rgba(255, 200, 87, 0.16);
+  color: #ffc857;
+}
+
+.social-chat-peers .social-empty {
+  margin: 0.35rem 0.15rem;
+  font-size: 0.78rem;
+  text-align: center;
+  line-height: 1.3;
+}
+
 .social-chat-thread {
   width: 100%;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -3097,24 +3167,7 @@ button.btn-ghost.social-mini {
   overflow: hidden;
 }
 
-.social-chat-stack {
-  width: 100%;
-  max-width: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 0.45rem;
-  flex: 1;
-  min-height: 0;
-}
-
-.social-chat-stack > .social-chat-thread {
-  flex: 1;
-  min-height: min(52vh, 28rem);
-}
-
-.social-chat-stack > #social-chat-back,
-.social-chat-stack > .btn-ghost {
+.social-chat-view > #social-chat-back {
   width: 100%;
   max-width: 100%;
   margin: 0;
@@ -3122,6 +3175,32 @@ button.btn-ghost.social-mini {
   padding: 0.95rem 1.2rem;
   font-size: 0.85rem;
   align-self: stretch;
+}
+
+@media (max-width: 520px) {
+  .social-chat-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+
+  .social-chat-sidebar {
+    max-height: 7.5rem;
+    padding: 0.4rem 0.45rem;
+  }
+
+  .social-chat-peers {
+    flex-direction: row;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .social-chat-peers .garage-kind-btn,
+  .social-chat-peers > button {
+    width: auto;
+    min-width: 5.4rem;
+    flex: 0 0 auto;
+  }
 }
 
 .social-chat-messages {
@@ -3375,10 +3454,10 @@ button.btn-ghost.social-mini {
   font-size: 0.88rem;
 }
 
-#social-hub .social-chat-stack > #social-chat-back {
+#social-hub .social-chat-view > #social-chat-back {
   width: 100%;
   max-width: 100%;
-  margin-top: 0.55rem;
+  margin-top: 0.15rem;
 }
 
 #social-find-form.multiplayer-form {
