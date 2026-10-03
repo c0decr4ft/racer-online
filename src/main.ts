@@ -36,9 +36,7 @@ if (!mobileBlocked) {
   try {
     const game = new Game(canvas);
     Object.assign(window, { __game: game, __physicsBackend: vehiclePhysicsBackend() });
-    initControlsHelp({
-      onStartTutorial: () => game.startTutorial(),
-    });
+    initControlsHelp();
     initSettingsUi({
       onApply: (settings) => game.applyGameSettings(settings),
     });
