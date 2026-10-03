@@ -733,7 +733,7 @@ async function refreshActiveLists(): Promise<void> {
 function syncChatWithLabel(): void {
   const label = el("social-chat-with");
   if (!label) return;
-  label.textContent = chatPeer ? chatPeer.name.toUpperCase() : "Pick a friend below";
+  label.textContent = chatPeer ? chatPeer.name.toUpperCase() : "Pick a friend";
 }
 
 function formatChatTime(ms: number): string {

@@ -680,10 +680,13 @@
             <div class="social-chat-header">
               <p class="eyebrow">MESSAGES</p>
               <h1>CHAT</h1>
-              <p id="social-chat-with" class="social-chat-peer-name">Pick a friend below</p>
-              <div id="social-chat-peers" class="garage-kind social-chat-peers"></div>
+              <p id="social-chat-with" class="social-chat-peer-name">Pick a friend</p>
             </div>
-            <div class="social-chat-stack">
+            <div class="social-chat-body">
+              <aside class="social-chat-sidebar" aria-label="Friends">
+                <p class="social-chat-sidebar-label">FRIENDS</p>
+                <div id="social-chat-peers" class="social-chat-peers"></div>
+              </aside>
               <div class="social-chat-thread">
                 <div id="social-chat-messages" class="social-chat-messages" role="log" aria-live="polite"></div>
                 <form id="social-chat-form" class="social-chat-form" autocomplete="off">
@@ -693,8 +696,8 @@
                   </div>
                 </form>
               </div>
-              <button id="social-chat-back" class="btn-ghost" type="button">BACK</button>
             </div>
+            <button id="social-chat-back" class="btn-ghost" type="button">BACK</button>
             <p id="social-chat-status" class="tagline social-status"></p>
           </div>
         </div>
