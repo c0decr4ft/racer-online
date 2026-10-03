@@ -41,6 +41,7 @@ import {
   buildInviteJoinUrl,
   ackLobbyInvite,
   fetchLobbyInvites,
+  registerLobbyInbox,
   onInviteJoin,
   rememberInviteFromDm,
   type LobbyInviteRow,
@@ -211,6 +212,7 @@ function stopRequestPoll(): void {
 
 function startRequestPoll(): void {
   stopRequestPoll();
+  void registerLobbyInbox();
   void syncFriendRequestsFromServer();
   void syncLobbyInvitesFromServer();
   requestPollTimer = window.setInterval(() => {
