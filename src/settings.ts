@@ -11,6 +11,8 @@ export type GameSettings = {
   effects: QualityLevel;
   /** Master volume 0–100 (mute button still silences everything). */
   sound: number;
+  /** Race against your best full-race ghost on each track (all modes). */
+  ghost: boolean;
 };
 
 const STORAGE_KEY = "racer-settings-v1";
@@ -19,6 +21,7 @@ const DEFAULTS: GameSettings = {
   graphics: "high",
   effects: "high",
   sound: 100,
+  ghost: true,
 };
 
 function clampSound(n: number): number {
@@ -41,6 +44,7 @@ export function loadSettings(): GameSettings {
       graphics: normalizeLevel(parsed.graphics, DEFAULTS.graphics),
       effects: normalizeLevel(parsed.effects, DEFAULTS.effects),
       sound: clampSound(Number(parsed.sound ?? DEFAULTS.sound)),
+      ghost: typeof parsed.ghost === "boolean" ? parsed.ghost : DEFAULTS.ghost,
     };
   } catch {
     return { ...DEFAULTS };
@@ -52,6 +56,7 @@ export function saveSettings(next: GameSettings): GameSettings {
     graphics: normalizeLevel(next.graphics, DEFAULTS.graphics),
     effects: normalizeLevel(next.effects, DEFAULTS.effects),
     sound: clampSound(next.sound),
+    ghost: !!next.ghost,
   };
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(clean));

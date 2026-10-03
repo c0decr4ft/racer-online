@@ -119,6 +119,13 @@ import {
   type GameSettings,
   type QualityLevel,
 } from "./settings";
+import {
+  GhostPlayer,
+  GhostRecorder,
+  loadGhostRecording,
+  maybeSaveBestGhost,
+  toGhostKind,
+} from "./ghost";
 
 function formatTime(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return "--:--.---";
@@ -229,6 +236,10 @@ export class Game {
   private perf: PerfSettings = settingsForTier("high");
   /** Manual Settings → Effects (explosions / smoke). */
   private effectsLevel: QualityLevel = "high";
+  /** Manual Settings → Ghost mode (best full-race replay). */
+  private ghostEnabled = true;
+  private ghostPlayer: GhostPlayer | null = null;
+  private readonly ghostRecorder = new GhostRecorder();
   private sunLight: THREE.DirectionalLight | null = null;
   /** Reused coasting input when finished/wrecked online — avoid per-frame object alloc. */
   private readonly _coastInput: InputState = {
@@ -536,6 +547,7 @@ export class Game {
     const saved = loadSettings();
     this.qualityTier = graphicsToTier(saved.graphics);
     this.effectsLevel = saved.effects;
+    this.ghostEnabled = saved.ghost;
     this.perf = settingsForTier(this.qualityTier);
     this.perfThrottle = this.qualityTier !== "high";
     this.audio.setMasterVolume(soundGain(saved.sound));
@@ -2471,6 +2483,7 @@ export class Game {
     this.clearBattleCubes();
     this.net.disconnect();
     this.clearRemotes();
+    this.disposeGhost();
     this.el.netStatus.classList.add("hidden");
     this.pauseTotal = 0;
     this.pauseBegan = 0;
@@ -3581,6 +3594,57 @@ export class Game {
     if (this.spectating) this.stopSpectate();
   }
 
+  private disposeGhost() {
+    this.ghostPlayer?.dispose();
+    this.ghostPlayer = null;
+    this.ghostRecorder.reset();
+  }
+
+  /** Spawn a see-through copy of the player's best full race on this track+vehicle. */
+  private spawnGhostFromBest() {
+    this.ghostPlayer?.dispose();
+    this.ghostPlayer = null;
+    if (!this.ghostEnabled || this.roomSpectating) return;
+    const kind = toGhostKind(this.player?.mesh.userData.kind ?? this.garage.kind);
+    if (!kind) return;
+    const rec = loadGhostRecording(this.trackId, kind);
+    if (!rec) return;
+    this.ghostPlayer = new GhostPlayer(
+      this.scene,
+      kind,
+      this.garage.primary,
+      this.garage.accent,
+      rec,
+    );
+    this.ghostPlayer.setVisible(true);
+  }
+
+  private sampleGhostPose() {
+    if (!this.player || this.gridHeld || this.finished || this.exploding) return;
+    if (this.onlineWrecked || this.roomSpectating || this.godMode) return;
+    const kind = toGhostKind(this.player.mesh.userData.kind);
+    if (!kind) return;
+    const elapsed = this.raceNow() - this.raceStart;
+    if (elapsed < 0) return;
+    const p = this.player.state.position;
+    this.ghostRecorder.push(elapsed, p.x, p.z, this.player.state.heading);
+  }
+
+  /** Persist this race trail when it beats the stored best full-race time. */
+  private commitGhostIfBest(timeMs: number) {
+    if (this.godMode || this.roomSpectating || this.tutorial) return;
+    const kind = toGhostKind(this.player?.mesh.userData.kind ?? this.garage.kind);
+    if (!kind) return;
+    const samples = this.ghostRecorder.snapshot();
+    if (samples.length < 2) return;
+    maybeSaveBestGhost({
+      trackId: this.trackId,
+      kind,
+      timeMs,
+      samples,
+    });
+  }
+
   private setAiVisible(visible: boolean) {
     for (const r of this.rivals) {
       r.vehicle.mesh.visible = visible;
@@ -3641,8 +3705,14 @@ export class Game {
    */
   applyGameSettings(settings: GameSettings) {
     this.effectsLevel = settings.effects;
+    this.ghostEnabled = settings.ghost;
     this.audio.setMasterVolume(soundGain(settings.sound));
     this.applyPerfSettings(graphicsToTier(settings.graphics), { force: true });
+    this.ghostPlayer?.setVisible(this.ghostEnabled);
+    // Mid-race toggle ON with no ghost yet — spawn from stored best if any.
+    if (this.ghostEnabled && !this.ghostPlayer && this.running && !this.gridHeld) {
+      this.spawnGhostFromBest();
+    }
   }
 
   /**
@@ -3806,6 +3876,9 @@ export class Game {
     this.garage = next;
     if (unchanged) return;
 
+    // Ghost mesh is independent of garage rebuilds but must not linger across kind swaps.
+    this.disposeGhost();
+
     const kind = this.garage.kind;
     const playerPos = this.player?.state.position.clone() ?? this.track.startPosition.clone();
     const playerHeading = this.player?.state.heading ?? this.track.startHeading;
@@ -3893,6 +3966,7 @@ export class Game {
     this.onlineFinishPending = false;
     this.pendingFinishMs = 0;
     this.stopSpectate();
+    this.disposeGhost();
     this.paused = false;
     this.running = true;
     this.syncTouchControls();
@@ -4047,6 +4121,8 @@ export class Game {
     // First lap: arm the S1 timer exactly at GO so S1 gets a clean reference
     this.sectorStartMs = this.raceStart;
     this.startRaceDriveAudio();
+    this.ghostRecorder.reset();
+    this.spawnGhostFromBest();
     if (!this.online && !this.solo) {
       for (const r of this.rivals) {
         r.vehicle.state.speed = 5; // modest roll — soft launch still ramps throttle
@@ -4205,6 +4281,10 @@ export class Game {
         remote.update(now, this.camera, remoteViewportWidth, remoteViewportHeight);
       }
     }
+    // Best-race ghost follows the live race clock (GO → finish), all modes.
+    if (this.ghostPlayer && this.running && this.raceStart > 0 && !this.gridHeld) {
+      this.ghostPlayer.update(this.raceNow() - this.raceStart);
+    }
 
     const inputPeek = this.input.getState();
     this.birdLookDown =
@@ -4298,6 +4378,7 @@ export class Game {
             this.player.state.steerAngle = 0;
             this.player.syncCollision();
           }
+          this.sampleGhostPose();
           // After mesh pose is final so the burn stays glued to the wreck.
           this.localWreckFire?.update(dt);
           this.tickDriveAudio(input.throttle);
@@ -5778,6 +5859,7 @@ export class Game {
       this.paused = false;
       this.clearCountdown();
       this.pendingFinishMs = this.raceNow() - this.raceStart;
+      this.commitGhostIfBest(this.pendingFinishMs);
       this.net.reportFinish(this.pendingFinishMs, this.bestLap);
       this.el.wrongWay.classList.add("hidden");
       this.el.delta.textContent = "";
@@ -5813,6 +5895,7 @@ export class Game {
     if (this.pendingFinishMs <= 0) {
       this.pendingFinishMs = this.raceNow() - this.raceStart;
     }
+    this.commitGhostIfBest(this.pendingFinishMs);
     this.showFinishOverlay(result);
   }
 

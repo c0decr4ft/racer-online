@@ -213,6 +213,39 @@ export function enableHeadlightCameras(...cameras: THREE.Camera[]) {
 }
 
 /**
+ * Make a vehicle mesh look like a best-race ghost (semi-transparent, no shadows).
+ * Clones materials so the player's garage paint is never mutated.
+ */
+export function applyGhostAppearance(root: THREE.Group, opacity = 0.42) {
+  const clones = new Map<THREE.Material, THREE.Material>();
+  root.traverse((obj) => {
+    obj.castShadow = false;
+    obj.receiveShadow = false;
+    if (!(obj instanceof THREE.Mesh)) return;
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    const next = mats.map((m) => {
+      if (!m) return m;
+      const existing = clones.get(m);
+      if (existing) return existing;
+      const clone = m.clone();
+      clone.transparent = true;
+      clone.opacity = opacity;
+      clone.depthWrite = false;
+      if ("emissiveIntensity" in clone && typeof (clone as { emissiveIntensity?: number }).emissiveIntensity === "number") {
+        (clone as { emissiveIntensity: number }).emissiveIntensity = Math.min(
+          (clone as { emissiveIntensity: number }).emissiveIntensity,
+          0.15,
+        );
+      }
+      clones.set(m, clone);
+      return clone;
+    });
+    obj.material = Array.isArray(obj.material) ? next : next[0]!;
+  });
+  root.userData.ghost = true;
+}
+
+/**
  * Strip SpotLight beams from a vehicle mesh (AI / remotes).
  * Emissive lamp materials stay — other clients still see glowing lenses.
  */
