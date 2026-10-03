@@ -1,6 +1,7 @@
 /**
  * Best-race ghost — local replay of your fastest full race on a track+vehicle.
- * Not best-lap: the whole race clock (GO → finish) must beat the stored timeMs.
+ * One recording per map + car/bike, shared across solo / AI / multiplayer.
+ * Beating that full-race time replaces it; Settings → RESET clears them.
  */
 import * as THREE from "three";
 import {
@@ -10,6 +11,7 @@ import {
   stripVehicleSpotLights,
 } from "./car";
 import type { VehicleKind } from "./garage";
+import { projectOnTrack } from "./track";
 import { VISUAL_RIDE_Y } from "./vehicle";
 
 const STORAGE_PREFIX = "racer-ghost-v1";
@@ -17,6 +19,9 @@ const SAMPLE_MS = 50;
 /** Cap ~5 minutes @ 20 Hz so localStorage stays sane. */
 const MAX_SAMPLES = 6_000;
 const GHOST_OPACITY = 0.42;
+/** Post-finish cruise (~48 km/h) — same vibe as finished AI cars. */
+const COAST_CRUISE_MS = 13.3;
+const COAST_DECEL = 9;
 
 export type GhostKind = "car" | "bike";
 
@@ -104,6 +109,25 @@ export function saveGhostRecording(rec: GhostRecording): boolean {
   }
 }
 
+/** Wipe every stored best-race ghost (Settings → RESET). */
+export function clearAllGhostRecordings(): number {
+  let removed = 0;
+  try {
+    const keys: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(`${STORAGE_PREFIX}-`)) keys.push(k);
+    }
+    for (const k of keys) {
+      localStorage.removeItem(k);
+      removed += 1;
+    }
+  } catch {
+    /* private mode */
+  }
+  return removed;
+}
+
 /** Keep the recording only when this full-race time beats the stored best. */
 export function maybeSaveBestGhost(opts: {
   trackId: string;
@@ -161,7 +185,15 @@ export class GhostPlayer {
   readonly mesh: THREE.Group;
   private samples: GhostSample[] = [];
   private scene: THREE.Scene;
+  private path: THREE.CatmullRomCurve3;
+  private finishMs: number;
   private visibleWanted = true;
+  private coasting = false;
+  private coastT = 0;
+  private coastSpeed = COAST_CRUISE_MS;
+  private lastElapsed = -1;
+  private readonly _pos = new THREE.Vector3();
+  private readonly _tan = new THREE.Vector3();
 
   constructor(
     scene: THREE.Scene,
@@ -169,8 +201,11 @@ export class GhostPlayer {
     color: number,
     accent: number,
     recording: GhostRecording,
+    path: THREE.CatmullRomCurve3,
   ) {
     this.scene = scene;
+    this.path = path;
+    this.finishMs = Math.max(1, recording.timeMs);
     this.mesh = createVehicle(kind, color, 13, accent);
     stripVehicleSpotLights(this.mesh);
     applyGhostAppearance(this.mesh, GHOST_OPACITY);
@@ -188,22 +223,34 @@ export class GhostPlayer {
     this.mesh.visible = on;
   }
 
-  /** Drive the ghost with ms since GO (same clock as the live race). */
+  /**
+   * Drive the ghost with ms since GO.
+   * After the recorded finish, slows and keeps looping the track (no freeze on the line).
+   */
   update(elapsedMs: number) {
     if (!this.visibleWanted || this.samples.length === 0) {
       this.mesh.visible = false;
       return;
     }
     this.mesh.visible = true;
-    const samples = this.samples;
     const t = Math.max(0, elapsedMs);
-    const last = samples[samples.length - 1]!;
-    if (t >= last.t) {
-      this.mesh.position.set(last.x, VISUAL_RIDE_Y, last.z);
-      this.mesh.rotation.y = last.h;
-      this.mesh.rotation.z = 0;
+    const raceDt =
+      this.lastElapsed < 0 ? 0 : Math.min(0.05, Math.max(0, (t - this.lastElapsed) / 1000));
+    this.lastElapsed = t;
+
+    const lastSampleT = this.samples[this.samples.length - 1]!.t;
+    const pastFinish = t >= this.finishMs || t >= lastSampleT;
+    if (pastFinish) {
+      this.updateCoast(raceDt);
       return;
     }
+
+    this.coasting = false;
+    this.placeFromSamples(t);
+  }
+
+  private placeFromSamples(t: number) {
+    const samples = this.samples;
     let i = 1;
     while (i < samples.length && samples[i]!.t < t) i += 1;
     const b = samples[i]!;
@@ -216,6 +263,42 @@ export class GhostPlayer {
       a.z + (b.z - a.z) * u,
     );
     this.mesh.rotation.y = wrapHeading(a.h + wrapPi(b.h - a.h) * u);
+    this.mesh.rotation.z = 0;
+  }
+
+  private beginCoast() {
+    const last = this.samples[this.samples.length - 1]!;
+    const prev = this.samples[this.samples.length - 2] ?? last;
+    const dist = Math.hypot(last.x - prev.x, last.z - prev.z);
+    const spanSec = Math.max(0.05, (last.t - prev.t) / 1000);
+    this.coastSpeed = Math.max(COAST_CRUISE_MS, Math.min(40, dist / spanSec));
+    this._pos.set(last.x, 0, last.z);
+    this.coastT = projectOnTrack(this.path, this._pos).t;
+    this.coasting = true;
+  }
+
+  private updateCoast(dt: number) {
+    if (!this.coasting) this.beginCoast();
+    if (dt <= 0) {
+      this.path.getPointAt(this.coastT, this._pos);
+      this.path.getTangentAt(this.coastT, this._tan);
+      this.mesh.position.set(this._pos.x, VISUAL_RIDE_Y, this._pos.z);
+      this.mesh.rotation.y = Math.atan2(this._tan.x, this._tan.z);
+      this.mesh.rotation.z = 0;
+      return;
+    }
+    if (this.coastSpeed > COAST_CRUISE_MS) {
+      this.coastSpeed = Math.max(COAST_CRUISE_MS, this.coastSpeed - COAST_DECEL * dt);
+    } else {
+      this.coastSpeed = COAST_CRUISE_MS;
+    }
+    const len = Math.max(1, this.path.getLength());
+    this.coastT = (this.coastT + (this.coastSpeed * dt) / len) % 1;
+    if (this.coastT < 0) this.coastT += 1;
+    this.path.getPointAt(this.coastT, this._pos);
+    this.path.getTangentAt(this.coastT, this._tan);
+    this.mesh.position.set(this._pos.x, VISUAL_RIDE_Y, this._pos.z);
+    this.mesh.rotation.y = Math.atan2(this._tan.x, this._tan.z);
     this.mesh.rotation.z = 0;
   }
 

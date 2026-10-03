@@ -39,6 +39,7 @@ if (!mobileBlocked) {
     initControlsHelp();
     initSettingsUi({
       onApply: (settings) => game.applyGameSettings(settings),
+      onResetGhosts: () => game.clearGhostRecords(),
     });
     initSocialUi({
       onJoinInvite: (invite) => {

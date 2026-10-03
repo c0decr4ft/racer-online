@@ -117,6 +117,7 @@ import {
   type QualityLevel,
 } from "./settings";
 import {
+  clearAllGhostRecordings,
   GhostPlayer,
   GhostRecorder,
   loadGhostRecording,
@@ -3590,8 +3591,16 @@ export class Game {
       this.garage.primary,
       this.garage.accent,
       rec,
+      this.track.path,
     );
     this.ghostPlayer.setVisible(true);
+  }
+
+  /** Settings → RESET — wipe every stored best-race ghost. */
+  clearGhostRecords() {
+    clearAllGhostRecordings();
+    this.disposeGhost();
+    this.notify("Ghost times cleared");
   }
 
   private sampleGhostPose() {
