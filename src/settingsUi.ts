@@ -11,6 +11,7 @@ import { closeControlsHelp, closeHomeInstructions } from "./controlsHelp";
 export type SettingsApplyFn = (settings: GameSettings) => void;
 
 let applyFn: SettingsApplyFn | null = null;
+let resetGhostsFn: (() => void) | null = null;
 let current: GameSettings = loadSettings();
 
 export function getUiSettings(): GameSettings {
@@ -47,8 +48,12 @@ function commit(partial: Partial<GameSettings>) {
 /**
  * Wire homepage Settings button. Call `onApply` whenever the player changes a value.
  */
-export function initSettingsUi(opts: { onApply: SettingsApplyFn }): void {
+export function initSettingsUi(opts: {
+  onApply: SettingsApplyFn;
+  onResetGhosts?: () => void;
+}): void {
   applyFn = opts.onApply;
+  resetGhostsFn = opts.onResetGhosts ?? null;
   current = loadSettings();
 
   const btn = document.getElementById("settings-btn");
@@ -127,6 +132,11 @@ export function initSettingsUi(opts: { onApply: SettingsApplyFn }): void {
     const value = t.dataset.value;
     if (value !== "on" && value !== "off") return;
     commit({ ghost: value === "on" });
+  });
+
+  document.getElementById("settings-ghost-reset")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    resetGhostsFn?.();
   });
 
   const slider = document.getElementById("settings-sound");

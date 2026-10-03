@@ -2648,6 +2648,22 @@ body:has(#social-invite-banner:not(.hidden)) .toast-stack {
   font-size: 0.85rem;
 }
 
+.settings-ghost-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.35rem;
+  align-items: stretch;
+}
+
+.settings-ghost-row .settings-seg {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.settings-ghost-reset {
+  min-width: 4.5rem;
+  letter-spacing: 0.08em;
+}
+
 .settings-seg {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

@@ -313,10 +313,15 @@
 
           <div class="settings-section">
             <h3 class="settings-label">Ghost mode</h3>
-            <p class="settings-hint">Race a see-through copy of your best full race on this map</p>
-            <div id="settings-ghost" class="settings-seg" role="group" aria-label="Ghost mode">
-              <button type="button" class="settings-seg-btn" data-value="off">OFF</button>
-              <button type="button" class="settings-seg-btn is-active" data-value="on">ON</button>
+            <p class="settings-hint">One best full race per map — same ghost in every mode; beat it to update</p>
+            <div class="settings-ghost-row">
+              <div id="settings-ghost" class="settings-seg" role="group" aria-label="Ghost mode">
+                <button type="button" class="settings-seg-btn" data-value="off">OFF</button>
+                <button type="button" class="settings-seg-btn is-active" data-value="on">ON</button>
+              </div>
+              <button id="settings-ghost-reset" class="settings-seg-btn settings-ghost-reset" type="button">
+                RESET
+              </button>
             </div>
           </div>
 
