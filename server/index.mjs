@@ -1187,11 +1187,16 @@ function presenceSnapshot(store) {
       maxPlayers: room.maxPlayers,
       trackId: room.trackId || "",
       eventMode: room.eventMode || "race",
-      racers: [...room.clients.values()].map((c) => ({
-        id: c.id,
-        name: c.name || "RACER",
-        kind: c.kind === "bike" ? "bike" : "car",
-      })),
+      racers: [...room.clients.values()].map((c) => {
+        const pk = normalizePubkeyHex(c.pose?.pubkey || c.pubkey);
+        const rawName = c.name || c.pose?.name || "RACER";
+        return {
+          id: c.id,
+          name: pk ? resolveOnlineDisplayName(pk, rawName) : sanitizePlayerName(rawName),
+          kind: (c.pose?.kind || c.kind) === "bike" ? "bike" : "car",
+          pubkey: pk || undefined,
+        };
+      }),
     })),
     online: listOnlinePlayers(nowAt),
   };
@@ -1211,7 +1216,8 @@ function normalizePubkeyHex(raw) {
 function sanitizePlayerName(raw) {
   const cleaned = String(raw ?? "")
     .normalize("NFKC")
-    .replace(/[^\p{L}\p{N} _\-.]/gu, "")
+    // Keep ellipsis so short-npub labels (npub1abcd…wxyz) round-trip.
+    .replace(/[^\p{L}\p{N} _\-.…]/gu, "")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 24)
@@ -1223,6 +1229,50 @@ function sanitizePlayerName(raw) {
 function isPlaceholderPlayerName(name) {
   const n = String(name || "").trim().toLowerCase();
   return !n || n === "racer" || n === "nostr racer";
+}
+
+/** Short npub / bare hex fallback — unique when two accounts share "RACER". */
+function shortPubkeyLabel(pubkey) {
+  const pk = normalizePubkeyHex(pubkey);
+  if (!pk) return "RACER";
+  try {
+    const npub = nip19.npubEncode(pk);
+    return `${npub.slice(0, 12)}…${npub.slice(-4)}`;
+  } catch {
+    return `${pk.slice(0, 12)}…`;
+  }
+}
+
+/** True for npub short labels (with or without ellipsis). */
+function isShortPubkeyLabel(name) {
+  const n = String(name || "").trim().toLowerCase();
+  return /^npub1[0-9a-z…]+$/i.test(n) || /^[0-9a-f]{8,16}…?[0-9a-f]{0,4}$/i.test(n);
+}
+
+function isWeakPlayerName(name) {
+  return isPlaceholderPlayerName(name) || isShortPubkeyLabel(name);
+}
+
+/** Prefer a real username over RACER / short-npub fallbacks. */
+function preferPlayerName(prev, next) {
+  const a = sanitizePlayerName(prev);
+  const b = sanitizePlayerName(next);
+  if (!isWeakPlayerName(b)) return b;
+  if (!isWeakPlayerName(a)) return a;
+  if (!isPlaceholderPlayerName(b)) return b;
+  if (!isPlaceholderPlayerName(a)) return a;
+  return b || a || "RACER";
+}
+
+function resolveOnlineDisplayName(pubkey, heartbeatName) {
+  const pk = normalizePubkeyHex(pubkey);
+  const hb = sanitizePlayerName(heartbeatName);
+  const dirName = pk && playersDir.players[pk] ? sanitizePlayerName(playersDir.players[pk].name) : "";
+  if (!isWeakPlayerName(hb)) return hb;
+  if (dirName && !isWeakPlayerName(dirName)) return dirName;
+  if (!isPlaceholderPlayerName(hb)) return hb;
+  if (dirName && !isPlaceholderPlayerName(dirName)) return dirName;
+  return shortPubkeyLabel(pk);
 }
 
 function emptyPlayers() {
@@ -1591,14 +1641,8 @@ function touchPlayerDirectory(pubkey, name, now = Date.now()) {
   if (!pk) return;
   const prev = playersDir.players[pk];
   const cleaned = sanitizePlayerName(name);
-  const nextName =
-    !isPlaceholderPlayerName(cleaned)
-      ? cleaned
-      : prev && !isPlaceholderPlayerName(prev.name)
-        ? prev.name
-        : cleaned;
   const next = {
-    name: nextName,
+    name: preferPlayerName(prev?.name, cleaned),
     lastSeen: Math.max(prev?.lastSeen || 0, now),
   };
   if (prev && prev.name === next.name && prev.lastSeen === next.lastSeen) return;
@@ -1650,7 +1694,11 @@ function listOnlinePlayers(now = Date.now()) {
     if (!id?.pubkey) continue;
     const prev = byPk.get(id.pubkey);
     if (!prev || id.at >= prev.at) {
-      byPk.set(id.pubkey, { pubkey: id.pubkey, name: id.name, at: Math.max(at, id.at) });
+      byPk.set(id.pubkey, {
+        pubkey: id.pubkey,
+        name: resolveOnlineDisplayName(id.pubkey, id.name),
+        at: Math.max(at, id.at),
+      });
     }
   }
   return [...byPk.values()].sort((a, b) => a.name.localeCompare(b.name) || a.pubkey.localeCompare(b.pubkey));

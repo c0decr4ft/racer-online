@@ -2677,11 +2677,16 @@ export class Game {
       return;
     }
 
-    // name(lower) → room racer for watch links from the signed-in list
-    const watchByName = new Map<string, { room: string; id: string; name: string }>();
+    // pubkey → room racer (preferred); name fallback only when unique
+    type WatchTarget = { room: string; id: string; name: string };
+    const watchByPubkey = new Map<string, WatchTarget>();
+    const watchByName = new Map<string, WatchTarget | null>();
     for (const room of rooms) {
       for (const r of room.racers || []) {
-        watchByName.set(r.name.toLowerCase(), { room: room.room, id: r.id, name: r.name });
+        const target: WatchTarget = { room: room.room, id: r.id, name: r.name };
+        if (r.pubkey) watchByPubkey.set(r.pubkey.toLowerCase(), target);
+        const key = r.name.toLowerCase();
+        watchByName.set(key, watchByName.has(key) ? null : target);
       }
     }
 
@@ -2698,6 +2703,7 @@ export class Game {
     }
 
     if (online.length) {
+      const mine = getSession()?.pubkey?.toLowerCase() || "";
       const block = document.createElement("div");
       block.className = "dev-live-block";
       const title = document.createElement("div");
@@ -2714,10 +2720,16 @@ export class Game {
         const li = document.createElement("li");
         const name = document.createElement("span");
         name.className = "dev-live-name";
-        name.textContent = player.name;
+        const pk = (player.pubkey || "").toLowerCase();
+        const raw = (player.name || "").trim();
+        const placeholder = !raw || /^racer$/i.test(raw) || /^nostr racer$/i.test(raw);
+        let label = placeholder && pk ? shortNpub(pk) : raw || (pk ? shortNpub(pk) : "RACER");
+        if (pk && pk === mine) label = `${label} · YOU`;
+        name.textContent = label;
         const side = document.createElement("span");
         side.className = "dev-live-kind";
-        const watch = watchByName.get(player.name.toLowerCase());
+        const watch =
+          (pk && watchByPubkey.get(pk)) || watchByName.get((player.name || "").toLowerCase()) || null;
         if (watch) {
           side.textContent = "WATCH";
           li.classList.add("is-watchable");
@@ -2743,7 +2755,7 @@ export class Game {
     maxPlayers: number;
     trackId?: string;
     eventMode?: string;
-    racers?: { id: string; name: string; kind: "car" | "bike" }[];
+    racers?: { id: string; name: string; kind: "car" | "bike"; pubkey?: string }[];
   }): HTMLDivElement {
     const block = document.createElement("div");
     block.className = "dev-live-block";
@@ -2769,28 +2781,33 @@ export class Game {
 
     const list = document.createElement("ul");
     list.className = "dev-live-racers";
-    const racers = room.racers?.length
-      ? room.racers
-      : Array.from({ length: room.players }, (_, i) => ({
-          id: String(i),
-          name: `Player ${i + 1}`,
-          kind: "car" as const,
-        }));
+    const racers: { id: string; name: string; kind: "car" | "bike"; pubkey?: string }[] =
+      room.racers?.length
+        ? room.racers
+        : Array.from({ length: room.players }, (_, i) => ({
+            id: String(i),
+            name: `Player ${i + 1}`,
+            kind: "car" as const,
+          }));
     for (const racer of racers) {
       const li = document.createElement("li");
       const name = document.createElement("span");
       name.className = "dev-live-name";
-      name.textContent = racer.name;
+      const raw = (racer.name || "").trim();
+      const placeholder = !raw || /^racer$/i.test(raw) || /^nostr racer$/i.test(raw);
+      const pk = racer.pubkey;
+      const label = placeholder && pk ? shortNpub(pk) : raw || (pk ? shortNpub(pk) : "RACER");
+      name.textContent = label;
       const kind = document.createElement("span");
       kind.className = "dev-live-kind";
       kind.textContent = "WATCH";
       li.append(name, kind);
       li.classList.add("is-watchable");
-      li.title = `Watch ${racer.name} live`;
+      li.title = `Watch ${label} live`;
       li.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
-        void this.beginDevSpectate(room.room, racer.id, racer.name);
+        void this.beginDevSpectate(room.room, racer.id, label);
       });
       list.appendChild(li);
     }

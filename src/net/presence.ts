@@ -13,6 +13,7 @@
  */
 
 import { apiUrl } from "./apiBase";
+import { shortNpub } from "../nostr/profile";
 
 const PUBLIC_BLOB_URL =
   "https://jsonblob.com/api/jsonBlob/019fbe1c-6ce6-78a2-b891-3908b5a6b901";
@@ -35,7 +36,12 @@ export type PresenceBucket = { key: string; count: number; at: number };
 export type PresenceSample = { at: number; count: number };
 export type PresenceOnlinePlayer = { pubkey: string; name: string; at?: number };
 
-export type PresenceRoomRacer = { id: string; name: string; kind: "car" | "bike" };
+export type PresenceRoomRacer = {
+  id: string;
+  name: string;
+  kind: "car" | "bike";
+  pubkey?: string;
+};
 
 export type PresenceRoom = {
   room: string;
@@ -70,9 +76,11 @@ export function setPresenceIdentity(identity: { pubkey: string; name: string } |
   const name = String(identity.name || "")
     .trim()
     .slice(0, 24);
+  const pk = identity.pubkey.toLowerCase();
+  const placeholder = !name || /^racer$/i.test(name) || /^nostr racer$/i.test(name);
   presenceIdentity = {
-    pubkey: identity.pubkey.toLowerCase(),
-    name: name || "RACER",
+    pubkey: pk,
+    name: placeholder ? shortNpub(pk) : name,
   };
 }
 
@@ -293,11 +301,16 @@ function parsePresenceRooms(raw: unknown): PresenceRoom[] | undefined {
     if (Array.isArray(r.racers)) {
       for (const entry of r.racers) {
         if (!entry || typeof entry !== "object") continue;
-        const e = entry as { id?: unknown; name?: unknown; kind?: unknown };
+        const e = entry as { id?: unknown; name?: unknown; kind?: unknown; pubkey?: unknown };
+        const pk =
+          typeof e.pubkey === "string" && /^[0-9a-f]{64}$/i.test(e.pubkey)
+            ? e.pubkey.toLowerCase()
+            : undefined;
         racers.push({
           id: typeof e.id === "string" ? e.id : "",
           name: typeof e.name === "string" && e.name.trim() ? e.name.trim().slice(0, 24) : "RACER",
           kind: e.kind === "bike" ? "bike" : "car",
+          pubkey: pk,
         });
       }
     }
