@@ -354,10 +354,8 @@ async function syncFriendRequestsFromServer(): Promise<void> {
   for (const row of snap.outgoing) {
     upsertOutgoingRequest(me, { pubkey: row.pubkey, name: row.name });
   }
-  const serverFriends = new Set<string>();
   for (const row of snap.friends) {
     if (row.pubkey === me.toLowerCase()) continue;
-    serverFriends.add(row.pubkey);
     const label = peerLabel(row.pubkey, row.name);
     if (!isFriend(me, row.pubkey)) {
       addFriend(me, { pubkey: row.pubkey, name: label });
@@ -371,20 +369,20 @@ async function syncFriendRequestsFromServer(): Promise<void> {
       }
     }
   }
-  // After a successful heal-sync, drop local friends the server no longer lists
-  // (REMOVE / peer unfriend). Skip when heal failed so an empty fetch can't wipe
-  // the local list after a server redeploy.
+  // After a successful heal-sync, drop only friends the server marked severed
+  // (REMOVE / peer unfriend). Do NOT wipe on mere absence — unsigned sync floods
+  // used to evict bonds from the global cap and look like a mass REMOVE.
   if (healed) {
+    const severed = new Set((snap.severed || []).map((r) => r.pubkey));
     for (const f of listFriends(me)) {
-      if (!serverFriends.has(f.pubkey)) {
-        removeFriend(me, f.pubkey);
-        if (chatPeer?.pubkey === f.pubkey) {
-          chatPeer = null;
-          stopThread?.();
-          stopThread = null;
-        }
-        changed = true;
+      if (!severed.has(f.pubkey)) continue;
+      removeFriend(me, f.pubkey);
+      if (chatPeer?.pubkey === f.pubkey) {
+        chatPeer = null;
+        stopThread?.();
+        stopThread = null;
       }
+      changed = true;
     }
   }
   for (const row of snap.accepted) {
