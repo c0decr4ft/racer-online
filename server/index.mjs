@@ -23,6 +23,13 @@ import {
   verifyLobbyAuthEvent,
   normalizeInboxKey,
 } from "./lobbyInvites.mjs";
+import {
+  emptyFriendRequests,
+  friendshipKey,
+  normalizeFriendRequests,
+  mergeFriendRequestStoresPreferLocal,
+  isBurnedFeedbackNostrKey,
+} from "./friendHydrate.mjs";
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -1337,12 +1344,6 @@ function savePlayers(store) {
 let playersDir = loadPlayers();
 
 /** Server-mediated friend requests — no NIP-17 encrypt/sign (avoids extension permission storms). */
-const FRIEND_REQUEST_MAX = 2_000;
-const FRIEND_ACCEPT_TTL_MS = 14 * 24 * 60 * 60 * 1000;
-
-function emptyFriendRequests() {
-  return { pending: [], accepts: [], friendships: [], severed: [] };
-}
 
 function loadFriendRequests() {
   try {
@@ -1352,105 +1353,6 @@ function loadFriendRequests() {
   } catch {
     return emptyFriendRequests();
   }
-}
-
-function friendshipKey(a, b) {
-  return a < b ? `${a}:${b}` : `${b}:${a}`;
-}
-
-/** Keep unfriend blocks long enough that a peer's heal-sync cannot resurrect the bond. */
-const FRIEND_SEVERED_TTL_MS = 90 * 24 * 60 * 60 * 1000;
-
-function normalizeFriendRequests(data) {
-  const store = emptyFriendRequests();
-  if (!data || typeof data !== "object") return store;
-  const pending = Array.isArray(data.pending) ? data.pending : [];
-  const accepts = Array.isArray(data.accepts) ? data.accepts : [];
-  const friendships = Array.isArray(data.friendships) ? data.friendships : [];
-  const severed = Array.isArray(data.severed) ? data.severed : [];
-  const now = Date.now();
-  for (const row of pending) {
-    if (!row || typeof row !== "object") continue;
-    const from = normalizePubkeyHex(row.from);
-    const to = normalizePubkeyHex(row.to);
-    if (!from || !to || from === to) continue;
-    store.pending.push({
-      from,
-      to,
-      fromName: sanitizePlayerName(row.fromName),
-      at: typeof row.at === "number" && Number.isFinite(row.at) ? Math.round(row.at) : now,
-    });
-  }
-  for (const row of accepts) {
-    if (!row || typeof row !== "object") continue;
-    const from = normalizePubkeyHex(row.from);
-    const to = normalizePubkeyHex(row.to);
-    if (!from || !to || from === to) continue;
-    const at = typeof row.at === "number" && Number.isFinite(row.at) ? Math.round(row.at) : now;
-    if (now - at > FRIEND_ACCEPT_TTL_MS) continue;
-    store.accepts.push({
-      from,
-      to,
-      fromName: sanitizePlayerName(row.fromName),
-      at,
-    });
-  }
-  for (const row of friendships) {
-    if (!row || typeof row !== "object") continue;
-    const a = normalizePubkeyHex(row.a);
-    const b = normalizePubkeyHex(row.b);
-    if (!a || !b || a === b) continue;
-    store.friendships.push({
-      a,
-      b,
-      aName: sanitizePlayerName(row.aName),
-      bName: sanitizePlayerName(row.bName),
-      at: typeof row.at === "number" && Number.isFinite(row.at) ? Math.round(row.at) : now,
-    });
-  }
-  for (const row of severed) {
-    if (!row || typeof row !== "object") continue;
-    const a = normalizePubkeyHex(row.a);
-    const b = normalizePubkeyHex(row.b);
-    if (!a || !b || a === b) continue;
-    const at = typeof row.at === "number" && Number.isFinite(row.at) ? Math.round(row.at) : now;
-    if (now - at > FRIEND_SEVERED_TTL_MS) continue;
-    store.severed.push({ a, b, at });
-  }
-  const pendMap = new Map();
-  for (const row of store.pending.sort((a, b) => a.at - b.at)) {
-    pendMap.set(`${row.from}:${row.to}`, row);
-  }
-  store.pending = [...pendMap.values()]
-    .sort((a, b) => b.at - a.at)
-    .slice(0, FRIEND_REQUEST_MAX);
-  store.accepts = store.accepts.sort((a, b) => b.at - a.at).slice(0, FRIEND_REQUEST_MAX);
-  const friendMap = new Map();
-  for (const row of store.friendships.sort((a, b) => a.at - b.at)) {
-    friendMap.set(friendshipKey(row.a, row.b), row);
-  }
-  store.friendships = [...friendMap.values()]
-    .sort((a, b) => b.at - a.at)
-    .slice(0, FRIEND_REQUEST_MAX);
-  const severMap = new Map();
-  for (const row of store.severed.sort((a, b) => a.at - b.at)) {
-    severMap.set(friendshipKey(row.a, row.b), row);
-  }
-  // Drop active friendships that are still marked severed (heal races).
-  store.friendships = store.friendships.filter((r) => !severMap.has(friendshipKey(r.a, r.b)));
-  store.severed = [...severMap.values()]
-    .sort((a, b) => b.at - a.at)
-    .slice(0, FRIEND_REQUEST_MAX);
-  return store;
-}
-
-function mergeFriendRequestStores(local, remote) {
-  return normalizeFriendRequests({
-    pending: [...(local.pending || []), ...(remote.pending || [])],
-    accepts: [...(local.accepts || []), ...(remote.accepts || [])],
-    friendships: [...(local.friendships || []), ...(remote.friendships || [])],
-    severed: [...(local.severed || []), ...(remote.severed || [])],
-  });
 }
 
 function saveFriendRequests(store) {
@@ -1467,6 +1369,13 @@ function saveFriendRequests(store) {
 
 async function mirrorFriendRequests(store) {
   if (!FEEDBACK_NOSTR_SK) return;
+  // Committed default nsec is public — publishing here only feeds relay poison.
+  if (isBurnedFeedbackNostrKey(FEEDBACK_NOSTR_NSEC_HEX)) {
+    console.warn(
+      "[friend-requests] refusing Nostr mirror — default FEEDBACK_NOSTR_NSEC is public; set a fresh env secret",
+    );
+    return;
+  }
   try {
     const body = normalizeFriendRequests(store);
     const { SimplePool } = await import("nostr-tools");
@@ -1493,6 +1402,14 @@ async function mirrorFriendRequests(store) {
 
 async function hydrateFriendRequestsFromBlob() {
   if (!FEEDBACK_NOSTR_SK) return;
+  // Same burned key as feedback: anyone can publish severed / friendship floods
+  // that the old union-merge applied every 15 minutes.
+  if (isBurnedFeedbackNostrKey(FEEDBACK_NOSTR_NSEC_HEX)) {
+    console.warn(
+      "[friend-requests] refusing Nostr hydrate — default FEEDBACK_NOSTR_NSEC is public; set a fresh env secret",
+    );
+    return;
+  }
   try {
     const { SimplePool, getPublicKey } = await import("nostr-tools");
     const pubkey = getPublicKey(FEEDBACK_NOSTR_SK);
@@ -1524,7 +1441,8 @@ async function hydrateFriendRequestsFromBlob() {
       }
     }
     const local = loadFriendRequests();
-    const merged = mergeFriendRequestStores(local, remote);
+    // Prefer disk-local bonds — remote severed / newest-wins floods must not wipe them.
+    const merged = mergeFriendRequestStoresPreferLocal(local, remote);
     const before =
       local.pending.length + local.accepts.length + local.friendships.length;
     const after =
