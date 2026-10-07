@@ -192,7 +192,10 @@ function attachHeadBeams(
     );
     light.position.set(m.x, m.y, m.z);
     light.castShadow = false;
-    // Off lights must be invisible — intensity 0 still hits the fragment shader.
+    // Hidden until the first night race. Intensity 0 still runs in the fragment
+    // shader, but hiding a light that was already on changes NUM_SPOT_LIGHTS and
+    // recompiles every lit material (a half-second stall). setVehicleHeadlights
+    // latches visibility on and only fades intensity after that.
     light.visible = false;
     // Stay on default layer 0 so the chase/rear cameras collect these lights.
     light.layers.enable(HEADLIGHT_LAYER);
@@ -299,8 +302,8 @@ export function setVehicleHeadlights(
   if (beams) {
     for (const b of beams) {
       const lit = on && allowBeams;
+      if (lit) b.visible = true;
       b.intensity = lit ? HEAD_BEAM_INTENSITY : 0;
-      b.visible = lit;
     }
   }
   const heads = root.userData.headLightMaterials as THREE.MeshStandardMaterial[] | undefined;

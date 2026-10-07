@@ -837,7 +837,10 @@ export class WildlifeHerd {
         }),
     );
     this.burstLight = new THREE.PointLight(0xff7a3a, 0, 16);
-    this.burstLight.visible = false;
+    // Stay visible for the herd's lifetime. Toggling visible changes
+    // NUM_POINT_LIGHTS and recompiles every lit shader (hundreds of ms).
+    this.burstLight.visible = true;
+    this.burstLight.intensity = 0;
     this.group.add(this.burstLight);
     const far = spec.outfieldFar ?? OUTFIELD_FAR;
     const near = spec.outfieldNear ?? ZONE_CLEAR;
@@ -923,7 +926,6 @@ export class WildlifeHerd {
   dispose() {
     this.clearBursts();
     this.burstLight.intensity = 0;
-    this.burstLight.visible = false;
     this.burstGeo.dispose();
     for (const m of this.burstMats) m.dispose();
     for (const mesh of this.burstPool) {
@@ -1334,7 +1336,6 @@ export class WildlifeHerd {
     // Reuse the resident light — never add/remove (avoids shader recompile freezes).
     this.burstLight.position.set(ox, 1.6, oz);
     this.burstLight.intensity = 2.2;
-    this.burstLight.visible = true;
   }
 
   private respawnAnimal(animal: Animal) {
@@ -1386,12 +1387,8 @@ export class WildlifeHerd {
         this.bursts.splice(i, 1);
       }
     }
-    if (this.burstLight.visible) {
+    if (this.burstLight.intensity > 0) {
       this.burstLight.intensity = Math.max(0, this.burstLight.intensity - dt * 8);
-      if (this.burstLight.intensity <= 0.05) {
-        this.burstLight.intensity = 0;
-        this.burstLight.visible = false;
-      }
     }
   }
 
@@ -1403,7 +1400,6 @@ export class WildlifeHerd {
     }
     this.bursts.length = 0;
     this.burstLight.intensity = 0;
-    this.burstLight.visible = false;
   }
 }
 

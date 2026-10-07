@@ -590,7 +590,10 @@ export class Game {
 
     // Resident flash light — never add/remove (shader recompile freezes on weak GPUs).
     this.explodeFlashLight = new THREE.PointLight(0xff7a3a, 0, 28);
-    this.explodeFlashLight.visible = false;
+    // Always in the light list. Hiding it on explode-end changes NUM_POINT_LIGHTS
+    // and recompiles every material mid-race.
+    this.explodeFlashLight.visible = true;
+    this.explodeFlashLight.intensity = 0;
     this.scene.add(this.explodeFlashLight);
 
     this.input.onPadConnected = () =>
@@ -4029,6 +4032,9 @@ export class Game {
     this.audio.stopRaceAudio();
     this.audio.unmute();
     this.syncMuteBtn();
+    // Lines, ghost mesh, night-light count, and the first shadow pass happen
+    // before 3-2-1. Doing them on GO or the first painted frame is the stall.
+    this.warmRacePresentation();
     if ((isDevGarageKind(this.garage.kind) && !this.online) || this.roomSpectating) {
       // Scout / live watch — skip 3-2-1 so poses flow immediately.
       this.clearCountdown();
@@ -4036,6 +4042,39 @@ export class Game {
     } else {
       this.beginCountdown();
     }
+  }
+
+  /**
+   * Pay shader compile, shadow-map alloc, AI groove build, and ghost mesh
+   * creation before the countdown is on screen.
+   */
+  private warmRacePresentation() {
+    if (!this.player) return;
+    const lamps = this._lampMeshes;
+    lamps.length = 0;
+    for (const r of this.rivals) {
+      if (r.vehicle.mesh.visible) lamps.push(r.vehicle.mesh);
+    }
+    this.weather.update(0, this.player.state.position, this.player.state.heading, true, this.player.mesh, {
+      particles: this.weather.mode === "rain",
+      lampMeshes: lamps,
+    });
+    if (!this.online && !this.solo) {
+      for (const r of this.rivals) r.warmLine(this.track.path);
+    }
+    this.spawnGhostFromBest();
+    // First engine-smoke puff used to build the particle buffer mid-race (wall 9).
+    if (this.perf.engineSmoke && this.effectsLevel !== "low") {
+      this.ensureEngineSmoke();
+      if (this.engineSmoke) this.engineSmoke.visible = false;
+    }
+    const holdGrid = !((isDevGarageKind(this.garage.kind) && !this.online) || this.roomSpectating);
+    this.scene.updateMatrixWorld(true);
+    this.renderer.shadowMap.needsUpdate = true;
+    this.renderer.compile(this.scene, this.camera);
+    this.renderer.render(this.scene, this.camera);
+    this.shadowNeedsWarmup = false;
+    if (holdGrid) this.ghostPlayer?.setVisible(false);
   }
 
   private beginCountdown() {
@@ -4058,10 +4097,11 @@ export class Game {
     el.classList.toggle("go", label === "GO");
     el.textContent = label;
     el.classList.remove("hidden");
-    // Retrigger CSS pulse on each digit
+    // Retrigger CSS pulse without a forced layout read (offsetWidth stalls a frame).
     el.style.animation = "none";
-    void el.offsetWidth;
-    el.style.animation = "";
+    requestAnimationFrame(() => {
+      if (el.dataset.label === label) el.style.animation = "";
+    });
     this.audio.playCountdown(label);
   }
 
@@ -4091,7 +4131,7 @@ export class Game {
     this.sectorStartMs = this.raceStart;
     this.startRaceDriveAudio();
     this.ghostRecorder.reset();
-    this.spawnGhostFromBest();
+    this.ghostPlayer?.setVisible(true);
     if (!this.online && !this.solo) {
       for (const r of this.rivals) {
         r.vehicle.state.speed = 5; // modest roll — soft launch still ramps throttle
@@ -5044,8 +5084,8 @@ export class Game {
     }
     if (this.explodeFlashLight) {
       this.explodeFlashLight.position.set(origin.x, 2.2, origin.z);
-      this.explodeFlashLight.intensity = effectsFlashIntensity(this.effectsLevel);
-      this.explodeFlashLight.visible = this.effectsLevel !== "low";
+      this.explodeFlashLight.intensity =
+        this.effectsLevel === "low" ? 0 : effectsFlashIntensity(this.effectsLevel);
     }
   }
 
@@ -5065,12 +5105,8 @@ export class Game {
         this.explodeParts.splice(i, 1);
       }
     }
-    if (this.explodeFlashLight?.visible) {
+    if (this.explodeFlashLight && this.explodeFlashLight.intensity > 0) {
       this.explodeFlashLight.intensity = Math.max(0, this.explodeFlashLight.intensity - dt * 10);
-      if (this.explodeFlashLight.intensity <= 0.05) {
-        this.explodeFlashLight.intensity = 0;
-        this.explodeFlashLight.visible = false;
-      }
     }
   }
 
@@ -5080,10 +5116,7 @@ export class Game {
       (p.mesh.material as THREE.MeshBasicMaterial).dispose();
     }
     this.explodeParts.length = 0;
-    if (this.explodeFlashLight) {
-      this.explodeFlashLight.intensity = 0;
-      this.explodeFlashLight.visible = false;
-    }
+    if (this.explodeFlashLight) this.explodeFlashLight.intensity = 0;
   }
 
   /** @param restoreCar show player mesh again (race restart / home). */

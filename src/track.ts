@@ -5824,6 +5824,9 @@ export function projectOnTrackNear(
  * smooth parallel of the centerline and never zigzags into a barrier.
  * Safe |offset| is the caller's responsibility (keep well inside road half-width).
  */
+const _traceCenter = new THREE.Vector3();
+const _traceTan = new THREE.Vector3();
+
 export class OffsetRacingLine {
   readonly offset: number;
   readonly count: number;
@@ -5868,19 +5871,19 @@ export class OffsetRacingLine {
     let prevN: THREE.Vector3 | null = null;
     for (let i = 0; i < n; i++) {
       const t = i / n;
-      const center = path.getPointAt(t);
-      const tan = path.getTangentAt(t).normalize();
+      path.getPointAt(t, _traceCenter);
+      path.getTangentAt(t, _traceTan).normalize();
       // Left-hand lateral in XZ (matches spawn / projectOnTrack)
-      const normal = new THREE.Vector3(-tan.z, 0, tan.x);
+      const normal = new THREE.Vector3(-_traceTan.z, 0, _traceTan.x);
       if (prevN && normal.dot(prevN) < 0) normal.negate();
       const nLen = Math.hypot(normal.x, normal.z) || 1;
       normal.x /= nLen;
       normal.z /= nLen;
-      prevN = normal.clone();
+      prevN = normal;
 
       ts[i] = t;
-      points.push(center.clone().addScaledVector(normal, offset));
-      tangents.push(tan.clone());
+      points.push(_traceCenter.clone().addScaledVector(normal, offset));
+      tangents.push(_traceTan.clone());
       normals.push(normal);
     }
 
