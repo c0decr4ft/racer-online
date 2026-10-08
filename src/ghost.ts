@@ -128,6 +128,23 @@ export function clearAllGhostRecordings(): number {
   return removed;
 }
 
+/**
+ * Best-race ghosts are completed full races only (lap counter past totalLaps).
+ * Multiplayer `raceResult` also ends the session for unfinished players with a
+ * shorter clock — those DNFs must never overwrite a real PB.
+ */
+export function canCommitBestGhost(opts: {
+  lap: number;
+  totalLaps: number;
+  godMode?: boolean;
+  spectating?: boolean;
+}): boolean {
+  if (opts.godMode || opts.spectating) return false;
+  if (!Number.isFinite(opts.lap) || !Number.isFinite(opts.totalLaps)) return false;
+  if (opts.totalLaps <= 0) return false;
+  return opts.lap > opts.totalLaps;
+}
+
 /** Keep the recording only when this full-race time beats the stored best. */
 export function maybeSaveBestGhost(opts: {
   trackId: string;

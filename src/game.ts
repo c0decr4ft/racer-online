@@ -117,6 +117,7 @@ import {
   type QualityLevel,
 } from "./settings";
 import {
+  canCommitBestGhost,
   clearAllGhostRecordings,
   GhostPlayer,
   GhostRecorder,
@@ -3616,7 +3617,18 @@ export class Game {
 
   /** Persist this race trail when it beats the stored best full-race time. */
   private commitGhostIfBest(timeMs: number) {
-    if (this.godMode || this.roomSpectating) return;
+    // Skip DNFs: multiplayer raceResult calls finishRace for unfinished players
+    // with a shorter clock that would permanently poison the PB (shorter-wins).
+    if (
+      !canCommitBestGhost({
+        lap: this.lap,
+        totalLaps: TOTAL_LAPS,
+        godMode: this.godMode,
+        spectating: this.roomSpectating,
+      })
+    ) {
+      return;
+    }
     const kind = toGhostKind(this.player?.mesh.userData.kind ?? this.garage.kind);
     if (!kind) return;
     const samples = this.ghostRecorder.snapshot();
