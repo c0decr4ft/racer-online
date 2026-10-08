@@ -3850,8 +3850,21 @@ const httpServer = createServer(async (req, res) => {
     }
     try {
       const data = JSON.parse(body || "{}");
+      const store = loadFeedback();
+      const requestedId = String(data.id ?? "").trim();
+      // Anonymous submit is append-only. Reusing an id is an idempotent retry of
+      // this submit — never a replace of someone else's durable inbox row.
+      // (IDs leak via the public Nostr mirror tags, and via the POST body echo.)
+      if (requestedId) {
+        const existing = store.messages.find((m) => m.id === requestedId);
+        if (existing) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, messages: store.messages, source: "server", emailed: false }));
+          return;
+        }
+      }
       const msg = normalizeFeedbackMessage({
-        id: data.id,
+        id: requestedId || randomUUID(),
         text: data.text,
         createdAt: data.createdAt ?? Date.now(),
         name: data.name,
@@ -3861,7 +3874,6 @@ const httpServer = createServer(async (req, res) => {
         res.end(JSON.stringify({ ok: false, error: "bad feedback" }));
         return;
       }
-      const store = loadFeedback();
       store.messages = [msg, ...store.messages.filter((m) => m.id !== msg.id)];
       const saved = saveFeedback(store);
       // Forward to the feedback inbox (best-effort — local log is the backup)
