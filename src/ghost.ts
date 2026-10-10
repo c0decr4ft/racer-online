@@ -1,6 +1,6 @@
 /**
  * Best-race ghost — local replay of your fastest full race on a track+vehicle.
- * One recording per map + car/bike. Playback is Test Drive and Solo Race only.
+ * One recording per map + car/bike. Playback is Solo Race only.
  * Beating that full-race time replaces it; Settings → RESET clears them.
  */
 import * as THREE from "three";
