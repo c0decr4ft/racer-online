@@ -14,7 +14,7 @@ export const INTERP_DELAY_MS = NET_TICK_MS * 2.2;
  * Wider than a couple ticks so a slow machine (15–20 FPS pose uplink) still
  * looks smooth on a fast peer instead of hitching every missing frame.
  */
-export const MAX_EXTRAPOLATE_MS = NET_TICK_MS * 8;
+export const MAX_EXTRAPOLATE_MS = NET_TICK_MS * 4;
 export const MAX_PLAYERS = 6;
 export const MIN_PLAYERS = 2;
 
@@ -180,6 +180,7 @@ export type ServerMsg =
     }
   | { t: "join"; player: PlayerPose }
   | { t: "leave"; id: string; hostId?: string }
+  | { t: "closed"; reason: string }
   | { t: "notice"; text: string }
   | {
       t: "lobby";

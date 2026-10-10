@@ -11,7 +11,7 @@ export type GameSettings = {
   effects: QualityLevel;
   /** Master volume 0–100 (mute button still silences everything). */
   sound: number;
-  /** Race against your best full-race ghost on each track (all modes). */
+  /** Race against your best full-race ghost (Test Drive and Solo Race). */
   ghost: boolean;
 };
 

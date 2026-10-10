@@ -238,18 +238,19 @@ export async function sendGameInvites(input: SendGameInvitesInput): Promise<{
 
 export async function fetchLobbyInvites(pubkey: string): Promise<LobbyInviteRow[]> {
   const pk = normalizePubkey(pubkey);
-  const url = apiUrl(`/lobby-invites?pubkey=${encodeURIComponent(pk)}`);
-  if (!url || !pk) return [];
   const inboxKey = getOrCreateLobbyInboxKey();
+  // Query param, not a custom header: satsracer.com → onrender preflight
+  // rejects X-Lobby-Inbox-Key, so the invite never arrives.
+  const url = apiUrl(
+    `/lobby-invites?pubkey=${encodeURIComponent(pk)}&inboxKey=${encodeURIComponent(inboxKey)}`,
+  );
+  if (!url || !pk) return [];
   const ok = await registerLobbyInbox();
   if (!ok) return [];
   try {
     const res = await fetch(url, {
       cache: "no-store",
-      headers: {
-        Accept: "application/json",
-        "X-Lobby-Inbox-Key": inboxKey,
-      },
+      headers: { Accept: "application/json" },
     });
     if (res.status === 401) {
       registeredPubkeys.delete(pk);
@@ -257,10 +258,7 @@ export async function fetchLobbyInvites(pubkey: string): Promise<LobbyInviteRow[
       if (!retried) return [];
       const res2 = await fetch(url, {
         cache: "no-store",
-        headers: {
-          Accept: "application/json",
-          "X-Lobby-Inbox-Key": inboxKey,
-        },
+        headers: { Accept: "application/json" },
       });
       if (!res2.ok) return [];
       return parseInviteRows(await res2.json());

@@ -28,17 +28,6 @@ function normalizeWireRaceMode(raw: string | undefined | null): EventGameMode {
   return "race";
 }
 
-/**
- * Optional track adapter for dead reckoning: project world (x,z) → arclength t,
- * and arclength t → track pose. Lets remotes coast along the racing line on bad
- * links instead of free-flying off it.
- */
-export type RemoteTrackAdapter = {
-  project: (x: number, z: number) => number;
-  poseAt: (t: number) => { x: number; z: number; h: number };
-  length: number;
-};
-
 function poseKind(pose: PlayerPose): VehicleKind {
   return pose.kind === "bike" ? "bike" : "car";
 }
@@ -84,14 +73,10 @@ export class RemotePlayer {
   private errZ = 0;
   /** Easing state for the adaptive render delay (prevents rubber-banding). */
   private delaySmooth = 0;
-  /** Dead reckoning — track projection state (recomputed once per new snapshot). */
-  private track?: RemoteTrackAdapter;
-  private projT = 0;
-  private projSnapshotAt = 0;
   private fire: WreckFire | null = null;
   wrecked = false;
 
-  constructor(pose: PlayerPose, scene: THREE.Scene, labelRoot: HTMLElement, track?: RemoteTrackAdapter) {
+  constructor(pose: PlayerPose, scene: THREE.Scene, labelRoot: HTMLElement) {
     this.id = pose.id;
     this.name = pose.name;
     this.kind = poseKind(pose);
@@ -109,7 +94,6 @@ export class RemotePlayer {
     this.mesh.position.set(pose.x, VISUAL_RIDE_Y, pose.z);
     this.mesh.rotation.y = pose.h;
     scene.add(this.mesh);
-    this.track = track;
 
     this.label = document.createElement("div");
     this.label.className = "player-tag";
@@ -225,7 +209,7 @@ export class RemotePlayer {
     // Adaptive jitter buffer: on good links stay tight; on hitchy/asymmetric
     // links (fast PC ↔ slow PC) widen so sparse poses still lerp smoothly.
     const minDelay = NET_TICK_MS * 1.6;
-    const interpDelay = THREE.MathUtils.clamp(minDelay + this.jitterMs * 3.2, minDelay, 480);
+    const interpDelay = THREE.MathUtils.clamp(minDelay + this.jitterMs * 2, minDelay, 160);
     // Ease the delay (~2.5 Hz): otherwise every jitter EMA wobble re-times the
     // render point and the remote visibly rubber-bands.
     if (this.delaySmooth === 0) this.delaySmooth = interpDelay;
@@ -259,46 +243,14 @@ export class RemotePlayer {
         const spanSec = span / 1000;
         // Ease speed off while coasting — corrections arrive smaller.
         const dampedS = newest.pose.s * Math.max(0.25, Math.exp(-extrapSec / 0.45));
-        if (this.track && newest.pose.s > 0.5) {
-          // Dead reckoning along the racing line for POSITION only — never steal
-          // yaw from the track tangent (that made remotes look like they were
-          // driving sideways when projection landed off-line).
-          if (this.projSnapshotAt !== newest.at) {
-            this.projT = this.track.project(newest.pose.x, newest.pose.z);
-            this.projSnapshotAt = newest.at;
-          }
-          const t2 = this.projT + (dampedS * extrapSec) / this.track.length;
-          const p = this.track.poseAt(t2);
-          x = p.x;
-          z = p.z;
-          const dh = wrapPi(newest.pose.h - prev.pose.h);
-          turnRate = THREE.MathUtils.clamp(dh / spanSec, -2.4, 2.4);
-          h = wrapHeading(newest.pose.h + turnRate * extrapSec);
-          s = dampedS;
-        } else {
-          const dh = wrapPi(newest.pose.h - prev.pose.h);
-          // Clamp to plausible car motion — a stale/corrupt pair would otherwise
-          // spin the extrapolated heading or fling the position off the track.
-          turnRate = THREE.MathUtils.clamp(dh / spanSec, -2.4, 2.4);
-          // Prefer reported heading×speed; blend a little measured delta to keep coasting honest.
-          const maxV = 55; // m/s ≈ 200 km/h — beyond that it's a teleport, not motion
-          const measuredVx = THREE.MathUtils.clamp((newest.pose.x - prev.pose.x) / spanSec, -maxV, maxV);
-          const measuredVz = THREE.MathUtils.clamp((newest.pose.z - prev.pose.z) / spanSec, -maxV, maxV);
-          const reportBlend = Math.abs(newest.pose.s) < 0.5 ? 0.15 : 0.85;
-          const faceH = newest.pose.h;
-          const baseVx = THREE.MathUtils.lerp(measuredVx, Math.sin(faceH) * dampedS, reportBlend);
-          const baseVz = THREE.MathUtils.lerp(measuredVz, Math.cos(faceH) * dampedS, reportBlend);
-          // Curve the coast with turn rate so late packets don't skate straight through corners.
-          const midH = faceH + turnRate * extrapSec * 0.5;
-          const curvedVx = Math.sin(midH) * dampedS;
-          const curvedVz = Math.cos(midH) * dampedS;
-          const vx = THREE.MathUtils.lerp(baseVx, curvedVx, 0.65);
-          const vz = THREE.MathUtils.lerp(baseVz, curvedVz, 0.65);
-          x = newest.pose.x + vx * extrapSec;
-          z = newest.pose.z + vz * extrapSec;
-          h = wrapHeading(faceH + turnRate * extrapSec);
-          s = dampedS;
-        }
+        const hx = Math.sin(newest.pose.h);
+        const hz = Math.cos(newest.pose.h);
+        x = newest.pose.x + hx * dampedS * extrapSec;
+        z = newest.pose.z + hz * dampedS * extrapSec;
+        const dh = wrapPi(newest.pose.h - prev.pose.h);
+        turnRate = THREE.MathUtils.clamp(dh / spanSec, -2.2, 2.2);
+        h = wrapHeading(newest.pose.h + turnRate * extrapSec);
+        s = dampedS;
       } else {
         let i = 0;
         while (i < buf.length - 2 && buf[i + 1]!.at < renderAt) i++;
@@ -351,18 +303,20 @@ export class RemotePlayer {
     }
     const dispX = x + this.errX;
     const dispZ = z + this.errZ;
-    // Face travel when we're clearly sliding the mesh — kills residual sideways looks.
+    // Face travel when the nose is badly off the direction the car is actually
+    // moving. A small slip stays (drift), a sideways or backwards nose gets
+    // pulled back onto the velocity without locking perfectly to it.
     let dispH = h;
-    if (this.hasDisplay && Math.abs(s) > 3) {
+    if (this.hasDisplay && Math.abs(s) > 6) {
       const moveX = dispX - this.mesh.position.x;
       const moveZ = dispZ - this.mesh.position.z;
       const moveLen = Math.hypot(moveX, moveZ);
-      if (moveLen > 0.04) {
+      if (moveLen > 0.05) {
         const moveH = Math.atan2(moveX / moveLen, moveZ / moveLen);
         const align = wrapPi(moveH - h);
-        // Only nudge when mildly off; if ~90°+ trust the network heading.
-        if (Math.abs(align) < Math.PI * 0.35) {
-          dispH = wrapHeading(h + align * 0.65);
+        const slip = this.kind === "bike" ? 0.5 : 0.32;
+        if (Math.abs(align) > slip) {
+          dispH = wrapHeading(moveH - Math.sign(align) * slip);
         }
       }
     }
@@ -380,8 +334,10 @@ export class RemotePlayer {
 
     // Direct sample — no exponential chase on pose (that read as laggy remotes).
     this.mesh.position.set(dispX, VISUAL_RIDE_Y, dispZ);
+    this.mesh.rotation.order = "YXZ";
     this.mesh.rotation.y = dispH;
-    this.mesh.rotation.z = this.lean;
+    this.mesh.rotation.x = 0;
+    this.mesh.rotation.z = this.kind === "bike" ? this.lean : 0;
 
     // Spin wheels from interpolated speed so remotes don't look frozen/stuttery.
     if (dt > 0 && Math.abs(s) > 0.05) {
@@ -468,6 +424,7 @@ export type NetHandlers = {
   onWelcome: (info: WelcomeInfo) => void;
   onJoin: (player: PlayerPose) => void;
   onLeave: (id: string, hostId?: string) => void;
+  onClosed: (reason: string) => void;
   onNotice: (text: string) => void;
   onLobby: (info: {
     players: PlayerPose[];
@@ -903,6 +860,9 @@ export class NetClient {
         if (msg.hostId) this.hostId = msg.hostId;
         this.roster.delete(msg.id);
         this.handlers.onLeave(msg.id, msg.hostId);
+      } else if (msg.t === "closed") {
+        this.handlers.onClosed(msg.reason || "The host left — room closed");
+        this.disconnect();
       } else if (msg.t === "notice") {
         this.handlers.onNotice(msg.text);
       } else if (msg.t === "lobby") {

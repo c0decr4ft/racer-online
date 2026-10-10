@@ -24,7 +24,7 @@ import { drawTrackPreview } from "./mapPreview";
 import { Input, type InputState } from "./input";
 import { isTouchPrimary, TouchControls, viewportSize } from "./touch";
 import { Vehicle, RivalAI } from "./vehicle";
-import { NetClient, RemotePlayer, type RemoteTrackAdapter, type WelcomeInfo } from "./net/client";
+import { NetClient, RemotePlayer, type WelcomeInfo } from "./net/client";
 import { closeControlsHelp, closeHomeInstructions } from "./controlsHelp";
 import { closeSocialHub } from "./social/ui";
 import { WreckFire } from "./wreckFire";
@@ -99,7 +99,7 @@ import {
   WeatherController,
   type WeatherMode,
 } from "./weather";
-import { WildlifeHerd } from "./wildlife";
+import { hashAnimalSeed, WildlifeHerd } from "./wildlife";
 import {
   bindWebglContextRecovery,
   createGameRenderer,
@@ -504,6 +504,8 @@ export class Game {
 
   /** Per-track wildlife herd — null only if a track has no animal spec. */
   private wildlife: WildlifeHerd | null = null;
+  /** Shared online herd seed — same value on every client in the room. */
+  private onlineAnimalSeed = 1;
   /** Scratch pack for wildlife hits (avoid clobbering `_pack` mid-frame). */
   private readonly _wildlifePack: Vehicle[] = [];
 
@@ -590,7 +592,10 @@ export class Game {
 
     // Resident flash light — never add/remove (shader recompile freezes on weak GPUs).
     this.explodeFlashLight = new THREE.PointLight(0xff7a3a, 0, 28);
-    this.explodeFlashLight.visible = false;
+    // Always in the light list. Hiding it on explode-end changes NUM_POINT_LIGHTS
+    // and recompiles every material mid-race.
+    this.explodeFlashLight.visible = true;
+    this.explodeFlashLight.intensity = 0;
     this.scene.add(this.explodeFlashLight);
 
     this.input.onPadConnected = () =>
@@ -623,6 +628,12 @@ export class Game {
           }
         }
       },
+      onClosed: (reason) => {
+        const racing = this.running;
+        this.showToast(reason);
+        if (racing) this.goHome();
+        else this.closeMultiplayer();
+      },
       onNotice: (text) => {
         this.pushLobbyNotice(text);
         if (this.inLobby) {
@@ -642,8 +653,10 @@ export class Game {
         this.applyMenuWeatherPreview(this.net.weather);
         this.renderLobby();
       },
-      onStart: (_at, trackId, kind, weather, battleCubes) =>
-        this.beginOnlineRace(trackId, kind, weather, battleCubes),
+      onStart: (at, trackId, kind, weather, battleCubes) => {
+        this.onlineAnimalSeed = hashAnimalSeed(`${trackId}:${Math.round(at)}`);
+        this.beginOnlineRace(trackId, kind, weather, battleCubes);
+      },
       onCubeTaken: (info) => this.onBattleCubeTaken(info),
       onCubesDropped: (info) => this.onBattleCubesDropped(info),
       onWrecked: (id, name) => this.applyOnlineWreck(id, name),
@@ -2345,7 +2358,8 @@ export class Game {
   /** Spawn the track's wildlife herd (cows/goats/pigeons/deer/crabs/snakes). */
   private syncWildlife() {
     this.disposeWildlife();
-    const herd = WildlifeHerd.createForTrack(this.track.id, this.track.path);
+    const seed = this.online ? this.onlineAnimalSeed : hashAnimalSeed(String(Math.random()));
+    const herd = WildlifeHerd.createForTrack(this.track.id, this.track.path, seed);
     if (!herd) return;
     this.wildlife = herd;
     this.scene.add(herd.group);
@@ -2374,16 +2388,20 @@ export class Game {
         pack.push(r.vehicle);
       }
     }
-    this.wildlife.update(
-      dt,
-      pack,
-      (info) => {
+    const elapsedSec =
+      this.online && this.raceStart > 0 && !this.gridHeld ? (this.raceNow() - this.raceStart) / 1000 : -1;
+    const opts = { halfRate: this.perf.wildlifeHalfRate };
+    if (elapsedSec >= 0) {
+      this.wildlife.syncShared(elapsedSec, dt, pack, (info) => {
         this.audio.playBoom();
-        // Banner for the local player's hits only.
         if (info.target === this.player) this.showAnimalHit(info.name);
-      },
-      { halfRate: this.perf.wildlifeHalfRate },
-    );
+      }, opts);
+      return;
+    }
+    this.wildlife.update(dt, pack, (info) => {
+      this.audio.playBoom();
+      if (info.target === this.player) this.showAnimalHit(info.name);
+    }, opts);
   }
 
   private showAnimalHit(name: string) {
@@ -3531,19 +3549,7 @@ export class Game {
 
   private spawnRemote(pose: PlayerPose) {
     if (pose.id === this.net.id || this.remotes.has(pose.id)) return;
-    let remote!: RemotePlayer;
-    const scratch = new THREE.Vector3();
-    // Dead reckoning adapter: project onto the racing line / advance along it
-    // when snapshots run out (keyed sticky projection, cleaned up on remove).
-    const adapter: RemoteTrackAdapter = {
-      project: (x, z) => this.projectSticky(remote, scratch.set(x, 0, z)).t,
-      poseAt: (t) => {
-        const p = this.spawnPose(t, 0);
-        return { x: p.pos.x, z: p.pos.z, h: p.heading };
-      },
-      length: this.track.path.getLength(),
-    };
-    remote = new RemotePlayer(pose, this.scene, this.labelRoot, adapter);
+    const remote = new RemotePlayer(pose, this.scene, this.labelRoot);
     // Local-only beams: remotes keep emissive lenses, never SpotLights.
     stripVehicleSpotLights(remote.mesh);
     this.remotes.set(pose.id, remote);
@@ -3576,11 +3582,17 @@ export class Game {
     this.ghostRecorder.reset();
   }
 
+  /** Ghost is Test Drive and Solo Race only — not Start Race, multiplayer, or events. */
+  private ghostAllowed(): boolean {
+    if (!this.ghostEnabled || this.online || this.roomSpectating) return false;
+    return this.practice || this.solo;
+  }
+
   /** Spawn a see-through copy of the player's best full race on this track+vehicle. */
   private spawnGhostFromBest() {
     this.ghostPlayer?.dispose();
     this.ghostPlayer = null;
-    if (!this.ghostEnabled || this.roomSpectating) return;
+    if (!this.ghostAllowed()) return;
     const kind = toGhostKind(this.player?.mesh.userData.kind ?? this.garage.kind);
     if (!kind) return;
     const rec = loadGhostRecording(this.trackId, kind);
@@ -3604,19 +3616,28 @@ export class Game {
   }
 
   private sampleGhostPose() {
+    if (!this.ghostAllowed()) return;
     if (!this.player || this.gridHeld || this.finished || this.exploding) return;
-    if (this.onlineWrecked || this.roomSpectating || this.godMode) return;
+    if (this.onlineWrecked || this.godMode) return;
     const kind = toGhostKind(this.player.mesh.userData.kind);
     if (!kind) return;
     const elapsed = this.raceNow() - this.raceStart;
     if (elapsed < 0) return;
     const p = this.player.state.position;
-    this.ghostRecorder.push(elapsed, p.x, p.z, this.player.state.heading);
+    // Visual yaw includes the drift slip the player sees. Physics heading alone
+    // points through the corner while the body is still sideways.
+    this.ghostRecorder.push(
+      elapsed,
+      p.x,
+      p.z,
+      this.player.mesh.rotation.y,
+      this.player.mesh.rotation.z,
+    );
   }
 
   /** Persist this race trail when it beats the stored best full-race time. */
   private commitGhostIfBest(timeMs: number) {
-    if (this.godMode || this.roomSpectating) return;
+    if (!this.ghostAllowed() || this.godMode) return;
     const kind = toGhostKind(this.player?.mesh.userData.kind ?? this.garage.kind);
     if (!kind) return;
     const samples = this.ghostRecorder.snapshot();
@@ -3692,9 +3713,9 @@ export class Game {
     this.ghostEnabled = settings.ghost;
     this.audio.setMasterVolume(soundGain(settings.sound));
     this.applyPerfSettings(graphicsToTier(settings.graphics), { force: true });
-    this.ghostPlayer?.setVisible(this.ghostEnabled);
+    this.ghostPlayer?.setVisible(this.ghostAllowed());
     // Mid-race toggle ON with no ghost yet — spawn from stored best if any.
-    if (this.ghostEnabled && !this.ghostPlayer && this.running && !this.gridHeld) {
+    if (this.ghostAllowed() && !this.ghostPlayer && this.running && !this.gridHeld) {
       this.spawnGhostFromBest();
     }
   }
@@ -4029,6 +4050,9 @@ export class Game {
     this.audio.stopRaceAudio();
     this.audio.unmute();
     this.syncMuteBtn();
+    // Lines, ghost mesh, night-light count, and the first shadow pass happen
+    // before 3-2-1. Doing them on GO or the first painted frame is the stall.
+    this.warmRacePresentation();
     if ((isDevGarageKind(this.garage.kind) && !this.online) || this.roomSpectating) {
       // Scout / live watch — skip 3-2-1 so poses flow immediately.
       this.clearCountdown();
@@ -4036,6 +4060,39 @@ export class Game {
     } else {
       this.beginCountdown();
     }
+  }
+
+  /**
+   * Pay shader compile, shadow-map alloc, AI groove build, and ghost mesh
+   * creation before the countdown is on screen.
+   */
+  private warmRacePresentation() {
+    if (!this.player) return;
+    const lamps = this._lampMeshes;
+    lamps.length = 0;
+    for (const r of this.rivals) {
+      if (r.vehicle.mesh.visible) lamps.push(r.vehicle.mesh);
+    }
+    this.weather.update(0, this.player.state.position, this.player.state.heading, true, this.player.mesh, {
+      particles: this.weather.mode === "rain",
+      lampMeshes: lamps,
+    });
+    if (!this.online && !this.solo) {
+      for (const r of this.rivals) r.warmLine(this.track.path);
+    }
+    this.spawnGhostFromBest();
+    // First engine-smoke puff used to build the particle buffer mid-race (wall 9).
+    if (this.perf.engineSmoke && this.effectsLevel !== "low") {
+      this.ensureEngineSmoke();
+      if (this.engineSmoke) this.engineSmoke.visible = false;
+    }
+    const holdGrid = !((isDevGarageKind(this.garage.kind) && !this.online) || this.roomSpectating);
+    this.scene.updateMatrixWorld(true);
+    this.renderer.shadowMap.needsUpdate = true;
+    this.renderer.compile(this.scene, this.camera);
+    this.renderer.render(this.scene, this.camera);
+    this.shadowNeedsWarmup = false;
+    if (holdGrid) this.ghostPlayer?.setVisible(false);
   }
 
   private beginCountdown() {
@@ -4058,10 +4115,11 @@ export class Game {
     el.classList.toggle("go", label === "GO");
     el.textContent = label;
     el.classList.remove("hidden");
-    // Retrigger CSS pulse on each digit
+    // Retrigger CSS pulse without a forced layout read (offsetWidth stalls a frame).
     el.style.animation = "none";
-    void el.offsetWidth;
-    el.style.animation = "";
+    requestAnimationFrame(() => {
+      if (el.dataset.label === label) el.style.animation = "";
+    });
     this.audio.playCountdown(label);
   }
 
@@ -4091,7 +4149,7 @@ export class Game {
     this.sectorStartMs = this.raceStart;
     this.startRaceDriveAudio();
     this.ghostRecorder.reset();
-    this.spawnGhostFromBest();
+    this.ghostPlayer?.setVisible(true);
     if (!this.online && !this.solo) {
       for (const r of this.rivals) {
         r.vehicle.state.speed = 5; // modest roll — soft launch still ramps throttle
@@ -4235,7 +4293,7 @@ export class Game {
         remote.update(now, this.camera, remoteViewportWidth, remoteViewportHeight);
       }
     }
-    // Best-race ghost follows the live race clock (GO → finish), all modes.
+    // Best-race ghost follows the live race clock (GO → finish) in Test Drive and Solo.
     if (this.ghostPlayer && this.running && this.raceStart > 0 && !this.gridHeld) {
       this.ghostPlayer.update(this.raceNow() - this.raceStart);
     }
@@ -4465,14 +4523,16 @@ export class Game {
     this.renderer.setScissorTest(false);
     this.renderer.setViewport(0, 0, w, h);
     this.renderer.autoClear = true;
-    // Rearview reuses the main pass shadow map (autoUpdate=false). Rebuild
-    // every other live frame — soft PCF at 2048 is expensive; half-rate keeps
-    // the trail tight enough without a hitch every frame.
+    // Rearview reuses the main pass shadow map (autoUpdate=false).
+    // High redraws every frame so contact shadows don't lag a frame and snap.
+    // Mid/low stay on half-rate — a 2048 soft map every frame is what hitching felt like.
     const liveShadows =
       this.running && !this.paused && (!this.finished || this.onlineFinishPending || this.spectating);
     if (liveShadows) {
       this.shadowFrame += 1;
-      this.renderer.shadowMap.needsUpdate = this.shadowNeedsWarmup || this.shadowFrame % 2 === 0;
+      const everyFrame = this.qualityTier === "high";
+      this.renderer.shadowMap.needsUpdate =
+        this.shadowNeedsWarmup || everyFrame || this.shadowFrame % 2 === 0;
     } else {
       this.renderer.shadowMap.needsUpdate = this.shadowNeedsWarmup;
     }
@@ -5044,8 +5104,8 @@ export class Game {
     }
     if (this.explodeFlashLight) {
       this.explodeFlashLight.position.set(origin.x, 2.2, origin.z);
-      this.explodeFlashLight.intensity = effectsFlashIntensity(this.effectsLevel);
-      this.explodeFlashLight.visible = this.effectsLevel !== "low";
+      this.explodeFlashLight.intensity =
+        this.effectsLevel === "low" ? 0 : effectsFlashIntensity(this.effectsLevel);
     }
   }
 
@@ -5065,12 +5125,8 @@ export class Game {
         this.explodeParts.splice(i, 1);
       }
     }
-    if (this.explodeFlashLight?.visible) {
+    if (this.explodeFlashLight && this.explodeFlashLight.intensity > 0) {
       this.explodeFlashLight.intensity = Math.max(0, this.explodeFlashLight.intensity - dt * 10);
-      if (this.explodeFlashLight.intensity <= 0.05) {
-        this.explodeFlashLight.intensity = 0;
-        this.explodeFlashLight.visible = false;
-      }
     }
   }
 
@@ -5080,10 +5136,7 @@ export class Game {
       (p.mesh.material as THREE.MeshBasicMaterial).dispose();
     }
     this.explodeParts.length = 0;
-    if (this.explodeFlashLight) {
-      this.explodeFlashLight.intensity = 0;
-      this.explodeFlashLight.visible = false;
-    }
+    if (this.explodeFlashLight) this.explodeFlashLight.intensity = 0;
   }
 
   /** @param restoreCar show player mesh again (race restart / home). */

@@ -1,6 +1,6 @@
 /**
  * Best-race ghost — local replay of your fastest full race on a track+vehicle.
- * One recording per map + car/bike, shared across solo / AI / multiplayer.
+ * One recording per map + car/bike. Playback is Test Drive and Solo Race only.
  * Beating that full-race time replaces it; Settings → RESET clears them.
  */
 import * as THREE from "three";
@@ -18,10 +18,9 @@ const STORAGE_PREFIX = "racer-ghost-v1";
 const SAMPLE_MS = 50;
 /** Cap ~5 minutes @ 20 Hz so localStorage stays sane. */
 const MAX_SAMPLES = 6_000;
-const GHOST_OPACITY = 0.42;
-/** Post-finish cruise (~48 km/h) — same vibe as finished AI cars. */
-const COAST_CRUISE_MS = 13.3;
-const COAST_DECEL = 9;
+const GHOST_OPACITY = 0.22;
+/** Post-finish cruise follows the end of the recording — never a faster default. */
+const COAST_DECEL = 6;
 
 export type GhostKind = "car" | "bike";
 
@@ -30,11 +29,15 @@ export type GhostSample = {
   t: number;
   x: number;
   z: number;
+  /** Visual nose angle, including drift slip. */
   h: number;
+  /** Body roll while sliding. Older recordings omit this. */
+  lean?: number;
 };
 
 export type GhostRecording = {
-  v: 1;
+  /** 1 = physics heading. 2 = the nose angle you actually saw, including the drift. */
+  v: 1 | 2;
   trackId: string;
   kind: GhostKind;
   timeMs: number;
@@ -70,7 +73,9 @@ export function loadGhostRecording(trackId: string, kind: GhostKind): GhostRecor
     const raw = localStorage.getItem(storageKey(trackId, kind));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<GhostRecording>;
-    if (parsed.v !== 1 || parsed.trackId !== trackId || parsed.kind !== kind) return null;
+    if ((parsed.v !== 1 && parsed.v !== 2) || parsed.trackId !== trackId || parsed.kind !== kind) {
+      return null;
+    }
     if (!Number.isFinite(parsed.timeMs) || (parsed.timeMs as number) <= 0) return null;
     if (!Array.isArray(parsed.samples) || parsed.samples.length < 2) return null;
     const samples: GhostSample[] = [];
@@ -90,10 +95,18 @@ export function loadGhostRecording(trackId: string, kind: GhostKind): GhostRecor
         x: s.x as number,
         z: s.z as number,
         h: wrapHeading(s.h as number),
+        lean:
+          s.lean != null && Number.isFinite(s.lean) ? (s.lean as number) : undefined,
       });
     }
     if (samples.length < 2) return null;
-    return { v: 1, trackId, kind, timeMs: Math.round(parsed.timeMs as number), samples };
+    return {
+      v: parsed.v,
+      trackId,
+      kind,
+      timeMs: Math.round(parsed.timeMs as number),
+      samples,
+    };
   } catch {
     return null;
   }
@@ -140,7 +153,7 @@ export function maybeSaveBestGhost(opts: {
   const prev = loadGhostRecording(opts.trackId, opts.kind);
   if (prev && prev.timeMs <= timeMs) return false;
   return saveGhostRecording({
-    v: 1,
+    v: 2,
     trackId: opts.trackId,
     kind: opts.kind,
     timeMs,
@@ -158,7 +171,7 @@ export class GhostRecorder {
     this.lastSampleAt = -SAMPLE_MS;
   }
 
-  push(elapsedMs: number, x: number, z: number, h: number) {
+  push(elapsedMs: number, x: number, z: number, h: number, lean = 0) {
     if (!Number.isFinite(elapsedMs) || elapsedMs < 0) return;
     if (this.samples.length >= MAX_SAMPLES) return;
     if (elapsedMs - this.lastSampleAt < SAMPLE_MS && this.samples.length > 0) return;
@@ -168,6 +181,7 @@ export class GhostRecorder {
       x,
       z,
       h: wrapHeading(h),
+      lean: Math.abs(lean) > 0.004 ? lean : undefined,
     });
   }
 
@@ -186,12 +200,13 @@ export class GhostPlayer {
   private samples: GhostSample[] = [];
   private scene: THREE.Scene;
   private path: THREE.CatmullRomCurve3;
-  private finishMs: number;
   private visibleWanted = true;
   private coasting = false;
   private coastT = 0;
-  private coastSpeed = COAST_CRUISE_MS;
+  private coastSpeed = 0;
   private lastElapsed = -1;
+  /** Older recordings stored steering heading, so playback adds the slide angle. */
+  private legacyHeading = false;
   private readonly _pos = new THREE.Vector3();
   private readonly _tan = new THREE.Vector3();
 
@@ -205,16 +220,18 @@ export class GhostPlayer {
   ) {
     this.scene = scene;
     this.path = path;
-    this.finishMs = Math.max(1, recording.timeMs);
     this.mesh = createVehicle(kind, color, 13, accent);
     stripVehicleSpotLights(this.mesh);
     applyGhostAppearance(this.mesh, GHOST_OPACITY);
     this.mesh.name = "ghost-racer";
     this.samples = recording.samples;
+    this.legacyHeading = recording.v < 2;
     const first = this.samples[0]!;
     this.mesh.position.set(first.x, VISUAL_RIDE_Y, first.z);
+    this.mesh.rotation.order = "YXZ";
     this.mesh.rotation.y = first.h;
-    this.mesh.rotation.z = 0;
+    this.mesh.rotation.x = 0;
+    this.mesh.rotation.z = first.lean ?? 0;
     scene.add(this.mesh);
   }
 
@@ -224,8 +241,8 @@ export class GhostPlayer {
   }
 
   /**
-   * Drive the ghost with ms since GO.
-   * After the recorded finish, slows and keeps looping the track (no freeze on the line).
+   * Drive the ghost with ms since GO, at the recorded timestamps.
+   * After the last sample it keeps rolling at that exit speed, then eases off.
    */
   update(elapsedMs: number) {
     if (!this.visibleWanted || this.samples.length === 0) {
@@ -239,8 +256,9 @@ export class GhostPlayer {
     this.lastElapsed = t;
 
     const lastSampleT = this.samples[this.samples.length - 1]!.t;
-    const pastFinish = t >= this.finishMs || t >= lastSampleT;
-    if (pastFinish) {
+    // Stay on the recorded clock until the last sample. Switching to the
+    // centerline early (or flooring a cruise speed) made the ghost pull ahead.
+    if (t >= lastSampleT) {
       this.updateCoast(raceDt);
       return;
     }
@@ -262,8 +280,23 @@ export class GhostPlayer {
       VISUAL_RIDE_Y,
       a.z + (b.z - a.z) * u,
     );
-    this.mesh.rotation.y = wrapHeading(a.h + wrapPi(b.h - a.h) * u);
-    this.mesh.rotation.z = 0;
+    const lean = (a.lean ?? 0) + ((b.lean ?? 0) - (a.lean ?? 0)) * u;
+    let heading = wrapHeading(a.h + wrapPi(b.h - a.h) * u);
+    let roll = lean;
+    if (this.legacyHeading) {
+      const dx = b.x - a.x;
+      const dz = b.z - a.z;
+      if (dx * dx + dz * dz > 0.04) {
+        const slip = wrapPi(heading - Math.atan2(dx, dz));
+        const kick = Math.max(-0.28, Math.min(0.28, slip));
+        heading = wrapHeading(heading + kick);
+        if (a.lean == null && b.lean == null) roll = kick * 0.45;
+      }
+    }
+    this.mesh.rotation.order = "YXZ";
+    this.mesh.rotation.y = heading;
+    this.mesh.rotation.x = 0;
+    this.mesh.rotation.z = roll;
   }
 
   private beginCoast() {
@@ -271,7 +304,7 @@ export class GhostPlayer {
     const prev = this.samples[this.samples.length - 2] ?? last;
     const dist = Math.hypot(last.x - prev.x, last.z - prev.z);
     const spanSec = Math.max(0.05, (last.t - prev.t) / 1000);
-    this.coastSpeed = Math.max(COAST_CRUISE_MS, Math.min(40, dist / spanSec));
+    this.coastSpeed = Math.min(40, dist / spanSec);
     this._pos.set(last.x, 0, last.z);
     this.coastT = projectOnTrack(this.path, this._pos).t;
     this.coasting = true;
@@ -287,10 +320,8 @@ export class GhostPlayer {
       this.mesh.rotation.z = 0;
       return;
     }
-    if (this.coastSpeed > COAST_CRUISE_MS) {
-      this.coastSpeed = Math.max(COAST_CRUISE_MS, this.coastSpeed - COAST_DECEL * dt);
-    } else {
-      this.coastSpeed = COAST_CRUISE_MS;
+    if (this.coastSpeed > 4) {
+      this.coastSpeed = Math.max(4, this.coastSpeed - COAST_DECEL * dt);
     }
     const len = Math.max(1, this.path.getLength());
     this.coastT = (this.coastT + (this.coastSpeed * dt) / len) % 1;

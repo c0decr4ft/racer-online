@@ -77,7 +77,7 @@ let lobbyPollTimer: number | null = null;
 let bannerHideTimer: number | null = null;
 let activeBannerInviteId: string | null = null;
 
-const LOBBY_BANNER_MS = 10_000;
+const LOBBY_BANNER_MS = 6_000;
 let searchSeq = 0;
 
 function el<T extends HTMLElement>(id: string): T | null {
@@ -261,7 +261,7 @@ function presentLobbyInviteBanner(inv: LobbyInviteRow, who: string): void {
   banner.classList.remove("hidden");
   banner.replaceChildren();
   const text = document.createElement("span");
-  text.textContent = `${who} invited you to ${inv.room}`;
+  text.textContent = `${who} has invited you to their lobby`;
   const join = document.createElement("button");
   join.type = "button";
   join.className = "social-mini";

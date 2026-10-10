@@ -97,6 +97,8 @@ type Animal = {
   seed: number;
   /** Optional wing meshes for aerial flap (pigeons). */
   wings: THREE.Object3D[];
+  /** Local-only so a shared online animal is not hit every frame. */
+  hitUntil: number;
 };
 
 type BurstPart = {
@@ -803,6 +805,25 @@ function specForTrack(trackId: string): HerdSpec | null {
   return ALL_SPECS.find((s) => s.trackId === trackId) ?? null;
 }
 
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+export function hashAnimalSeed(text: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0 || 1;
+}
+
 export class WildlifeHerd {
   readonly group = new THREE.Group();
   private readonly q: PathQuery;
@@ -810,7 +831,7 @@ export class WildlifeHerd {
   private readonly animals: Animal[] = [];
   /** Precomputed habitat points — respawn must never re-run the expensive probe. */
   private readonly spawnPool: { x: number; z: number }[] = [];
-  private crossCooldown = CROSS_GAP_MIN + Math.random() * (CROSS_GAP_MAX - CROSS_GAP_MIN);
+  private crossCooldown = 0;
   private readonly bursts: BurstPart[] = [];
   private readonly burstGeo = new THREE.BoxGeometry(0.16, 0.16, 0.16);
   /** Shared materials — never create/dispose per hit (GC hitch on weak GPUs). */
@@ -822,9 +843,14 @@ export class WildlifeHerd {
    */
   private readonly burstLight: THREE.PointLight;
   private _meshFrame = 0;
+  private simAccum = 0;
+  private sharedSteps = 0;
+  private readonly rng: () => number;
 
-  private constructor(path: THREE.CatmullRomCurve3, spec: HerdSpec) {
+  private constructor(path: THREE.CatmullRomCurve3, spec: HerdSpec, seed: number) {
     this.spec = spec;
+    this.rng = mulberry32(seed || 1);
+    this.crossCooldown = CROSS_GAP_MIN + this.rng() * (CROSS_GAP_MAX - CROSS_GAP_MIN);
     this.group.name = spec.groupName;
     this.q = buildPathQuery(path);
     this.burstMats = spec.burstColors.map(
@@ -837,7 +863,10 @@ export class WildlifeHerd {
         }),
     );
     this.burstLight = new THREE.PointLight(0xff7a3a, 0, 16);
-    this.burstLight.visible = false;
+    // Stay visible for the herd's lifetime. Toggling visible changes
+    // NUM_POINT_LIGHTS and recompiles every lit shader (hundreds of ms).
+    this.burstLight.visible = true;
+    this.burstLight.intensity = 0;
     this.group.add(this.burstLight);
     const far = spec.outfieldFar ?? OUTFIELD_FAR;
     const near = spec.outfieldNear ?? ZONE_CLEAR;
@@ -867,6 +896,7 @@ export class WildlifeHerd {
         walkPhase: hash2(i, 13) * Math.PI * 2,
         seed: i,
         wings: readWings(mesh),
+        hitUntil: 0,
       });
       this.pickWanderTarget(this.animals[i]!);
     }
@@ -875,10 +905,11 @@ export class WildlifeHerd {
   static createForTrack(
     trackId: string,
     path: THREE.CatmullRomCurve3,
+    seed = 1,
   ): WildlifeHerd | null {
     const spec = specForTrack(trackId);
     if (!spec) return null;
-    const herd = new WildlifeHerd(path, spec);
+    const herd = new WildlifeHerd(path, spec, seed >>> 0);
     if (!herd.animals.length) return null;
     return herd;
   }
@@ -889,33 +920,72 @@ export class WildlifeHerd {
     onHit?: (info: AnimalHitInfo) => void,
     opts?: { halfRate?: boolean },
   ) {
-    this.updateBursts(dt);
+    this.simAccum += Math.min(Math.max(0, dt), 0.12);
+    let guard = 0;
+    while (this.simAccum >= 0.05 && guard++ < 6) {
+      this.stepHerd(0.05);
+      this.simAccum -= 0.05;
+    }
+    this.present(dt, vehicles, onHit, opts, false);
+  }
+
+  /**
+   * Online races share one seed and step from the race clock, so every
+   * client sees the same animal on the road.
+   */
+  syncShared(
+    elapsedSec: number,
+    dt: number,
+    vehicles: AnimalHitTarget[],
+    onHit?: (info: AnimalHitInfo) => void,
+    opts?: { halfRate?: boolean },
+  ) {
+    const target = Math.floor(Math.max(0, elapsedSec) / 0.05);
+    let guard = 0;
+    while (this.sharedSteps < target && guard++ < 90) {
+      this.stepHerd(0.05);
+      this.sharedSteps += 1;
+    }
+    this.present(dt, vehicles, onHit, opts, true);
+  }
+
+  private stepHerd(dt: number) {
     if (this.activeCrossingCount() < MAX_CROSSINGS) {
       this.crossCooldown -= dt;
       if (this.crossCooldown <= 0) this.tryStartCrossing();
     }
-
-    // Even frames still run sim + hits; odd frames skip mesh posing under load.
-    const skipMesh = !!opts?.halfRate && ((this._meshFrame++ & 1) === 1);
-
-    for (let i = 0; i < this.animals.length; i++) {
-      const animal = this.animals[i]!;
+    for (const animal of this.animals) {
       if (animal.mode === "dead") {
         animal.respawnIn -= dt;
         if (animal.respawnIn <= 0) this.respawnAnimal(animal);
         continue;
       }
       this.stepAnimal(animal, dt);
-      if (!skipMesh) this.syncMesh(animal, dt);
+    }
+  }
 
+  private present(
+    dt: number,
+    vehicles: AnimalHitTarget[],
+    onHit: ((info: AnimalHitInfo) => void) | undefined,
+    opts: { halfRate?: boolean } | undefined,
+    shared: boolean,
+  ) {
+    this.updateBursts(dt);
+    const skipMesh = !!opts?.halfRate && ((this._meshFrame++ & 1) === 1);
+    const now = performance.now();
+    for (const animal of this.animals) {
+      if (animal.mode === "dead") continue;
+      if (!skipMesh) this.syncMesh(animal, dt);
       if (
-        animal.mode === "approach" ||
-        animal.mode === "cross" ||
-        animal.mode === "return"
+        animal.mode !== "approach" &&
+        animal.mode !== "cross" &&
+        animal.mode !== "return"
       ) {
-        for (const v of vehicles) {
-          if (this.tryHit(animal, v, onHit)) break;
-        }
+        continue;
+      }
+      for (const v of vehicles) {
+        if (this.tryHit(animal, v, onHit, shared, now)) break;
       }
     }
   }
@@ -923,7 +993,6 @@ export class WildlifeHerd {
   dispose() {
     this.clearBursts();
     this.burstLight.intensity = 0;
-    this.burstLight.visible = false;
     this.burstGeo.dispose();
     for (const m of this.burstMats) m.dispose();
     for (const mesh of this.burstPool) {
@@ -1064,7 +1133,7 @@ export class WildlifeHerd {
     pool.sort((a, b) => a.nearRoad - b.nearRoad);
     const pickEntry =
       pool[
-        Math.min(pool.length - 1, Math.floor(Math.random() * Math.min(3, pool.length)))
+        Math.min(pool.length - 1, Math.floor(this.rng() * Math.min(3, pool.length)))
       ]!;
     const pick = pickEntry.a;
     const t = pickEntry.t;
@@ -1083,8 +1152,7 @@ export class WildlifeHerd {
     pick.crossLat = startLat;
     pick.targetX = edgeX;
     pick.targetZ = edgeZ;
-    this.crossCooldown =
-      CROSS_GAP_MIN + Math.random() * (CROSS_GAP_MAX - CROSS_GAP_MIN);
+    this.crossCooldown = CROSS_GAP_MIN + this.rng() * (CROSS_GAP_MAX - CROSS_GAP_MIN);
   }
 
   private stepAnimal(animal: Animal, dt: number) {
@@ -1278,14 +1346,22 @@ export class WildlifeHerd {
     animal: Animal,
     v: AnimalHitTarget,
     onHit?: (info: AnimalHitInfo) => void,
+    shared = false,
+    now = 0,
   ): boolean {
     const dist = this.hitDist();
     const dx = v.state.position.x - animal.x;
     const dz = v.state.position.z - animal.z;
     if (dx * dx + dz * dz > dist * dist) return false;
     if (Math.abs(v.state.speed) < 2.5) return false;
+    if (shared && animal.hitUntil > now) return false;
 
-    this.explodeAnimal(animal);
+    if (shared) {
+      animal.hitUntil = now + 1400;
+      this.burstAt(animal.x, animal.z);
+    } else {
+      this.explodeAnimal(animal);
+    }
     const keep =
       Math.sign(v.state.speed || 1) *
       Math.max(HIT_SPEED_FLOOR, Math.abs(v.state.speed) * HIT_SPEED_KEEP);
@@ -1296,20 +1372,12 @@ export class WildlifeHerd {
     return true;
   }
 
-  private explodeAnimal(animal: Animal) {
-    const ox = animal.x;
-    const oz = animal.z;
-    animal.mode = "dead";
-    animal.mesh.visible = false;
-    animal.respawnIn = RESPAWN_DELAY;
-
-    // Cap concurrent debris — old GPUs hitch hard on many transparent meshes.
+  private burstAt(ox: number, oz: number) {
     const n = Math.min(5, 12 - this.bursts.length);
     for (let i = 0; i < n; i++) {
       const base = this.burstMats[i % this.burstMats.length]!;
       let mesh = this.burstPool.pop();
       if (!mesh) {
-        // Own material per mesh so opacity fades don't clobber siblings.
         mesh = new THREE.Mesh(this.burstGeo, base.clone());
       }
       const mat = mesh.material as THREE.MeshBasicMaterial;
@@ -1331,10 +1399,17 @@ export class WildlifeHerd {
       this.group.add(mesh);
       this.bursts.push({ mesh, vel, life: 0.28 + Math.random() * 0.28 });
     }
-    // Reuse the resident light — never add/remove (avoids shader recompile freezes).
     this.burstLight.position.set(ox, 1.6, oz);
     this.burstLight.intensity = 2.2;
-    this.burstLight.visible = true;
+  }
+
+  private explodeAnimal(animal: Animal) {
+    const ox = animal.x;
+    const oz = animal.z;
+    animal.mode = "dead";
+    animal.mesh.visible = false;
+    animal.respawnIn = RESPAWN_DELAY;
+    this.burstAt(ox, oz);
   }
 
   private respawnAnimal(animal: Animal) {
@@ -1386,12 +1461,8 @@ export class WildlifeHerd {
         this.bursts.splice(i, 1);
       }
     }
-    if (this.burstLight.visible) {
+    if (this.burstLight.intensity > 0) {
       this.burstLight.intensity = Math.max(0, this.burstLight.intensity - dt * 8);
-      if (this.burstLight.intensity <= 0.05) {
-        this.burstLight.intensity = 0;
-        this.burstLight.visible = false;
-      }
     }
   }
 
@@ -1403,7 +1474,6 @@ export class WildlifeHerd {
     }
     this.bursts.length = 0;
     this.burstLight.intensity = 0;
-    this.burstLight.visible = false;
   }
 }
 

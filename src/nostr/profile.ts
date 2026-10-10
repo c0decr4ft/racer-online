@@ -103,3 +103,48 @@ export async function publishProfileName(
     cache.set(event.pubkey, { name, displayName: name });
   }
 }
+
+type ProfileSearchHit = { pubkey: string; name: string; lastSeen: number };
+
+/**
+ * Best-effort name search across relays that support NIP-50.
+ * Relays that ignore `search` just return nothing useful — callers still
+ * match the game directory by profile.
+ */
+export function searchProfilesByName(query: string, timeoutMs = 4500): Promise<ProfileSearchHit[]> {
+  const q = query.trim().toLowerCase();
+  if (q.length < 2) return Promise.resolve([]);
+  const relays = ["wss://relay.nostr.band", "wss://relay.damus.io", ...DEFAULT_RELAYS];
+  return new Promise((resolve) => {
+    const found = new Map<string, ProfileSearchHit>();
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      try {
+        sub.unsubscribe();
+      } catch {
+        /* ignore */
+      }
+      resolve([...found.values()]);
+    };
+    const sub = pool
+      .request(relays, { kinds: [0], search: q, limit: 30 } as { kinds: number[]; authors?: string[] })
+      .subscribe({
+        next: (event) => {
+          const pubkey = typeof event.pubkey === "string" ? event.pubkey.toLowerCase() : "";
+          if (!/^[0-9a-f]{64}$/.test(pubkey)) return;
+          const content = typeof event.content === "string" ? event.content : "";
+          const profile = parseProfileContent(content);
+          const name = (profile?.displayName || profile?.name || "").trim();
+          if (!name.toLowerCase().includes(q)) return;
+          const created = typeof event.created_at === "number" ? event.created_at * 1000 : 0;
+          const prev = found.get(pubkey);
+          if (!prev || created >= prev.lastSeen) found.set(pubkey, { pubkey, name, lastSeen: created });
+        },
+        complete: finish,
+        error: finish,
+      });
+    setTimeout(finish, timeoutMs);
+  });
+}

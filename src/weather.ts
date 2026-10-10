@@ -138,8 +138,18 @@ export class WeatherController {
   private trackRoot: THREE.Object3D | null = null;
   /** Biome sky / lamp overrides from the active track root. */
   private biomeAtmo: BiomeAtmosphere | null = null;
-  /** Cached street PointLights — toggled by night + distance (not full traverse each frame). */
+  /** Track-authored street lights — position sources only, never rendered. */
   private nightLamps: THREE.PointLight[] = [];
+  /**
+   * Fixed pool copied onto the nearest poles. Count stays constant while night
+   * lighting is on so NUM_POINT_LIGHTS doesn't change mid-lap (that recompiles
+   * every MeshStandardMaterial and freezes the frame).
+   */
+  private lampPool: THREE.PointLight[] = [];
+  private lampPoolLit = false;
+  private lampPoolBudget = 0;
+  private readonly _nearLamp: THREE.PointLight[] = new Array(32);
+  private readonly _nearD2 = new Float64Array(32);
   private lastHeadlightsOn: boolean | null = null;
   private lastHeadlightMesh: THREE.Group | null = null;
   private lastNightLampActive: boolean | null = null;
@@ -182,12 +192,16 @@ export class WeatherController {
     this.trackRoot = root;
     this.nightLamps = [];
     this.lastNightLampActive = null;
+    this.hideLampPool();
     const raw = root?.userData?.biomeAtmosphere;
     this.biomeAtmo =
       raw && typeof raw === "object" ? (raw as BiomeAtmosphere) : null;
     if (root) {
       root.traverse((obj) => {
         if (obj instanceof THREE.PointLight && obj.userData.nightLamp) {
+          // Real poles stay dark. The pool above is what the shader sees.
+          obj.visible = false;
+          obj.intensity = 0;
           this.nightLamps.push(obj);
         }
       });
@@ -227,7 +241,11 @@ export class WeatherController {
       this.nightLampRangeSq = r * r;
     }
     if (opts.maxNightLamps != null) {
-      this.maxNightLamps = Math.max(1, Math.floor(opts.maxNightLamps));
+      const next = Math.max(1, Math.floor(opts.maxNightLamps));
+      if (next !== this.maxNightLamps) {
+        this.maxNightLamps = next;
+        this.lampPoolLit = false;
+      }
     }
     if (opts.headlightBeams != null) {
       this.headlightBeams = opts.headlightBeams;
@@ -349,50 +367,114 @@ export class WeatherController {
     this.sun.target.updateMatrixWorld();
   }
 
-  /** Enable only nearby night PointLights so NUM_POINT_LIGHTS stays small in-shader. */
+  /**
+   * Light the nearest poles from a fixed pool. Source lights stay invisible.
+   * Turning individual lights on and off changes the shader's light count and
+   * recompiles the whole scene — that was the mid-race half-second freeze.
+   */
   private cullNightLamps(on: boolean, playerPos: THREE.Vector3) {
-    const rangeSq = this.nightLampRangeSq;
-    const px = playerPos.x;
-    const pz = playerPos.z;
-    if (!on) {
-      for (const lamp of this.nightLamps) {
-        if (lamp.visible || lamp.intensity !== 0) {
-          lamp.intensity = 0;
-          lamp.visible = false;
-        }
+    for (const lamp of this.nightLamps) {
+      if (lamp.visible || lamp.intensity !== 0) {
+        lamp.intensity = 0;
+        lamp.visible = false;
       }
+    }
+
+    const budget = on
+      ? Math.min(this.maxNightLamps, this.nightLamps.length, this._nearD2.length)
+      : 0;
+    if (budget === 0) {
+      if (this.lampPoolLit) this.hideLampPool();
       return;
     }
 
-    // Rank by distance², turn on the nearest N only — keeps shader light count bounded.
-    const scored: { lamp: THREE.PointLight; d2: number }[] = [];
-    for (const lamp of this.nightLamps) {
+    if (!this.lampPoolLit || this.lampPoolBudget !== budget) {
+      this.hideLampPool();
+      for (let i = 0; i < budget; i++) {
+        const dst = this.ensurePoolLight(i);
+        dst.visible = true;
+        dst.intensity = 0;
+      }
+      this.lampPoolLit = true;
+      this.lampPoolBudget = budget;
+    }
+
+    const found = this.nearestNightLamps(playerPos.x, playerPos.z, budget);
+    for (let i = 0; i < budget; i++) {
+      const dst = this.lampPool[i]!;
+      if (i < found) {
+        const src = this._nearLamp[i]!;
+        dst.position.copy(src.position);
+        dst.distance = src.distance;
+        dst.decay = src.decay;
+        dst.color.copy(src.color);
+        const intensity =
+          typeof src.userData.nightIntensity === "number"
+            ? (src.userData.nightIntensity as number)
+            : 1.6;
+        dst.intensity = intensity;
+      } else if (dst.intensity !== 0) {
+        dst.intensity = 0;
+      }
+    }
+  }
+
+  private ensurePoolLight(index: number): THREE.PointLight {
+    while (this.lampPool.length <= index) {
+      const light = new THREE.PointLight(0xffe0a8, 0, 24, 2);
+      light.castShadow = false;
+      light.visible = false;
+      light.name = "night-lamp-pool";
+      this.scene.add(light);
+      this.lampPool.push(light);
+    }
+    return this.lampPool[index]!;
+  }
+
+  private hideLampPool() {
+    for (const light of this.lampPool) {
+      light.intensity = 0;
+      light.visible = false;
+    }
+    this.lampPoolLit = false;
+    this.lampPoolBudget = 0;
+  }
+
+  /** Nearest `budget` sources, sorted near-to-far. No per-frame allocations. */
+  private nearestNightLamps(px: number, pz: number, budget: number): number {
+    const rangeSq = this.nightLampRangeSq;
+    const lamps = this._nearLamp;
+    const d2s = this._nearD2;
+    let filled = 0;
+    for (let i = 0; i < this.nightLamps.length; i++) {
+      const lamp = this.nightLamps[i]!;
       const dx = lamp.position.x - px;
       const dz = lamp.position.z - pz;
       const d2 = dx * dx + dz * dz;
-      if (d2 <= rangeSq) scored.push({ lamp, d2 });
-      else if (lamp.visible || lamp.intensity !== 0) {
-        lamp.intensity = 0;
-        lamp.visible = false;
+      if (d2 > rangeSq) continue;
+
+      let slot: number;
+      if (filled < budget) {
+        slot = filled;
+        filled++;
+      } else if (d2 < d2s[filled - 1]!) {
+        slot = filled - 1;
+      } else {
+        continue;
+      }
+      lamps[slot] = lamp;
+      d2s[slot] = d2;
+      while (slot > 0 && d2s[slot]! < d2s[slot - 1]!) {
+        const td = d2s[slot - 1]!;
+        d2s[slot - 1] = d2s[slot]!;
+        d2s[slot] = td;
+        const tl = lamps[slot - 1]!;
+        lamps[slot - 1] = lamps[slot]!;
+        lamps[slot] = tl;
+        slot--;
       }
     }
-    scored.sort((a, b) => a.d2 - b.d2);
-    const keep = new Set(scored.slice(0, this.maxNightLamps).map((s) => s.lamp));
-    for (const { lamp } of scored) {
-      if (keep.has(lamp)) {
-        const intensity =
-          typeof lamp.userData.nightIntensity === "number"
-            ? (lamp.userData.nightIntensity as number)
-            : 1.6;
-        if (!lamp.visible || lamp.intensity !== intensity) {
-          lamp.intensity = intensity;
-          lamp.visible = true;
-        }
-      } else if (lamp.visible || lamp.intensity !== 0) {
-        lamp.intensity = 0;
-        lamp.visible = false;
-      }
-    }
+    return filled;
   }
 
   private applyAtmosphere() {
@@ -472,6 +554,7 @@ export class WeatherController {
         lamp.intensity = 0;
         lamp.visible = false;
       }
+      this.hideLampPool();
       this.lastNightLampActive = false;
     } else {
       // Force a cull pass on the next update (player position known there).
