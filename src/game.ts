@@ -3582,10 +3582,11 @@ export class Game {
     this.ghostRecorder.reset();
   }
 
-  /** Ghost is Test Drive and Solo Race only — not Start Race, multiplayer, or events. */
+  /** Ghost is Solo Race only — not Test Drive, practice, Start Race, multiplayer, or events. */
   private ghostAllowed(): boolean {
     if (!this.ghostEnabled || this.online || this.roomSpectating) return false;
-    return this.practice || this.solo;
+    // Solo Race is solo without practice. Test Drift sets both; Test Drive is practice only.
+    return this.solo && !this.practice;
   }
 
   /** Spawn a see-through copy of the player's best full race on this track+vehicle. */
@@ -4293,7 +4294,7 @@ export class Game {
         remote.update(now, this.camera, remoteViewportWidth, remoteViewportHeight);
       }
     }
-    // Best-race ghost follows the live race clock (GO → finish) in Test Drive and Solo.
+    // Best-race ghost follows the live race clock (GO → finish) in Solo Race.
     if (this.ghostPlayer && this.running && this.raceStart > 0 && !this.gridHeld) {
       this.ghostPlayer.update(this.raceNow() - this.raceStart);
     }
