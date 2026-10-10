@@ -216,10 +216,10 @@ export function enableHeadlightCameras(...cameras: THREE.Camera[]) {
 }
 
 /**
- * Make a vehicle mesh look like a best-race ghost (semi-transparent, no shadows).
- * Clones materials so the player's garage paint is never mutated.
+ * Pale see-through ghost. Clones materials so the player's garage paint is never mutated.
+ * Body, glass, and lamps all go white — no leftover car color.
  */
-export function applyGhostAppearance(root: THREE.Group, opacity = 0.42) {
+export function applyGhostAppearance(root: THREE.Group, opacity = 0.22) {
   const clones = new Map<THREE.Material, THREE.Material>();
   root.traverse((obj) => {
     obj.castShadow = false;
@@ -234,12 +234,15 @@ export function applyGhostAppearance(root: THREE.Group, opacity = 0.42) {
       clone.transparent = true;
       clone.opacity = opacity;
       clone.depthWrite = false;
-      if ("emissiveIntensity" in clone && typeof (clone as { emissiveIntensity?: number }).emissiveIntensity === "number") {
-        (clone as { emissiveIntensity: number }).emissiveIntensity = Math.min(
-          (clone as { emissiveIntensity: number }).emissiveIntensity,
-          0.15,
-        );
+      const std = clone as THREE.MeshStandardMaterial;
+      if (std.color) std.color.setHex(0xf7f9fc);
+      if (std.emissive) {
+        std.emissive.setHex(0xe7eef6);
+        std.emissiveIntensity = 0.4;
       }
+      if ("metalness" in std) std.metalness = 0;
+      if ("roughness" in std) std.roughness = 0.6;
+      if ("map" in std) std.map = null;
       clones.set(m, clone);
       return clone;
     });

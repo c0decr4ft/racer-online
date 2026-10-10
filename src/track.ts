@@ -709,13 +709,12 @@ function plantVegetation(
 }
 
 /**
- * Volumetric alpine peak — irregular radial taper so it reads as a mountain
- * from the track (not a flat range slab / snow blob).
- * Unit height ≈ 1, base radius ≈ 1.
+ * Alpine massif — long ridge, a rocky bench, then a horn leaned off-center.
+ * Unit height ≈ 1, base radius ≈ 1. Not a spun cone.
  */
 function createVolumetricPeakGeometry(
-  sides = 9,
-  levels = 6,
+  sides = 11,
+  levels = 7,
   seed = 0,
 ): THREE.BufferGeometry {
   const positions: number[] = [];
@@ -733,22 +732,43 @@ function createVolumetricPeakGeometry(
     positions.push(ax, ay, az, bx, by, bz, cx, cy, cz);
   };
 
+  const ridge = hash2(seed, 1) * Math.PI * 2;
+  const rx = Math.cos(ridge);
+  const rz = Math.sin(ridge);
+  const stretch = 1.42 + hash2(seed, 2) * 0.5;
+  const pinch = 0.68 + hash2(seed, 6) * 0.16;
+  const tipLean = 0.2 + hash2(seed, 4) * 0.16;
+
+  const radiusAt = (t: number) => {
+    // Wide foot, a shoulder around a third of the way up, then a horn.
+    const foot = Math.pow(1 - t, 0.52);
+    const bench =
+      t > 0.2 && t < 0.5 ? 0.14 * Math.sin(((t - 0.2) / 0.3) * Math.PI) : 0;
+    return Math.max(0.035, foot * (0.94 + bench));
+  };
+
   type Ring = { y: number; pts: { x: number; z: number }[] };
   const rings: Ring[] = [];
   for (let li = 0; li <= levels; li++) {
     const t = li / levels; // 0 base → 1 tip
     const y = t;
-    // Flare then taper — wide shoulders, sharp summit
-    const radius = Math.pow(1 - t, 1.15) * (0.92 + hash2(seed, li + 3) * 0.18);
+    const radius = radiusAt(t);
+    const lean = tipLean * t * t;
     const pts: { x: number; z: number }[] = [];
     for (let s = 0; s < sides; s++) {
       const a = (s / sides) * Math.PI * 2;
       const jag =
-        0.82 +
-        hash2(seed * 17 + s, li * 9 + 5) * 0.28 +
-        hash2(s * 3 + li, seed + 11) * 0.12;
-      const r = Math.max(0.02, radius * jag);
-      pts.push({ x: Math.cos(a) * r, z: Math.sin(a) * r });
+        0.78 +
+        hash2(seed * 17 + s, li * 9 + 5) * 0.32 +
+        hash2(s * 3 + li, seed + 11) * 0.1;
+      // Spur every few faces so the silhouette isn't a smooth egg.
+      const spur = s % 3 === (seed % 3) && t > 0.15 && t < 0.72 ? 1.18 : 1;
+      const r = Math.max(0.02, radius * jag * spur);
+      const lx = Math.cos(a) * r * stretch;
+      const lz = Math.sin(a) * r * pinch;
+      const x = lx * rx - lz * rz + rx * lean;
+      const z = lx * rz + lz * rx + rz * lean;
+      pts.push({ x, z });
     }
     rings.push({ y, pts });
   }
@@ -766,14 +786,15 @@ function createVolumetricPeakGeometry(
       push(a0.x, lo.y, a0.z, b1.x, hi.y, b1.z, b0.x, hi.y, b0.z);
     }
   }
-  // Tip fan
+  // Close the horn. The last ring is already leaned along the ridge.
   const tip = rings[rings.length - 1]!;
-  const prev = rings[rings.length - 2]!;
+  const tipX = rx * tipLean;
+  const tipZ = rz * tipLean;
   for (let s = 0; s < sides; s++) {
     const s1 = (s + 1) % sides;
-    const p0 = prev.pts[s]!;
-    const p1 = prev.pts[s1]!;
-    push(p0.x, prev.y, p0.z, p1.x, prev.y, p1.z, 0, tip.y, 0);
+    const p0 = tip.pts[s]!;
+    const p1 = tip.pts[s1]!;
+    push(p0.x, tip.y, p0.z, p1.x, tip.y, p1.z, tipX, tip.y + 0.02, tipZ);
   }
   // Flat base (down-facing) so underside doesn't open
   const base = rings[0]!;
@@ -790,7 +811,7 @@ function createVolumetricPeakGeometry(
   return geo;
 }
 
-/** Snow cap — top third of a peak, slightly flared so it seats on rock. */
+/** Snow cap — same massif shape, scaled over the upper slopes. */
 function createSnowCapGeometry(seed = 0): THREE.BufferGeometry {
   return createVolumetricPeakGeometry(8, 4, seed + 40);
 }
@@ -835,18 +856,24 @@ function createRangeChunkGeometry(
   return geo;
 }
 
-/** Lower foothill band — wide and squat. */
+/** Lower foothill band — a short jagged ridge, not a single wedge. */
 function createFoothillGeometry(): THREE.BufferGeometry {
-  return createRangeChunkGeometry([
-    [-1.0, 0.1],
-    [-0.7, 0.45],
-    [-0.4, 0.28],
-    [-0.1, 0.7],
-    [0.25, 0.35],
-    [0.55, 0.58],
-    [0.8, 0.25],
-    [1.0, 0.08],
-  ], 0.85);
+  return createRangeChunkGeometry(
+    [
+      [-1.0, 0.05],
+      [-0.82, 0.34],
+      [-0.64, 0.16],
+      [-0.42, 0.58],
+      [-0.2, 0.3],
+      [0.0, 0.74],
+      [0.2, 0.36],
+      [0.4, 0.62],
+      [0.62, 0.2],
+      [0.82, 0.38],
+      [1.0, 0.06],
+    ],
+    1.2,
+  );
 }
 
 /**
@@ -1629,11 +1656,12 @@ function plantBiomeProps(
       dummy.updateMatrix();
       mesh.setMatrixAt(mesh.count++, dummy.matrix);
       if (!withSnow || caps.count >= caps.instanceMatrix.count) return;
-      const capH = h * (0.2 + hash2(i, 17) * 0.1);
-      const capR = base * (0.26 + hash2(i, 19) * 0.12);
-      dummy.position.set(x, yOff + h * 0.7, z);
-      dummy.scale.set(capR, capH, capR * (0.88 + hash2(i, 21) * 0.22));
-      dummy.rotation.set(0, yaw + 0.35, 0);
+      // Snow cloaks the upper slopes and the horn, instead of a small hat on the tip.
+      const capH = h * (0.56 + hash2(i, 17) * 0.08);
+      const capR = base * (0.58 + hash2(i, 19) * 0.1);
+      dummy.position.set(x, yOff + h * 0.4, z);
+      dummy.scale.set(capR, capH, capR * (0.9 + hash2(i, 21) * 0.16));
+      dummy.rotation.set(0, yaw + 0.2, 0);
       dummy.updateMatrix();
       caps.setMatrixAt(caps.count++, dummy.matrix);
     };
@@ -1654,8 +1682,8 @@ function plantBiomeProps(
       const radial = farR + (hash2(i, 4) - 0.5) * 22;
       const x = cx + Math.cos(a) * radial;
       const z = cz + Math.sin(a) * radial;
-      const base = 20 + hash2(i, 8) * 16;
-      const h = 44 + hash2(i, 11) * 48;
+      const base = 28 + hash2(i, 8) * 18;
+      const h = 34 + hash2(i, 11) * 26;
       const yaw = hash2(i, 13) * Math.PI * 2;
       plantPeak(peaks, snowCaps, i, x, z, base, h, yaw, -2.5, true);
 
@@ -1684,8 +1712,8 @@ function plantBiomeProps(
       const radial = farFillR + (hash2(i, 42) - 0.5) * 28;
       const x = cx + Math.cos(a) * radial;
       const z = cz + Math.sin(a) * radial;
-      const base = 14 + hash2(i, 44) * 12;
-      const h = 28 + hash2(i, 46) * 34;
+      const base = 18 + hash2(i, 44) * 14;
+      const h = 22 + hash2(i, 46) * 22;
       plantPeak(peaksC, snowCaps, i + 400, x, z, base, h, hash2(i, 48) * Math.PI * 2, -2.0, true);
     }
 
@@ -1695,10 +1723,10 @@ function plantBiomeProps(
       const radial = midR + (hash2(i, 52) - 0.5) * 20;
       const x = cx + Math.cos(a) * radial;
       const z = cz + Math.sin(a) * radial;
-      const base = 12 + hash2(i, 54) * 10;
+      const base = 16 + hash2(i, 54) * 12;
       if (!clearance.sceneryOk(x, z, base * 0.65 + 10)) continue;
       if (hitsTreeNear(x, z, base + 8)) continue;
-      const h = 24 + hash2(i, 56) * 26;
+      const h = 20 + hash2(i, 56) * 18;
       plantPeak(peaksB, snowCapsB, i + 600, x, z, base, h, hash2(i, 58) * Math.PI * 2, -1.8, true);
     }
 
@@ -1727,10 +1755,10 @@ function plantBiomeProps(
       const radial = nearR + (hash2(i, 62) - 0.5) * 16;
       const x = cx + Math.cos(a) * radial;
       const z = cz + Math.sin(a) * radial;
-      const base = 10 + hash2(i, 35) * 9;
+      const base = 14 + hash2(i, 35) * 10;
       if (!clearance.sceneryOk(x, z, base * 0.7 + 8)) continue;
       if (hitsTreeNear(x, z, base + 6)) continue;
-      const h = 18 + hash2(i, 37) * 20;
+      const h = 16 + hash2(i, 37) * 14;
       plantPeak(
         peaksC,
         snowCapsB,
