@@ -17,7 +17,8 @@
     "start:local": "npm run dev:online",
     "test:full": "node scripts/full-suite.mjs",
     "test:leaderboard": "node scripts/verify-leaderboard.mjs",
-    "test:lobby-invite-auth": "node scripts/verify-lobby-invite-auth.mjs"
+    "test:lobby-invite-auth": "node scripts/verify-lobby-invite-auth.mjs",
+    "test:wildlife-online-sync": "node scripts/verify-wildlife-online-sync.mjs"
   },
   "devDependencies": {
     "@types/qrcode": "^1.5.6",
