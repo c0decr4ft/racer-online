@@ -99,7 +99,7 @@ import {
   WeatherController,
   type WeatherMode,
 } from "./weather";
-import { hashAnimalSeed, WildlifeHerd } from "./wildlife";
+import { hashAnimalSeed, WildlifeHerd, type AnimalHitInfo } from "./wildlife";
 import {
   bindWebglContextRecovery,
   createGameRenderer,
@@ -506,6 +506,12 @@ export class Game {
   private wildlife: WildlifeHerd | null = null;
   /** Shared online herd seed — same value on every client in the room. */
   private onlineAnimalSeed = 1;
+  /**
+   * Wall-clock epoch (performance.now) at GO for online wildlife.
+   * Must NOT use pause-adjusted raceNow — pausing would freeze this client's
+   * herd while peers keep stepping, permanently desyncing animals.
+   */
+  private wildlifeRaceEpoch = 0;
   /** Scratch pack for wildlife hits (avoid clobbering `_pack` mid-frame). */
   private readonly _wildlifePack: Vehicle[] = [];
 
@@ -2388,20 +2394,23 @@ export class Game {
         pack.push(r.vehicle);
       }
     }
-    const elapsedSec =
-      this.online && this.raceStart > 0 && !this.gridHeld ? (this.raceNow() - this.raceStart) / 1000 : -1;
     const opts = { halfRate: this.perf.wildlifeHalfRate };
-    if (elapsedSec >= 0) {
-      this.wildlife.syncShared(elapsedSec, dt, pack, (info) => {
-        this.audio.playBoom();
-        if (info.target === this.player) this.showAnimalHit(info.name);
-      }, opts);
-      return;
-    }
-    this.wildlife.update(dt, pack, (info) => {
+    const onHit = (info: AnimalHitInfo) => {
       this.audio.playBoom();
       if (info.target === this.player) this.showAnimalHit(info.name);
-    }, opts);
+    };
+    // Online: always syncShared — never fall through to update() during 3-2-1.
+    // Countdown used to step the seeded RNG on local dt/FPS, so clients diverged
+    // before GO and the shared seed was worthless.
+    if (this.online) {
+      const elapsedSec =
+        this.wildlifeRaceEpoch > 0 && !this.gridHeld
+          ? Math.max(0, (performance.now() - this.wildlifeRaceEpoch) / 1000)
+          : 0;
+      this.wildlife.syncShared(elapsedSec, dt, pack, onHit, opts);
+      return;
+    }
+    this.wildlife.update(dt, pack, onHit, opts);
   }
 
   private showAnimalHit(name: string) {
@@ -3979,6 +3988,7 @@ export class Game {
     // Timer starts when countdown hits GO — hold at zero until then
     this.raceStart = 0;
     this.lapStart = 0;
+    this.wildlifeRaceEpoch = 0;
     this.input.clearDriveKeys();
     this.clearExplode(true);
     this.clearOnlineWreck();
@@ -4148,6 +4158,8 @@ export class Game {
     this.sectorIdx = 0;
     // First lap: arm the S1 timer exactly at GO so S1 gets a clean reference
     this.sectorStartMs = this.raceStart;
+    // Wildlife shared clock ignores pause — peers keep racing while you Esc.
+    this.wildlifeRaceEpoch = this.online ? performance.now() : 0;
     this.startRaceDriveAudio();
     this.ghostRecorder.reset();
     this.ghostPlayer?.setVisible(true);
@@ -5060,6 +5072,7 @@ export class Game {
     this.pauseBegan = 0;
     this.raceStart = 0;
     this.lapStart = 0;
+    this.wildlifeRaceEpoch = 0;
     this.crossedOnce = true;
     this.gates.reset();
     this.input.clearDriveKeys();
@@ -5067,6 +5080,10 @@ export class Game {
     this.el.best.textContent = "--:--.---";
     this.el.time.textContent = formatTime(0);
     this.el.gear.textContent = "1";
+    // Shared wildlife steps from the race clock. After a long race sharedSteps
+    // is far ahead of the rewound clock — without a reset animals freeze on
+    // the road and keep applying hit slowdowns for the restart.
+    this.wildlife?.resetSharedRace();
     this.snapOnlineStartingGrid();
     this.snapCamera();
     this.audio.unmute();

@@ -203,6 +203,84 @@ const top = normalize(
 );
 check("normalize keeps top 10 sorted", top.length === 10 && top[0].timeMs < top[9].timeMs);
 
+// --- Public blob must not accept unsigned plain rows (forgery → local wipe) ---
+function isRawEvent(data) {
+  if (!data || typeof data !== "object") return false;
+  return (
+    typeof data.id === "string" &&
+    typeof data.pubkey === "string" &&
+    typeof data.sig === "string" &&
+    typeof data.kind === "number" &&
+    Array.isArray(data.tags)
+  );
+}
+
+function toEntry(item, trackId, allowPlain) {
+  if (isRawEvent(item)) {
+    // Mirror: unsigned path under test — raw events need verifyScoreEvent in app.
+    // Here we only assert the plain-rejection branch.
+    return null;
+  }
+  if (!allowPlain) return null;
+  if (!item || typeof item !== "object") return null;
+  if (typeof item.timeMs !== "number" || !Number.isFinite(item.timeMs) || item.timeMs <= 0) return null;
+  return {
+    name: typeof item.name === "string" ? item.name : "RACER",
+    timeMs: item.timeMs,
+    at: typeof item.at === "number" ? item.at : 1,
+    trackId,
+  };
+}
+
+function parseStoreTrust(data, allowPlain) {
+  const store = emptyStore();
+  if (!isBoardPayload(data)) return store;
+  const obj = data;
+  if (obj.byTrack && typeof obj.byTrack === "object") {
+    for (const [id, list] of Object.entries(obj.byTrack)) {
+      const tid = normalizeTrackId(id);
+      if (!Array.isArray(list)) continue;
+      const entries = list.map((item) => toEntry(item, tid, allowPlain)).filter(Boolean);
+      store[tid] = normalize([...(store[tid] ?? []), ...entries], tid);
+    }
+  }
+  return store;
+}
+
+const forgedBlob = {
+  byTrack: {
+    "forest-loop": Array.from({ length: MAX }, (_, i) => ({
+      name: `FAKE${i}`,
+      timeMs: 1000 + i,
+      at: i + 1,
+    })),
+  },
+};
+const localReal = emptyStore();
+localReal["forest-loop"] = [{ name: "ALICE", timeMs: 90000, at: 1 }];
+
+const untrusted = parseStoreTrust(forgedBlob, false);
+check(
+  "public blob allowPlain=false drops forged unsigned rows",
+  storeEntryCount(untrusted) === 0,
+  `count=${storeEntryCount(untrusted)}`,
+);
+
+const trustedPlain = parseStoreTrust(forgedBlob, true);
+const poisoned = mergeBoardStores(localReal, trustedPlain);
+check(
+  "repro: allowPlain=true + MAX forged plains evict real local times",
+  !poisoned["forest-loop"].some((e) => e.name === "ALICE") && poisoned["forest-loop"].length === MAX,
+  `names=${poisoned["forest-loop"].map((e) => e.name).join(",")}`,
+);
+
+const fixedBlobMerge = mergeBoardStores(localReal, untrusted);
+check(
+  "fix: signed-only blob parse keeps real local times",
+  fixedBlobMerge["forest-loop"].some((e) => e.name === "ALICE") &&
+    fixedBlobMerge["forest-loop"].length === 1,
+);
+
 if (failures.length) {
   console.error(`\n${failures.length} failed`);
   process.exit(1);
