@@ -247,9 +247,8 @@ function isBoardPayload(data: unknown): boolean {
 /**
  * Coerce one stored item into a board entry.
  * - Signed score events: always signature-verified here.
- * - Plain entries: kept when `allowPlain` is set (local caches, older blobs,
- *   and the game server). Missing pubkeys are older unsigned times — dropping
- *   them is what made the board empty on newer builds.
+ * - Plain entries: kept when `allowPlain` is set (local caches and the game
+ *   server, which verifies signatures at write). Never for the public JSONBlob.
  */
 function toEntry(
   item: unknown,
@@ -291,7 +290,8 @@ function toEntry(
 /**
  * Parse a stored board payload.
  * `trusted` = our own game server (verified at write). `allowPlain` keeps
- * unsigned historical rows from local caches and older worldwide blobs.
+ * unsigned historical rows from local caches — never from the public JSONBlob
+ * (unauthenticated PUT can forge plain rows and truncate real times).
  */
 export function parseStore(data: unknown, trusted = false, allowPlain = trusted): BoardStore {
   const store = emptyStore();
@@ -457,8 +457,11 @@ async function fetchPublicBlobStore(url = PUBLIC_BLOB_URL): Promise<BoardStore> 
   if (!res.ok) throw new Error(String(res.status));
   const data = await res.json();
   if (!isBoardPayload(data)) throw new Error("unrecognized board payload");
-  // Signed events are verified. Plain rows are historical times from older builds.
-  return parseStore(data, false, true);
+  // Untrusted shared storage — signature-verify on read. Unsigned plain rows are
+  // forgeable by anyone who can PUT the JSONBlob; keeping them poisoned every
+  // client's local board via fetchLeaderboard → persistAllLocal (MAX truncation).
+  // Local archives / the game server still use allowPlain for historical recovery.
+  return parseStore(data, false, false);
 }
 
 async function fetchAllPublicBlobs(): Promise<BoardStore> {
@@ -501,19 +504,16 @@ function collectBlobEvents(data: unknown): Record<string, RawEvent[]> {
 async function publishEventToBlob(event: RawEvent, trackId: string): Promise<void> {
   const tid = normalizeTrackId(trackId);
   let existing: Record<string, RawEvent[]> = {};
-  let plainExisting = emptyStore();
   try {
     const res = await fetchBlobResponse();
     if (res.ok) {
-      const data = await res.json();
-      existing = collectBlobEvents(data);
-      plainExisting = parseStore(data, false, true);
+      existing = collectBlobEvents(await res.json());
     }
   } catch {
     /* unreadable blob — publish just ours */
   }
 
-  const merged: Record<string, unknown[]> = {};
+  const merged: Record<string, RawEvent[]> = {};
   for (const id of allBoardIds()) {
     const candidates = [...(existing[id] ?? []), ...(id === tid ? [event] : [])];
     const byPubkey = new Map<string, { raw: RawEvent; timeMs: number; at: number; score: number }>();
@@ -529,14 +529,14 @@ async function publishEventToBlob(event: RawEvent, trackId: string): Promise<voi
         byPubkey.set(score.pubkey, { raw, timeMs: score.timeMs, at: score.at, score: pts });
       }
     }
-    const signed = [...byPubkey.values()]
+    // Signed events only — never echo unsigned plains back onto the public blob
+    // (anyone can PUT jsonblob; re-publishing plains would cement forgeries).
+    merged[id] = [...byPubkey.values()]
       .sort((a, b) =>
         isPointsBoard(id) ? b.score - a.score || a.timeMs - b.timeMs : a.timeMs - b.timeMs || a.at - b.at,
       )
+      .slice(0, MAX)
       .map((v) => v.raw);
-    const covered = new Set(byPubkey.keys());
-    const plains = (plainExisting[id] ?? []).filter((e) => !e.pubkey || !covered.has(e.pubkey));
-    merged[id] = [...signed, ...plains].slice(0, MAX);
   }
 
   const res = await fetchBlobResponse({
