@@ -272,7 +272,7 @@ function normalizeSessionId(raw) {
 /** @typedef {{ id: string, name: string, color: number, accent: number, kind: string, pubkey?: string, x: number, z: number, h: number, s: number, g: string, lap: number }} Pose */
 /** @typedef {{ id: string, name: string, color: number, room: string, ws: import('ws').WebSocket, pose: Pose, lastPoseAt: number }} Client */
 /** @typedef {{ trackId: string, order: number }} TrackVote */
-/** @typedef {{ paymentHash: string, paymentRequest: string, bolt11?: string, paidAt: number, netSats?: number }} BuyIn */
+/** @typedef {{ paymentHash: string, paymentRequest: string, bolt11?: string, paidAt: number, netSats?: number, refundStarted?: boolean }} BuyIn */
 /** @typedef {{ at: number, level: 'info' | 'warn' | 'error', msg: string }} PotLogEntry */
 /** @typedef {{ tipSats: number, tipCollected: boolean, tipToken: string }} BattleClaimTip */
 /** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, wreckedIds: Set<string>, raceStartedAt: number, fireContactMs: Map<string, number>, fireContactLast: Map<string, number>, allWreckResetAt: number, clients: Map<string, Client>, isEvent: boolean, eventMode: 'race' | 'battle', buyInSats: number, buyInFeeSats: number, buyIns: Map<string, BuyIn>, potSats: number, potId: string, potClaimed: boolean, potLogs: PotLogEntry[], payoutTipSats: number, payoutTipCollected: boolean, payoutTipToken: string, battleCubes: Map<number, { id: number, x: number, z: number, sats: number, tier: string, takenBy: string }>, battleEarnings: Map<string, number>, battleClaimable: Map<string, number>, battleClaimedIds: Set<string>, battleClaimTips: Map<string, BattleClaimTip>, battleClaimDeadline: number, battleLeftoverSats: number, battleLeftoverCollected: boolean, battleLeftoverToken: string }} Room */
@@ -2119,6 +2119,17 @@ function abandonAllUnclaimedBattleShares(room, reason) {
 }
 
 /**
+ * Claim exclusive ownership of a lobby buy-in refund. Sync CAS on the buy-in
+ * object so host-leave + guest-leave cannot both mint a token for the same pay.
+ * @param {BuyIn | null | undefined} buyIn
+ */
+function beginLobbyBuyInRefund(buyIn) {
+  if (!buyIn || buyIn.refundStarted) return false;
+  buyIn.refundStarted = true;
+  return true;
+}
+
+/**
  * Refund a paid lobby buy-in as a Cashu token to the leaving player.
  * Prefer refund over stranding sats when the race has not started.
  * @param {Room} room
@@ -2127,6 +2138,11 @@ function abandonAllUnclaimedBattleShares(room, reason) {
  * @param {BuyIn} buyIn
  */
 async function refundLobbyBuyIn(room, client, ws, buyIn) {
+  // Idempotent: concurrent host-leave refund + guest leave share one buyIn object.
+  if (!beginLobbyBuyInRefund(buyIn)) return;
+  // Test-only: widen the host-leave ↔ guest-leave race window.
+  const testDelayMs = Math.max(0, Math.round(Number(process.env.RACER_REFUND_DELAY_MS) || 0));
+  if (testDelayMs > 0) await new Promise((r) => setTimeout(r, testDelayMs));
   const wanted = Math.max(0, Math.round(buyIn.netSats ?? room.buyInSats) || 0);
   if (wanted <= 0) {
     send(ws, { t: "buyInRefund", ok: true, sats: 0, mock: payments.mock });
@@ -2203,9 +2219,12 @@ async function refundLobbyBuyIn(room, client, ws, buyIn) {
  * @param {Room} room
  * @param {Client} client
  * @param {import('ws').WebSocket} ws
+ * @returns {Promise<boolean>} true when this call detached the client (caller may close ws)
  */
 async function removeClientFromRoom(room, client, ws) {
-  if (!room.clients.has(client.id)) return;
+  // Already detached (e.g. host-leave refund loop) — keep the socket open so the
+  // in-flight host refund can still deliver `buyInRefund` before `closed`.
+  if (!room.clients.has(client.id)) return false;
 
   const buyIn = room.buyIns.get(client.id);
   const refundPaidLobby =
@@ -2249,10 +2268,18 @@ async function removeClientFromRoom(room, client, ws) {
     rooms.delete(client.room);
   } else if (hostLeft) {
     const reason = "The host left — room closed";
+    // Snapshot before detaching — refund awaits must not leave guests in
+    // `clients`/`buyIns` or a concurrent leave can mint a second refund.
+    const others = [...room.clients.values()];
     if (room.isEvent && room.phase === "lobby") {
-      for (const other of [...room.clients.values()]) {
+      for (const other of others) {
         const paid = room.buyIns.get(other.id);
-        if (paid?.paidAt) {
+        room.clients.delete(other.id);
+        room.votes.delete(other.id);
+        room.buyIns.delete(other.id);
+        room.wreckedIds?.delete(other.id);
+        pruneFireContact(room, other.id);
+        if (paid?.paidAt && (paid.netSats ?? room.buyInSats) > 0) {
           await refundLobbyBuyIn(room, other, other.ws, paid).catch(() => {});
         }
       }
@@ -2261,7 +2288,7 @@ async function removeClientFromRoom(room, client, ws) {
       player: client.name,
       playerId: client.id,
     });
-    for (const other of [...room.clients.values()]) {
+    for (const other of others) {
       try {
         send(other.ws, { t: "closed", reason });
         other.ws.close();
@@ -2290,6 +2317,7 @@ async function removeClientFromRoom(room, client, ws) {
       scheduleAllWreckReset(room);
     }
   }
+  return true;
 }
 
 /**
@@ -4238,9 +4266,12 @@ wss.on("connection", (ws) => {
 
     if (msg.t === "leave") {
       // Explicit leave — refund / haul drop before the socket closes.
+      // If host-leave already detached us, do not close yet — their refund may
+      // still be mid-mint and will close after `buyInRefund` + `closed`.
       const leaving = client;
       client = null;
-      void removeClientFromRoom(room, leaving, ws).finally(() => {
+      void removeClientFromRoom(room, leaving, ws).then((detached) => {
+        if (!detached) return;
         try {
           ws.close();
         } catch {
