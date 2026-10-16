@@ -66,7 +66,8 @@ const WRECK_CONTACT_GRACE_MS = 450;
 const ALL_WRECK_RESET_DELAY_MS = 1_600;
 /** Binary state frame type — must match src/net/protocol.ts STATE_BIN_TYPE. */
 const STATE_BIN_TYPE = 1;
-const MAP_VOTE_MS = 20_000;
+/** Map-vote window after a casual finish. Tests may shorten via RACER_MAP_VOTE_MS. */
+const MAP_VOTE_MS = Math.max(200, Number(process.env.RACER_MAP_VOTE_MS) || 20_000);
 /** After finish, unclaimed battle shares → developer tip leftover. */
 const BATTLE_CLAIM_ABANDON_MS = 10 * 60_000;
 const MAX_PLAYERS = 6;
@@ -2641,6 +2642,10 @@ function resolveMapVote(room) {
     room.votes.clear();
     room.voteOrder = 0;
     room.voteEndsAt = 0;
+    // Same wipe as host `start` — otherwise last race's wreckedIds keep
+    // pose/finish blocked and re-ignite remotes after GO.
+    room.raceStartedAt = Date.now();
+    clearWrecks(room);
     for (const client of room.clients.values()) {
       client.pose.s = 0;
       client.pose.g = "1";
