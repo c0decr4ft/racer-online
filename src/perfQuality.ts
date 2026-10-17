@@ -84,6 +84,31 @@ export function settingsForTier(tier: PerfTier): PerfSettings {
   return HIGH;
 }
 
+/** Virtual machines and software GL (llvmpipe, SwiftShader, virgl). Real GPUs return false. */
+export function isSoftwareLikeGpu(): boolean {
+  try {
+    const c = document.createElement("canvas");
+    const gl =
+      (c.getContext("webgl2", { failIfMajorPerformanceCaveat: false }) as WebGL2RenderingContext | null) ||
+      (c.getContext("webgl", { failIfMajorPerformanceCaveat: false }) as WebGLRenderingContext | null);
+    if (!gl) return true;
+    const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+    const renderer = dbg
+      ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) ?? "").toLowerCase()
+      : "";
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+    return softwareLikeRenderer(renderer);
+  } catch {
+    return false;
+  }
+}
+
+function softwareLikeRenderer(renderer: string): boolean {
+  return /llvmpipe|softpipe|swrast|swiftshader|basic render|microsoft basic|mesa offscreen|virtualbox|vmware|parallels|chromium embedded|apple software|gdi generic|virgl|virtio|qemu|red hat/.test(
+    renderer,
+  );
+}
+
 /** Worse of two tiers (high < mid < low in cost). */
 export function worseTier(a: PerfTier, b: PerfTier): PerfTier {
   const rank = { high: 0, mid: 1, low: 2 };
@@ -119,13 +144,7 @@ export function probeBootPerfTier(): PerfTier {
     const mem = typeof nav.deviceMemory === "number" ? nav.deviceMemory : 8;
     const cores = typeof nav.hardwareConcurrency === "number" ? nav.hardwareConcurrency : 8;
 
-    if (
-      /llvmpipe|softpipe|swrast|swiftshader|basic render|microsoft basic|mesa offscreen|virtualbox|vmware|parallels|chromium embedded|apple software|gdi generic/.test(
-        renderer,
-      )
-    ) {
-      return "low";
-    }
+    if (softwareLikeRenderer(renderer)) return "low";
     if (maxTex > 0 && maxTex < 4096) return "low";
     if (mem > 0 && mem <= 2) return "low";
     if (cores > 0 && cores <= 2) return "low";
@@ -173,10 +192,25 @@ type RendererOpts = {
  * Build a WebGLRenderer that works on dual-GPU / flaky drivers.
  * Prefer high-performance; fall back to default preference if that fails.
  */
+function glContextWorks(attrs: WebGLContextAttributes): boolean {
+  const c = document.createElement("canvas");
+  try {
+    const gl =
+      (c.getContext("webgl2", attrs) as WebGL2RenderingContext | null) ||
+      (c.getContext("webgl", attrs) as WebGLRenderingContext | null);
+    if (!gl || gl.isContextLost()) return false;
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function createGameRenderer(opts: RendererOpts): THREE.WebGLRenderer {
-  const attempts: THREE.WebGLRendererParameters[] = [
+  // Probe a throwaway canvas. A failed getContext on the game canvas locks it,
+  // which is how virtual GPUs left every menu button unwired.
+  const attempts: Array<THREE.WebGLRendererParameters & WebGLContextAttributes> = [
     {
-      canvas: opts.canvas,
       antialias: opts.antialias,
       powerPreference: "high-performance",
       failIfMajorPerformanceCaveat: false,
@@ -185,7 +219,6 @@ export function createGameRenderer(opts: RendererOpts): THREE.WebGLRenderer {
       depth: true,
     },
     {
-      canvas: opts.canvas,
       antialias: false,
       powerPreference: "default",
       failIfMajorPerformanceCaveat: false,
@@ -194,7 +227,6 @@ export function createGameRenderer(opts: RendererOpts): THREE.WebGLRenderer {
       depth: true,
     },
     {
-      canvas: opts.canvas,
       antialias: false,
       powerPreference: "low-power",
       failIfMajorPerformanceCaveat: false,
@@ -204,24 +236,27 @@ export function createGameRenderer(opts: RendererOpts): THREE.WebGLRenderer {
     },
   ];
 
-  let lastError: unknown;
+  let chosen = attempts[attempts.length - 1]!;
   for (const params of attempts) {
-    try {
-      const renderer = new THREE.WebGLRenderer(params);
-      // Some drivers report a context that immediately dies — probe once.
-      const gl = renderer.getContext();
-      if (!gl || gl.isContextLost?.()) {
-        renderer.dispose();
-        continue;
-      }
-      return renderer;
-    } catch (err) {
-      lastError = err;
+    if (glContextWorks(params)) {
+      chosen = params;
+      break;
     }
   }
-  throw lastError instanceof Error
-    ? lastError
-    : new Error("WebGL unavailable — try updating your GPU drivers or use another browser");
+
+  try {
+    const renderer = new THREE.WebGLRenderer({ ...chosen, canvas: opts.canvas });
+    const gl = renderer.getContext();
+    if (!gl || gl.isContextLost?.()) {
+      renderer.dispose();
+      throw new Error("WebGL context was lost immediately");
+    }
+    return renderer;
+  } catch (err) {
+    throw err instanceof Error
+      ? err
+      : new Error("WebGL unavailable — try another browser, or turn off hardware acceleration and reload");
+  }
 }
 
 /** Wire context-lost recovery so a driver hiccup doesn't leave a permanent blue canvas. */

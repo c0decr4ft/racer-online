@@ -199,7 +199,7 @@ function handleQrFlow() {
     return;
   }
   box.classList.remove("hidden");
-  showStatus("Waiting for remote signer… scan the QR or open the link");
+  showStatus("Open Amber on your phone, scan the QR or paste the link, then approve Sats Racer");
   const { uri, wait, cancel } = startConnectLogin();
   connectCancel = cancel;
   const img = el<HTMLImageElement>("nostr-qr-img");
@@ -215,7 +215,9 @@ function handleQrFlow() {
   if (uriInput) uriInput.value = uri;
   wait.then(onLoginSuccess).catch((err) => {
     connectCancel = null;
-    showStatus(`QR login failed — ${err instanceof Error ? err.message : String(err)}`, true);
+    const message = err instanceof Error ? err.message : String(err);
+    if (/closed|abort|cancel/i.test(message)) return;
+    showStatus(`Amber didn't connect — ${message}`, true);
   });
 }
 
@@ -231,6 +233,23 @@ function handleRemoteToggle() {
     connectCancel?.();
     connectCancel = null;
     el<HTMLDivElement>("nostr-qr-box")?.classList.add("hidden");
+  }
+}
+
+async function handleCopyConnectUri() {
+  const input = el<HTMLInputElement>("nostr-connect-uri");
+  const value = input?.value ?? "";
+  if (!value) {
+    showStatus("Show the QR first, then copy the link into Amber", true);
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(value);
+    showStatus("Link copied — paste it into Amber on your phone");
+  } catch {
+    input?.focus();
+    input?.select();
+    showStatus("Select the link and paste it into Amber", true);
   }
 }
 
@@ -294,6 +313,7 @@ export function initNostrUi() {
   });
   el<HTMLButtonElement>("nostr-remote-toggle")?.addEventListener("click", handleRemoteToggle);
   el<HTMLButtonElement>("nostr-qr-toggle")?.addEventListener("click", handleQrFlow);
+  el<HTMLButtonElement>("nostr-connect-copy")?.addEventListener("click", () => void handleCopyConnectUri());
   el<HTMLButtonElement>("nostr-create-btn")?.addEventListener("click", () => {
     showView("create");
     el<HTMLInputElement>("nostr-username")?.focus();

@@ -103,6 +103,7 @@ import { hashAnimalSeed, WildlifeHerd } from "./wildlife";
 import {
   bindWebglContextRecovery,
   createGameRenderer,
+  isSoftwareLikeGpu,
   settingsForTier,
   type PerfSettings,
   type PerfTier,
@@ -545,6 +546,8 @@ export class Game {
     this.qualityTier = graphicsToTier(saved.graphics);
     this.effectsLevel = saved.effects;
     this.ghostEnabled = saved.ghost;
+    // Software / virtual GPUs only. A laptop with a real GPU keeps the saved tier.
+    if (isSoftwareLikeGpu()) this.qualityTier = "low";
     this.perf = settingsForTier(this.qualityTier);
     this.perfThrottle = this.qualityTier !== "high";
     this.audio.setMasterVolume(soundGain(saved.sound));
@@ -1641,7 +1644,7 @@ export class Game {
     }
 
     this.el.mpCreateStatus.textContent = "Creating room…";
-    await this.audio.unlock();
+    await this.unlockAudioBounded();
     this.audio.stopMenuMusic();
     this.garage = { ...loadGarage(), kind: this.mpCreateKind };
     this.solo = false;
@@ -1711,7 +1714,7 @@ export class Game {
     this.el.mpJoinRoom.value = room;
     const password = this.el.mpJoinPass.value.slice(0, 32);
     this.el.mpJoinStatus.textContent = "Joining room…";
-    await this.audio.unlock();
+    await this.unlockAudioBounded();
     this.audio.stopMenuMusic();
     // Colors from garage; vehicle kind is forced by the host/room on welcome.
     this.garage = loadGarage();
@@ -2262,7 +2265,7 @@ export class Game {
   }
 
   private async unlockAndMaybeMenuMusic() {
-    await this.audio.unlock();
+    await this.unlockAudioBounded();
     if (this.onHomeOrBoard()) this.audio.playMenuMusic();
   }
 
@@ -2438,24 +2441,36 @@ export class Game {
       trackId?: string;
     } = {},
   ) {
-    await this.audio.unlock();
-    this.audio.stopMenuMusic();
-    this.online = false;
-    this.net.disconnect();
-    this.clearRemotes();
-    this.el.netStatus.classList.add("hidden");
-    this.el.leaderboard.classList.add("hidden");
-    this.el.mapSelect.classList.add("hidden");
-    this.el.garage.classList.add("hidden");
-    this.el.multiplayer.classList.add("hidden");
-    document.getElementById("dev-dash")?.classList.add("hidden");
-    // Friends / help overlays sit above the race — clear them so the session isn't covered.
-    closeSocialHub();
-    closeControlsHelp();
-    closeHomeInstructions();
-    document.getElementById("home-settings")?.classList.add("hidden");
-    document.getElementById("feedback-compose")?.classList.add("hidden");
-    this.startRace(opts);
+    try {
+      await this.unlockAudioBounded();
+      this.audio.stopMenuMusic();
+      this.online = false;
+      this.net.disconnect();
+      this.clearRemotes();
+      this.el.netStatus.classList.add("hidden");
+      this.el.leaderboard.classList.add("hidden");
+      this.el.mapSelect.classList.add("hidden");
+      this.el.garage.classList.add("hidden");
+      this.el.multiplayer.classList.add("hidden");
+      document.getElementById("dev-dash")?.classList.add("hidden");
+      closeSocialHub();
+      closeControlsHelp();
+      closeHomeInstructions();
+      document.getElementById("home-settings")?.classList.add("hidden");
+      document.getElementById("feedback-compose")?.classList.add("hidden");
+      document.getElementById("nostr-login")?.classList.add("hidden");
+      this.startRace(opts);
+    } catch (err) {
+      this.notify(err instanceof Error ? err.message : "Could not start the race");
+    }
+  }
+
+  /** A stuck audio device must not freeze the menu. Laptops resume well inside this. */
+  private async unlockAudioBounded() {
+    await Promise.race([
+      this.audio.unlock(),
+      new Promise<void>((resolve) => setTimeout(resolve, 700)),
+    ]);
   }
 
   private goHome() {
@@ -3713,7 +3728,8 @@ export class Game {
     this.effectsLevel = settings.effects;
     this.ghostEnabled = settings.ghost;
     this.audio.setMasterVolume(soundGain(settings.sound));
-    this.applyPerfSettings(graphicsToTier(settings.graphics), { force: true });
+    const tier = isSoftwareLikeGpu() ? "low" : graphicsToTier(settings.graphics);
+    this.applyPerfSettings(tier, { force: true });
     this.ghostPlayer?.setVisible(this.ghostAllowed());
     // Mid-race toggle ON with no ghost yet — spawn from stored best if any.
     if (this.ghostAllowed() && !this.ghostPlayer && this.running && !this.gridHeld) {

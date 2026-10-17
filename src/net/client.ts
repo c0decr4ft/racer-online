@@ -208,7 +208,7 @@ export class RemotePlayer {
 
     // Adaptive jitter buffer: on good links stay tight; on hitchy/asymmetric
     // links (fast PC ↔ slow PC) widen so sparse poses still lerp smoothly.
-    const minDelay = NET_TICK_MS * 1.6;
+    const minDelay = NET_TICK_MS * 3;
     const interpDelay = THREE.MathUtils.clamp(minDelay + this.jitterMs * 2, minDelay, 160);
     // Ease the delay (~2.5 Hz): otherwise every jitter EMA wobble re-times the
     // render point and the remote visibly rubber-bands.
