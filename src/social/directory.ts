@@ -1,7 +1,10 @@
-/** Player directory + online list from the game server. */
+/** Player directory + online list from the game server, plus Nostr profile names. */
 
 import { nip19 } from "nostr-tools";
 import { apiUrl } from "../net/apiBase";
+import { getSession } from "../nostr/session";
+import { fetchProfile, searchProfilesByName } from "../nostr/profile";
+import { listFriends } from "./friends";
 
 export type DirectoryPlayer = {
   pubkey: string;
@@ -56,10 +59,23 @@ function queryPubkeyHint(query: string): string {
   return "";
 }
 
+function compactName(value: string): string {
+  return value.toLowerCase().replace(/[.\u2026\u00b7]/g, "");
+}
+
+function isWeakName(name: string): boolean {
+  const n = name.trim().toLowerCase();
+  if (!n || n === "racer" || n === "nostr racer") return true;
+  const compact = compactName(n);
+  return /^npub1[0-9a-z]+$/.test(compact) && compact.length <= 32;
+}
+
 function matchesQuery(player: { pubkey: string; name: string }, query: string): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
   if (player.name.toLowerCase().includes(q)) return true;
+  const qCompact = compactName(q);
+  if (qCompact && compactName(player.name).includes(qCompact)) return true;
   const pkHint = queryPubkeyHint(query);
   if (pkHint && (player.pubkey === pkHint || player.pubkey.startsWith(pkHint) || player.pubkey.includes(pkHint))) {
     return true;
@@ -142,7 +158,7 @@ function parseOnlineRows(raw: unknown): OnlinePlayer[] {
   return out;
 }
 
-async function playersFromLeaderboard(query: string): Promise<DirectoryPlayer[]> {
+async function playersFromLeaderboard(_query: string): Promise<DirectoryPlayer[]> {
   const url = apiUrl("/leaderboard");
   if (!url) return [];
   const data = (await fetchJson(url, 6_000)) as { byTrack?: Record<string, unknown> } | null;
@@ -163,7 +179,7 @@ async function playersFromLeaderboard(query: string): Promise<DirectoryPlayer[]>
       }
     }
   }
-  return [...map.values()].filter((r) => matchesQuery(r, query));
+  return [...map.values()];
 }
 
 function mergeDirectoryPlayers(...lists: DirectoryPlayer[][]): DirectoryPlayer[] {
@@ -171,48 +187,90 @@ function mergeDirectoryPlayers(...lists: DirectoryPlayer[][]): DirectoryPlayer[]
   for (const list of lists) {
     for (const p of list) {
       const prev = map.get(p.pubkey);
-      if (!prev || p.lastSeen >= prev.lastSeen) map.set(p.pubkey, p);
+      if (!prev) {
+        map.set(p.pubkey, p);
+        continue;
+      }
+      const prevWeak = isWeakName(prev.name);
+      const nextWeak = isWeakName(p.name);
+      if (prevWeak && !nextWeak) map.set(p.pubkey, p);
+      else if (!nextWeak && p.lastSeen >= prev.lastSeen) map.set(p.pubkey, p);
     }
   }
-  return [...map.values()].sort((a, b) => b.lastSeen - a.lastSeen).slice(0, 40);
+  return [...map.values()].sort((a, b) => b.lastSeen - a.lastSeen);
+}
+
+/**
+ * Directory rows are often stored as `npub1abcd...wxyz` before a profile loads.
+ * That label never contains the friend's display name, so a name search misses
+ * them. Look the profile up and match that instead.
+ */
+async function resolveNames(players: DirectoryPlayer[], query: string): Promise<DirectoryPlayer[]> {
+  const q = query.trim();
+  const resolved = await Promise.all(
+    players.map(async (player) => {
+      const nameMatches = matchesQuery(player, q);
+      if (!isWeakName(player.name) && (nameMatches || !q)) return nameMatches || !q ? player : null;
+      if (!isWeakName(player.name)) return null;
+      const profile = await fetchProfile(player.pubkey, 2800);
+      const label = sanitizeName(profile?.displayName || profile?.name || "");
+      const named = label && !isWeakName(label) ? { ...player, name: label } : player;
+      if (!q || matchesQuery(named, q) || matchesQuery(player, q)) return named;
+      return null;
+    }),
+  );
+  return resolved.filter((p): p is DirectoryPlayer => p !== null);
+}
+
+function friendsMatching(query: string): DirectoryPlayer[] {
+  const session = getSession();
+  if (!session || !query.trim()) return [];
+  return listFriends(session.pubkey)
+    .filter((f) => matchesQuery(f, query))
+    .map((f) => ({ pubkey: f.pubkey, name: sanitizeName(f.name), lastSeen: f.addedAt }));
 }
 
 export async function searchPlayers(query = ""): Promise<DirectoryResult> {
   const q = query.trim().slice(0, 64);
   const playersUrl = apiUrl(`/players?q=${encodeURIComponent(q)}`);
+  const browseUrl = q ? apiUrl("/players") : null;
   if (!playersUrl) {
-    return { players: [], online: [], source: "empty" };
+    const friends = friendsMatching(q);
+    return { players: friends, online: [], source: friends.length ? "server" : "empty" };
   }
 
-  // Players API first (fast). Board fallback is parallel + timed so a slow
-  // empty leaderboard can never leave Find stuck on "Searching…".
-  const [playersRaw, boardRows] = await Promise.all([
+  // Filtered search misses people stored under a short npub. Also load the
+  // recent directory and resolve those labels through Nostr profiles.
+  const [playersRaw, browseRaw, boardRows, nostrHits] = await Promise.all([
     fetchJson(playersUrl, 8_000),
+    browseUrl ? fetchJson(browseUrl, 8_000) : Promise.resolve(null),
     playersFromLeaderboard(q),
+    q.length >= 2 ? searchProfilesByName(q) : Promise.resolve([]),
   ]);
 
-  if (!playersRaw || typeof playersRaw !== "object") {
-    const fromBoard = boardRows;
-    return {
-      players: fromBoard.slice(0, 40),
-      online: [],
-      source: fromBoard.length ? "server" : "empty",
-    };
+  const serverPlayers = [
+    ...parseDirectoryRows((playersRaw as { players?: unknown } | null)?.players),
+    ...parseDirectoryRows((browseRaw as { players?: unknown } | null)?.players),
+  ];
+  const online = parseOnlineRows((playersRaw as { online?: unknown } | null)?.online);
+  const onlineAsDir: DirectoryPlayer[] = online.map((p) => ({
+    pubkey: p.pubkey,
+    name: p.name,
+    lastSeen: p.at ?? Date.now(),
+  }));
+  const nostrAsDir: DirectoryPlayer[] = nostrHits.map((hit) => ({
+    pubkey: hit.pubkey,
+    name: sanitizeName(hit.name),
+    lastSeen: hit.lastSeen,
+  }));
+
+  const merged = mergeDirectoryPlayers(boardRows, onlineAsDir, serverPlayers, friendsMatching(q), nostrAsDir);
+  const players = q ? await resolveNames(merged, q) : merged;
+  const serverOk = !!playersRaw && typeof playersRaw === "object";
+  if (!serverOk && players.length === 0) {
+    return { players: [], online: [], source: "empty" };
   }
-
-  const data = playersRaw as { players?: unknown; online?: unknown };
-  const players = parseDirectoryRows(data.players);
-  const online = parseOnlineRows(data.online);
-  const onlineAsDir: DirectoryPlayer[] = online
-    .filter((p) => matchesQuery(p, q))
-    .map((p) => ({
-      pubkey: p.pubkey,
-      name: p.name,
-      lastSeen: p.at ?? Date.now(),
-    }));
-
-  const merged = mergeDirectoryPlayers(boardRows, onlineAsDir, players);
-  return { players: merged, online, source: "server" };
+  return { players: players.slice(0, 40), online, source: "server" };
 }
 
 export async function fetchOnlinePlayers(): Promise<OnlinePlayer[]> {

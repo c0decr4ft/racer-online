@@ -192,7 +192,10 @@ function attachHeadBeams(
     );
     light.position.set(m.x, m.y, m.z);
     light.castShadow = false;
-    // Off lights must be invisible — intensity 0 still hits the fragment shader.
+    // Hidden until the first night race. Intensity 0 still runs in the fragment
+    // shader, but hiding a light that was already on changes NUM_SPOT_LIGHTS and
+    // recompiles every lit material (a half-second stall). setVehicleHeadlights
+    // latches visibility on and only fades intensity after that.
     light.visible = false;
     // Stay on default layer 0 so the chase/rear cameras collect these lights.
     light.layers.enable(HEADLIGHT_LAYER);
@@ -213,10 +216,10 @@ export function enableHeadlightCameras(...cameras: THREE.Camera[]) {
 }
 
 /**
- * Make a vehicle mesh look like a best-race ghost (semi-transparent, no shadows).
- * Clones materials so the player's garage paint is never mutated.
+ * Pale see-through ghost. Clones materials so the player's garage paint is never mutated.
+ * Body, glass, and lamps all go white — no leftover car color.
  */
-export function applyGhostAppearance(root: THREE.Group, opacity = 0.42) {
+export function applyGhostAppearance(root: THREE.Group, opacity = 0.22) {
   const clones = new Map<THREE.Material, THREE.Material>();
   root.traverse((obj) => {
     obj.castShadow = false;
@@ -231,12 +234,15 @@ export function applyGhostAppearance(root: THREE.Group, opacity = 0.42) {
       clone.transparent = true;
       clone.opacity = opacity;
       clone.depthWrite = false;
-      if ("emissiveIntensity" in clone && typeof (clone as { emissiveIntensity?: number }).emissiveIntensity === "number") {
-        (clone as { emissiveIntensity: number }).emissiveIntensity = Math.min(
-          (clone as { emissiveIntensity: number }).emissiveIntensity,
-          0.15,
-        );
+      const std = clone as THREE.MeshStandardMaterial;
+      if (std.color) std.color.setHex(0xf7f9fc);
+      if (std.emissive) {
+        std.emissive.setHex(0xe7eef6);
+        std.emissiveIntensity = 0.4;
       }
+      if ("metalness" in std) std.metalness = 0;
+      if ("roughness" in std) std.roughness = 0.6;
+      if ("map" in std) std.map = null;
       clones.set(m, clone);
       return clone;
     });
@@ -299,8 +305,8 @@ export function setVehicleHeadlights(
   if (beams) {
     for (const b of beams) {
       const lit = on && allowBeams;
+      if (lit) b.visible = true;
       b.intensity = lit ? HEAD_BEAM_INTENSITY : 0;
-      b.visible = lit;
     }
   }
   const heads = root.userData.headLightMaterials as THREE.MeshStandardMaterial[] | undefined;

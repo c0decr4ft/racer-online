@@ -489,6 +489,11 @@ export class RivalAI {
     this.gates.reset();
   }
 
+  /** Build the groove before GO so the first live frame doesn't trace it. */
+  warmLine(path: THREE.CatmullRomCurve3) {
+    this.ensureLine(path);
+  }
+
   /** Build / reuse this car's invisible offset line from the track centerline. */
   private ensureLine(path: THREE.CatmullRomCurve3): OffsetRacingLine {
     if (!this.line || this.linePath !== path) {

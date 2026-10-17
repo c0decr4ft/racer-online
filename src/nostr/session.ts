@@ -11,6 +11,16 @@ import { ExtensionSigner, NostrConnectSigner, PrivateKeySigner } from "applesauc
 import { DEFAULT_RELAYS } from "./relays";
 import { SCORE_EVENT_KIND } from "./scores";
 
+/** Relays advertised to Amber / other remote signers. Damus is what most phones already have. */
+const SIGNER_RELAYS = [...DEFAULT_RELAYS, "wss://relay.damus.io"];
+
+function openSignerAuth(url: string) {
+  // amber:// and nostrconnect:// do nothing on a desktop or virtual machine.
+  // The QR and copyable link are how the phone approves. Only https auth pages pop up.
+  if (!/^https?:/i.test(url)) return;
+  window.open(url, "sats-racer-auth", "width=420,height=640,noopener,noreferrer");
+}
+
 export type NostrMethod = "nip07" | "nip46" | "local";
 
 export type NostrSession = {
@@ -115,11 +125,11 @@ export async function loginWithBunker(uri: string): Promise<NostrSession> {
       onAuth: async (url: string) => {
         if (authOpened) return;
         authOpened = true;
-        window.open(url, "sats-racer-auth", "width=420,height=640,noopener,noreferrer");
+        openSignerAuth(url);
       },
     }),
     20_000,
-    "Remote signer did not respond — check the bunker URI",
+    "Amber didn't answer. On your phone, open Amber and approve Sats Racer",
   );
   const pubkey = await withTimeout(signer.getPublicKey(), 10_000, "Remote signer did not respond");
   persist({ method: "nip46", nbunksec: signer.getNbunksec(), pubkey });
@@ -138,9 +148,9 @@ export function startConnectLogin(): {
   cancel: () => void;
 } {
   const signer = new NostrConnectSigner({
-    relays: DEFAULT_RELAYS,
+    relays: SIGNER_RELAYS,
     onAuth: async (url: string) => {
-      window.open(url, "sats-racer-auth", "width=420,height=640,noopener,noreferrer");
+      openSignerAuth(url);
     },
   });
   const uri = signer.getNostrConnectURI({
@@ -149,7 +159,11 @@ export function startConnectLogin(): {
     permissions: signingPermissions(),
   });
   const wait = (async () => {
-    await withTimeout(signer.waitForSigner(), 180_000, "Timed out waiting for the remote signer");
+    await withTimeout(
+      signer.waitForSigner(),
+      180_000,
+      "Amber didn't answer. Open Amber on your phone, scan the QR or paste the link, and approve Sats Racer",
+    );
     const pubkey = await withTimeout(signer.getPublicKey(), 10_000, "Remote signer did not respond");
     persist({ method: "nip46", nbunksec: signer.getNbunksec(), pubkey });
     const session: NostrSession = { pubkey, method: "nip46", signer };
@@ -215,7 +229,7 @@ export async function reconnectRemoteSession(): Promise<NostrSession | null> {
         onAuth: async (url: string) => {
           if (authOpened) return;
           authOpened = true;
-          window.open(url, "sats-racer-auth", "width=420,height=640,noopener,noreferrer");
+          openSignerAuth(url);
         },
       }),
       15_000,

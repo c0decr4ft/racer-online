@@ -149,7 +149,7 @@
       </div>
 
       <div class="version-switcher" id="version-switcher">
-        <span id="version-badge" class="version-badge" aria-label="Version 1.0.22">v1.0.22</span>
+        <span id="version-badge" class="version-badge" aria-label="Version 1.2.9">v1.2.9</span>
       </div>
 
       <div id="home-corner-btns" class="home-corner-btns">
@@ -313,7 +313,7 @@
 
           <div class="settings-section">
             <h3 class="settings-label">Ghost mode</h3>
-            <p class="settings-hint">One best full race per map — same ghost in every mode; beat it to update</p>
+            <p class="settings-hint">Solo Race — a white ghost of your best full race; beat it to update</p>
             <div class="settings-ghost-row">
               <div id="settings-ghost" class="settings-seg" role="group" aria-label="Ghost mode">
                 <button type="button" class="settings-seg-btn" data-value="off">OFF</button>
@@ -427,10 +427,11 @@
                 <svg class="nostr-option-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M14.5 2a6.5 6.5 0 0 0-6.4 7.7L2 15.8V22h6.2l1.5-1.5v-2h2l1.4-1.4v-2h2l1.9-1.9A6.5 6.5 0 1 0 14.5 2zm0 4a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z"/></svg>
                 <span class="nostr-option-text">
                   <span class="nostr-option-title">REMOTE SIGNER</span>
-                  <span class="nostr-option-sub">NIP-46 · bunker:// or QR · Amber, nsec.app…</span>
+                  <span class="nostr-option-sub">NIP-46 · Amber on your phone, or bunker://</span>
                 </span>
               </button>
               <div id="nostr-remote-box" class="nostr-subbox hidden">
+                <p class="feedback-compose-hint">Amber stays on your phone. This screen only shows the code — scan it there, or copy the link into Amber.</p>
                 <div class="nostr-bunker-row">
                   <input
                     id="nostr-bunker-input"
@@ -445,6 +446,7 @@
                 <div id="nostr-qr-box" class="nostr-qr-box hidden">
                   <img id="nostr-qr-img" class="nostr-qr-img" alt="nostrconnect QR code" />
                   <input id="nostr-connect-uri" class="nostr-connect-uri" type="text" readonly aria-label="nostrconnect URI" />
+                  <button id="nostr-connect-copy" class="btn-ghost" type="button">COPY LINK FOR AMBER</button>
                 </div>
               </div>
             </div>

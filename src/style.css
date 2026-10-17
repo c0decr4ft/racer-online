@@ -3028,31 +3028,48 @@ button.btn-ghost.social-mini {
   color: var(--muted);
 }
 
+#social-hub:has(.social-chat-view:not(.hidden)) .overlay-inner {
+  max-width: min(46rem, 96vw);
+}
+
+#social-hub:has(.social-chat-view:not(.hidden)) .social-panel {
+  width: min(100%, 44rem);
+}
+
 .social-chat-view {
   flex: 1;
   min-height: 0;
   align-items: stretch !important;
-  gap: 0.55rem;
+  gap: 0.45rem;
   width: 100%;
 }
 
 .social-chat-header {
   width: 100%;
   display: flex;
-  flex-direction: column;
-  align-items: center;
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
   flex-shrink: 0;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.social-chat-header .eyebrow,
+.social-chat-header h1 {
+  margin: 0;
 }
 
 .social-chat-peer-name {
-  margin: 0.25rem 0 0;
+  margin: 0;
   color: var(--text);
   font-family: var(--font-display);
-  font-size: 1rem;
+  font-size: 0.78rem;
   font-weight: 700;
-  letter-spacing: 0.14em;
-  text-align: center;
-  max-width: 100%;
+  letter-spacing: 0.16em;
+  text-align: right;
+  max-width: 60%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3111,32 +3128,31 @@ button.btn-ghost.social-mini {
   width: 100%;
   min-width: 0;
   margin: 0;
-  padding: 0.7rem 0.4rem;
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--text);
+  padding: 0.55rem 0.45rem;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
   font-family: var(--font-display);
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   font-weight: 700;
-  letter-spacing: 0.08em;
-  text-align: center;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  letter-spacing: 0.12em;
+  text-align: left;
   cursor: pointer;
-  flex-shrink: 0;
+  box-shadow: none;
 }
 
 .social-chat-peers .garage-kind-btn:hover,
 .social-chat-peers > button:hover {
-  border-color: rgba(255, 200, 87, 0.45);
+  color: var(--text);
 }
 
 .social-chat-peers .garage-kind-btn.is-active,
 .social-chat-peers > button.is-active {
-  border-color: #ffc857;
-  background: rgba(255, 200, 87, 0.16);
-  color: #ffc857;
+  border-bottom-color: var(--accent);
+  background: transparent;
+  color: var(--text);
 }
 
 .social-chat-peers .social-empty {
@@ -3227,26 +3243,28 @@ button.btn-ghost.social-mini {
 }
 
 .social-msg-bubble {
-  max-width: min(85%, 22rem);
-  padding: 0.55rem 0.8rem 0.62rem;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.08);
+  max-width: min(88%, 24rem);
+  padding: 0.4rem 0.7rem 0.45rem;
+  border: none;
+  border-left: 2px solid var(--line);
+  background: transparent;
   font-family: var(--font-ui);
-  font-size: 1rem;
-  line-height: 1.4;
+  font-size: 1.05rem;
+  line-height: 1.35;
   display: flex;
   flex-direction: column;
-  gap: 0.28rem;
+  gap: 0.12rem;
   align-items: flex-start;
   text-align: left;
-  border-radius: 0.15rem 0.75rem 0.75rem 0.75rem;
-  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.22);
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .social-msg.is-mine .social-msg-bubble {
-  background: linear-gradient(180deg, rgba(255, 59, 46, 0.42), rgba(197, 31, 24, 0.32));
-  border-color: rgba(255, 59, 46, 0.55);
-  border-radius: 0.75rem 0.15rem 0.75rem 0.75rem;
+  background: transparent;
+  border-left: none;
+  border-right: 2px solid var(--accent);
+  border-radius: 0;
   align-items: flex-end;
   text-align: left;
 }
@@ -3489,27 +3507,24 @@ button.btn-ghost.social-mini {
 .social-invite-banner {
   position: fixed;
   top: max(0.85rem, env(safe-area-inset-top));
-  left: 50%;
+  right: max(0.85rem, env(safe-area-inset-right));
+  left: auto;
   z-index: 80;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.65rem;
-  width: min(28rem, calc(100vw - 1.5rem));
-  padding: 0.8rem 0.95rem 0.8rem 0.95rem;
-  border: 1px solid rgba(242, 245, 250, 0.2);
-  border-left: 3px solid var(--accent, #ff3b2e);
-  background:
-    linear-gradient(90deg, rgba(255, 59, 46, 0.18), transparent 48%),
-    rgba(8, 12, 18, 0.96);
-  box-shadow:
-    0 14px 36px rgba(0, 0, 0, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  width: min(22rem, calc(100vw - 1.5rem));
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--line);
+  border-right: 3px solid var(--accent);
+  background: rgba(8, 12, 18, 0.96);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.5);
   font-family: var(--font-ui);
   font-size: 0.95rem;
   font-weight: 600;
   letter-spacing: 0.03em;
-  transform: translateX(-50%);
+  transform: none;
   animation: invite-banner-in 0.38s cubic-bezier(0.2, 0.85, 0.25, 1) both;
   pointer-events: auto;
 }
@@ -3531,11 +3546,11 @@ button.btn-ghost.social-mini {
 @keyframes invite-banner-in {
   from {
     opacity: 0;
-    transform: translateX(-50%) translateY(-1.25rem);
+    transform: translateY(-1.25rem);
   }
   to {
     opacity: 1;
-    transform: translateX(-50%) translateY(0);
+    transform: translateY(0);
   }
 }
 

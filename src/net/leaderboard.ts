@@ -46,40 +46,22 @@ export type BoardSource = "online" | "server" | "local";
 
 /**
  * Per-track local cache schema revision — NOT the game display version (GAME_VERSION).
- * Keys and the shared JSONBlob URL stay game-version-agnostic so all releases share one board.
- * Bump only to wipe/migrate local score shape — never scope by release.
+ * Older builds stored the same times under v1–v4 keys and deleted every other key on
+ * startup, so the board vanished or returned depending on which version you opened.
+ * This build reads every key, keeps them all, and writes the union back.
  */
 const BOARD_STORAGE_VERSION = 5;
+/** Survives the v1.4 wipe, which only deletes keys starting with `racer-leaderboard-v`. */
+const ARCHIVE_KEY = "racer-board-archive";
 
 function storageKey(trackId: string) {
   return `racer-leaderboard-v${BOARD_STORAGE_VERSION}-${trackId}`;
 }
 
-const LEGACY_STORAGE_KEYS = ["racer-leaderboard-v1", "racer-leaderboard-v2", "racer-leaderboard-v3", "racer-leaderboard-v4"];
-const LEGACY_TRACK_PREFIXES = ["racer-leaderboard-v2-", "racer-leaderboard-v3-", "racer-leaderboard-v4-"];
 const DRIVER_NAME_KEY = "racer-driver-name";
-const MAX = 25;
+/** High cap so a full history stays visible. Best time per signed racer, plus legacy rows. */
+const MAX = 200;
 export const NAME_MAX = 15;
-
-function clearLegacyLocalBoards() {
-  try {
-    for (const key of LEGACY_STORAGE_KEYS) localStorage.removeItem(key);
-    for (const prefix of LEGACY_TRACK_PREFIXES) {
-      for (const t of TRACKS) localStorage.removeItem(`${prefix}${t.id}`);
-      localStorage.removeItem(`${prefix}twin-lakes`);
-    }
-    // Sweep any leftover older board keys (v1–v3)
-    for (let i = localStorage.length - 1; i >= 0; i--) {
-      const key = localStorage.key(i);
-      if (!key || !key.startsWith("racer-leaderboard-v")) continue;
-      if (key.startsWith(`racer-leaderboard-v${BOARD_STORAGE_VERSION}-`)) continue;
-      localStorage.removeItem(key);
-    }
-  } catch {
-    /* ignore */
-  }
-}
-clearLegacyLocalBoards();
 
 export function sanitizeDriverName(raw: string): string {
   const cleaned = String(raw ?? "")
@@ -109,12 +91,16 @@ function normalizeTrackId(raw: unknown): string {
  * Public worldwide board (JSONBlob). Best-effort sync when no game server is available.
  *
  * Recreated 2026-08-01 after prior blob returned 403 (expired).
+ * v1.4 published to LEGACY_BLOB_URL. Both are read so a version switch cannot
+ * hide times that only one blob still has.
  * Note: jsonblob.com currently issues ~24h TTLs on create. Prefer the durable
  * Node server (`npm run server` / `npm start`) — scores persist in server/leaderboard.json.
  * Set VITE_API_BASE to a hosted server for production Pages deploys.
  */
 export const PUBLIC_BLOB_URL =
   "https://jsonblob.com/api/jsonBlob/019fbe1c-6b22-7df1-9007-59a04ae0df4c";
+const LEGACY_BLOB_URL = "https://jsonblob.com/api/jsonBlob/019f89b5-c828-7f52-80b7-ca3888e5ae1b";
+const BLOB_URLS = [PUBLIC_BLOB_URL, LEGACY_BLOB_URL];
 
 const BLOB_ATTEMPTS = 4;
 const BLOB_RETRY_BASE_MS = 250;
@@ -260,11 +246,17 @@ function isBoardPayload(data: unknown): boolean {
 
 /**
  * Coerce one stored item into a board entry.
- * - Signed score events (public blob): always signature-verified here.
- * - Plain entries: only accepted from trusted sources (our game server, which
- *   verifies signatures at write time) and only in the verified-era shape.
+ * - Signed score events: always signature-verified here.
+ * - Plain entries: kept when `allowPlain` is set (local caches, older blobs,
+ *   and the game server). Missing pubkeys are older unsigned times — dropping
+ *   them is what made the board empty on newer builds.
  */
-function toEntry(item: unknown, trackId: string, trusted: boolean): LeaderboardEntry | null {
+function toEntry(
+  item: unknown,
+  trackId: string,
+  _trusted: boolean,
+  allowPlain = false,
+): LeaderboardEntry | null {
   if (isRawEvent(item)) {
     const score = verifyScoreEvent(item, trackId);
     if (!score) return null;
@@ -278,28 +270,38 @@ function toEntry(item: unknown, trackId: string, trusted: boolean): LeaderboardE
       eventId: score.eventId,
     };
   }
-  if (trusted) {
-    const e = item as LeaderboardEntry;
-    if (!e || typeof e !== "object") return null;
-    if (typeof e.pubkey !== "string" || !/^[0-9a-f]{64}$/.test(e.pubkey)) return null;
-    if (typeof e.timeMs !== "number" || !Number.isFinite(e.timeMs)) return null;
-    return e;
-  }
-  return null;
+  if (!allowPlain) return null;
+  if (!item || typeof item !== "object") return null;
+  const e = item as LeaderboardEntry;
+  if (typeof e.timeMs !== "number" || !Number.isFinite(e.timeMs) || e.timeMs <= 0) return null;
+  const pubkey =
+    typeof e.pubkey === "string" && /^[0-9a-f]{64}$/.test(e.pubkey) ? e.pubkey.toLowerCase() : undefined;
+  return {
+    name: typeof e.name === "string" ? e.name : "RACER",
+    timeMs: e.timeMs,
+    bestLapMs:
+      e.bestLapMs != null && Number.isFinite(e.bestLapMs) && e.bestLapMs > 0 ? e.bestLapMs : undefined,
+    at: typeof e.at === "number" && Number.isFinite(e.at) ? e.at : Date.now(),
+    trackId: e.trackId ? normalizeTrackId(e.trackId) : trackId,
+    pubkey,
+    eventId: typeof e.eventId === "string" ? e.eventId : undefined,
+  };
 }
 
 /**
  * Parse a stored board payload.
- * `trusted` = our own game server (verified at write); untrusted = public blob
- * (verify-on-read — unsigned legacy entries are dropped).
+ * `trusted` = our own game server (verified at write). `allowPlain` keeps
+ * unsigned historical rows from local caches and older worldwide blobs.
  */
-export function parseStore(data: unknown, trusted = false): BoardStore {
+export function parseStore(data: unknown, trusted = false, allowPlain = trusted): BoardStore {
   const store = emptyStore();
   if (!isBoardPayload(data)) return store;
 
   const obj = data as { byTrack?: unknown; entries?: unknown };
   const parseList = (list: unknown[], tid: string): LeaderboardEntry[] =>
-    list.map((item) => toEntry(item, tid, trusted)).filter((e): e is LeaderboardEntry => e !== null);
+    list
+      .map((item) => toEntry(item, tid, trusted, allowPlain))
+      .filter((e): e is LeaderboardEntry => e !== null);
 
   if (obj.byTrack && typeof obj.byTrack === "object") {
     for (const [id, list] of Object.entries(obj.byTrack as Record<string, unknown>)) {
@@ -336,6 +338,64 @@ function writeStoreLocally(store: BoardStore) {
   for (const id of allBoardIds()) writeLocal(id, normalize(store[id] ?? [], id));
 }
 
+function trackFromStorageKey(key: string): string | null {
+  const prefixed = /^racer-leaderboard-v\d+-(.+)$/.exec(key);
+  if (prefixed) return normalizeTrackId(prefixed[1]);
+  if (/^racer-leaderboard-v\d+$/.test(key)) return DEFAULT_TRACK_ID;
+  return null;
+}
+
+function storeFromEntryList(trackId: string, list: unknown[]): BoardStore {
+  const store = emptyStore();
+  const tid = normalizeTrackId(trackId);
+  store[tid] = list
+    .map((item) => toEntry(item, tid, true, true))
+    .filter((e): e is LeaderboardEntry => e !== null);
+  return store;
+}
+
+/** Every local board this browser has ever stored, including older version keys. */
+function readEveryLocalStore(): BoardStore {
+  const parts: BoardStore[] = [readLocalStore()];
+  try {
+    const archiveRaw = localStorage.getItem(ARCHIVE_KEY);
+    if (archiveRaw) parts.push(parseStore(JSON.parse(archiveRaw), true, true));
+    const keys: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key) keys.push(key);
+    }
+    for (const key of keys) {
+      if (!key.startsWith("racer-leaderboard-v")) continue;
+      if (key.startsWith(`racer-leaderboard-v${BOARD_STORAGE_VERSION}-`)) continue;
+      const track = trackFromStorageKey(key);
+      if (!track) continue;
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) parts.push(storeFromEntryList(track, parsed));
+      else parts.push(parseStore(parsed, true, true));
+    }
+  } catch {
+    /* private mode / bad JSON — keep what we already read */
+  }
+  return mergeBoardStores(...parts);
+}
+
+/** Write the union to the current key, the v1.4 key, and a version-proof archive. */
+function persistAllLocal(store: BoardStore) {
+  const normalized = mergeBoardStores(store);
+  writeStoreLocally(normalized);
+  try {
+    localStorage.setItem(ARCHIVE_KEY, JSON.stringify({ byTrack: normalized }));
+    for (const id of allBoardIds()) {
+      localStorage.setItem(`racer-leaderboard-v4-${id}`, JSON.stringify(normalized[id] ?? []));
+    }
+  } catch {
+    /* quota / private mode */
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -344,12 +404,12 @@ function shouldRetryBlobStatus(status: number): boolean {
   return status === 429 || status === 408 || status >= 500;
 }
 
-/** Fetch JSONBlob with backoff on transient network / rate-limit / 5xx failures. */
-async function fetchBlobResponse(init?: RequestInit): Promise<Response> {
+/** Fetch one JSONBlob with backoff on transient network / rate-limit / 5xx failures. */
+async function fetchBlobAt(url: string, init?: RequestInit): Promise<Response> {
   let lastError: unknown;
   for (let attempt = 0; attempt < BLOB_ATTEMPTS; attempt++) {
     try {
-      const res = await fetch(PUBLIC_BLOB_URL, {
+      const res = await fetch(url, {
         cache: "no-store",
         ...init,
         headers: {
@@ -373,6 +433,10 @@ async function fetchBlobResponse(init?: RequestInit): Promise<Response> {
   throw lastError instanceof Error ? lastError : new Error("blob fetch failed");
 }
 
+function fetchBlobResponse(init?: RequestInit): Promise<Response> {
+  return fetchBlobAt(PUBLIC_BLOB_URL, init);
+}
+
 async function fetchLocalServerStore(): Promise<BoardStore | null> {
   const url = apiUrl("/leaderboard");
   if (!url) return null;
@@ -388,17 +452,29 @@ async function fetchLocalServerStore(): Promise<BoardStore | null> {
   }
 }
 
-async function fetchPublicBlobStore(): Promise<BoardStore> {
-  const res = await fetchBlobResponse();
+async function fetchPublicBlobStore(url = PUBLIC_BLOB_URL): Promise<BoardStore> {
+  const res = await fetchBlobAt(url);
   if (!res.ok) throw new Error(String(res.status));
   const data = await res.json();
   if (!isBoardPayload(data)) throw new Error("unrecognized board payload");
-  // Untrusted shared storage — every event is signature-verified on read.
-  return parseStore(data, false);
+  // Signed events are verified. Plain rows are historical times from older builds.
+  return parseStore(data, false, true);
 }
 
-/** Max signed events kept per track in the public blob. */
-const BLOB_TRACK_CAP = 25;
+async function fetchAllPublicBlobs(): Promise<BoardStore> {
+  const stores = await Promise.all(
+    BLOB_URLS.map(async (url) => {
+      try {
+        return await fetchPublicBlobStore(url);
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return mergeBoardStores(...stores.filter((s): s is BoardStore => s !== null));
+}
+
+/** Max rows kept per track in the public blob. Same cap as the on-screen board. */
 
 /** Extract raw signed events per track from a blob payload (unsigned items skipped). */
 function collectBlobEvents(data: unknown): Record<string, RawEvent[]> {
@@ -425,14 +501,19 @@ function collectBlobEvents(data: unknown): Record<string, RawEvent[]> {
 async function publishEventToBlob(event: RawEvent, trackId: string): Promise<void> {
   const tid = normalizeTrackId(trackId);
   let existing: Record<string, RawEvent[]> = {};
+  let plainExisting = emptyStore();
   try {
     const res = await fetchBlobResponse();
-    if (res.ok) existing = collectBlobEvents(await res.json());
+    if (res.ok) {
+      const data = await res.json();
+      existing = collectBlobEvents(data);
+      plainExisting = parseStore(data, false, true);
+    }
   } catch {
     /* unreadable blob — publish just ours */
   }
 
-  const merged: Record<string, RawEvent[]> = {};
+  const merged: Record<string, unknown[]> = {};
   for (const id of allBoardIds()) {
     const candidates = [...(existing[id] ?? []), ...(id === tid ? [event] : [])];
     const byPubkey = new Map<string, { raw: RawEvent; timeMs: number; at: number; score: number }>();
@@ -448,12 +529,14 @@ async function publishEventToBlob(event: RawEvent, trackId: string): Promise<voi
         byPubkey.set(score.pubkey, { raw, timeMs: score.timeMs, at: score.at, score: pts });
       }
     }
-    merged[id] = [...byPubkey.values()]
+    const signed = [...byPubkey.values()]
       .sort((a, b) =>
         isPointsBoard(id) ? b.score - a.score || a.timeMs - b.timeMs : a.timeMs - b.timeMs || a.at - b.at,
       )
-      .slice(0, BLOB_TRACK_CAP)
       .map((v) => v.raw);
+    const covered = new Set(byPubkey.keys());
+    const plains = (plainExisting[id] ?? []).filter((e) => !e.pubkey || !covered.has(e.pubkey));
+    merged[id] = [...signed, ...plains].slice(0, MAX);
   }
 
   const res = await fetchBlobResponse({
@@ -471,36 +554,33 @@ function insertEntry(store: BoardStore, entry: LeaderboardEntry, trackId: string
   return next;
 }
 
+function storeHasEntries(store: BoardStore | null | undefined): boolean {
+  if (!store) return false;
+  return allBoardIds().some((id) => (store[id] ?? []).length > 0);
+}
+
 export async function fetchLeaderboard(
   trackId: string = DEFAULT_TRACK_ID,
 ): Promise<{ entries: LeaderboardEntry[]; source: BoardSource }> {
   const tid = normalizeTrackId(trackId);
+  const local = readEveryLocalStore();
 
-  // Merge server + public blob so an empty/fresh server never hides worldwide scores.
+  // An empty server used to replace the board. Always union it with local history.
   const fromServer = await fetchLocalServerStore();
   if (fromServer) {
     void healServerFromBlob(fromServer).catch(() => undefined);
   }
 
-  let fromPublic: BoardStore | null = null;
-  try {
-    fromPublic = await fetchPublicBlobStore();
-  } catch {
-    fromPublic = null;
-  }
+  const fromPublic = await fetchAllPublicBlobs();
+  const merged = mergeBoardStores(local, fromServer ?? emptyStore(), fromPublic);
+  persistAllLocal(merged);
 
-  const merged = mergeBoardStores(fromServer ?? emptyStore(), fromPublic ?? emptyStore());
-  const hasAny = allBoardIds().some((id) => (merged[id] ?? []).length > 0);
-  if (hasAny || fromServer || fromPublic) {
-    const source: BoardSource = fromServer
-      ? "server"
-      : fromPublic
-        ? "online"
-        : "local";
-    return { entries: entriesFor(merged, tid), source };
-  }
-
-  return { entries: entriesFor(emptyStore(), tid), source: "local" };
+  const source: BoardSource = storeHasEntries(fromServer)
+    ? "server"
+    : storeHasEntries(fromPublic)
+      ? "online"
+      : "local";
+  return { entries: entriesFor(merged, tid), source };
 }
 
 /**
@@ -578,6 +658,7 @@ export async function submitScore(
   writeStoreLocally(local);
 
   if (!signer) {
+    persistAllLocal(local);
     return { entries: entriesFor(local, tid), source: "local" };
   }
 
@@ -603,7 +684,8 @@ export async function submitScore(
       if (res.ok) {
         const data = await res.json();
         if (isBoardPayload(data)) {
-          const store = parseStore(data, true);
+          const store = mergeBoardStores(parseStore(data, true, true), readEveryLocalStore());
+          persistAllLocal(store);
           // Best-effort: mirror to the worldwide blob + public Nostr relays.
           void publishEventToBlob(event, tid).catch(() => undefined);
           void publishScoreEvent(event);
@@ -619,9 +701,11 @@ export async function submitScore(
   try {
     await publishEventToBlob(event, tid);
     void publishScoreEvent(event);
-    const store = await fetchPublicBlobStore();
+    const store = mergeBoardStores(await fetchPublicBlobStore(), readEveryLocalStore());
+    persistAllLocal(store);
     return { entries: entriesFor(store, tid), source: "online" };
   } catch {
+    persistAllLocal(local);
     return { entries: entriesFor(local, tid), source: "local" };
   }
 }
@@ -638,7 +722,7 @@ export function formatBoardTime(ms: number): string {
 /** Device-best race time + best lap for a track (from the local personal store). */
 export function getLocalBest(trackId: string): { timeMs: number | null; bestLapMs: number | null } {
   const tid = normalizeTrackId(trackId);
-  const entries = readLocal(tid);
+  const entries = readEveryLocalStore()[tid] ?? [];
   let timeMs: number | null = null;
   let bestLapMs: number | null = null;
   for (const e of entries) {
@@ -685,3 +769,6 @@ export function getLocalDriverName(): string | null {
     return null;
   }
 }
+
+// Fold every older board into the keys this build and v1.4 both read.
+persistAllLocal(readEveryLocalStore());

@@ -216,7 +216,7 @@ async function sendFeedbackEmail(msg) {
     await sendFeedbackEmailOnce(msg);
   }
 }
-const MAX_BOARD = 25;
+const MAX_BOARD = 200;
 const MAX_FEEDBACK = 80;
 const FEEDBACK_TEXT_MAX = 500;
 const FEEDBACK_NAME_MAX = 24;
@@ -791,39 +791,43 @@ async function syncBoardFromRelays() {
 }
 
 /**
- * Normalize + rank a track board. Verified-era entries only: every entry must
- * carry a Nostr pubkey (legacy unsigned entries are dropped here), one best
- * time per racer (pubkey), fastest first, top MAX_BOARD.
+ * Normalize + rank a track board. One best time per signed racer (pubkey).
+ * Older rows without a pubkey are kept too (one row per name + time) so a
+ * reload cannot throw historical scores away. Fastest first, top MAX_BOARD.
  * @param {BoardEntry[]} entries @param {string} [trackId]
  */
 function sortBoard(entries, trackId) {
   const tid = trackId ? normalizeTrackId(trackId) : undefined;
   const cleaned = [...entries]
-    .filter((e) => e && Number.isFinite(e.timeMs) && e.timeMs > 0 && normalizePubkey(e.pubkey))
-    .map((e) => ({
-      name: sanitizeDriverName(e.name),
-      timeMs: Math.round(e.timeMs),
-      bestLapMs: e.bestLapMs != null ? Math.round(e.bestLapMs) : undefined,
-      at: e.at || Date.now(),
-      trackId: tid || (e.trackId ? normalizeTrackId(e.trackId) : undefined),
-      pubkey: normalizePubkey(e.pubkey),
-      eventId: typeof e.eventId === "string" ? e.eventId : undefined,
-    }));
+    .filter((e) => e && Number.isFinite(e.timeMs) && e.timeMs > 0)
+    .map((e) => {
+      const pubkey = normalizePubkey(e.pubkey);
+      return {
+        name: sanitizeDriverName(e.name),
+        timeMs: Math.round(e.timeMs),
+        bestLapMs: e.bestLapMs != null ? Math.round(e.bestLapMs) : undefined,
+        at: e.at || Date.now(),
+        trackId: tid || (e.trackId ? normalizeTrackId(e.trackId) : undefined),
+        pubkey: pubkey || undefined,
+        eventId: typeof e.eventId === "string" ? e.eventId : undefined,
+      };
+    });
 
   /** @type {Map<string, BoardEntry>} */
-  const byPubkey = new Map();
+  const byKey = new Map();
   for (const e of cleaned) {
-    const prev = byPubkey.get(e.pubkey);
+    const key = e.pubkey ? `pk:${e.pubkey}` : `legacy:${e.name.toLowerCase()}|${e.timeMs}`;
+    const prev = byKey.get(key);
     if (
       !prev ||
       e.timeMs < prev.timeMs ||
       (e.timeMs === prev.timeMs && (e.at || 0) < (prev.at || 0))
     ) {
-      byPubkey.set(e.pubkey, e);
+      byKey.set(key, e);
     }
   }
 
-  return [...byPubkey.values()]
+  return [...byKey.values()]
     .sort((a, b) => a.timeMs - b.timeMs || (a.at || 0) - (b.at || 0))
     .slice(0, MAX_BOARD);
 }
@@ -1252,10 +1256,18 @@ function shortPubkeyLabel(pubkey) {
   }
 }
 
-/** True for npub short labels (with or without ellipsis). */
+/**
+ * True for npub / hex short labels.
+ * Dotted forms (`npub1abcd...wxyz`, unicode ellipsis) must count — otherwise
+ * preferPlayerName treats them as a real username and never stores the
+ * display name people actually search for.
+ */
 function isShortPubkeyLabel(name) {
   const n = String(name || "").trim().toLowerCase();
-  return /^npub1[0-9a-z…]+$/i.test(n) || /^[0-9a-f]{8,16}…?[0-9a-f]{0,4}$/i.test(n);
+  const compact = n.replace(/[.\u2026\u00b7]/g, "");
+  if (/^npub1[0-9a-z]+$/.test(compact) && compact.length <= 32) return true;
+  if (/^[0-9a-f]{8,20}$/.test(compact) && compact !== n) return true;
+  return false;
 }
 
 function isWeakPlayerName(name) {
@@ -1755,9 +1767,11 @@ function searchPlayers(query) {
     if (rows.some((r) => r.pubkey === online.pubkey)) continue;
     rows.push({ pubkey: online.pubkey, name: online.name, lastSeen: online.at || Date.now() });
   }
+  const compact = (value) => String(value || "").toLowerCase().replace(/[.\u2026\u00b7]/g, "");
+  const qCompact = compact(q);
   const match = (r) => {
     if (!q) return true;
-    if (r.name.toLowerCase().includes(q)) return true;
+    if (r.name.toLowerCase().includes(q) || (qCompact && compact(r.name).includes(qCompact))) return true;
     if (pkHint && (r.pubkey === pkHint || r.pubkey.startsWith(pkHint) || r.pubkey.includes(pkHint))) {
       return true;
     }
@@ -1780,7 +1794,10 @@ function searchPlayers(query) {
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Accept, X-Lobby-Inbox-Key",
+  );
   res.setHeader("Access-Control-Max-Age", "86400");
 }
 
@@ -2216,6 +2233,8 @@ async function removeClientFromRoom(room, client, ws) {
     await refundLobbyBuyIn(room, client, ws, buyIn);
   }
 
+  const hostLeft = room.hostId === client.id;
+
   if (room.clients.size === 0) {
     if (room.isEvent && room.eventMode === "battle" && room.phase === "finished") {
       abandonAllUnclaimedBattleShares(room, "room-empty");
@@ -2227,6 +2246,31 @@ async function removeClientFromRoom(room, client, ws) {
       playerId: client.id,
     });
     closeSpectators(room, "room closed");
+    rooms.delete(client.room);
+  } else if (hostLeft) {
+    const reason = "The host left — room closed";
+    if (room.isEvent && room.phase === "lobby") {
+      for (const other of [...room.clients.values()]) {
+        const paid = room.buyIns.get(other.id);
+        if (paid?.paidAt) {
+          await refundLobbyBuyIn(room, other, other.ws, paid).catch(() => {});
+        }
+      }
+    }
+    roomActivity(room, "room-closed", `room closed · host ${client.name} left`, {
+      player: client.name,
+      playerId: client.id,
+    });
+    for (const other of [...room.clients.values()]) {
+      try {
+        send(other.ws, { t: "closed", reason });
+        other.ws.close();
+      } catch {
+        /* already gone */
+      }
+    }
+    room.clients.clear();
+    closeSpectators(room, reason);
     rooms.delete(client.room);
   } else {
     if (room.hostId === client.id) {
