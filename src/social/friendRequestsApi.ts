@@ -13,6 +13,8 @@ export type FriendRequestSnapshot = {
   outgoing: FriendRequestRow[];
   accepted: FriendRequestRow[];
   friends: FriendRequestRow[];
+  /** Durable REMOVE targets — client should drop only these, not every missing friend. */
+  severed: FriendRequestRow[];
 };
 
 function normalizePubkey(raw: unknown): string {
@@ -57,12 +59,14 @@ function parseSnapshot(data: {
   outgoing?: unknown;
   accepted?: unknown;
   friends?: unknown;
+  severed?: unknown;
 }): FriendRequestSnapshot {
   return {
     incoming: parseRows(data.incoming),
     outgoing: parseRows(data.outgoing),
     accepted: parseRows(data.accepted),
     friends: parseRows(data.friends),
+    severed: parseRows(data.severed),
   };
 }
 
