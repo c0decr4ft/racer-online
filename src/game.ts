@@ -676,6 +676,7 @@ export class Game {
         this.updateMapVote(votes, received, total),
       onVoteResult: (trackId) => this.showMapVoteResult(trackId),
       onState: (players, at) => this.onNetState(players, at),
+      onPeerPose: (player, at) => this.onNetPeerPose(player, at),
       onEventInvoice: (creq, amountSats, mock, buyInSats, feeSats, bolt11) =>
         this.showBuyInInvoice(creq, amountSats, mock, buyInSats, feeSats, bolt11),
       onPayoutResult: (result) => this.onPayoutResult(result),
@@ -3549,6 +3550,10 @@ export class Game {
       seen.add(p.id);
       p.kind = roomKind;
       if (p.wrecked) this.wreckedIds.add(p.id);
+      if (this.net.peerPoseFresh(p.id)) {
+        if (p.wrecked) this.remotes.get(p.id)?.setOnFire();
+        continue;
+      }
       const remote = this.remotes.get(p.id);
       if (remote) remote.push(p, at);
       else {
@@ -3559,6 +3564,19 @@ export class Game {
     }
     for (const id of this.remotes.keys()) {
       if (!seen.has(id)) this.removeRemote(id);
+    }
+  }
+
+  /** One remote car from the direct channel. Other cars stay where they are. */
+  private onNetPeerPose(p: PlayerPose, at: number) {
+    if (this.gridHeld) return;
+    if (p.id === this.net.id) return;
+    p.kind = this.net.kind === "bike" ? "bike" : "car";
+    const remote = this.remotes.get(p.id);
+    if (remote) remote.push(p, at);
+    else {
+      this.spawnRemote(p);
+      this.remotes.get(p.id)?.push(p, at);
     }
   }
 

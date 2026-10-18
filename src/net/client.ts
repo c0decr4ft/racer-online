@@ -14,8 +14,10 @@ import {
   type NetWeatherMode,
   type PlayerPose,
   type PoseMotion,
+  type RtcSignal,
   type ServerMsg,
 } from "./protocol";
+import { PoseMesh, type DirectPose } from "./poseMesh";
 import { applyWireWeather, normalizeWeatherMode } from "../weather";
 import { configuredApiBase, configuredWsUrl, sameOriginOnline } from "./onlineConfig";
 import { WreckFire } from "../wreckFire";
@@ -504,6 +506,8 @@ export type NetHandlers = {
   onVoteResult: (trackId: string) => void;
   /** `at` is local performance.now()-space time for the snapshot (clock-synced). */
   onState: (players: PlayerPose[], at: number) => void;
+  /** One racer's position from the direct channel. Does not remove other cars. */
+  onPeerPose: (player: PlayerPose, at: number) => void;
   onError: (message: string) => void;
   onStatus: (text: string) => void;
 };
@@ -589,6 +593,10 @@ export class NetClient {
   private connGen = 0;
   /** Lobby/race ping loop — keeps a live latency reading even outside races. */
   private pingTimer: ReturnType<typeof setInterval> | null = null;
+  /** Direct pose channels. Null until the room welcome arrives. */
+  private poseMesh: PoseMesh | null = null;
+  /** Signals that arrived before this client knew its own id. */
+  private pendingRtc: { from: string; signal: RtcSignal }[] = [];
   private finishSent = false;
   /** Resolves an in-flight leave→buyInRefund wait (lobby paid leave). */
   private refundWait: {
@@ -661,6 +669,49 @@ export class NetClient {
   private emitState(players: PlayerPose[], at: number) {
     this.rememberPlayers(players);
     this.handlers.onState(players, at);
+  }
+
+  /** True when this racer's car is arriving on the direct channel right now. */
+  peerPoseFresh(id: string): boolean {
+    return this.poseMesh?.fresh(id, performance.now()) ?? false;
+  }
+
+  private ensurePoseMesh() {
+    if (this.poseMesh || this.spectator) return;
+    this.poseMesh = new PoseMesh(
+      (to, signal) => this.sendRtc(to, signal),
+      (pose, at) => this.emitDirectPose(pose, at),
+    );
+  }
+
+  private syncPosePeers() {
+    if (this.spectator || !this.myId) return;
+    this.ensurePoseMesh();
+    this.poseMesh?.setSelf(this.myId);
+    this.poseMesh?.sync(this.roster.keys());
+    this.flushPendingRtc();
+  }
+
+  private closePoseMesh() {
+    this.poseMesh?.close();
+    this.poseMesh = null;
+  }
+
+  private flushPendingRtc() {
+    if (!this.myId || !this.poseMesh) return;
+    const queued = this.pendingRtc.splice(0);
+    for (const item of queued) this.poseMesh.handleSignal(item.from, item.signal);
+  }
+
+  private sendRtc(to: string, signal: RtcSignal) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ t: "rtc", to, signal }));
+  }
+
+  private emitDirectPose(pose: DirectPose, at: number) {
+    const full = this.posesFromMotions([pose])[0];
+    if (!full || full.id === this.myId) return;
+    this.handlers.onPeerPose(full, at);
   }
 
   createRoom(opts: Omit<RoomConnectOpts, "mode">) {
@@ -835,6 +886,7 @@ export class NetClient {
         this.clockReady = false;
         this.rememberPlayers(msg.players);
         this.rememberPlayer(msg.you);
+        this.syncPosePeers();
         this.handlers.onStatus(
           this.spectator ? `Watching · ${msg.room}` : `Lobby · ${msg.room}`,
         );
@@ -855,11 +907,21 @@ export class NetClient {
         });
       } else if (msg.t === "join") {
         this.rememberPlayer(msg.player);
+        this.syncPosePeers();
         this.handlers.onJoin(msg.player);
       } else if (msg.t === "leave") {
         if (msg.hostId) this.hostId = msg.hostId;
         this.roster.delete(msg.id);
+        this.syncPosePeers();
         this.handlers.onLeave(msg.id, msg.hostId);
+      } else if (msg.t === "rtc") {
+        if (!this.myId) {
+          this.pendingRtc.push({ from: msg.from, signal: msg.signal });
+          return;
+        }
+        this.ensurePoseMesh();
+        this.poseMesh?.setSelf(this.myId);
+        this.poseMesh?.handleSignal(msg.from, msg.signal);
       } else if (msg.t === "closed") {
         this.handlers.onClosed(msg.reason || "The host left — room closed");
         this.disconnect();
@@ -875,6 +937,7 @@ export class NetClient {
         this.raceMode = normalizeWireRaceMode(msg.raceMode ?? msg.event?.mode ?? this.raceMode);
         this.roster.clear();
         this.rememberPlayers(msg.players);
+        this.syncPosePeers();
         this.handlers.onLobby({ ...msg, weather: this.weather, raceMode: this.raceMode });
       } else if (msg.t === "start") {
         this.phase = "racing";
@@ -1025,6 +1088,8 @@ export class NetClient {
     if (gen !== this.connGen) return;
     this.stopPingLoop();
     this.stopPosePump();
+    this.closePoseMesh();
+    this.pendingRtc.length = 0;
     this.pendingPose = null;
     this.connected = false;
     this.ws = null;
@@ -1043,6 +1108,8 @@ export class NetClient {
     this.connGen++;
     this.stopPingLoop();
     this.stopPosePump();
+    this.closePoseMesh();
+    this.pendingRtc.length = 0;
     this.pendingPose = null;
     if (this.refundWait) {
       clearTimeout(this.refundWait.timer);
@@ -1240,6 +1307,15 @@ export class NetClient {
     const now = performance.now();
     if (now - this.lastPoseAt < NET_TICK_MS * 0.9) return;
     this.lastPoseAt = now;
+    this.poseMesh?.sendPose({
+      id: this.myId,
+      x: pose.x,
+      z: pose.z,
+      h: pose.h,
+      s: pose.s,
+      g: pose.g,
+      lap: pose.lap,
+    });
     this.ws.send(
       JSON.stringify({
         t: "pose",

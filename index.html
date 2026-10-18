@@ -431,7 +431,8 @@
                 </span>
               </button>
               <div id="nostr-remote-box" class="nostr-subbox hidden">
-                <p class="feedback-compose-hint">Amber stays on your phone. This screen only shows the code — scan it there, or copy the link into Amber.</p>
+                <p class="feedback-compose-hint">Approve Sats Racer in Amber. On a computer, show the QR and scan it with your phone.</p>
+                <button id="nostr-amber-open" type="button">OPEN IN AMBER</button>
                 <div class="nostr-bunker-row">
                   <input
                     id="nostr-bunker-input"
@@ -442,11 +443,13 @@
                   />
                   <button id="nostr-bunker-btn" type="button">CONNECT</button>
                 </div>
-                <button id="nostr-qr-toggle" class="btn-ghost" type="button">SHOW QR / LINK</button>
+                <div class="nostr-amber-actions">
+                  <button id="nostr-qr-toggle" class="btn-ghost" type="button">SHOW QR</button>
+                  <button id="nostr-connect-copy" class="btn-ghost" type="button">COPY LINK</button>
+                </div>
                 <div id="nostr-qr-box" class="nostr-qr-box hidden">
                   <img id="nostr-qr-img" class="nostr-qr-img" alt="nostrconnect QR code" />
-                  <input id="nostr-connect-uri" class="nostr-connect-uri" type="text" readonly aria-label="nostrconnect URI" />
-                  <button id="nostr-connect-copy" class="btn-ghost" type="button">COPY LINK FOR AMBER</button>
+                  <textarea id="nostr-connect-uri" class="nostr-connect-uri" rows="3" readonly aria-label="nostrconnect URI"></textarea>
                 </div>
               </div>
             </div>

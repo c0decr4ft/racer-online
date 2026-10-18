@@ -4047,6 +4047,18 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    if (msg.t === "rtc") {
+      const to = typeof msg.to === "string" ? msg.to.slice(0, 16) : "";
+      const peer = room.clients.get(to);
+      const signal = msg.signal;
+      if (!peer || peer.id === client.id || !signal || typeof signal !== "object") return;
+      const kind = signal.kind;
+      if (kind !== "offer" && kind !== "answer" && kind !== "ice") return;
+      if (JSON.stringify(signal).length > 12_000) return;
+      send(peer.ws, { t: "rtc", from: client.id, signal });
+      return;
+    }
+
     if (msg.t === "start") {
       if (client.id !== room.hostId) {
         send(ws, { t: "notice", text: "only the host can start" });

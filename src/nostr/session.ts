@@ -8,11 +8,14 @@
  */
 import { generateSecretKey, getPublicKey, nip19 } from "nostr-tools";
 import { ExtensionSigner, NostrConnectSigner, PrivateKeySigner } from "applesauce-signers";
-import { DEFAULT_RELAYS } from "./relays";
+import "./relays";
 import { SCORE_EVENT_KIND } from "./scores";
 
-/** Relays advertised to Amber / other remote signers. Damus is what most phones already have. */
-const SIGNER_RELAYS = [...DEFAULT_RELAYS, "wss://relay.damus.io"];
+/**
+ * Relays Amber can actually read and write for NIP-46.
+ * Primal is fine for profiles, but it often drops signer events, so it stays off this list.
+ */
+const SIGNER_RELAYS = ["wss://relay.damus.io", "wss://nos.lol", "wss://relay.nostr.band"];
 
 function openSignerAuth(url: string) {
   // amber:// and nostrconnect:// do nothing on a desktop or virtual machine.
@@ -128,8 +131,8 @@ export async function loginWithBunker(uri: string): Promise<NostrSession> {
         openSignerAuth(url);
       },
     }),
-    20_000,
-    "Amber didn't answer. On your phone, open Amber and approve Sats Racer",
+    90_000,
+    "Amber didn't answer. Approve Sats Racer in Amber, then try again",
   );
   const pubkey = await withTimeout(signer.getPublicKey(), 10_000, "Remote signer did not respond");
   persist({ method: "nip46", nbunksec: signer.getNbunksec(), pubkey });
@@ -146,6 +149,8 @@ export function startConnectLogin(): {
   uri: string;
   wait: Promise<NostrSession>;
   cancel: () => void;
+  /** Re-open the relay listen after the phone app backgrounds this page. */
+  resume: () => void;
 } {
   const signer = new NostrConnectSigner({
     relays: SIGNER_RELAYS,
@@ -156,15 +161,17 @@ export function startConnectLogin(): {
   const uri = signer.getNostrConnectURI({
     name: "Sats Racer",
     url: location.origin,
+    image: new URL(`${import.meta.env.BASE_URL}favicon.png`, location.origin).href,
     permissions: signingPermissions(),
   });
   const wait = (async () => {
+    await signer.open();
     await withTimeout(
       signer.waitForSigner(),
       180_000,
-      "Amber didn't answer. Open Amber on your phone, scan the QR or paste the link, and approve Sats Racer",
+      "Amber didn't answer. Tap Open in Amber, or scan the QR, then approve Sats Racer",
     );
-    const pubkey = await withTimeout(signer.getPublicKey(), 10_000, "Remote signer did not respond");
+    const pubkey = await withTimeout(signer.getPublicKey(), 20_000, "Amber connected, but didn't share your key. Approve Sats Racer and try again");
     persist({ method: "nip46", nbunksec: signer.getNbunksec(), pubkey });
     const session: NostrSession = { pubkey, method: "nip46", signer };
     setSession(session);
@@ -175,6 +182,14 @@ export function startConnectLogin(): {
     wait,
     cancel: () => {
       void signer.close().catch(() => undefined);
+    },
+    resume: () => {
+      if (signer.isConnected) return;
+      const live = signer as NostrConnectSigner & { req?: { unsubscribe(): void } };
+      live.listening = false;
+      live.req?.unsubscribe();
+      live.req = undefined;
+      void signer.open().catch(() => undefined);
     },
   };
 }
