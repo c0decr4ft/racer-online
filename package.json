@@ -16,7 +16,8 @@
     "start:prod": "node server/index.mjs",
     "start:local": "npm run dev:online",
     "test:full": "node scripts/full-suite.mjs",
-    "test:lobby-invite-auth": "node scripts/verify-lobby-invite-auth.mjs"
+    "test:lobby-invite-auth": "node scripts/verify-lobby-invite-auth.mjs",
+    "test:friend-hydrate": "node scripts/verify-friend-hydrate.mjs"
   },
   "devDependencies": {
     "@types/qrcode": "^1.5.6",
