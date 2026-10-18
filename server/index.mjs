@@ -2247,7 +2247,10 @@ async function removeClientFromRoom(room, client, ws) {
     });
     closeSpectators(room, "room closed");
     rooms.delete(client.room);
-  } else if (hostLeft) {
+  } else if (hostLeft && (!room.isEvent || room.phase === "lobby")) {
+    // Casual rooms + Event lobby: host leave closes the room (lobby refunds first).
+    // Event racing/finished MUST keep the room — force-closing kicked the winner
+    // (and battle claimers) with an unclaimed pot still on disk and no claim path.
     const reason = "The host left — room closed";
     if (room.isEvent && room.phase === "lobby") {
       for (const other of [...room.clients.values()]) {
