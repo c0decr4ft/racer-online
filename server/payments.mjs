@@ -632,8 +632,20 @@ function quoteState(status) {
 /**
  * If the Lightning mint quote for this request is PAID, mint the tokens into
  * the pot wallet and return the net sats. Returns null while unpaid / in-flight.
+ *
+ * Serialized on the same `withReceiveLock(paymentHash)` as Cashu `/api/ecash/pay`
+ * receives. Event Mode exposes both a NUT-18 creq and a bolt11 for one buy-in; if
+ * Lightning minted into `receivedIds` while Cashu was inside `wallet.receive`,
+ * `persistPotProofs` early-returned and the freshly swapped Cashu secrets were
+ * GC'd — a silent second-payment burn. Holding this lock until after persist
+ * means Cashu either finishes first or hits `alreadyReceived` *before* the mint
+ * swap (payer proofs stay unspent).
  */
 async function cashuSettleIfPaid(paymentHash) {
+  return withReceiveLock(paymentHash, () => cashuSettleIfPaidLocked(paymentHash));
+}
+
+async function cashuSettleIfPaidLocked(paymentHash) {
   const q = mintQuotes.get(paymentHash);
   if (!q) return null;
   if (q.settled) return q.settled;
@@ -926,6 +938,14 @@ export const payments = {
 /** Record fresh buy-in proofs into the pot wallet store (real mode). */
 export async function depositProofs(freshProofs, potId) {
   await persistPotProofs(freshProofs, "", potId);
+}
+
+/**
+ * Test/harness hook: run `fn` under the same per-paymentHash lock that serializes
+ * Cashu receives and Lightning settle. Used by verify-cashu-ln-receive-lock.mjs.
+ */
+export function runUnderReceiveLock(paymentHash, fn) {
+  return withReceiveLock(paymentHash, fn);
 }
 
 /** Append a payout attempt to the audit log (gitignored). */
