@@ -191,25 +191,18 @@ type RendererOpts = {
 /**
  * Build a WebGLRenderer that works on dual-GPU / flaky drivers.
  * Prefer high-performance; fall back to default preference if that fails.
+ *
+ * Bind webgl2 ourselves and pass `context` into THREE. THREE r185 only creates
+ * webgl2; if attributed getContext returns null it retries bare getContext("webgl2"),
+ * which can bind defaults and permanently lock the game canvas (menus never wire).
+ * A null getContext does not lock — so we can safely walk fallback attrs here.
+ *
+ * Do not treat a webgl1 success as proof attrs work: THREE cannot use webgl1, and
+ * that false positive skipped later webgl2-capable fallbacks (antialias off / other
+ * powerPreference) after 7e0a3b9's throwaway probe.
  */
-function glContextWorks(attrs: WebGLContextAttributes): boolean {
-  const c = document.createElement("canvas");
-  try {
-    const gl =
-      (c.getContext("webgl2", attrs) as WebGL2RenderingContext | null) ||
-      (c.getContext("webgl", attrs) as WebGLRenderingContext | null);
-    if (!gl || gl.isContextLost()) return false;
-    gl.getExtension("WEBGL_lose_context")?.loseContext();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export function createGameRenderer(opts: RendererOpts): THREE.WebGLRenderer {
-  // Probe a throwaway canvas. A failed getContext on the game canvas locks it,
-  // which is how virtual GPUs left every menu button unwired.
-  const attempts: Array<THREE.WebGLRendererParameters & WebGLContextAttributes> = [
+  const attempts: WebGLContextAttributes[] = [
     {
       antialias: opts.antialias,
       powerPreference: "high-performance",
@@ -236,27 +229,44 @@ export function createGameRenderer(opts: RendererOpts): THREE.WebGLRenderer {
     },
   ];
 
-  let chosen = attempts[attempts.length - 1]!;
-  for (const params of attempts) {
-    if (glContextWorks(params)) {
-      chosen = params;
+  let lastError: unknown;
+  for (const attrs of attempts) {
+    let gl: WebGL2RenderingContext | null = null;
+    try {
+      gl = opts.canvas.getContext("webgl2", attrs) as WebGL2RenderingContext | null;
+    } catch (err) {
+      lastError = err;
+      continue;
+    }
+    if (!gl || gl.isContextLost()) continue;
+
+    try {
+      const renderer = new THREE.WebGLRenderer({
+        canvas: opts.canvas,
+        context: gl,
+        antialias: !!attrs.antialias,
+        powerPreference: attrs.powerPreference,
+        failIfMajorPerformanceCaveat: false,
+        alpha: false,
+        stencil: false,
+        depth: true,
+      });
+      const ctx = renderer.getContext();
+      if (!ctx || ctx.isContextLost?.()) {
+        renderer.dispose();
+        throw new Error("WebGL context was lost immediately");
+      }
+      return renderer;
+    } catch (err) {
+      lastError = err;
+      // Context is already bound to this canvas — further attr attempts cannot run.
       break;
     }
   }
 
-  try {
-    const renderer = new THREE.WebGLRenderer({ ...chosen, canvas: opts.canvas });
-    const gl = renderer.getContext();
-    if (!gl || gl.isContextLost?.()) {
-      renderer.dispose();
-      throw new Error("WebGL context was lost immediately");
-    }
-    return renderer;
-  } catch (err) {
-    throw err instanceof Error
-      ? err
-      : new Error("WebGL unavailable — try another browser, or turn off hardware acceleration and reload");
-  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("WebGL unavailable — try another browser, or turn off hardware acceleration and reload");
 }
 
 /** Wire context-lost recovery so a driver hiccup doesn't leave a permanent blue canvas. */
