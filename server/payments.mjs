@@ -928,6 +928,50 @@ export async function depositProofs(freshProofs, potId) {
   await persistPotProofs(freshProofs, "", potId);
 }
 
+const MAX_PAYOUT_ROWS = 200;
+
+/**
+ * True when a payout row still holds a tip bearer token that must not be dropped.
+ * After tip-wallet receive fails, `collectTip` leaves secrets only in `tipToken`
+ * (and briefly room RAM). Truncating those rows burns custody.
+ */
+export function hasPendingTipCustody(row) {
+  return !!(
+    row &&
+    row.mock !== true &&
+    row.collected !== true &&
+    !Number.isFinite(Number(row.claimedAt)) &&
+    typeof row.tipToken === "string" &&
+    row.tipToken.length > 0 &&
+    Number(row.tipSats) > 0
+  );
+}
+
+/**
+ * Cap payout history at `maxRows` while never dropping uncollected tipToken
+ * custody rows. Older non-custody rows may fall off; pending tip bearer tokens
+ * stay until sweep/retry marks them collected.
+ */
+export function prunePayoutsList(list, maxRows = MAX_PAYOUT_ROWS) {
+  const arr = Array.isArray(list) ? list : [];
+  const limit = Math.max(1, Math.round(Number(maxRows) || MAX_PAYOUT_ROWS));
+  if (arr.length <= limit) return arr.slice();
+  const newest = arr.slice(-limit);
+  const keptTokens = new Set(
+    newest.filter(hasPendingTipCustody).map((r) => String(r.tipToken)),
+  );
+  const olderCustody = [];
+  for (let i = 0; i < arr.length - limit; i++) {
+    const row = arr[i];
+    if (!hasPendingTipCustody(row)) continue;
+    const tok = String(row.tipToken);
+    if (keptTokens.has(tok)) continue;
+    keptTokens.add(tok);
+    olderCustody.push(row);
+  }
+  return olderCustody.concat(newest);
+}
+
 /** Append a payout attempt to the audit log (gitignored). */
 export function recordPayout(record) {
   let list = [];
@@ -939,7 +983,7 @@ export function recordPayout(record) {
   if (!Array.isArray(list)) list = [];
   list.push({ at: Date.now(), ...record });
   try {
-    writeFileSync(PAYOUTS_PATH, JSON.stringify(list.slice(-200), null, 2));
+    writeFileSync(PAYOUTS_PATH, JSON.stringify(prunePayoutsList(list), null, 2));
   } catch {
     /* ignore */
   }
@@ -959,7 +1003,7 @@ export function loadPayouts() {
 /** Persist the payout audit log (e.g. after marking tips collected). */
 export function savePayouts(list) {
   try {
-    writeFileSync(PAYOUTS_PATH, JSON.stringify((Array.isArray(list) ? list : []).slice(-200), null, 2));
+    writeFileSync(PAYOUTS_PATH, JSON.stringify(prunePayoutsList(list), null, 2));
   } catch {
     /* ignore */
   }
