@@ -1,6 +1,7 @@
-/** Server-mediated friend requests (no extension encrypt/sign prompts). */
+/** Server-mediated friend requests (signed mutations — no forgeable REMOVE). */
 
 import { apiUrl } from "../net/apiBase";
+import { getSession } from "../nostr/session";
 
 export type FriendRequestRow = {
   pubkey: string;
@@ -14,6 +15,9 @@ export type FriendRequestSnapshot = {
   accepted: FriendRequestRow[];
   friends: FriendRequestRow[];
 };
+
+export const FRIEND_AUTH_KIND = 30078;
+export const FRIEND_AUTH_D_TAG = "racer-online:friend-requests";
 
 function normalizePubkey(raw: unknown): string {
   const hex = String(raw ?? "")
@@ -66,6 +70,24 @@ function parseSnapshot(data: {
   };
 }
 
+function friendAuthTemplate(action: string) {
+  return {
+    kind: FRIEND_AUTH_KIND,
+    created_at: Math.floor(Date.now() / 1000),
+    content: JSON.stringify({ action, at: Date.now() }),
+    tags: [
+      ["d", FRIEND_AUTH_D_TAG],
+      ["t", "racer-online"],
+    ],
+  };
+}
+
+async function signFriendAuth(action: string): Promise<unknown> {
+  const session = getSession();
+  if (!session) throw new Error("Sign in with Nostr to manage friends");
+  return session.signer.signEvent(friendAuthTemplate(action));
+}
+
 export async function fetchFriendRequests(pubkey: string): Promise<FriendRequestSnapshot | null> {
   const pk = normalizePubkey(pubkey);
   const url = apiUrl(`/friend-requests?pubkey=${encodeURIComponent(pk)}`);
@@ -82,6 +104,7 @@ export async function fetchFriendRequests(pubkey: string): Promise<FriendRequest
 /**
  * Push this browser's local inbox/friends up to the server so a redeploy wipe
  * cannot erase pending requests — then the GET snapshot is the merge result.
+ * Unsigned on purpose: polled often; cannot sever / unfriend.
  */
 export async function syncLocalFriendState(input: {
   from: string;
@@ -124,6 +147,7 @@ async function postFriendAction(
   const peer = normalizePubkey(to);
   if (!url || !me || !peer) return null;
   try {
+    const event = await signFriendAuth(action);
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -132,6 +156,7 @@ async function postFriendAction(
         from: me,
         to: peer,
         fromName: sanitizeName(fromName),
+        event,
       }),
     });
     if (!res.ok) return null;
