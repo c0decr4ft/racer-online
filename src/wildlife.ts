@@ -941,12 +941,32 @@ export class WildlifeHerd {
     opts?: { halfRate?: boolean },
   ) {
     const target = Math.floor(Math.max(0, elapsedSec) / 0.05);
+    // Field reset / new race rewinds elapsedSec to ~0 while sharedSteps still
+    // holds the previous race's count. Without a rewind, the herd never steps
+    // again and animals freeze mid-road (perpetual hit slowdowns).
+    if (target < this.sharedSteps) this.resetSharedRace();
     let guard = 0;
     while (this.sharedSteps < target && guard++ < 90) {
       this.stepHerd(0.05);
       this.sharedSteps += 1;
     }
     this.present(dt, vehicles, onHit, opts, true);
+  }
+
+  /**
+   * Zero the shared race clock and put every animal back in habitat.
+   * Call on online field reset so countdown/GO start from a clean herd.
+   */
+  resetSharedRace() {
+    this.sharedSteps = 0;
+    this.simAccum = 0;
+    this.crossCooldown = CROSS_GAP_MIN + this.rng() * (CROSS_GAP_MAX - CROSS_GAP_MIN);
+    this.clearBursts();
+    for (const animal of this.animals) {
+      animal.hitUntil = 0;
+      animal.respawnIn = 0;
+      this.respawnAnimal(animal);
+    }
   }
 
   private stepHerd(dt: number) {

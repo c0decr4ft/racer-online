@@ -5083,6 +5083,10 @@ export class Game {
     this.el.best.textContent = "--:--.---";
     this.el.time.textContent = formatTime(0);
     this.el.gear.textContent = "1";
+    // Shared wildlife steps from the race clock. After a long race sharedSteps
+    // is far ahead of the rewound clock — without a reset animals freeze on
+    // the road and keep applying hit slowdowns for the restart.
+    this.wildlife?.resetSharedRace();
     this.snapOnlineStartingGrid();
     this.snapCamera();
     this.audio.unmute();
