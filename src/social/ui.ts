@@ -104,7 +104,8 @@ function escapeHtml(s: string): string {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function syncPresenceFromSession(): void {
@@ -838,7 +839,7 @@ function renderChatMessages(): void {
               : `${who} has sent you a ${room} lobby request`;
             const btn = mine
               ? ""
-              : `<button type="button" class="social-mini" data-invite-id="${m.id}">JOIN</button>`;
+              : `<button type="button" class="social-mini" data-invite-id="${escapeHtml(m.id)}">JOIN</button>`;
             return `<div class="social-msg${mine ? " is-mine" : ""}"><div class="social-msg-bubble social-msg-invite"><span class="social-msg-meta">${escapeHtml(time)}</span><span class="social-msg-text">${escapeHtml(body)}</span>${btn}</div></div>`;
           }
           return `<div class="social-msg${mine ? " is-mine" : ""}"><div class="social-msg-bubble"><span class="social-msg-meta">${escapeHtml(time)}</span><span class="social-msg-text">${escapeHtml(m.plaintext)}</span></div></div>`;
