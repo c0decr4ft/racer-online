@@ -1,6 +1,7 @@
 /**
  * Regression: NIP-17 gift-wrap unwrap must reject seals whose rumor.pubkey
- * does not match the seal signer (sender impersonation).
+ * does not match the seal signer (sender impersonation), and must never pass
+ * a non-hex rumor.id into chat HTML (invite JOIN attribute XSS → nsec theft).
  *
  * Run: node scripts/verify-nip17-unwrap.mjs
  */
@@ -11,6 +12,7 @@ import { generateSecretKey, getPublicKey, finalizeEvent, verifyEvent } from "nos
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const src = readFileSync(join(ROOT, "src/social/dm.ts"), "utf8");
+const uiSrc = readFileSync(join(ROOT, "src/social/ui.ts"), "utf8");
 
 function assert(cond, msg) {
   if (!cond) throw new Error(msg);
@@ -30,10 +32,19 @@ function nip17SealMatchesRumor(sealPubkey, rumorPubkey) {
   return !!seal && seal === rumor;
 }
 
+/** Mirrors src/social/dm.ts `safeEventId`. */
+function safeEventId(raw) {
+  const hex = String(raw || "")
+    .trim()
+    .toLowerCase();
+  return /^[0-9a-f]{64}$/.test(hex) ? hex : "";
+}
+
 assert(
   /export function nip17SealMatchesRumor/.test(src),
   "dm.ts must export nip17SealMatchesRumor",
 );
+assert(/export function safeEventId/.test(src), "dm.ts must export safeEventId");
 assert(/verifyEvent\(seal\)/.test(src), "unwrapGiftWrap must verifyEvent(seal)");
 assert(
   /nip17SealMatchesRumor\(seal\.pubkey,\s*rumor\.pubkey\)/.test(src),
@@ -46,6 +57,14 @@ assert(
 assert(
   !/const from = normalizePubkey\(rumor\.pubkey\)/.test(src),
   "must not trust rumor.pubkey alone for from",
+);
+assert(
+  /safeEventId\(rumor\.id\)/.test(src),
+  "unwrapGiftWrap must sanitize rumor.id before DmMessage.id",
+);
+assert(
+  /data-invite-id="\$\{escapeHtml\(m\.id\)\}"/.test(uiSrc),
+  "chat invite JOIN must escapeHtml message id in the attribute",
 );
 
 const aliceSk = generateSecretKey();
@@ -80,5 +99,15 @@ assert(
   !nip17SealMatchesRumor(seal.pubkey, spoofRumor.pubkey),
   "spoofed friend-accept rumor must fail seal↔rumor match",
 );
+
+const legitId = "a".repeat(64);
+assert(safeEventId(legitId) === legitId, "64-hex event id accepted");
+assert(safeEventId(legitId.toUpperCase()) === legitId, "event id lowercased");
+assert(
+  !safeEventId(`"><img src=x onerror=alert(1)>`),
+  "XSS payload must not pass as event id",
+);
+assert(!safeEventId(""), "empty id rejected");
+assert(!safeEventId("abc"), "short id rejected");
 
 console.log("verify-nip17-unwrap: ok");

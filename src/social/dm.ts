@@ -56,6 +56,14 @@ function normalizePubkey(raw: string): string {
   return /^[0-9a-f]{64}$/.test(hex) ? hex : "";
 }
 
+/** Nostr event ids are 32-byte hex. Reject anything else before it reaches the DOM. */
+export function safeEventId(raw: unknown): string {
+  const hex = String(raw || "")
+    .trim()
+    .toLowerCase();
+  return /^[0-9a-f]{64}$/.test(hex) ? hex : "";
+}
+
 /**
  * NIP-17: the kind:13 seal signer MUST match the unsigned kind:14 rumor author.
  * Without this check, any sender can impersonate any pubkey by rewriting rumor.pubkey.
@@ -233,7 +241,10 @@ async function unwrapGiftWrap(event: NostrEvent, myPubkey: string): Promise<DmMe
   if (!from) return null;
   if (from !== myPubkey && to !== myPubkey) return null;
 
-  const id = typeof rumor.id === "string" && rumor.id ? rumor.id : event.id;
+  // Rumor id is attacker-controlled JSON. Chat UI embeds it in HTML attributes
+  // (invite JOIN). Only accept a 64-hex event id; otherwise use the wrap id.
+  const id = safeEventId(rumor.id) || safeEventId(event.id);
+  if (!id) return null;
   const created = typeof rumor.created_at === "number" ? rumor.created_at : event.created_at;
   return toDmMessage(id, from, to, created, rumor.content);
 }
