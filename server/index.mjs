@@ -67,19 +67,7 @@ const WRECK_IGNITE_MS = 3_000;
 /** Brief separation does not reset the 3s fire-spread timer. */
 const WRECK_CONTACT_GRACE_MS = 450;
 /** Pause so the field sees everyone burning before the shared restart. */
-const ALL_WRECK_RESET_DELAY_MS = Math.max(
-  0,
-  Number(process.env.RACER_ALL_WRECK_RESET_MS) || 1_600,
-);
-/**
- * Must cover the client 3→2→1→GO hold after all-wreck fieldReset
- * (3×1000ms before GO releases controls). Gates finish + crash while peers
- * are still frozen — crash during the hold re-ignites co-located stale poses.
- */
-const RACE_COUNTDOWN_MS = Math.max(
-  0,
-  Number(process.env.RACER_RACE_COUNTDOWN_MS) || 3_000,
-);
+const ALL_WRECK_RESET_DELAY_MS = 1_600;
 /** Binary state frame type — must match src/net/protocol.ts STATE_BIN_TYPE. */
 const STATE_BIN_TYPE = 1;
 const MAP_VOTE_MS = 20_000;
@@ -291,7 +279,7 @@ function normalizeSessionId(raw) {
 /** @typedef {{ paymentHash: string, paymentRequest: string, bolt11?: string, paidAt: number, netSats?: number }} BuyIn */
 /** @typedef {{ at: number, level: 'info' | 'warn' | 'error', msg: string }} PotLogEntry */
 /** @typedef {{ tipSats: number, tipCollected: boolean, tipToken: string }} BattleClaimTip */
-/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, wreckedIds: Set<string>, raceStartedAt: number, raceOpenAt: number, fireContactMs: Map<string, number>, fireContactLast: Map<string, number>, allWreckResetAt: number, clients: Map<string, Client>, isEvent: boolean, eventMode: 'race' | 'battle', buyInSats: number, buyInFeeSats: number, buyIns: Map<string, BuyIn>, potSats: number, potId: string, potClaimed: boolean, potLogs: PotLogEntry[], payoutTipSats: number, payoutTipCollected: boolean, payoutTipToken: string, battleCubes: Map<number, { id: number, x: number, z: number, sats: number, tier: string, takenBy: string }>, battleEarnings: Map<string, number>, battleClaimable: Map<string, number>, battleClaimedIds: Set<string>, battleClaimTips: Map<string, BattleClaimTip>, battleClaimDeadline: number, battleLeftoverSats: number, battleLeftoverCollected: boolean, battleLeftoverToken: string }} Room */
+/** @typedef {{ name: string, password: string, maxPlayers: number, trackId: string, kind: string, weather: string, hostId: string, phase: 'lobby' | 'racing' | 'finished' | 'starting', winnerId: string, voteOptions: string[], votes: Map<string, TrackVote>, voteOrder: number, voteEndsAt: number, wreckedIds: Set<string>, raceStartedAt: number, fireContactMs: Map<string, number>, fireContactLast: Map<string, number>, allWreckResetAt: number, clients: Map<string, Client>, isEvent: boolean, eventMode: 'race' | 'battle', buyInSats: number, buyInFeeSats: number, buyIns: Map<string, BuyIn>, potSats: number, potId: string, potClaimed: boolean, potLogs: PotLogEntry[], payoutTipSats: number, payoutTipCollected: boolean, payoutTipToken: string, battleCubes: Map<number, { id: number, x: number, z: number, sats: number, tier: string, takenBy: string }>, battleEarnings: Map<string, number>, battleClaimable: Map<string, number>, battleClaimedIds: Set<string>, battleClaimTips: Map<string, BattleClaimTip>, battleClaimDeadline: number, battleLeftoverSats: number, battleLeftoverCollected: boolean, battleLeftoverToken: string }} Room */
 
 /** Persist a debug line on the event pot (disk + in-memory) so the DEV table can show it. */
 function potLog(room, level, msg) {
@@ -2403,13 +2391,7 @@ function runFieldReset(room) {
     c.pose.s = 0;
     c.pose.lap = 1;
     c.pose.g = "1";
-    // Allow the next pose to snap back to the start grid.
-    c.lastPoseAt = 0;
   }
-  // Clients re-run local 3-2-1-GO while server poses still sit at the wreck
-  // pile-up. Reject crash/finish until that hold ends — otherwise one crash
-  // re-ignites co-located peers via tickWreckFire and soft-locks the race.
-  room.raceOpenAt = Date.now() + RACE_COUNTDOWN_MS;
   broadcast(room, { t: "fieldReset", reason: "allWrecked" });
   console.log(`[wreck] ${room.name} field reset`);
 }
@@ -2418,9 +2400,6 @@ function runFieldReset(room) {
 function tickWreckFire(room, dtMs) {
   const wrecked = room.wreckedIds;
   if (!wrecked || wrecked.size === 0 || room.phase !== "racing") return;
-  // Post-fieldReset countdown: poses are still at the wreck until clients
-  // upload grid snaps after GO — do not spread fire off stale co-location.
-  if (Date.now() < (room.raceOpenAt || 0)) return;
   room.fireContactMs ??= new Map();
   room.fireContactLast ??= new Map();
   const now = Date.now();
@@ -3002,7 +2981,6 @@ function admitClient(ws, msg, mode) {
       voteEndsAt: 0,
       wreckedIds: new Set(),
       raceStartedAt: 0,
-      raceOpenAt: 0,
       fireContactMs: new Map(),
       fireContactLast: new Map(),
       allWreckResetAt: 0,
@@ -4224,10 +4202,6 @@ wss.on("connection", (ws) => {
 
     if (msg.t === "crash") {
       if (room.phase !== "racing" || room.winnerId) return;
-      // fieldReset hold: server poses still sit at the wreck pile-up while
-      // clients are frozen on the grid. A crash here re-ignites everyone via
-      // tickWreckFire and soft-locks the race in repeated fieldResets.
-      if (Date.now() < (room.raceOpenAt || 0)) return;
       markWrecked(room, client, "crash");
       return;
     }
@@ -4289,9 +4263,6 @@ wss.on("connection", (ws) => {
     if (msg.t === "finish") {
       if (room.phase !== "racing" || room.winnerId) return;
       if (room.wreckedIds?.has(client.id)) return;
-      // fieldReset (and any future raceOpenAt hold) — block finishes while peers
-      // are still frozen on the local 3-2-1-GO countdown.
-      if (Date.now() < (room.raceOpenAt || 0)) return;
       const timeMs = Math.max(1_000, Math.min(3_600_000, Math.round(Number(msg.timeMs) || 0)));
       declareRaceWinner(room, client, timeMs);
       return;
