@@ -37,6 +37,12 @@ function normalizeTrackId(raw) {
   return TRACK_IDS.includes(id) ? id : DEFAULT_TRACK_ID;
 }
 
+/** Mirror src/net/leaderboard.ts `knownTrackId` — drop removed/unknown courses. */
+function knownTrackId(raw) {
+  const id = String(raw ?? "").trim();
+  return TRACK_IDS.includes(id) || id === "yard-drift" ? id : null;
+}
+
 function entryKey(e) {
   return `${e.name.trim().toLowerCase()}|${Math.round(e.timeMs)}`;
 }
@@ -119,8 +125,8 @@ function parseStore(data) {
   if (!isBoardPayload(data)) return store;
   if (data.byTrack && typeof data.byTrack === "object") {
     for (const [id, list] of Object.entries(data.byTrack)) {
-      const tid = normalizeTrackId(id);
-      if (!Array.isArray(list)) continue;
+      const tid = knownTrackId(id);
+      if (!tid || !Array.isArray(list)) continue;
       store[tid] = normalize([...(store[tid] ?? []), ...list], tid);
     }
     return store;
@@ -131,6 +137,18 @@ function parseStore(data) {
   }
   if (Array.isArray(data.entries)) {
     store[DEFAULT_TRACK_ID] = normalize(data.entries, DEFAULT_TRACK_ID);
+  }
+  return store;
+}
+
+/** Tip bug: unknown/removed byTrack keys used normalizeTrackId → DEFAULT. */
+function buggyParseStoreCollapseUnknown(data) {
+  const store = emptyStore();
+  if (!data?.byTrack || typeof data.byTrack !== "object") return store;
+  for (const [id, list] of Object.entries(data.byTrack)) {
+    const tid = normalizeTrackId(id);
+    if (!Array.isArray(list)) continue;
+    store[tid] = normalize([...(store[tid] ?? []), ...list], tid);
   }
   return store;
 }
@@ -191,9 +209,9 @@ const parsed = parseStore({
   },
 });
 check(
-  "unknown track id merges into default",
+  "unknown track id is dropped (not merged into default)",
   parsed["forest-loop"].some((e) => e.name === "A") &&
-    parsed["forest-loop"].some((e) => e.name === "B"),
+    !parsed["forest-loop"].some((e) => e.name === "B"),
 );
 check("error payload is not a board", !isBoardPayload({ error: "nope" }));
 check("error payload parses empty", storeEntryCount(parseStore({ error: "nope" })) === 0);
@@ -202,6 +220,38 @@ const top = normalize(
   Array.from({ length: 15 }, (_, i) => ({ name: `N${i}`, timeMs: 100000 - i * 100, at: i })),
 );
 check("normalize keeps top 10 sorted", top.length === 10 && top[0].timeMs < top[9].timeMs);
+
+// Removed learner-loop times collapsing onto forest-loop truncated real PBs past MAX.
+const forestFull = Array.from({ length: MAX }, (_, i) => ({
+  name: `F${i}`,
+  timeMs: 60000 + i * 100,
+  at: i,
+}));
+const learnerFast = Array.from({ length: 5 }, (_, i) => ({
+  name: `L${i}`,
+  timeMs: 20000 + i * 100,
+  at: 1000 + i,
+}));
+const archive = {
+  byTrack: {
+    "forest-loop": forestFull,
+    "learner-loop": learnerFast,
+  },
+};
+const collapsed = buggyParseStoreCollapseUnknown(archive);
+check(
+  "repro: learner-loop collapse wipes forest PBs past MAX",
+  collapsed["forest-loop"].some((e) => e.name === "L0") &&
+    collapsed["forest-loop"].filter((e) => e.name.startsWith("F")).length === MAX - 5,
+  `forestKept=${collapsed["forest-loop"].filter((e) => e.name.startsWith("F")).length}`,
+);
+const fixedParse = parseStore(archive);
+check(
+  "fix: learner-loop dropped; forest PBs intact",
+  !fixedParse["forest-loop"].some((e) => e.name.startsWith("L")) &&
+    fixedParse["forest-loop"].filter((e) => e.name.startsWith("F")).length === MAX,
+  `forestKept=${fixedParse["forest-loop"].length}`,
+);
 
 if (failures.length) {
   console.error(`\n${failures.length} failed`);
