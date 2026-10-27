@@ -17,7 +17,6 @@
     "start:local": "npm run dev:online",
     "test:full": "node scripts/full-suite.mjs",
     "test:lobby-invite-auth": "node scripts/verify-lobby-invite-auth.mjs",
-    "test:battle-claim-departed-fold": "node scripts/verify-battle-claim-departed-fold.mjs",
     "test:leaderboard": "node scripts/verify-leaderboard.mjs"
   },
   "devDependencies": {
