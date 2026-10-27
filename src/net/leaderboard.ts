@@ -88,6 +88,16 @@ function normalizeTrackId(raw: unknown): string {
 }
 
 /**
+ * Accept only ids that are still a real course. Removed tracks (e.g. learner-loop)
+ * and garbage keys must NOT collapse onto DEFAULT — that merged foreign times into
+ * Forest Loop and truncated real local PBs past MAX on boot migrate.
+ */
+function knownTrackId(raw: unknown): string | null {
+  const id = String(raw ?? "").trim();
+  return isTrackId(id) ? id : null;
+}
+
+/**
  * Public worldwide board (JSONBlob). Best-effort sync when no game server is available.
  *
  * Recreated 2026-08-01 after prior blob returned 403 (expired).
@@ -305,9 +315,9 @@ export function parseStore(data: unknown, trusted = false, allowPlain = trusted)
 
   if (obj.byTrack && typeof obj.byTrack === "object") {
     for (const [id, list] of Object.entries(obj.byTrack as Record<string, unknown>)) {
-      const tid = normalizeTrackId(id);
-      if (!Array.isArray(list)) continue;
-      // Merge when legacy / unknown ids collapse onto the same track
+      // Drop unknown / removed track keys — never remap them onto DEFAULT.
+      const tid = knownTrackId(id);
+      if (!tid || !Array.isArray(list)) continue;
       store[tid] = normalize([...(store[tid] ?? []), ...parseList(list, tid)], tid);
     }
     return store;
@@ -340,7 +350,7 @@ function writeStoreLocally(store: BoardStore) {
 
 function trackFromStorageKey(key: string): string | null {
   const prefixed = /^racer-leaderboard-v\d+-(.+)$/.exec(key);
-  if (prefixed) return normalizeTrackId(prefixed[1]);
+  if (prefixed) return knownTrackId(prefixed[1]);
   if (/^racer-leaderboard-v\d+$/.test(key)) return DEFAULT_TRACK_ID;
   return null;
 }
@@ -483,7 +493,8 @@ function collectBlobEvents(data: unknown): Record<string, RawEvent[]> {
   const lists: Record<string, unknown[]> = {};
   if (obj && typeof obj === "object" && obj.byTrack && typeof obj.byTrack === "object") {
     for (const [id, list] of Object.entries(obj.byTrack as Record<string, unknown>)) {
-      if (Array.isArray(list)) lists[normalizeTrackId(id)] = list;
+      const tid = knownTrackId(id);
+      if (tid && Array.isArray(list)) lists[tid] = list;
     }
   } else if (Array.isArray(data)) {
     lists[DEFAULT_TRACK_ID] = data;
