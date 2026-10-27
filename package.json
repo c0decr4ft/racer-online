@@ -18,6 +18,7 @@
     "test:full": "node scripts/full-suite.mjs",
     "test:lobby-invite-auth": "node scripts/verify-lobby-invite-auth.mjs",
     "test:battle-claim-departed-fold": "node scripts/verify-battle-claim-departed-fold.mjs",
+    "test:field-reset-crash-hold": "node scripts/verify-field-reset-crash-hold.mjs",
     "test:leaderboard": "node scripts/verify-leaderboard.mjs"
   },
   "devDependencies": {
