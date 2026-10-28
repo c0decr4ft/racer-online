@@ -253,6 +253,12 @@ function normalizeTrackId(raw) {
   return TRACK_IDS.includes(id) ? id : DEFAULT_TRACK_ID;
 }
 
+/** Known course only — never remap removed/legacy ids onto Forest Loop. */
+function knownTrackId(raw) {
+  const id = String(raw ?? "").trim();
+  return TRACK_IDS.includes(id) ? id : "";
+}
+
 function normalizeKind(raw) {
   return String(raw ?? "").toLowerCase() === "bike" ? "bike" : "car";
 }
@@ -728,9 +734,8 @@ function loadStore() {
     if (raw && typeof raw === "object") {
       if (raw.byTrack && typeof raw.byTrack === "object") {
         for (const [id, list] of Object.entries(raw.byTrack)) {
-          const tid = normalizeTrackId(id);
-          if (!Array.isArray(list)) continue;
-          // Merge when legacy / unknown ids collapse onto the same track
+          const tid = knownTrackId(id);
+          if (!tid || !Array.isArray(list)) continue;
           store[tid] = sortBoard([...(store[tid] || []), ...list], tid);
         }
         return store;
