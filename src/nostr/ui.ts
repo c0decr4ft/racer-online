@@ -57,6 +57,13 @@ function showStatus(text: string, isError = false) {
 let connectCancel: (() => void) | null = null;
 let pendingResolver: ((session: NostrSession | null) => void) | null = null;
 
+/** Stop an in-flight Amber QR wait so a late phone approval cannot clobber another login. */
+function cancelConnectWait() {
+  connectCancel?.();
+  connectCancel = null;
+  el<HTMLDivElement>("nostr-qr-box")?.classList.add("hidden");
+}
+
 function resolvePending(session: NostrSession | null) {
   const resolver = pendingResolver;
   pendingResolver = null;
@@ -114,8 +121,7 @@ function showView(view: NostrView) {
 }
 
 export function closeNostrModal() {
-  connectCancel?.();
-  connectCancel = null;
+  cancelConnectWait();
   el<HTMLDivElement>("nostr-login")?.classList.add("hidden");
   resolvePending(null);
 }
@@ -150,6 +156,7 @@ export function ensureNostrLogin(reason: string): Promise<NostrSession | null> {
 }
 
 function onLoginSuccess(session: NostrSession) {
+  cancelConnectWait();
   showStatus("");
   el<HTMLDivElement>("nostr-login")?.classList.add("hidden");
   void refreshIdentityViews();
@@ -157,6 +164,7 @@ function onLoginSuccess(session: NostrSession) {
 }
 
 async function handleExtensionLogin() {
+  cancelConnectWait();
   showStatus("Contacting extension…");
   try {
     const session = await loginWithExtension();
@@ -180,6 +188,7 @@ async function handleBunkerLogin() {
     input?.focus();
     return;
   }
+  cancelConnectWait();
   showStatus("Connecting to remote signer…");
   try {
     const session = await loginWithBunker(uri);
@@ -194,12 +203,13 @@ function handleQrFlow() {
   if (!box) return;
   if (!box.classList.contains("hidden")) {
     box.classList.add("hidden");
-    connectCancel?.();
-    connectCancel = null;
+    cancelConnectWait();
     return;
   }
   box.classList.remove("hidden");
   showStatus("Open Amber on your phone, scan the QR or paste the link, then approve Sats Racer");
+  // Replace any prior wait before starting a new one.
+  connectCancel?.();
   const { uri, wait, cancel } = startConnectLogin();
   connectCancel = cancel;
   const img = el<HTMLImageElement>("nostr-qr-img");
@@ -230,9 +240,7 @@ function handleRemoteToggle() {
   toggle.setAttribute("aria-expanded", String(!open));
   if (open) {
     // Collapsing also stops any pending QR wait
-    connectCancel?.();
-    connectCancel = null;
-    el<HTMLDivElement>("nostr-qr-box")?.classList.add("hidden");
+    cancelConnectWait();
   }
 }
 
@@ -269,6 +277,9 @@ async function handleCreateGo() {
     input?.focus();
     return;
   }
+  // Drop any outstanding Amber QR wait before minting a local key — a late
+  // phone approval must not overwrite racer-nostr-session-v1 and burn the nsec.
+  cancelConnectWait();
   setStatus("Generating your keys…");
   const { session, nsec } = createAccount();
   setStatus("Publishing your profile…");
@@ -315,6 +326,7 @@ export function initNostrUi() {
   el<HTMLButtonElement>("nostr-qr-toggle")?.addEventListener("click", handleQrFlow);
   el<HTMLButtonElement>("nostr-connect-copy")?.addEventListener("click", () => void handleCopyConnectUri());
   el<HTMLButtonElement>("nostr-create-btn")?.addEventListener("click", () => {
+    cancelConnectWait();
     showView("create");
     el<HTMLInputElement>("nostr-username")?.focus();
   });
