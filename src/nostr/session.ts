@@ -44,6 +44,18 @@ function signingPermissions(): string[] {
 let current: NostrSession | null = null;
 const listeners = new Set<(session: NostrSession | null) => void>();
 
+/**
+ * Bumped whenever a login path commits (or is cancelled). In-flight NIP-46 QR
+ * waits capture the generation at start and refuse to persist if it changed —
+ * otherwise a late Amber approval can overwrite a freshly created local nsec.
+ */
+let loginGeneration = 0;
+
+function bumpLoginGeneration(): number {
+  loginGeneration += 1;
+  return loginGeneration;
+}
+
 export function getSession(): NostrSession | null {
   return current;
 }
@@ -94,6 +106,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 export async function loginWithExtension(): Promise<NostrSession> {
   const signer = new ExtensionSigner();
   const pubkey = await withTimeout(signer.getPublicKey(), 10_000, "Extension did not respond");
+  bumpLoginGeneration();
   persist({ method: "nip07", pubkey });
   const session: NostrSession = { pubkey, method: "nip07", signer };
   setSession(session);
@@ -110,6 +123,7 @@ export function createAccount(): { session: NostrSession; nsec: string } {
   const signer = new PrivateKeySigner(secretKey);
   const pubkey = getPublicKey(secretKey);
   const nsec = nip19.nsecEncode(secretKey);
+  bumpLoginGeneration();
   persist({ method: "local", nsec });
   const session: NostrSession = { pubkey, method: "local", signer };
   setSession(session);
@@ -132,6 +146,7 @@ export async function loginWithBunker(uri: string): Promise<NostrSession> {
     "Amber didn't answer. On your phone, open Amber and approve Sats Racer",
   );
   const pubkey = await withTimeout(signer.getPublicKey(), 10_000, "Remote signer did not respond");
+  bumpLoginGeneration();
   persist({ method: "nip46", nbunksec: signer.getNbunksec(), pubkey });
   const session: NostrSession = { pubkey, method: "nip46", signer };
   setSession(session);
@@ -141,12 +156,18 @@ export async function loginWithBunker(uri: string): Promise<NostrSession> {
 /**
  * NIP-46 QR / nostrconnect:// flow — we generate a URI, the remote signer
  * (Amber, nsec.app, …) connects to us. `wait` resolves once connected.
+ *
+ * If the user finishes another login (create / extension / bunker) while this
+ * wait is outstanding, `loginGeneration` advances and this path must not
+ * persist — a late phone approval would otherwise wipe a local nsec.
  */
 export function startConnectLogin(): {
   uri: string;
   wait: Promise<NostrSession>;
   cancel: () => void;
 } {
+  const generationAtStart = loginGeneration;
+  let cancelled = false;
   const signer = new NostrConnectSigner({
     relays: SIGNER_RELAYS,
     onAuth: async (url: string) => {
@@ -164,7 +185,14 @@ export function startConnectLogin(): {
       180_000,
       "Amber didn't answer. Open Amber on your phone, scan the QR or paste the link, and approve Sats Racer",
     );
+    if (cancelled || generationAtStart !== loginGeneration) {
+      throw new Error("cancelled");
+    }
     const pubkey = await withTimeout(signer.getPublicKey(), 10_000, "Remote signer did not respond");
+    if (cancelled || generationAtStart !== loginGeneration) {
+      throw new Error("cancelled");
+    }
+    bumpLoginGeneration();
     persist({ method: "nip46", nbunksec: signer.getNbunksec(), pubkey });
     const session: NostrSession = { pubkey, method: "nip46", signer };
     setSession(session);
@@ -174,6 +202,8 @@ export function startConnectLogin(): {
     uri,
     wait,
     cancel: () => {
+      cancelled = true;
+      bumpLoginGeneration();
       void signer.close().catch(() => undefined);
     },
   };
@@ -247,6 +277,7 @@ export async function reconnectRemoteSession(): Promise<NostrSession | null> {
 
 export async function logout(): Promise<void> {
   const session = current;
+  bumpLoginGeneration();
   clearPersisted();
   setSession(null);
   if (session?.method === "nip46") {
