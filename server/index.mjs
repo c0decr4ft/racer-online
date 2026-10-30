@@ -5,6 +5,10 @@ import { networkInterfaces } from "node:os";
 import { payments, depositProofs, recordPayout, loadPayouts, savePayouts } from "./payments.mjs";
 import { appendActivity, loadActivity, classifyActivityMsg, inferActivityKind, activityStats } from "./activityLog.mjs";
 import {
+  planAbandonedBattleShare,
+  shouldFoldDepartedBattleClaim,
+} from "./battleAbandonTip.mjs";
+import {
   buildBattleCubes,
   buildDroppedBattleCubes,
   BATTLE_PICKUP_RADIUS,
@@ -2089,11 +2093,14 @@ function dropBattleHaulOnWreck(room, client) {
  * @param {string} clientId
  * @param {string} reason
  */
-function abandonBattleClaimShare(room, clientId, reason) {
+function abandonBattleClaimShare(room, clientId, reason, { force = false } = {}) {
   if (!room?.isEvent || room.eventMode !== "battle") return 0;
   if (room.phase !== "finished") return 0;
-  if (room.battleClaimedIds?.has(clientId)) return 0;
+  // In-flight claimPot holds battleClaimedIds — skip unless the claim already
+  // unlocked and the claimer departed (force), so we do not race a live payout.
+  if (!force && room.battleClaimedIds?.has(clientId)) return 0;
   const sats = Math.max(0, Math.round(room.battleClaimable?.get(clientId) || 0));
+  const tipState = room.battleClaimTips?.get(clientId) || null;
   if (sats <= 0) {
     room.battleClaimable?.delete(clientId);
     room.battleClaimTips?.delete(clientId);
@@ -2101,11 +2108,45 @@ function abandonBattleClaimShare(room, clientId, reason) {
   }
   room.battleClaimable.delete(clientId);
   room.battleClaimTips?.delete(clientId);
-  room.battleLeftoverSats = Math.max(0, Math.round(room.battleLeftoverSats || 0)) + sats;
+  // Tip may already have left the pot during a failed claimPot — fold only the
+  // remainder and custody any pending tip bearer token (never drop it).
+  const plan = planAbandonedBattleShare({ claimableSats: sats, tipState });
+  if (plan.pendingTipToken) {
+    recordPayout({
+      room: room.name,
+      potId: room.potId,
+      winnerId: "developer",
+      winnerPubkey: null,
+      potSats: plan.pendingTipSats,
+      winnerSats: 0,
+      tipSats: plan.pendingTipSats,
+      tipPercent: 100,
+      feeSats: 0,
+      collected: false,
+      collectedAt: null,
+      tipToken: plan.pendingTipToken,
+      mock: payments.mock,
+      kind: "battle-abandoned-claim-tip",
+    });
+    potLog(
+      room,
+      "warn",
+      `battle abandoned tip token custody · ${clientId} · ${plan.pendingTipSats} sats (${reason})`,
+    );
+  }
+  room.battleLeftoverSats =
+    Math.max(0, Math.round(room.battleLeftoverSats || 0)) + plan.leftoverAdd;
   room.battleLeftoverCollected = false;
-  potLog(room, "info", `battle share abandoned · ${clientId} · ${sats} sats → tip (${reason})`);
-  console.log(`[battle] ${room.name} abandoned ${sats} sats from ${clientId} (${reason})`);
-  return sats;
+  potLog(
+    room,
+    "info",
+    `battle share abandoned · ${clientId} · ${plan.leftoverAdd} sats → tip (${reason})` +
+      (plan.pendingTipSats ? ` · ${plan.pendingTipSats} tip already out of pot` : ""),
+  );
+  console.log(
+    `[battle] ${room.name} abandoned ${plan.leftoverAdd} sats from ${clientId} (${reason})`,
+  );
+  return plan.leftoverAdd + plan.pendingTipSats;
 }
 
 /** Sweep every unclaimed battle share into leftover (room empty / deadline). */
@@ -4411,8 +4452,21 @@ wss.on("connection", (ws) => {
               `battle claimed · ${client.name} ${winnerSats} · tip ${tipSats}${tipCollected ? "" : " pending"} · fee ${feeSats}`,
             );
           } catch (err) {
-            // Unlock claim retry; tip state stays so we never double-tip.
+            // Unlock claim retry; tip state stays so we never double-tip — unless
+            // the claimer already left. Disconnect/deadline abandon skips ids in
+            // battleClaimedIds; once unlocked a departed share would sit forever
+            // in battleClaimable (no reconnect into finished rooms).
             room.battleClaimedIds.delete(client.id);
+            const foldDeparted = shouldFoldDepartedBattleClaim({
+              clientInRoom: room.clients.has(client.id),
+              hasClaimable: (room.battleClaimable?.get(client.id) || 0) > 0,
+            });
+            if (foldDeparted) {
+              const abandoned = abandonBattleClaimShare(room, client.id, "claim-fail-departed", {
+                force: true,
+              });
+              if (abandoned > 0) void collectBattleLeftover(room).catch(() => {});
+            }
             potLog(room, "error", `battle claim failed: ${String(err?.message || err).slice(0, 160)}`);
             send(ws, { t: "payoutResult", ok: false, error: String(err?.message || err).slice(0, 140) });
           }
