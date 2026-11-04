@@ -5,6 +5,10 @@ import { networkInterfaces } from "node:os";
 import { payments, depositProofs, recordPayout, loadPayouts, savePayouts } from "./payments.mjs";
 import { appendActivity, loadActivity, classifyActivityMsg, inferActivityKind, activityStats } from "./activityLog.mjs";
 import {
+  isBuyInRefundCustodyRecord,
+  planUndeliveredBuyInRefund,
+} from "./buyinRefundCustody.mjs";
+import {
   buildBattleCubes,
   buildDroppedBattleCubes,
   BATTLE_PICKUP_RADIUS,
@@ -449,6 +453,8 @@ async function sweepPendingTipTokens() {
   const list = loadPayouts();
   let swept = 0;
   for (const r of list) {
+    // Player buy-in refund bearer tokens must never be burned into the tip wallet.
+    if (isBuyInRefundCustodyRecord(r)) continue;
     if (!r || r.mock || r.collected || r.claimedAt || !r.tipToken || !(Number(r.tipSats) > 0)) continue;
     try {
       const net = await payments.receiveTipToken(r.tipToken, Number(r.tipSats));
@@ -481,6 +487,8 @@ function markCollectedTipsClaimed() {
   let changed = false;
   for (const r of list) {
     if (!r || r.mock || r.claimedAt) continue;
+    // Do not seal undelivered player refund custody as tip withdrawals.
+    if (isBuyInRefundCustodyRecord(r)) continue;
     if (r.collected === true || Number.isFinite(Number(r.collectedAt))) {
       r.claimedAt = now;
       changed = true;
@@ -605,6 +613,20 @@ async function devTipsSummary() {
     console.warn("[activity] load failed:", err?.message || err);
     activity = [];
   }
+  // Closed-socket lobby refunds — bearer tokens for DEV rescue (not tip wallet).
+  const undeliveredRefunds = loadPayouts()
+    .filter((r) => isBuyInRefundCustodyRecord(r) && !r.claimedAt && r.mock !== true)
+    .map((r) => ({
+      at: Number(r.at) || 0,
+      room: String(r.room || ""),
+      player: String(r.player || ""),
+      sats: Math.max(0, Math.round(Number(r.winnerSats) || Number(r.potSats) || 0)),
+      token: String(r.refundToken || "").trim(),
+      potId: String(r.potId || ""),
+    }))
+    .filter((r) => r.token && r.sats > 0)
+    .sort((a, b) => b.at - a.at)
+    .slice(0, 50);
   return {
     ok: true,
     mint: payments.mintUrl,
@@ -619,6 +641,7 @@ async function devTipsSummary() {
       ? { amountSats: pendingWithdraw.amountSats, at: pendingWithdraw.at, token: pendingWithdraw.token }
       : null,
     tips: list,
+    undeliveredRefunds,
     custody,
     events,
     activity,
@@ -2167,15 +2190,41 @@ async function refundLobbyBuyIn(room, client, ws, buyIn) {
         `[event] EMERGENCY buy-in refund token for ${client.name} (ws closed) — redeem once:`,
         token,
       );
+      // Durable custody — stdout alone is lost on log rotate / redeploy.
+      const custody = planUndeliveredBuyInRefund({
+        delivered: false,
+        token,
+        refundSats,
+      });
+      if (custody.needsCustody) {
+        recordPayout({
+          room: room.name,
+          potId: room.potId,
+          winnerId: client.id,
+          winnerPubkey: client.pose?.pubkey || null,
+          potSats: custody.refundSats,
+          winnerSats: custody.refundSats,
+          tipSats: 0,
+          tipPercent: 0,
+          feeSats: 0,
+          collected: false,
+          collectedAt: null,
+          tipToken: null,
+          refundToken: custody.refundToken,
+          mock: payments.mock,
+          kind: "buyin-refund-undelivered",
+          player: client.name,
+        });
+      }
       potLog(
         room,
         "warn",
-        `buy-in refund token undelivered · ${client.name} · ${refundSats} sats (see server log)`,
+        `buy-in refund token undelivered · ${client.name} · ${refundSats} sats (custodied on disk)`,
       );
       appendActivity({
         type: "payment",
         kind: "payment-failed",
-        detail: `Buy-in refund undelivered · ${room.name} · ${client.name} · ${refundSats} sats — check server log`,
+        detail: `Buy-in refund undelivered · ${room.name} · ${client.name} · ${refundSats} sats — custodied for DEV rescue`,
         level: "error",
         ok: false,
         room: room.name,
