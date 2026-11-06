@@ -23,6 +23,11 @@ import {
   verifyLobbyAuthEvent,
   normalizeInboxKey,
 } from "./lobbyInvites.mjs";
+import {
+  normalizeFeedbackMessage,
+  normalizeFeedbackStore,
+  mergeFeedbackStores,
+} from "./feedbackStore.mjs";
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -217,9 +222,6 @@ async function sendFeedbackEmail(msg) {
   }
 }
 const MAX_BOARD = 200;
-const MAX_FEEDBACK = 80;
-const FEEDBACK_TEXT_MAX = 500;
-const FEEDBACK_NAME_MAX = 24;
 const NAME_MAX = 15;
 const PRESENCE_STALE_MS = 75_000;
 const PRESENCE_KEEP_HOURS = 14 * 24;
@@ -943,82 +945,6 @@ function savePresence(store) {
   body.historyEpoch = PRESENCE_HISTORY_EPOCH;
   writeFileSync(PRESENCE_PATH, JSON.stringify(body, null, 2));
   return body;
-}
-
-function sanitizeFeedbackText(raw) {
-  return String(raw ?? "")
-    .normalize("NFKC")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, FEEDBACK_TEXT_MAX);
-}
-
-function sanitizeFeedbackName(raw) {
-  if (raw == null) return undefined;
-  const cleaned = String(raw)
-    .normalize("NFKC")
-    .replace(/[^\p{L}\p{N} _\-.]/gu, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, FEEDBACK_NAME_MAX)
-    .trim();
-  return cleaned || undefined;
-}
-
-function normalizeFeedbackMessage(raw) {
-  if (!raw || typeof raw !== "object") return null;
-  const text = sanitizeFeedbackText(raw.text);
-  if (!text) return null;
-  const createdAt =
-    typeof raw.createdAt === "number" && Number.isFinite(raw.createdAt)
-      ? Math.round(raw.createdAt)
-      : Date.now();
-  const id = String(raw.id ?? "").trim() || `fb-${Date.now().toString(36)}`;
-  const name = sanitizeFeedbackName(raw.name);
-  const readAt =
-    typeof raw.readAt === "number" && Number.isFinite(raw.readAt) && raw.readAt > 0
-      ? Math.round(raw.readAt)
-      : undefined;
-  const msg = name ? { id, text, createdAt, name } : { id, text, createdAt };
-  if (readAt !== undefined) msg.readAt = readAt;
-  return msg;
-}
-
-/** Normalize a raw feedback store (disk or blob) into sorted unique messages. */
-function normalizeFeedbackStore(raw) {
-  const list = Array.isArray(raw?.messages) ? raw.messages : Array.isArray(raw) ? raw : [];
-  const seen = new Set();
-  const messages = [];
-  for (const row of list) {
-    const msg = normalizeFeedbackMessage(row);
-    if (!msg || seen.has(msg.id)) continue;
-    seen.add(msg.id);
-    messages.push(msg);
-  }
-  messages.sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
-  return { messages: messages.slice(0, MAX_FEEDBACK) };
-}
-
-/** Union two stores by id — keep readAt if either side has it. */
-function mergeFeedbackStores(a, b) {
-  const byId = new Map();
-  for (const row of [...(a?.messages || []), ...(b?.messages || [])]) {
-    const msg = normalizeFeedbackMessage(row);
-    if (!msg) continue;
-    const prev = byId.get(msg.id);
-    if (!prev) {
-      byId.set(msg.id, msg);
-      continue;
-    }
-    const readAt = [prev.readAt, msg.readAt].find((n) => Number.isFinite(Number(n)));
-    const newer = msg.createdAt >= prev.createdAt ? msg : prev;
-    if (readAt !== undefined) newer.readAt = Math.round(Number(readAt));
-    byId.set(msg.id, newer);
-  }
-  const messages = [...byId.values()].sort(
-    (x, y) => y.createdAt - x.createdAt || x.id.localeCompare(y.id),
-  );
-  return { messages: messages.slice(0, MAX_FEEDBACK) };
 }
 
 /** One-time: copy legacy server/feedback.json into DATA_DIR when mounting a disk. */
@@ -3894,10 +3820,12 @@ const httpServer = createServer(async (req, res) => {
     }
     try {
       const data = JSON.parse(body || "{}");
+      // Ignore client createdAt — far-future stamps permanently starve real
+      // rows under MAX_FEEDBACK (and remirror the poison to Nostr).
       const msg = normalizeFeedbackMessage({
         id: data.id,
         text: data.text,
-        createdAt: data.createdAt ?? Date.now(),
+        createdAt: Date.now(),
         name: data.name,
       });
       if (!msg) {
