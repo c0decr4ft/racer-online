@@ -57,6 +57,13 @@ function showStatus(text: string, isError = false) {
 let connectCancel: (() => void) | null = null;
 let pendingResolver: ((session: NostrSession | null) => void) | null = null;
 
+/** Stop an in-flight Amber QR wait so a late phone approval cannot clobber another login. */
+function cancelConnectWait() {
+  connectCancel?.();
+  connectCancel = null;
+  el<HTMLDivElement>("nostr-qr-box")?.classList.add("hidden");
+}
+
 function resolvePending(session: NostrSession | null) {
   const resolver = pendingResolver;
   pendingResolver = null;
@@ -114,8 +121,7 @@ function showView(view: NostrView) {
 }
 
 export function closeNostrModal() {
-  connectCancel?.();
-  connectCancel = null;
+  cancelConnectWait();
   el<HTMLDivElement>("nostr-login")?.classList.add("hidden");
   resolvePending(null);
 }
@@ -150,6 +156,7 @@ export function ensureNostrLogin(reason: string): Promise<NostrSession | null> {
 }
 
 function onLoginSuccess(session: NostrSession) {
+  cancelConnectWait();
   showStatus("");
   el<HTMLDivElement>("nostr-login")?.classList.add("hidden");
   void refreshIdentityViews();
@@ -157,12 +164,15 @@ function onLoginSuccess(session: NostrSession) {
 }
 
 async function handleExtensionLogin() {
+  cancelConnectWait();
   showStatus("Contacting extension…");
   try {
     const session = await loginWithExtension();
     onLoginSuccess(session);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // CREATE ACCOUNT (or another login) won while the extension prompt was open.
+    if (/closed|abort|cancel/i.test(message)) return;
     showStatus(
       /missing|no extension|not found/i.test(message)
         ? "No Nostr extension found — install Alby or nos2x, then retry"
@@ -180,12 +190,16 @@ async function handleBunkerLogin() {
     input?.focus();
     return;
   }
+  cancelConnectWait();
   showStatus("Connecting to remote signer…");
   try {
     const session = await loginWithBunker(uri);
     onLoginSuccess(session);
   } catch (err) {
-    showStatus(`Connection failed — ${err instanceof Error ? err.message : String(err)}`, true);
+    const message = err instanceof Error ? err.message : String(err);
+    // CREATE ACCOUNT won while bunker/Amber was still approving — keep the local nsec.
+    if (/closed|abort|cancel/i.test(message)) return;
+    showStatus(`Connection failed — ${message}`, true);
   }
 }
 
@@ -194,12 +208,13 @@ function handleQrFlow() {
   if (!box) return;
   if (!box.classList.contains("hidden")) {
     box.classList.add("hidden");
-    connectCancel?.();
-    connectCancel = null;
+    cancelConnectWait();
     return;
   }
   box.classList.remove("hidden");
   showStatus("Open Amber on your phone, scan the QR or paste the link, then approve Sats Racer");
+  // Replace any prior wait before starting a new one.
+  connectCancel?.();
   const { uri, wait, cancel } = startConnectLogin();
   connectCancel = cancel;
   const img = el<HTMLImageElement>("nostr-qr-img");
@@ -230,9 +245,7 @@ function handleRemoteToggle() {
   toggle.setAttribute("aria-expanded", String(!open));
   if (open) {
     // Collapsing also stops any pending QR wait
-    connectCancel?.();
-    connectCancel = null;
-    el<HTMLDivElement>("nostr-qr-box")?.classList.add("hidden");
+    cancelConnectWait();
   }
 }
 
@@ -269,6 +282,10 @@ async function handleCreateGo() {
     input?.focus();
     return;
   }
+  // Drop any outstanding Amber QR wait before minting a local key — a late
+  // phone approval must not overwrite racer-nostr-session-v1 and burn the nsec.
+  // In-flight bunker/extension awaits are refused by loginGeneration in session.ts.
+  cancelConnectWait();
   setStatus("Generating your keys…");
   const { session, nsec } = createAccount();
   setStatus("Publishing your profile…");
@@ -315,6 +332,7 @@ export function initNostrUi() {
   el<HTMLButtonElement>("nostr-qr-toggle")?.addEventListener("click", handleQrFlow);
   el<HTMLButtonElement>("nostr-connect-copy")?.addEventListener("click", () => void handleCopyConnectUri());
   el<HTMLButtonElement>("nostr-create-btn")?.addEventListener("click", () => {
+    cancelConnectWait();
     showView("create");
     el<HTMLInputElement>("nostr-username")?.focus();
   });
