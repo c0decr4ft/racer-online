@@ -83,6 +83,31 @@ function clearPersisted() {
   }
 }
 
+/**
+ * True when `saved` is still the session this tab holds in memory.
+ * Logout must not clear storage when another tab already persisted a
+ * different login — that burned the other tab's local nsec.
+ */
+function persistedMatchesSession(
+  saved: { method?: unknown; pubkey?: unknown; nsec?: unknown } | null,
+  session: NostrSession,
+): boolean {
+  if (!saved || saved.method !== session.method) return false;
+  if (session.method === "nip07" || session.method === "nip46") {
+    return typeof saved.pubkey === "string" && saved.pubkey === session.pubkey;
+  }
+  if (session.method === "local" && typeof saved.nsec === "string") {
+    try {
+      const decoded = nip19.decode(saved.nsec);
+      if (decoded.type !== "nsec") return false;
+      return getPublicKey(decoded.data) === session.pubkey;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
     promise,
@@ -247,7 +272,12 @@ export async function reconnectRemoteSession(): Promise<NostrSession | null> {
 
 export async function logout(): Promise<void> {
   const session = current;
-  clearPersisted();
+  // Only wipe localStorage when it still belongs to this tab's session.
+  // Another tab may have created/restored a newer login (esp. a local nsec);
+  // an unconditional removeItem would burn that key.
+  if (!session || persistedMatchesSession(readPersisted(), session)) {
+    clearPersisted();
+  }
   setSession(null);
   if (session?.method === "nip46") {
     await (session.signer as NostrConnectSigner).logout().catch(() => undefined);

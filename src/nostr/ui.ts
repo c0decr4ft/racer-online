@@ -346,6 +346,15 @@ export function initNostrUi() {
   el<HTMLButtonElement>("nostr-in-close")?.addEventListener("click", closeNostrModal);
   el<HTMLButtonElement>("nostr-logout-btn")?.addEventListener("click", () => {
     void logout().then(() => {
+      // Drop any nsec left in the backup/create inputs so a later XSS cannot
+      // read a key after localStorage was cleared.
+      const nsecOut = el<HTMLInputElement>("nostr-nsec-out");
+      const backupNsec = el<HTMLInputElement>("nostr-backup-nsec");
+      if (nsecOut) nsecOut.value = "";
+      if (backupNsec) backupNsec.value = "";
+      el<HTMLDivElement>("nostr-backup-secret")?.classList.add("hidden");
+      const toggle = el<HTMLButtonElement>("nostr-backup-toggle");
+      if (toggle) toggle.textContent = "SHOW BACKUP KEY";
       showView("out");
       void refreshIdentityViews();
     });
