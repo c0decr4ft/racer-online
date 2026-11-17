@@ -970,7 +970,7 @@ async function main() {
   mobile.on("pageerror", (e) => mobileErrors.push(String(e)));
   await mobile.goto(BASE, { waitUntil: "domcontentloaded", timeout: 45000 });
   await mobile.waitForTimeout(1200);
-  // Mobile is gated: the DESKTOP ONLY cover shows and the engine never boots.
+  // Phones are the controller: scan or type a code. The race engine never boots.
   assert(
     "mobile:gate-class",
     await mobile.evaluate(() => document.documentElement.classList.contains("mobile-blocked")),
@@ -978,7 +978,7 @@ async function main() {
   assert("mobile:gate-visible", await visible(mobile, "#mobile-gate"));
   assert(
     "mobile:gate-text",
-    await mobile.evaluate(() => /desktop/i.test(document.getElementById("mobile-gate")?.textContent || "")),
+    await mobile.evaluate(() => /scan to play/i.test(document.getElementById("mobile-gate")?.textContent || "")),
   );
   assert(
     "mobile:engine-not-booted",

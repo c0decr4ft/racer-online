@@ -154,6 +154,20 @@
 
       <div id="home-corner-btns" class="home-corner-btns">
         <button
+          id="phone-pad-btn"
+          class="feedback-btn"
+          type="button"
+          aria-haspopup="dialog"
+          aria-controls="phone-link"
+          aria-label="Phone controller"
+          title="Phone controller"
+        >
+          <svg class="feedback-btn-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="7" y="2.5" width="10" height="19" rx="2" fill="none" stroke="currentColor" stroke-width="1.75" />
+            <path d="M12 17.6a1 1 0 1 0 0-2 1 1 0 0 0 0 2z" fill="currentColor" />
+          </svg>
+        </button>
+        <button
           id="settings-btn"
           class="feedback-btn"
           type="button"
@@ -364,20 +378,14 @@
               </dl>
             </section>
             <section class="controls-help-group" aria-labelledby="controls-help-pad">
-              <h3 class="controls-help-group-title" id="controls-help-pad">Controller</h3>
+              <h3 class="controls-help-group-title" id="controls-help-pad">Phone</h3>
               <dl class="controls-help-list">
-                <div class="controls-help-row"><dt>Stick / D-pad</dt><dd>Steer</dd></div>
-                <div class="controls-help-row"><dt>RT / LT</dt><dd>Gas / brake</dd></div>
-                <div class="controls-help-row"><dt>B / Circle</dt><dd>Hold + steer to drift (cars)</dd></div>
-                <div class="controls-help-row"><dt>RB / LB</dt><dd>Shift up / down</dd></div>
-                <div class="controls-help-row"><dt>Start</dt><dd>Pause</dd></div>
-                <div class="controls-help-row"><dt>Y / Triangle</dt><dd>Reset car</dd></div>
-              </dl>
-            </section>
-            <section class="controls-help-group" aria-labelledby="controls-help-touch">
-              <h3 class="controls-help-group-title" id="controls-help-touch">Touch</h3>
-              <dl class="controls-help-list">
-                <div class="controls-help-row"><dt>Pads</dt><dd>Gas, brake, steer &amp; shift</dd></div>
+                <div class="controls-help-row"><dt>QR</dt><dd>Link a phone from the controller button</dd></div>
+                <div class="controls-help-row"><dt>Tilt</dt><dd>Steer — left tilt turns left</dd></div>
+                <div class="controls-help-row"><dt>GAS / BRAKE</dt><dd>Pedals on the phone</dd></div>
+                <div class="controls-help-row"><dt>SHIFT / DOWN</dt><dd>Gears</dd></div>
+                <div class="controls-help-row"><dt>DRIFT</dt><dd>Hold with tilt to slide</dd></div>
+                <div class="controls-help-row"><dt>Arrows / OK</dt><dd>Move the menu, then select</dd></div>
               </dl>
             </section>
           </div>
@@ -1059,16 +1067,77 @@
         </div>
       </div>
     </div>
+    <div id="phone-link" class="feedback-compose hidden" role="dialog" aria-modal="true" aria-labelledby="phone-link-title">
+      <div class="feedback-compose-panel phone-link-panel">
+        <p class="eyebrow" id="phone-link-title">PHONE</p>
+        <h2 class="phone-link-heading">Scan to play</h2>
+        <p class="feedback-compose-hint">Open Sats Racer on your phone and scan this code. Tilt the phone to steer.</p>
+        <img id="phone-link-qr" class="phone-link-qr hidden" alt="QR code that links a phone as the controller" width="280" height="280" />
+        <p id="phone-link-code" class="phone-link-code" aria-label="Link code"></p>
+        <p id="phone-link-status" class="tagline" aria-live="polite">Connecting…</p>
+        <div class="feedback-compose-actions">
+          <button id="phone-link-unlink" class="btn-ghost hidden" type="button">UNLINK</button>
+          <button id="phone-link-close" class="btn-ghost" type="button">CLOSE</button>
+        </div>
+      </div>
+    </div>
     <div id="mobile-gate" class="mobile-gate">
-      <div class="mobile-gate-inner">
-        <p class="eyebrow">SATS RACER</p>
-        <h1>DESKTOP ONLY</h1>
-        <p class="tagline">Open this page on a computer to play</p>
+      <div class="phone-pad-ui">
+        <section id="phone-scan" class="phone-panel">
+          <p class="eyebrow">SATS RACER</p>
+          <h1>SCAN<br /><span>TO PLAY</span></h1>
+          <p class="tagline">Point the camera at the QR code on your computer</p>
+          <button id="phone-scan-btn" type="button">SCAN QR CODE</button>
+          <video id="phone-scan-video" class="phone-scan-video hidden" playsinline muted autoplay></video>
+          <form id="phone-code-form" class="phone-code-form">
+            <label class="phone-code-label" for="phone-code-input">Or type the code</label>
+            <input id="phone-code-input" class="phone-code-input" maxlength="6" autocapitalize="characters" autocomplete="off" spellcheck="false" inputmode="text" aria-label="6 character link code" />
+            <button type="submit">LINK</button>
+          </form>
+          <p id="phone-scan-status" class="tagline" aria-live="polite"></p>
+        </section>
+
+        <section id="phone-menu" class="phone-panel hidden">
+          <p class="eyebrow">MENU</p>
+          <p id="phone-menu-status" class="tagline" aria-live="polite">Linked</p>
+          <div class="phone-dpad" role="group" aria-label="Menu pad">
+            <button type="button" data-pad="up" aria-label="Up">▲</button>
+            <button type="button" data-pad="left" aria-label="Left">◀</button>
+            <button type="button" data-pad="ok">OK</button>
+            <button type="button" data-pad="right" aria-label="Right">▶</button>
+            <button type="button" data-pad="down" aria-label="Down">▼</button>
+          </div>
+          <div class="phone-shortcuts" role="group" aria-label="Shortcuts">
+            <button type="button" data-pad="race">RACE</button>
+            <button type="button" data-pad="garage">GARAGE</button>
+            <button type="button" data-pad="back">BACK</button>
+          </div>
+        </section>
+
+        <section id="phone-drive" class="phone-panel hidden">
+          <div class="phone-drive-top">
+            <button id="phone-pause" type="button">PAUSE</button>
+          </div>
+          <p class="eyebrow">STEER</p>
+          <p id="phone-drive-status" class="tagline" aria-live="polite">Tilt to steer</p>
+          <div class="phone-wheel" aria-hidden="true">
+            <span>L</span>
+            <div class="phone-wheel-track"><div id="phone-wheel-puck"></div></div>
+            <span>R</span>
+          </div>
+          <button id="phone-tilt-btn" type="button">ENABLE TILT</button>
+          <div class="phone-drive-pad">
+            <button id="phone-gas" type="button">GAS</button>
+            <button id="phone-shift" type="button">UP</button>
+            <button id="phone-brake" type="button">BRAKE</button>
+            <button id="phone-shift-down" type="button">DOWN</button>
+          </div>
+          <button id="phone-drift" type="button">DRIFT</button>
+        </section>
       </div>
     </div>
     <script>
-      // Mobile gate: phones/tablets get the desktop-only message, never the game.
-      // Runs before the module bundle so the 3D engine never boots on mobile.
+      // Phones don't boot the race. They get the controller page instead.
       (function () {
         var coarse = window.matchMedia && matchMedia("(pointer: coarse)").matches;
         var smallScreen = Math.min(screen.width, screen.height) < 820;

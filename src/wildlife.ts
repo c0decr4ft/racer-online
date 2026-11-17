@@ -1,6 +1,6 @@
 /**
  * Track wildlife — per-track herds that wander a habitat and occasionally
- * cross the road. Hits = small burst + speed slowdown for player AND AI.
+ * cross the road. A hit explodes the animal and holds the car slower.
  *
  * meadow-sweep → cows (infield)
  * summit-pass → goats (outfield / trees)
@@ -22,14 +22,15 @@ const WANDER_COUNT = 15;
 const ANIMAL_RADIUS = 1.15;
 const SMALL_RADIUS = 0.55;
 const CAR_RADIUS = 1.7;
-const HIT_DIST = ANIMAL_RADIUS + CAR_RADIUS;
-const SMALL_HIT_DIST = SMALL_RADIUS + CAR_RADIUS;
+/** Extra reach so the bumper counts, not only the chassis center. */
+const HIT_DIST = (ANIMAL_RADIUS + CAR_RADIUS) * 1.4;
+const SMALL_HIT_DIST = (SMALL_RADIUS + CAR_RADIUS) * 1.55;
 
-/** Noticeable hit, not a full crash — keep most of the speed. */
-const HIT_SPEED_KEEP = 0.55;
-const HIT_SPEED_FLOOR = 6;
-/** Sticky throttle cut after a hit (player + AI) — short so it doesn't feel like a freeze. */
-const HIT_DRIVE_PENALTY = 0.45;
+/** A hit dumps most of the speed and holds it there for a moment. */
+const HIT_SPEED_KEEP = 0.34;
+const HIT_SPEED_FLOOR = 4;
+/** How long the car is held at the post-hit speed. */
+const HIT_DRIVE_PENALTY = 1.05;
 
 const WANDER_SPEED = 1.15;
 const CROSS_SPEED = 1.85;
@@ -99,6 +100,11 @@ type Animal = {
   wings: THREE.Object3D[];
   /** Local-only so a shared online animal is not hit every frame. */
   hitUntil: number;
+  /**
+   * Online-only hide timer. The shared sim keeps moving so other clients
+   * stay in sync; this client just sees the explosion.
+   */
+  hiddenUntil: number;
 };
 
 type BurstPart = {
@@ -112,6 +118,8 @@ export type AnimalHitTarget = {
   syncCollision: () => void;
   /** Sticky post-hit drive cut — shared by player and AI vehicles. */
   animalHitPenalty: number;
+  /** Absolute speed ceiling while `animalHitPenalty` is active. */
+  hitSpeedCap: number;
 };
 
 /** @deprecated Prefer AnimalHitTarget */
@@ -897,6 +905,7 @@ export class WildlifeHerd {
         seed: i,
         wings: readWings(mesh),
         hitUntil: 0,
+        hiddenUntil: 0,
       });
       this.pickWanderTarget(this.animals[i]!);
     }
@@ -976,14 +985,15 @@ export class WildlifeHerd {
     const now = performance.now();
     for (const animal of this.animals) {
       if (animal.mode === "dead") continue;
-      if (!skipMesh) this.syncMesh(animal, dt);
-      if (
-        animal.mode !== "approach" &&
-        animal.mode !== "cross" &&
-        animal.mode !== "return"
-      ) {
+      if (animal.hiddenUntil > now) {
+        animal.mesh.visible = false;
         continue;
       }
+      if (animal.hiddenUntil > 0) {
+        animal.hiddenUntil = 0;
+        animal.mesh.visible = true;
+      }
+      if (!skipMesh) this.syncMesh(animal, dt);
       for (const v of vehicles) {
         if (this.tryHit(animal, v, onHit, shared, now)) break;
       }
@@ -1354,26 +1364,21 @@ export class WildlifeHerd {
     const dz = v.state.position.z - animal.z;
     if (dx * dx + dz * dz > dist * dist) return false;
     if (Math.abs(v.state.speed) < 2.5) return false;
-    if (shared && animal.hitUntil > now) return false;
+    if (animal.hitUntil > now) return false;
 
-    if (shared) {
-      animal.hitUntil = now + 1400;
-      this.burstAt(animal.x, animal.z);
-    } else {
-      this.explodeAnimal(animal);
-    }
-    const keep =
-      Math.sign(v.state.speed || 1) *
-      Math.max(HIT_SPEED_FLOOR, Math.abs(v.state.speed) * HIT_SPEED_KEEP);
-    v.state.speed = keep;
+    animal.hitUntil = now + 400;
+    this.explodeAnimal(animal, shared);
+    const keep = Math.max(HIT_SPEED_FLOOR, Math.abs(v.state.speed) * HIT_SPEED_KEEP);
+    v.state.speed = Math.sign(v.state.speed || 1) * keep;
     v.animalHitPenalty = Math.max(v.animalHitPenalty, HIT_DRIVE_PENALTY);
+    v.hitSpeedCap = Math.min(v.hitSpeedCap, keep);
     v.syncCollision();
     onHit?.({ name: this.spec.hitName, target: v });
     return true;
   }
 
   private burstAt(ox: number, oz: number) {
-    const n = Math.min(5, 12 - this.bursts.length);
+    const n = Math.min(16, 24 - this.bursts.length);
     for (let i = 0; i < n; i++) {
       const base = this.burstMats[i % this.burstMats.length]!;
       let mesh = this.burstPool.pop();
@@ -1389,27 +1394,34 @@ export class WildlifeHerd {
         0.4 + Math.random() * 0.5,
         oz + (Math.random() - 0.5) * 0.7,
       );
-      mesh.scale.setScalar(0.55 + Math.random() * 0.35);
-      const speed = 5 + Math.random() * 9;
+      mesh.scale.setScalar(2.2 + Math.random() * 1.8);
+      const speed = 8 + Math.random() * 12;
       const vel = new THREE.Vector3(
         (Math.random() - 0.5) * speed,
         3 + Math.random() * 7,
         (Math.random() - 0.5) * speed,
       );
       this.group.add(mesh);
-      this.bursts.push({ mesh, vel, life: 0.28 + Math.random() * 0.28 });
+      this.bursts.push({ mesh, vel, life: 0.42 + Math.random() * 0.28 });
     }
     this.burstLight.position.set(ox, 1.6, oz);
     this.burstLight.intensity = 2.2;
   }
 
-  private explodeAnimal(animal: Animal) {
+  private explodeAnimal(animal: Animal, shared: boolean) {
     const ox = animal.x;
     const oz = animal.z;
-    animal.mode = "dead";
-    animal.mesh.visible = false;
-    animal.respawnIn = RESPAWN_DELAY;
     this.burstAt(ox, oz);
+    animal.mesh.visible = false;
+    if (shared) {
+      // Keep the shared step alive so every client still agrees on the herd.
+      // This car just sees the burst, then the animal stays gone long enough
+      // to finish crossing before it shows up again.
+      animal.hiddenUntil = performance.now() + 6000;
+      return;
+    }
+    animal.mode = "dead";
+    animal.respawnIn = RESPAWN_DELAY;
   }
 
   private respawnAnimal(animal: Animal) {

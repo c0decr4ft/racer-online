@@ -13,7 +13,7 @@ import {
 import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, copyFileSync } from "node:fs";
 import { dirname, join, extname, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import {
   emptyLobbyInvites,
   normalizeLobbyInvites,
@@ -3961,6 +3961,124 @@ const httpServer = createServer(async (req, res) => {
   res.end(JSON.stringify({ ok: false, error: "not found" }));
 });
 
+const PAD_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+/** @type {Map<string, { code: string, host: import('ws').WebSocket, phone: import('ws').WebSocket | null }>} */
+const padSessions = new Map();
+/** @type {WeakMap<import('ws').WebSocket, { role: "host" | "phone", code: string }>} */
+const padSockets = new WeakMap();
+
+function padLanHost() {
+  for (const infos of Object.values(networkInterfaces())) {
+    for (const info of infos ?? []) {
+      if (info && info.family === "IPv4" && !info.internal) return info.address;
+    }
+  }
+  return null;
+}
+
+function makePadCode() {
+  let code = "";
+  for (let i = 0; i < 6; i++) code += PAD_ALPHABET[randomInt(PAD_ALPHABET.length)];
+  return padSessions.has(code) ? makePadCode() : code;
+}
+
+function padAxis(value, min, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(min, Math.min(max, n));
+}
+
+function endPadSocket(ws) {
+  const meta = padSockets.get(ws);
+  if (!meta) return;
+  padSockets.delete(ws);
+  const session = padSessions.get(meta.code);
+  if (!session) return;
+  if (meta.role === "host" && session.host === ws) {
+    if (session.phone && session.phone.readyState === 1) {
+      send(session.phone, { t: "pad-end", message: "The computer closed the link" });
+    }
+    padSessions.delete(meta.code);
+    return;
+  }
+  if (meta.role === "phone" && session.phone === ws) {
+    session.phone = null;
+    if (session.host.readyState === 1) send(session.host, { t: "pad-unlinked" });
+  }
+}
+
+/** Phone controller pairing. Returns true when the message was a pad message. */
+function handlePadMessage(ws, msg) {
+  if (typeof msg.t !== "string" || !msg.t.startsWith("pad-")) return false;
+
+  if (msg.t === "pad-host") {
+    endPadSocket(ws);
+    const code = makePadCode();
+    padSessions.set(code, { code, host: ws, phone: null });
+    padSockets.set(ws, { role: "host", code });
+    send(ws, { t: "pad-ready", code, lanHost: padLanHost() });
+    return true;
+  }
+
+  if (msg.t === "pad-join") {
+    const code = String(msg.code || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
+    const session = padSessions.get(code);
+    if (!session || session.host.readyState !== 1) {
+      send(ws, { t: "pad-error", message: "That code isn't waiting. Show the QR on the computer again." });
+      return true;
+    }
+    if (session.phone && session.phone !== ws && session.phone.readyState === 1) {
+      const old = session.phone;
+      padSockets.delete(old);
+      session.phone = null;
+      send(old, { t: "pad-end", message: "Another phone linked" });
+      try { old.close(); } catch { /* already gone */ }
+    }
+    endPadSocket(ws);
+    session.phone = ws;
+    padSockets.set(ws, { role: "phone", code });
+    send(session.host, { t: "pad-linked" });
+    send(ws, { t: "pad-joined", code });
+    return true;
+  }
+
+  const meta = padSockets.get(ws);
+  const session = meta ? padSessions.get(meta.code) : null;
+  if (!session || !meta) return true;
+
+  if (msg.t === "pad-screen" && meta.role === "host") {
+    if (!session.phone || session.phone.readyState !== 1) return true;
+    send(session.phone, { t: "pad-screen", screen: msg.screen === "drive" ? "drive" : "menu" });
+    return true;
+  }
+
+  if (msg.t === "pad-menu" && meta.role === "phone") {
+    const key = String(msg.key || "");
+    if (!["up", "down", "left", "right", "ok", "back", "race", "garage"].includes(key)) return true;
+    send(session.host, { t: "pad-menu", key });
+    return true;
+  }
+
+  if (msg.t === "pad-drive" && meta.role === "phone") {
+    const now = Date.now();
+    if (ws.padDriveAt && now - ws.padDriveAt < 15) return true;
+    ws.padDriveAt = now;
+    const shift = msg.shift === 1 || msg.shift === -1 ? msg.shift : 0;
+    send(session.host, {
+      t: "pad-drive",
+      steer: padAxis(msg.steer, -1, 1),
+      throttle: padAxis(msg.throttle, 0, 1),
+      brake: padAxis(msg.brake, 0, 1),
+      handbrake: padAxis(msg.handbrake, 0, 1),
+      shift,
+      pause: msg.pause === true,
+    });
+    return true;
+  }
+
+  return true;
+}
+
 const wss = new WebSocketServer({ server: httpServer });
 
 wss.on("connection", (ws) => {
@@ -4014,6 +4132,8 @@ wss.on("connection", (ws) => {
       send(ws, { t: "pong", n: msg.n });
       return;
     }
+
+    if (handlePadMessage(ws, msg)) return;
 
     if (msg.t === "spectate") {
       if (client || spectator) return;
@@ -4563,6 +4683,7 @@ wss.on("connection", (ws) => {
   });
 
   ws.on("close", () => {
+    endPadSocket(ws);
     if (spectator) {
       const room = rooms.get(spectator.room);
       room?.spectators?.delete(spectator.id);
