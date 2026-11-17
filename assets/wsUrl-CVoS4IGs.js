@@ -1,0 +1,1 @@
+import{i as e,s as t}from"./onlineConfig-r4VemSjm.js";function n(){let n=location.protocol===`https:`?`wss:`:`ws:`,r=location.hostname;return r===`localhost`||r===`127.0.0.1`||location.port===`5173`||location.port===`4173`?`${n}//${r}:8787`:e()||t()?.wsUrl||null}export{n as t};
