@@ -82,6 +82,24 @@ export class PadHost {
     else this.paint();
   }
 
+  /** Phone dropped or the socket died. QR screen again, button no longer "linked". */
+  private showConnectScreen() {
+    this.linked = false;
+    this.setLinked(false);
+    clearPadFocus();
+    this.wantOpen = true;
+    document.getElementById("phone-link")?.classList.remove("hidden");
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.code) {
+      const codeEl = document.getElementById("phone-link-code");
+      if (codeEl) codeEl.textContent = this.code;
+      this.setStatus("Scan to play");
+      return;
+    }
+    this.code = "";
+    if (!this.ws || this.ws.readyState > 1) this.connect();
+    else this.paint();
+  }
+
   hideModal() {
     document.getElementById("phone-link")?.classList.add("hidden");
   }
@@ -125,11 +143,13 @@ export class PadHost {
       this.ws = null;
       this.stopPing();
       const was = this.linked;
+      const reopen = was || this.wantOpen;
       this.linked = false;
+      this.code = "";
       this.setLinked(false);
       clearPadFocus();
-      if (was) this.handlers.onStatus("Phone unlinked");
-      if (this.wantOpen) this.setStatus("Link dropped — close and open the controller again");
+      if (reopen) this.showConnectScreen();
+      if (was) this.handlers.onStatus("Phone disconnected");
     });
     ws.addEventListener("error", () => {
       if (this.ws !== ws) return;
@@ -160,11 +180,9 @@ export class PadHost {
       return;
     }
     if (msg.t === "pad-unlinked" || msg.t === "pad-end") {
-      this.linked = false;
-      this.setLinked(false);
-      clearPadFocus();
-      this.setStatus("Phone disconnected — scan again");
-      this.handlers.onStatus("Phone disconnected");
+      const was = this.linked;
+      this.showConnectScreen();
+      if (was) this.handlers.onStatus("Phone disconnected");
       return;
     }
     if (msg.t === "pad-menu" && typeof msg.key === "string" && MENU_KEYS.has(msg.key)) {

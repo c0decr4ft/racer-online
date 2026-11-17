@@ -162,7 +162,7 @@ export class Input {
     this.phoneBrake = axes.brake;
     this.phoneSteer = axes.steer;
     this.phoneHandbrake = axes.handbrake;
-    this.phoneUntil = performance.now() + 320;
+    this.phoneUntil = performance.now() + 500;
   }
 
   requestPause() {

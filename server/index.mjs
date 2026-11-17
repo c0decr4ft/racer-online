@@ -3996,7 +3996,7 @@ function endPadSocket(ws) {
   if (!session) return;
   if (meta.role === "host" && session.host === ws) {
     if (session.phone && session.phone.readyState === 1) {
-      send(session.phone, { t: "pad-end", message: "The computer closed the link" });
+      send(session.phone, { t: "pad-unlinked" });
     }
     padSessions.delete(meta.code);
     return;
@@ -4024,17 +4024,18 @@ function handlePadMessage(ws, msg) {
     const code = String(msg.code || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
     const session = padSessions.get(code);
     if (!session || session.host.readyState !== 1) {
-      send(ws, { t: "pad-error", message: "That code isn't waiting. Show the QR on the computer again." });
+      send(ws, { t: "pad-error", message: "Code isn't waiting" });
       return true;
     }
-    if (session.phone && session.phone !== ws && session.phone.readyState === 1) {
+    if (session.phone && session.phone !== ws) {
       const old = session.phone;
       padSockets.delete(old);
       session.phone = null;
-      send(old, { t: "pad-end", message: "Another phone linked" });
+      if (old.readyState === 1) send(old, { t: "pad-unlinked" });
       try { old.close(); } catch { /* already gone */ }
     }
-    endPadSocket(ws);
+    const prior = padSockets.get(ws);
+    if (prior && !(prior.role === "phone" && prior.code === code)) endPadSocket(ws);
     session.phone = ws;
     padSockets.set(ws, { role: "phone", code });
     send(session.host, { t: "pad-linked" });
@@ -4061,7 +4062,7 @@ function handlePadMessage(ws, msg) {
 
   if (msg.t === "pad-drive" && meta.role === "phone") {
     const now = Date.now();
-    if (ws.padDriveAt && now - ws.padDriveAt < 15) return true;
+    if (ws.padDriveAt && now - ws.padDriveAt < 8) return true;
     ws.padDriveAt = now;
     const shift = msg.shift === 1 || msg.shift === -1 ? msg.shift : 0;
     send(session.host, {

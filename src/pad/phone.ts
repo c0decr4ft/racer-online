@@ -5,6 +5,11 @@ type Screen = "scan" | "menu" | "drive";
 const held = { throttle: 0, brake: 0, handbrake: 0, shift: 0 as -1 | 0 | 1, pause: false };
 let steer = 0;
 let steerTarget = 0;
+/** Portrait deadzone / full lock. Positive steer is left (negative gamma). */
+const STEER_DEAD_DEG = 2;
+const STEER_FULL_DEG = 20;
+const STEER_LERP = 0.85;
+const DRIVE_SEND_MS = 16;
 let ws: WebSocket | null = null;
 let driveTimer: ReturnType<typeof setInterval> | null = null;
 let scanTimer = 0;
@@ -45,7 +50,7 @@ function join(next: string) {
   const url = gameWsUrl();
   if (!url) {
     show("scan");
-    setStatus("Can’t reach the game server");
+    setStatus("No server");
     return;
   }
   show("menu");
@@ -70,11 +75,11 @@ function join(next: string) {
     ping = null;
     stopDriveLoop();
     show("scan");
-    setStatus(endNote || "Link closed — scan again");
+    setStatus(endNote || "Unlinked");
     endNote = "";
   });
   socket.addEventListener("error", () => {
-    if (ws === socket) setStatus("Can’t reach the game server");
+    if (ws === socket) setStatus("No server");
   });
 }
 
@@ -95,10 +100,14 @@ function onMessage(raw: string) {
     setStatus(msg.screen === "drive" ? "Tilt to steer" : "Linked");
     return;
   }
-  if (msg.t === "pad-error" || msg.t === "pad-end") {
-    endNote = typeof msg.message === "string" ? msg.message : "Link closed";
+  if (msg.t === "pad-unlinked" || msg.t === "pad-end") {
+    endNote = "Unlinked";
     ws?.close();
     return;
+  }
+  if (msg.t === "pad-error") {
+    endNote = "Code isn't waiting";
+    ws?.close();
   }
 }
 
@@ -118,6 +127,14 @@ function wireMenu() {
 }
 
 function wireDrive() {
+  const drive = document.getElementById("phone-drive");
+  drive?.addEventListener(
+    "touchmove",
+    (e) => {
+      e.preventDefault();
+    },
+    { passive: false },
+  );
   hold(document.getElementById("phone-gas"), (on) => {
     held.throttle = on ? 1 : 0;
   });
@@ -127,16 +144,13 @@ function wireDrive() {
   hold(document.getElementById("phone-drift"), (on) => {
     held.handbrake = on ? 1 : 0;
   });
-  document.getElementById("phone-shift")?.addEventListener("pointerdown", (e) => {
-    e.preventDefault();
+  press(document.getElementById("phone-shift"), () => {
     held.shift = 1;
   });
-  document.getElementById("phone-shift-down")?.addEventListener("pointerdown", (e) => {
-    e.preventDefault();
+  press(document.getElementById("phone-shift-down"), () => {
     held.shift = -1;
   });
-  document.getElementById("phone-pause")?.addEventListener("pointerdown", (e) => {
-    e.preventDefault();
+  press(document.getElementById("phone-pause"), () => {
     held.pause = true;
   });
   document.getElementById("phone-tilt-btn")?.addEventListener("click", () => {
@@ -145,10 +159,16 @@ function wireDrive() {
   listenTilt();
 }
 
+/** Hold stays on until this pointer lifts. A second finger on another control does not clear it. */
 function hold(el: HTMLElement | null, set: (on: boolean) => void) {
   if (!el) return;
+  let pointerId: number | null = null;
   const down = (e: PointerEvent) => {
+    if (pointerId != null) return;
+    if (e.pointerType === "mouse" && e.button !== 0) return;
     e.preventDefault();
+    e.stopPropagation();
+    pointerId = e.pointerId;
     el.classList.add("is-held");
     set(true);
     try {
@@ -157,13 +177,35 @@ function hold(el: HTMLElement | null, set: (on: boolean) => void) {
       /* already gone */
     }
   };
-  const up = () => {
+  const up = (e: PointerEvent) => {
+    if (pointerId == null || e.pointerId !== pointerId) return;
+    pointerId = null;
     el.classList.remove("is-held");
     set(false);
   };
   el.addEventListener("pointerdown", down);
   el.addEventListener("pointerup", up);
   el.addEventListener("pointercancel", up);
+  el.addEventListener("pointermove", (e) => {
+    if (pointerId != null && e.pointerId === pointerId) e.preventDefault();
+  });
+  el.addEventListener("contextmenu", (e) => e.preventDefault());
+}
+
+function press(el: HTMLElement | null, fire: () => void) {
+  if (!el) return;
+  el.addEventListener("pointerdown", (e) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      el.setPointerCapture(e.pointerId);
+    } catch {
+      /* already gone */
+    }
+    fire();
+  });
+  el.addEventListener("contextmenu", (e) => e.preventDefault());
 }
 
 function listenTilt() {
@@ -181,14 +223,14 @@ async function enableTilt() {
     if (typeof ask.requestPermission === "function") {
       const result = await ask.requestPermission();
       if (result !== "granted") {
-        setStatus("Tilt stays off until you allow motion");
+        setStatus("Tilt off");
         return;
       }
     }
     document.getElementById("phone-tilt-btn")?.classList.add("hidden");
     setStatus("Tilt to steer");
   } catch {
-    setStatus("This phone blocked tilt");
+    setStatus("Tilt off");
   }
 }
 
@@ -201,12 +243,10 @@ function steerFromTilt(e: DeviceOrientationEvent): number | null {
   if (type === "landscape-primary") tilt = -beta;
   else if (type === "landscape-secondary") tilt = beta;
   else tilt = -gamma;
-  const dead = 5;
-  const full = 30;
   const mag = Math.abs(tilt);
-  if (mag <= dead) return 0;
-  const n = Math.min(1, (mag - dead) / (full - dead));
-  return Math.sign(tilt) * n * n;
+  if (mag <= STEER_DEAD_DEG) return 0;
+  const n = Math.min(1, (mag - STEER_DEAD_DEG) / (STEER_FULL_DEG - STEER_DEAD_DEG));
+  return Math.sign(tilt) * n;
 }
 
 function screenOrientation(): string {
@@ -219,7 +259,7 @@ function startDriveLoop() {
     .requestPermission === "function";
   document.getElementById("phone-tilt-btn")?.classList.toggle("hidden", !needsAsk);
   driveTimer = setInterval(() => {
-    steer += (steerTarget - steer) * 0.45;
+    steer += (steerTarget - steer) * STEER_LERP;
     const puck = document.getElementById("phone-wheel-puck");
     if (puck) puck.style.transform = `translateX(${steer * 72}px)`;
     send({
@@ -233,7 +273,7 @@ function startDriveLoop() {
     });
     held.shift = 0;
     held.pause = false;
-  }, 33);
+  }, DRIVE_SEND_MS);
 }
 
 function stopDriveLoop() {
@@ -248,8 +288,24 @@ function stopDriveLoop() {
   steerTarget = 0;
 }
 
+function enterFullscreen() {
+  const el = document.documentElement as HTMLElement & {
+    webkitRequestFullscreen?: () => void;
+  };
+  try {
+    if (typeof el.requestFullscreen === "function") {
+      void Promise.resolve(el.requestFullscreen()).catch(() => undefined);
+      return;
+    }
+    el.webkitRequestFullscreen?.();
+  } catch {
+    /* denied — drive and menu still show */
+  }
+}
+
 function wireScan() {
   document.getElementById("phone-scan-btn")?.addEventListener("click", () => {
+    enterFullscreen();
     void startScan();
   });
   document.getElementById("phone-code-form")?.addEventListener("submit", (e) => {
@@ -257,8 +313,10 @@ function wireScan() {
     const input = document.getElementById("phone-code-input");
     const typed = input instanceof HTMLInputElement ? input.value : "";
     const next = typed.trim().toUpperCase();
-    if (/^[A-Z0-9]{6}$/.test(next)) join(next);
-    else setStatus("Enter the 6-character code under the QR");
+    if (/^[A-Z0-9]{6}$/.test(next)) {
+      enterFullscreen();
+      join(next);
+    } else setStatus("Need 6 characters");
   });
 }
 
@@ -272,13 +330,13 @@ async function startScan() {
       audio: false,
     });
   } catch {
-    setStatus("Camera blocked — type the code instead");
+    setStatus("Type the code");
     return;
   }
   video.srcObject = scanStream;
   video.classList.remove("hidden");
   await video.play().catch(() => undefined);
-  setStatus("Point the camera at the QR code");
+  setStatus("Point at the QR");
 
   const Detector = (window as unknown as { BarcodeDetector?: new (opts: { formats: string[] }) => { detect: (src: HTMLVideoElement) => Promise<{ rawValue: string }[]> } }).BarcodeDetector;
   let detector: { detect: (src: HTMLVideoElement) => Promise<{ rawValue: string }[]> } | null = null;
