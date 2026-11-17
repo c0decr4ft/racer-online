@@ -5018,6 +5018,14 @@ export class Game {
     if (!this.online || !this.running) return;
     this.wreckedIds.add(id);
     if (id === this.net.id) {
+      // Server dropped our finish (wreckedIds gate) but the client may already
+      // have set finished/onlineFinishPending. Stay a wreck, not a phantom finisher —
+      // otherwise fieldReset early-outs and Pause/Home stay locked.
+      if (this.finished || this.onlineFinishPending) {
+        this.finished = false;
+        this.onlineFinishPending = false;
+        this.pendingFinishMs = 0;
+      }
       this.igniteLocal(this.onlineWrecked ? undefined : "You caught fire");
       return;
     }
@@ -5055,10 +5063,15 @@ export class Game {
 
   /** Everyone burned — back on the grid. Idempotent for the exploding client + remotes. */
   private applyOnlineFieldReset() {
-    if (!this.online || !this.running || this.finished) return;
+    // Server still `phase: racing` — honor fieldReset even if we locally "finished"
+    // after a silent wrecked finish reject (otherwise sole survivors soft-lock).
+    if (!this.online || !this.running) return;
     const now = performance.now();
     if (now - this.lastFieldResetAt < 1500) return;
     this.lastFieldResetAt = now;
+    this.finished = false;
+    this.onlineFinishPending = false;
+    this.pendingFinishMs = 0;
     this.stopSpectate();
     this.clearOnlineWreck();
     this.resetWallHits();
