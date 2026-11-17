@@ -55,6 +55,12 @@ function showStatus(text: string, isError = false) {
 }
 
 let connectCancel: (() => void) | null = null;
+let connectResume: (() => void) | null = null;
+
+function onAmberVisible() {
+  if (document.visibilityState !== "visible") return;
+  connectResume?.();
+}
 let pendingResolver: ((session: NostrSession | null) => void) | null = null;
 
 function resolvePending(session: NostrSession | null) {
@@ -113,9 +119,15 @@ function showView(view: NostrView) {
   el<HTMLDivElement>("nostr-backup-view")?.classList.toggle("hidden", view !== "backup");
 }
 
-export function closeNostrModal() {
+function stopAmberWait() {
   connectCancel?.();
   connectCancel = null;
+  connectResume = null;
+  document.removeEventListener("visibilitychange", onAmberVisible);
+}
+
+export function closeNostrModal() {
+  stopAmberWait();
   el<HTMLDivElement>("nostr-login")?.classList.add("hidden");
   resolvePending(null);
 }
@@ -189,36 +201,55 @@ async function handleBunkerLogin() {
   }
 }
 
-function handleQrFlow() {
-  const box = el<HTMLDivElement>("nostr-qr-box");
-  if (!box) return;
-  if (!box.classList.contains("hidden")) {
-    box.classList.add("hidden");
-    connectCancel?.();
-    connectCancel = null;
-    return;
-  }
-  box.classList.remove("hidden");
-  showStatus("Open Amber on your phone, scan the QR or paste the link, then approve Sats Racer");
-  const { uri, wait, cancel } = startConnectLogin();
+function connectUriField(): HTMLTextAreaElement | null {
+  return el<HTMLTextAreaElement>("nostr-connect-uri");
+}
+
+/** Start listening for Amber once. Opening the QR does not restart the wait. */
+function ensureAmberWait() {
+  if (connectCancel) return;
+  showStatus("Listening for Amber. Approve Sats Racer on your phone");
+  const { uri, wait, cancel, resume } = startConnectLogin();
   connectCancel = cancel;
+  connectResume = resume;
+  document.addEventListener("visibilitychange", onAmberVisible);
+  const field = connectUriField();
+  if (field) field.value = uri;
   const img = el<HTMLImageElement>("nostr-qr-img");
   if (img) {
     void qrCode()
-      .then((QRCode) => QRCode.toDataURL(uri, { width: 224, margin: 1 }))
+      .then((QRCode) => QRCode.toDataURL(uri, { width: 224, margin: 1, errorCorrectionLevel: "M" }))
       .then((dataUrl) => {
         img.src = dataUrl;
       })
-      .catch(() => undefined);
+      .catch(() => {
+        showStatus("QR couldn't be drawn. Use Open in Amber or copy the link", true);
+      });
   }
-  const uriInput = el<HTMLInputElement>("nostr-connect-uri");
-  if (uriInput) uriInput.value = uri;
-  wait.then(onLoginSuccess).catch((err) => {
-    connectCancel = null;
-    const message = err instanceof Error ? err.message : String(err);
-    if (/closed|abort|cancel/i.test(message)) return;
-    showStatus(`Amber didn't connect — ${message}`, true);
-  });
+  wait
+    .then((session) => {
+      connectResume = null;
+      document.removeEventListener("visibilitychange", onAmberVisible);
+      onLoginSuccess(session);
+    })
+    .catch((err) => {
+      connectCancel = null;
+      connectResume = null;
+      document.removeEventListener("visibilitychange", onAmberVisible);
+      const message = err instanceof Error ? err.message : String(err);
+      if (/closed|abort|cancel/i.test(message)) return;
+      showStatus(`Amber didn't connect — ${message}`, true);
+    });
+}
+
+function handleQrFlow() {
+  const box = el<HTMLDivElement>("nostr-qr-box");
+  if (!box) return;
+  const toggle = el<HTMLButtonElement>("nostr-qr-toggle");
+  const show = box.classList.contains("hidden");
+  box.classList.toggle("hidden", !show);
+  if (toggle) toggle.textContent = show ? "HIDE QR" : "SHOW QR";
+  if (show) ensureAmberWait();
 }
 
 /** Expand/collapse the remote-signer sub-panel (bunker URI + QR). */
@@ -226,21 +257,36 @@ function handleRemoteToggle() {
   const box = el<HTMLDivElement>("nostr-remote-box");
   const toggle = el<HTMLButtonElement>("nostr-remote-toggle");
   if (!box || !toggle) return;
-  const open = box.classList.toggle("hidden");
-  toggle.setAttribute("aria-expanded", String(!open));
-  if (open) {
-    // Collapsing also stops any pending QR wait
-    connectCancel?.();
-    connectCancel = null;
+  const collapsed = box.classList.toggle("hidden");
+  toggle.setAttribute("aria-expanded", String(!collapsed));
+  if (collapsed) {
+    stopAmberWait();
     el<HTMLDivElement>("nostr-qr-box")?.classList.add("hidden");
+    const qrToggle = el<HTMLButtonElement>("nostr-qr-toggle");
+    if (qrToggle) qrToggle.textContent = "SHOW QR";
+    const field = connectUriField();
+    if (field) field.value = "";
+    return;
   }
+  ensureAmberWait();
+}
+
+function handleOpenAmber() {
+  const value = connectUriField()?.value ?? "";
+  if (!value.startsWith("nostrconnect://")) {
+    showStatus("Open Remote signer first, then tap Open in Amber", true);
+    return;
+  }
+  showStatus("Approve Sats Racer in Amber, then come back to this page");
+  const popup = window.open(value, "_blank");
+  if (!popup) window.location.href = value;
 }
 
 async function handleCopyConnectUri() {
-  const input = el<HTMLInputElement>("nostr-connect-uri");
+  const input = connectUriField();
   const value = input?.value ?? "";
   if (!value) {
-    showStatus("Show the QR first, then copy the link into Amber", true);
+    showStatus("Open Remote signer first, then copy the link", true);
     return;
   }
   try {
@@ -313,6 +359,7 @@ export function initNostrUi() {
   });
   el<HTMLButtonElement>("nostr-remote-toggle")?.addEventListener("click", handleRemoteToggle);
   el<HTMLButtonElement>("nostr-qr-toggle")?.addEventListener("click", handleQrFlow);
+  el<HTMLButtonElement>("nostr-amber-open")?.addEventListener("click", handleOpenAmber);
   el<HTMLButtonElement>("nostr-connect-copy")?.addEventListener("click", () => void handleCopyConnectUri());
   el<HTMLButtonElement>("nostr-create-btn")?.addEventListener("click", () => {
     showView("create");

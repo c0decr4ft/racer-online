@@ -155,7 +155,9 @@ export type ClientMsg =
   | { t: "leave" }
   /** Host-only. Optional weather re-asserts the room setting on play. */
   | { t: "start"; weather?: NetWeatherMode }
-  | { t: "ping"; n: number };
+  | { t: "ping"; n: number }
+  /** WebRTC signal for the direct pose channel. Relayed only to `to` in the same room. */
+  | { t: "rtc"; to: string; signal: RtcSignal };
 
 export type ServerMsg =
   | {
@@ -276,7 +278,15 @@ export type ServerMsg =
   | { t: "voteUpdate"; votes: Record<string, number>; received: number; total: number }
   | { t: "voteResult"; trackId: string }
   | { t: "pong"; n: number }
-  | { t: "error"; message: string };
+  | { t: "error"; message: string }
+  /** WebRTC signal from another racer in the room. */
+  | { t: "rtc"; from: string; signal: RtcSignal };
+
+/** Offer / answer / ICE for the direct car-position channel. */
+export type RtcSignal =
+  | { kind: "offer"; sdp: string }
+  | { kind: "answer"; sdp: string }
+  | { kind: "ice"; candidate: RTCIceCandidateInit | null };
 
 export const PLAYER_COLORS = [0xe4eaf2, 0xe23b2e, 0x2a66f0, 0xf0c020, 0x1dbf6a, 0xb44dff, 0xff6b9d, 0x00d4ff];
 

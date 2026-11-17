@@ -22,6 +22,8 @@ import {
 } from "./track";
 import { drawTrackPreview } from "./mapPreview";
 import { Input, type InputState } from "./input";
+import { PadHost } from "./pad/host";
+import { handlePadMenu } from "./pad/menu";
 import { isTouchPrimary, TouchControls, viewportSize } from "./touch";
 import { Vehicle, RivalAI } from "./vehicle";
 import { NetClient, RemotePlayer, type WelcomeInfo } from "./net/client";
@@ -208,6 +210,16 @@ export class Game {
   /** Roof-mounted look-behind cam for the always-on rearview inset. */
   private rearCamera: THREE.PerspectiveCamera;
   input = new Input();
+  /** Phone linked from the QR button. Replaces gamepad input. */
+  readonly phonePad = new PadHost({
+    onDrive: (drive) => {
+      this.input.setPhoneDrive(drive);
+      if (drive.shift) this.input.requestShift(drive.shift);
+      if (drive.pause) this.input.requestPause();
+    },
+    onMenu: (key) => handlePadMenu(key),
+    onStatus: (text) => this.showToast(text),
+  });
   private touch = new TouchControls(this.input);
   private touchMode = false;
   track = createTrack(DEFAULT_TRACK_ID, { sceneryScale: MENU_SCENERY_SCALE });
@@ -601,9 +613,6 @@ export class Game {
     this.explodeFlashLight.intensity = 0;
     this.scene.add(this.explodeFlashLight);
 
-    this.input.onPadConnected = () =>
-      this.showToast("Controller connected — stick steers, RT gas, LT brake, B drifts (cars)");
-
     this.net = new NetClient({
       onWelcome: (info) => this.onNetWelcome(info),
       onJoin: (p) => {
@@ -676,6 +685,7 @@ export class Game {
         this.updateMapVote(votes, received, total),
       onVoteResult: (trackId) => this.showMapVoteResult(trackId),
       onState: (players, at) => this.onNetState(players, at),
+      onPeerPose: (player, at) => this.onNetPeerPose(player, at),
       onEventInvoice: (creq, amountSats, mock, buyInSats, feeSats, bolt11) =>
         this.showBuyInInvoice(creq, amountSats, mock, buyInSats, feeSats, bolt11),
       onPayoutResult: (result) => this.onPayoutResult(result),
@@ -3549,6 +3559,10 @@ export class Game {
       seen.add(p.id);
       p.kind = roomKind;
       if (p.wrecked) this.wreckedIds.add(p.id);
+      if (this.net.peerPoseFresh(p.id)) {
+        if (p.wrecked) this.remotes.get(p.id)?.setOnFire();
+        continue;
+      }
       const remote = this.remotes.get(p.id);
       if (remote) remote.push(p, at);
       else {
@@ -3559,6 +3573,19 @@ export class Game {
     }
     for (const id of this.remotes.keys()) {
       if (!seen.has(id)) this.removeRemote(id);
+    }
+  }
+
+  /** One remote car from the direct channel. Other cars stay where they are. */
+  private onNetPeerPose(p: PlayerPose, at: number) {
+    if (this.gridHeld) return;
+    if (p.id === this.net.id) return;
+    p.kind = this.net.kind === "bike" ? "bike" : "car";
+    const remote = this.remotes.get(p.id);
+    if (remote) remote.push(p, at);
+    else {
+      this.spawnRemote(p);
+      this.remotes.get(p.id)?.push(p, at);
     }
   }
 
@@ -4297,6 +4324,7 @@ export class Game {
     const rawDeltaMs = now - this.lastFrame;
     const dt = Math.min(rawDeltaMs / 1000, 0.05);
     this.lastFrame = now;
+    this.phonePad.setScreen(this.running && !this.finished && !this.paused ? "drive" : "menu");
     // FPS scaler: watch real frame pacing; under load drop minimap/rain — never
     // skip shadow-map rebuilds (that lagged behind the car and looked janky).
     this.fpsEmaMs += (Math.min(rawDeltaMs, 100) - this.fpsEmaMs) * 0.05;

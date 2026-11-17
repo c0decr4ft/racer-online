@@ -1,28 +1,52 @@
 import "./style.css";
-import { initControlsHelp } from "./controlsHelp";
-import { initFeedbackCompose } from "./feedbackCompose";
-import { Game } from "./game";
-import { loadOnlineConfig, configuredApiBase, configuredWsUrl } from "./net/onlineConfig";
-import { startPresenceHeartbeat } from "./net/presence";
-import { restoreSession } from "./nostr/session";
-import { initNostrUi } from "./nostr/ui";
-import { initVehiclePhysics, vehiclePhysicsBackend } from "./physics/vehiclePhysics";
-import { initSettingsUi } from "./settingsUi";
-import { initSocialUi } from "./social/ui";
-import { clearInviteQuery, parseInviteQuery } from "./social/organize";
-import { GAME_VERSION } from "./version";
-import { initVersionBadge } from "./versions";
 
 const canvas = document.getElementById("game");
 if (!(canvas instanceof HTMLCanvasElement)) {
   throw new Error("Missing #game canvas");
 }
 
-// Mobile gate (set by the inline script in index.html): show DESKTOP ONLY and
-// never boot the engine, presence, or session restore on phones/tablets.
+// Phones (and a ?pad= link) are a controller. The race engine stays on the computer.
+const padQuery = new URLSearchParams(location.search).get("pad") || "";
 const mobileBlocked = document.documentElement.classList.contains("mobile-blocked");
 
-if (!mobileBlocked) {
+if (mobileBlocked || padQuery) {
+  if (padQuery) document.documentElement.classList.add("phone-pad");
+  document.getElementById("app")?.setAttribute("aria-hidden", "true");
+  const { loadOnlineConfig } = await import("./net/onlineConfig");
+  await loadOnlineConfig();
+  const { startPhonePad } = await import("./pad/phone");
+  startPhonePad(padQuery);
+} else {
+  const [
+    { initControlsHelp },
+    { initFeedbackCompose },
+    { Game },
+    { loadOnlineConfig, configuredApiBase, configuredWsUrl },
+    { startPresenceHeartbeat },
+    { restoreSession },
+    { initNostrUi },
+    { initVehiclePhysics, vehiclePhysicsBackend },
+    { initSettingsUi },
+    { initSocialUi },
+    { clearInviteQuery, parseInviteQuery },
+    { GAME_VERSION },
+    { initVersionBadge },
+  ] = await Promise.all([
+    import("./controlsHelp"),
+    import("./feedbackCompose"),
+    import("./game"),
+    import("./net/onlineConfig"),
+    import("./net/presence"),
+    import("./nostr/session"),
+    import("./nostr/ui"),
+    import("./physics/vehiclePhysics"),
+    import("./settingsUi"),
+    import("./social/ui"),
+    import("./social/organize"),
+    import("./version"),
+    import("./versions"),
+  ]);
+
   await Promise.all([loadOnlineConfig(), initVehiclePhysics()]);
 
   initVersionBadge();

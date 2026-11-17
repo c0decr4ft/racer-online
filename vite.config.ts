@@ -8,7 +8,8 @@ const base = process.env.VITE_BASE || (onRender ? "/" : "/racer-online/");
 export default defineConfig({
   base,
   server: {
-    host: "127.0.0.1",
+    // 0.0.0.0 so a phone on the same Wi-Fi can open the page and link as a controller.
+    host: "0.0.0.0",
     port: 5173,
     proxy: {
       "/ws": {

@@ -59,6 +59,8 @@ export class Vehicle {
    * wildlife collision actually sticks instead of full-throttle recovery.
    */
   animalHitPenalty = 0;
+  /** Absolute m/s ceiling while animalHitPenalty is running. */
+  hitSpeedCap = Number.POSITIVE_INFINITY;
 
   constructor(mesh: THREE.Group, position: THREE.Vector3, heading: number, manual = false) {
     this.mesh = mesh;
@@ -86,6 +88,7 @@ export class Vehicle {
     this.shiftTimer = 0;
     this.powerMul = 1;
     this.animalHitPenalty = 0;
+    this.hitSpeedCap = Number.POSITIVE_INFINITY;
     this.driftYaw = 0;
     this.leanSmooth = 0;
     this.syncMesh();
@@ -157,13 +160,17 @@ export class Vehicle {
       p.descend = input.descend;
       p.lookDown = input.lookDown;
       this.animalHitPenalty = Math.max(0, this.animalHitPenalty - dt);
-      p.throttle = input.throttle * 0.4;
-      p.brake = Math.max(input.brake, 0.06);
+      p.throttle = input.throttle * 0.2;
+      p.brake = Math.max(input.brake, 0.22);
       p.handbrake = 0;
       physicsInput = p;
     }
 
     stepVehiclePhysics(s, dt, physicsInput, this.powerMul);
+    if (this.hitSpeedCap < 1e6 && Math.abs(s.speed) > this.hitSpeedCap) {
+      s.speed = Math.sign(s.speed || 1) * this.hitSpeedCap;
+    }
+    if (this.animalHitPenalty <= 0) this.hitSpeedCap = Number.POSITIVE_INFINITY;
     this.updateDriftPose(dt);
 
     this.syncMesh(dt);
