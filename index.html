@@ -1086,11 +1086,11 @@
         <section id="phone-scan" class="phone-panel">
           <p class="eyebrow">SATS RACER</p>
           <h1>SCAN<br /><span>TO PLAY</span></h1>
-          <p class="tagline">Point the camera at the QR code on your computer</p>
-          <button id="phone-scan-btn" type="button">SCAN QR CODE</button>
+          <p class="tagline">Point the camera at the QR.</p>
+          <button id="phone-scan-btn" type="button">SCAN</button>
           <video id="phone-scan-video" class="phone-scan-video hidden" playsinline muted autoplay></video>
           <form id="phone-code-form" class="phone-code-form">
-            <label class="phone-code-label" for="phone-code-input">Or type the code</label>
+            <label class="phone-code-label" for="phone-code-input">CODE</label>
             <input id="phone-code-input" class="phone-code-input" maxlength="6" autocapitalize="characters" autocomplete="off" spellcheck="false" inputmode="text" aria-label="6 character link code" />
             <button type="submit">LINK</button>
           </form>
@@ -1117,22 +1117,29 @@
         <section id="phone-drive" class="phone-panel hidden">
           <div class="phone-drive-top">
             <button id="phone-pause" type="button">PAUSE</button>
+            <button id="phone-tilt-btn" type="button">TILT</button>
+            <p id="phone-drive-status" class="tagline" aria-live="polite">Tilt to steer</p>
           </div>
-          <p class="eyebrow">STEER</p>
-          <p id="phone-drive-status" class="tagline" aria-live="polite">Tilt to steer</p>
-          <div class="phone-wheel" aria-hidden="true">
-            <span>L</span>
-            <div class="phone-wheel-track"><div id="phone-wheel-puck"></div></div>
-            <span>R</span>
+          <div class="phone-drive-stage">
+            <div class="phone-left-controls">
+              <div class="phone-gears">
+                <button id="phone-shift" type="button" aria-label="Shift up">▲</button>
+                <button id="phone-shift-down" type="button" aria-label="Shift down">▼</button>
+              </div>
+              <button id="phone-drift" type="button" aria-label="Drift">
+                <span class="phone-drift-knob" aria-hidden="true"></span>
+              </button>
+            </div>
+            <div class="phone-wheel" aria-hidden="true">
+              <span>L</span>
+              <div class="phone-wheel-track"><div id="phone-wheel-puck"></div></div>
+              <span>R</span>
+            </div>
+            <div class="phone-pedals">
+              <button id="phone-gas" type="button">GAS</button>
+              <button id="phone-brake" type="button">BRAKE</button>
+            </div>
           </div>
-          <button id="phone-tilt-btn" type="button">ENABLE TILT</button>
-          <div class="phone-drive-pad">
-            <button id="phone-gas" type="button">GAS</button>
-            <button id="phone-shift" type="button">UP</button>
-            <button id="phone-brake" type="button">BRAKE</button>
-            <button id="phone-shift-down" type="button">DOWN</button>
-          </div>
-          <button id="phone-drift" type="button">DRIFT</button>
         </section>
       </div>
     </div>
