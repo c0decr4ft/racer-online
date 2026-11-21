@@ -17,7 +17,8 @@
     "start:local": "npm run dev:online",
     "test:full": "node scripts/full-suite.mjs",
     "test:lobby-invite-auth": "node scripts/verify-lobby-invite-auth.mjs",
-    "test:sticky-finish-field-reset": "node scripts/verify-sticky-finish-field-reset.mjs"
+    "test:sticky-finish-field-reset": "node scripts/verify-sticky-finish-field-reset.mjs",
+    "test:create-account-reentry": "node scripts/verify-create-account-reentry.mjs"
   },
   "devDependencies": {
     "@types/qrcode": "^1.5.6",
