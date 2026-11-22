@@ -299,8 +299,25 @@ async function handleCopyConnectUri() {
   }
 }
 
+/** Blocks re-entrant CREATE while profile publish is in flight (up to ~4s). */
+let createInFlight = false;
+
+function setCreateControlsEnabled(on: boolean) {
+  const go = el<HTMLButtonElement>("nostr-create-go");
+  const back = el<HTMLButtonElement>("nostr-create-back");
+  const username = el<HTMLInputElement>("nostr-username");
+  if (go) go.disabled = !on;
+  if (back) back.disabled = !on;
+  if (username) username.disabled = !on;
+}
+
 /** Username step → create the account, publish the name, show key backup. */
 async function handleCreateGo() {
+  // createAccount() immediately overwrites racer-nostr-session-v1. A second click /
+  // Enter / BACK→CREATE during publishProfileName burned nsec₁ and could paint it
+  // on the backup screen while storage held nsec₂ — user backs up the wrong key.
+  if (createInFlight) return;
+
   const input = el<HTMLInputElement>("nostr-username");
   const status = el<HTMLParagraphElement>("nostr-create-status");
   const name = (input?.value ?? "").replace(/\s+/g, " ").trim().slice(0, 24);
@@ -315,19 +332,33 @@ async function handleCreateGo() {
     input?.focus();
     return;
   }
-  setStatus("Generating your keys…");
-  const { session, nsec } = createAccount();
-  setStatus("Publishing your profile…");
+
+  createInFlight = true;
+  setCreateControlsEnabled(false);
   try {
-    await publishProfileName(session.signer, name);
-  } catch {
-    /* name publish is best-effort — the account still works */
+    setStatus("Generating your keys…");
+    const { session, nsec } = createAccount();
+    setStatus("Publishing your profile…");
+    try {
+      await publishProfileName(session.signer, name);
+    } catch {
+      /* name publish is best-effort — the account still works */
+    }
+    // Another login may have replaced the session; never show a burned nsec.
+    if (getSession()?.pubkey !== session.pubkey) {
+      setStatus("");
+      return;
+    }
+    const liveNsec = getLocalSecret() ?? nsec;
+    const out = el<HTMLInputElement>("nostr-nsec-out");
+    if (out) out.value = liveNsec;
+    setStatus("");
+    showView("backup");
+    void refreshIdentityViews();
+  } finally {
+    createInFlight = false;
+    setCreateControlsEnabled(true);
   }
-  const out = el<HTMLInputElement>("nostr-nsec-out");
-  if (out) out.value = nsec;
-  setStatus("");
-  showView("backup");
-  void refreshIdentityViews();
 }
 
 async function handleCopyNsec(e: MouseEvent) {
