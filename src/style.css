@@ -839,6 +839,11 @@ body:has(#mute-btn.hidden) .hud-top {
   z-index: 15;
 }
 
+/* Garage can open over a paused race. Pause stays underneath at the overlay layer. */
+#garage {
+  z-index: 11;
+}
+
 .version-switcher {
   position: fixed;
   right: 0.85rem;

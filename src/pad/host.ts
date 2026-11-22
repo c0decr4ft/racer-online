@@ -1,3 +1,4 @@
+import { clampGyro } from "../settings";
 import { clearPadFocus, type PadMenuKey } from "./menu";
 import { gameWsUrl } from "./wsUrl";
 
@@ -29,6 +30,7 @@ export class PadHost {
   private wantOpen = false;
   private ping: ReturnType<typeof setInterval> | null = null;
   private code = "";
+  private gyro = 1;
   private readonly handlers: PadHandlers;
 
   constructor(handlers: PadHandlers) {
@@ -65,6 +67,12 @@ export class PadHost {
       },
       true,
     );
+  }
+
+  /** Store tilt scale and push it to the phone when a link is up. */
+  setGyroSensitivity(sensitivity: number) {
+    this.gyro = clampGyro(sensitivity);
+    this.sendGyro();
   }
 
   /** Tell the phone whether to show the menu pad or the steering wheel. */
@@ -177,6 +185,7 @@ export class PadHost {
       this.setStatus("Phone linked");
       this.handlers.onStatus("Phone linked — tilt it to steer");
       this.send({ t: "pad-screen", screen: this.screen });
+      this.sendGyro();
       return;
     }
     if (msg.t === "pad-unlinked" || msg.t === "pad-end") {
@@ -240,6 +249,11 @@ export class PadHost {
   private setStatus(text: string) {
     const el = document.getElementById("phone-link-status");
     if (el) el.textContent = text;
+  }
+
+  private sendGyro() {
+    if (!this.linked) return;
+    this.send({ t: "pad-gyro", sensitivity: this.gyro });
   }
 
   private send(msg: object) {

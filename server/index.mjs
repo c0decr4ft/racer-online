@@ -3988,6 +3988,12 @@ function padAxis(value, min, max) {
   return Math.max(min, Math.min(max, n));
 }
 
+function padGyro(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 1;
+  return Math.max(0.5, Math.min(2.5, Math.round(n * 10) / 10));
+}
+
 function endPadSocket(ws) {
   const meta = padSockets.get(ws);
   if (!meta) return;
@@ -4050,6 +4056,12 @@ function handlePadMessage(ws, msg) {
   if (msg.t === "pad-screen" && meta.role === "host") {
     if (!session.phone || session.phone.readyState !== 1) return true;
     send(session.phone, { t: "pad-screen", screen: msg.screen === "drive" ? "drive" : "menu" });
+    return true;
+  }
+
+  if (msg.t === "pad-gyro" && meta.role === "host") {
+    if (!session.phone || session.phone.readyState !== 1) return true;
+    send(session.phone, { t: "pad-gyro", sensitivity: padGyro(msg.sensitivity) });
     return true;
   }
 

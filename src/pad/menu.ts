@@ -54,20 +54,41 @@ function clickIfShown(id: string) {
   if (el instanceof HTMLButtonElement && shown(el)) el.click();
 }
 
+/** Same click handler as the desktop button, even when its overlay is hidden. */
+function clickButton(id: string) {
+  const el = document.getElementById(id);
+  if (el instanceof HTMLButtonElement && !el.disabled) el.click();
+}
+
 export function handlePadMenu(key: PadMenuKey) {
   if (key === "race") {
     clickIfShown("start-btn");
     return;
   }
   if (key === "garage") {
-    clickIfShown("home-garage-btn");
+    clearPadFocus();
+    clickButton("home-garage-btn");
     return;
   }
   if (key === "back") {
     const back = rows()
       .flat()
       .find((btn) => /back/i.test(btn.textContent || "") || /back/i.test(btn.id));
-    back?.click();
+    if (back) {
+      clearPadFocus();
+      back.click();
+      return;
+    }
+    const pause = document.getElementById("pause");
+    const resume = document.getElementById("resume-btn");
+    if (
+      pause instanceof HTMLElement &&
+      !pause.classList.contains("hidden") &&
+      resume instanceof HTMLButtonElement
+    ) {
+      clearPadFocus();
+      resume.click();
+    }
     return;
   }
   if (key === "ok") {

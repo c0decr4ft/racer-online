@@ -1,6 +1,7 @@
 /** Home Settings modal — graphics / effects / sound. */
 
 import {
+  clampGyro,
   loadSettings,
   saveSettings,
   type GameSettings,
@@ -37,6 +38,10 @@ function syncUi(settings: GameSettings) {
   const label = document.getElementById("settings-sound-value");
   if (slider instanceof HTMLInputElement) slider.value = String(settings.sound);
   if (label) label.textContent = `${settings.sound}%`;
+  const gyro = document.getElementById("settings-gyro");
+  const gyroLabel = document.getElementById("settings-gyro-value");
+  if (gyro instanceof HTMLInputElement) gyro.value = String(settings.phoneGyroSensitivity);
+  if (gyroLabel) gyroLabel.textContent = `${settings.phoneGyroSensitivity.toFixed(1)}×`;
 }
 
 function commit(partial: Partial<GameSettings>) {
@@ -143,6 +148,13 @@ export function initSettingsUi(opts: {
   if (slider instanceof HTMLInputElement) {
     slider.addEventListener("input", () => {
       commit({ sound: Number(slider.value) });
+    });
+  }
+
+  const gyro = document.getElementById("settings-gyro");
+  if (gyro instanceof HTMLInputElement) {
+    gyro.addEventListener("input", () => {
+      commit({ phoneGyroSensitivity: clampGyro(Number(gyro.value)) });
     });
   }
 

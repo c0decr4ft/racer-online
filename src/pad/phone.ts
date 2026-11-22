@@ -1,3 +1,4 @@
+import { clampGyro } from "../settings";
 import { gameWsUrl } from "./wsUrl";
 
 type Screen = "scan" | "menu" | "drive";
@@ -10,6 +11,7 @@ const STEER_DEAD_DEG = 2;
 const STEER_FULL_DEG = 20;
 const STEER_LERP = 0.85;
 const DRIVE_SEND_MS = 16;
+let gyroSensitivity = 1;
 let ws: WebSocket | null = null;
 let driveTimer: ReturnType<typeof setInterval> | null = null;
 let scanTimer = 0;
@@ -98,6 +100,10 @@ function onMessage(raw: string) {
   if (msg.t === "pad-screen") {
     show(msg.screen === "drive" ? "drive" : "menu");
     setStatus(msg.screen === "drive" ? "Tilt to steer" : "Linked");
+    return;
+  }
+  if (msg.t === "pad-gyro") {
+    gyroSensitivity = clampGyro(Number(msg.sensitivity));
     return;
   }
   if (msg.t === "pad-unlinked" || msg.t === "pad-end") {
@@ -245,7 +251,8 @@ function steerFromTilt(e: DeviceOrientationEvent): number | null {
   else tilt = -gamma;
   const mag = Math.abs(tilt);
   if (mag <= STEER_DEAD_DEG) return 0;
-  const n = Math.min(1, (mag - STEER_DEAD_DEG) / (STEER_FULL_DEG - STEER_DEAD_DEG));
+  const full = Math.max(STEER_DEAD_DEG + 1, STEER_FULL_DEG / gyroSensitivity);
+  const n = Math.min(1, (mag - STEER_DEAD_DEG) / (full - STEER_DEAD_DEG));
   return Math.sign(tilt) * n;
 }
 

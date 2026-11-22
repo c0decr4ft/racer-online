@@ -563,6 +563,7 @@ export class Game {
     this.perf = settingsForTier(this.qualityTier);
     this.perfThrottle = this.qualityTier !== "high";
     this.audio.setMasterVolume(soundGain(saved.sound));
+    this.phonePad.setGyroSensitivity(saved.phoneGyroSensitivity);
 
     // Cap DPR for stable FPS on retina / weak GPUs. Prefer high-performance GL,
     // then fall back so dual-GPU laptops / flaky drivers don't leave a blue clear.
@@ -1102,6 +1103,7 @@ export class Game {
     this.closeGarageSwatchPalettes();
     this.syncGarageUi();
     this.el.garage.classList.remove("hidden");
+    if (this.paused) this.el.pause.classList.add("hidden");
     this.syncMuteBtn();
     // Reveal bird button for the dev profile only.
     void this.devAccessAllowed().then((allowed) => this.syncGarageDevKinds(allowed));
@@ -1120,6 +1122,7 @@ export class Game {
       this.garage = loadGarage();
     }
     this.el.garage.classList.add("hidden");
+    if (this.paused) this.el.pause.classList.remove("hidden");
     this.audio.playMenuMusic();
     this.syncMuteBtn();
   }
@@ -3755,6 +3758,7 @@ export class Game {
     this.effectsLevel = settings.effects;
     this.ghostEnabled = settings.ghost;
     this.audio.setMasterVolume(soundGain(settings.sound));
+    this.phonePad.setGyroSensitivity(settings.phoneGyroSensitivity);
     const tier = isSoftwareLikeGpu() ? "low" : graphicsToTier(settings.graphics);
     this.applyPerfSettings(tier, { force: true });
     this.ghostPlayer?.setVisible(this.ghostAllowed());

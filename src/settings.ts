@@ -13,7 +13,14 @@ export type GameSettings = {
   sound: number;
   /** Race against your best full-race ghost (Solo Race only). */
   ghost: boolean;
+  /** Phone tilt scale. 1 is the default feel; higher reaches full lock with less tilt. */
+  phoneGyroSensitivity: number;
 };
+
+/** Less sensitive (more tilt) … more sensitive (small tilt). */
+export const GYRO_MIN = 0.5;
+export const GYRO_MAX = 2.5;
+export const GYRO_DEFAULT = 1;
 
 const STORAGE_KEY = "racer-settings-v1";
 
@@ -22,7 +29,14 @@ const DEFAULTS: GameSettings = {
   effects: "high",
   sound: 100,
   ghost: true,
+  phoneGyroSensitivity: GYRO_DEFAULT,
 };
+
+export function clampGyro(n: number): number {
+  if (!Number.isFinite(n)) return GYRO_DEFAULT;
+  const stepped = Math.round(n * 10) / 10;
+  return Math.max(GYRO_MIN, Math.min(GYRO_MAX, stepped));
+}
 
 function clampSound(n: number): number {
   if (!Number.isFinite(n)) return DEFAULTS.sound;
@@ -45,6 +59,7 @@ export function loadSettings(): GameSettings {
       effects: normalizeLevel(parsed.effects, DEFAULTS.effects),
       sound: clampSound(Number(parsed.sound ?? DEFAULTS.sound)),
       ghost: typeof parsed.ghost === "boolean" ? parsed.ghost : DEFAULTS.ghost,
+      phoneGyroSensitivity: clampGyro(Number(parsed.phoneGyroSensitivity ?? DEFAULTS.phoneGyroSensitivity)),
     };
   } catch {
     return { ...DEFAULTS };
@@ -57,6 +72,7 @@ export function saveSettings(next: GameSettings): GameSettings {
     effects: normalizeLevel(next.effects, DEFAULTS.effects),
     sound: clampSound(next.sound),
     ghost: !!next.ghost,
+    phoneGyroSensitivity: clampGyro(next.phoneGyroSensitivity),
   };
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(clean));
