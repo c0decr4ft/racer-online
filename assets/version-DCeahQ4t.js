@@ -1,0 +1,1 @@
+import{t as e}from"./version-CpPJoDSd.js";export{e as GAME_VERSION};
