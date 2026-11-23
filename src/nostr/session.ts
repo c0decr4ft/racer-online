@@ -269,9 +269,22 @@ export async function logout(): Promise<void> {
   }
 }
 
-/** The stored nsec for locally created accounts (never for extension/remote sessions). */
+/**
+ * The stored nsec for the *current* local account (never for extension/remote).
+ * Must match `current.pubkey` — another tab's CREATE ACCOUNT can overwrite
+ * `racer-nostr-session-v1` while this tab's in-memory signer is unchanged; returning
+ * that foreign nsec would paint/copy the wrong backup key (permanent identity burn).
+ */
 export function getLocalSecret(): string | null {
   if (current?.method !== "local") return null;
   const saved = readPersisted();
-  return typeof saved?.nsec === "string" ? saved.nsec : null;
+  if (typeof saved?.nsec !== "string") return null;
+  try {
+    const decoded = nip19.decode(saved.nsec);
+    if (decoded.type !== "nsec") return null;
+    if (getPublicKey(decoded.data) !== current.pubkey) return null;
+    return saved.nsec;
+  } catch {
+    return null;
+  }
 }
