@@ -349,6 +349,9 @@ async function handleCreateGo() {
       setStatus("");
       return;
     }
+    // Prefer live storage only when it still matches this session (getLocalSecret
+    // binds nsec→pubkey). Another tab's CREATE can overwrite storage while this
+    // tab's signer is unchanged — fall back to the closed-over nsec then.
     const liveNsec = getLocalSecret() ?? nsec;
     const out = el<HTMLInputElement>("nostr-nsec-out");
     if (out) out.value = liveNsec;
