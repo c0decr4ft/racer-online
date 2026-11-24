@@ -86,6 +86,36 @@ function clearPersisted() {
   }
 }
 
+/**
+ * True when localStorage holds a local nsec this tab does not own.
+ * Extension / bunker / QR `persist` must not overwrite that blob — a stale
+ * signed-out tab would otherwise burn the only copy of another tab's key
+ * (loginGeneration is per JS realm and cannot see cross-tab CREATE).
+ */
+function foreignLocalNsecInStorage(): boolean {
+  const saved = readPersisted();
+  if (!saved || saved.method !== "local" || typeof saved.nsec !== "string") return false;
+  if (current?.method === "local") {
+    try {
+      const decoded = nip19.decode(saved.nsec);
+      if (decoded.type === "nsec" && getPublicKey(decoded.data) === current.pubkey) {
+        return false;
+      }
+    } catch {
+      /* treat undecodable storage as foreign */
+    }
+  }
+  return true;
+}
+
+function assertCanReplacePersisted(): void {
+  if (foreignLocalNsecInStorage()) {
+    throw new Error(
+      "A local account is already saved in this browser. Open that tab or back up its key before signing in another way",
+    );
+  }
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
     promise,
@@ -97,6 +127,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 export async function loginWithExtension(): Promise<NostrSession> {
   const signer = new ExtensionSigner();
   const pubkey = await withTimeout(signer.getPublicKey(), 10_000, "Extension did not respond");
+  assertCanReplacePersisted();
   persist({ method: "nip07", pubkey });
   const session: NostrSession = { pubkey, method: "nip07", signer };
   setSession(session);
@@ -135,6 +166,7 @@ export async function loginWithBunker(uri: string): Promise<NostrSession> {
     "Amber didn't answer. Approve Sats Racer in Amber, then try again",
   );
   const pubkey = await withTimeout(signer.getPublicKey(), 10_000, "Remote signer did not respond");
+  assertCanReplacePersisted();
   persist({ method: "nip46", nbunksec: signer.getNbunksec(), pubkey });
   const session: NostrSession = { pubkey, method: "nip46", signer };
   setSession(session);
@@ -172,6 +204,8 @@ export function startConnectLogin(): {
       "Amber didn't answer. Tap Open in Amber, or scan the QR, then approve Sats Racer",
     );
     const pubkey = await withTimeout(signer.getPublicKey(), 20_000, "Amber connected, but didn't share your key. Approve Sats Racer and try again");
+    // Re-check after the wait — another tab may have CREATE'd a local nsec.
+    assertCanReplacePersisted();
     persist({ method: "nip46", nbunksec: signer.getNbunksec(), pubkey });
     const session: NostrSession = { pubkey, method: "nip46", signer };
     setSession(session);
@@ -251,6 +285,7 @@ export async function reconnectRemoteSession(): Promise<NostrSession | null> {
       "stored session unreadable",
     );
     const pubkey = await withTimeout(signer.getPublicKey(), 12_000, "remote signer unreachable");
+    assertCanReplacePersisted();
     persist({ method: "nip46", nbunksec: signer.getNbunksec(), pubkey });
     const session: NostrSession = { pubkey, method: "nip46", signer };
     setSession(session);
