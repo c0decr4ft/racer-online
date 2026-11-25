@@ -47,11 +47,21 @@ const checks = [
   },
   {
     ok: /getSession\(\)\?\.pubkey !== session\.pubkey/.test(body),
-    msg: "handleCreateGo must skip backup paint when session was replaced",
+    msg: "handleCreateGo must detect when session was replaced during publish",
+  },
+  {
+    ok: /getSession\(\)\?\.pubkey !== session\.pubkey[\s\S]*out\.value = nsec[\s\S]*showView\("backup"\)/.test(
+      body,
+    ),
+    msg: "session mismatch must still paint closed-over nsec on backup (mid-create logout / late login)",
   },
   {
     ok: /getLocalSecret\(\)/.test(body),
     msg: "backup nsec must come from getLocalSecret (live storage), not only closed-over nsec",
+  },
+  {
+    ok: /if \(createInFlight\) showView\("create"\)/.test(src),
+    msg: "openNostrModal must keep create view while createInFlight",
   },
   {
     ok: /finally[\s\S]*createInFlight = false[\s\S]*setCreateControlsEnabled\(true\)/.test(body),
