@@ -56,6 +56,8 @@ function showStatus(text: string, isError = false) {
 
 let connectCancel: (() => void) | null = null;
 let connectResume: (() => void) | null = null;
+/** Blocks re-entrant CREATE while profile publish is in flight (up to ~4s). */
+let createInFlight = false;
 
 function onAmberVisible() {
   if (document.visibilityState !== "visible") return;
@@ -141,7 +143,12 @@ export function openNostrModal(reason?: string) {
     reasonEl.classList.toggle("hidden", !reason);
   }
   showStatus("");
-  showView(getSession() ? "in" : "out");
+  // createAccount() already setSession before backup paint. Re-opening the chip
+  // mid-publish used to switch to in-view (LOG OUT live) while create controls
+  // were all disabled — Tab escaped the modal, LOG OUT clearPersisted the new
+  // nsec, and handleCreateGo skipped backup → permanent identity burn.
+  if (createInFlight) showView("create");
+  else showView(getSession() ? "in" : "out");
   void refreshIdentityViews();
   modal.classList.remove("hidden");
 }
@@ -299,16 +306,17 @@ async function handleCopyConnectUri() {
   }
 }
 
-/** Blocks re-entrant CREATE while profile publish is in flight (up to ~4s). */
-let createInFlight = false;
-
 function setCreateControlsEnabled(on: boolean) {
   const go = el<HTMLButtonElement>("nostr-create-go");
   const back = el<HTMLButtonElement>("nostr-create-back");
   const username = el<HTMLInputElement>("nostr-username");
+  const logoutBtn = el<HTMLButtonElement>("nostr-logout-btn");
   if (go) go.disabled = !on;
   if (back) back.disabled = !on;
   if (username) username.disabled = !on;
+  // Keep a focusable control inside the dialog while publishing, and block LOG OUT
+  // if in-view is somehow shown mid-create (openNostrModal / pad).
+  if (logoutBtn) logoutBtn.disabled = !on;
 }
 
 /** Username step → create the account, publish the name, show key backup. */
@@ -344,13 +352,18 @@ async function handleCreateGo() {
     } catch {
       /* name publish is best-effort — the account still works */
     }
-    // Another login may have replaced the session; never show a burned nsec.
+    const out = el<HTMLInputElement>("nostr-nsec-out");
+    // Same-tab login/logout can replace getSession() while publish awaits. The
+    // closed-over nsec is then the only copy — still surface it for backup.
+    // (Re-entrant CREATE is blocked by createInFlight; do not prefer unbound
+    // storage here when the live session no longer matches.)
     if (getSession()?.pubkey !== session.pubkey) {
-      setStatus("");
+      if (out) out.value = nsec;
+      setStatus("Save this key now — sign-in changed while creating this account", true);
+      showView("backup");
       return;
     }
     const liveNsec = getLocalSecret() ?? nsec;
-    const out = el<HTMLInputElement>("nostr-nsec-out");
     if (out) out.value = liveNsec;
     setStatus("");
     showView("backup");
@@ -423,6 +436,9 @@ export function initNostrUi() {
   el<HTMLButtonElement>("nostr-login-cancel")?.addEventListener("click", closeNostrModal);
   el<HTMLButtonElement>("nostr-in-close")?.addEventListener("click", closeNostrModal);
   el<HTMLButtonElement>("nostr-logout-btn")?.addEventListener("click", () => {
+    // Mid-create LOG OUT would clearPersisted before backup paint (PR159 disabled
+    // every create control so Tab left the dialog and could reach this button).
+    if (createInFlight) return;
     void logout().then(() => {
       showView("out");
       void refreshIdentityViews();
