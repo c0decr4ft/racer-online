@@ -398,14 +398,22 @@ function stopScan() {
   }
 }
 
-function parsePad(text: string): string | null {
+/**
+ * Extract a pad code from a scanned QR / typed string.
+ * Cross-origin http(s) links may navigate (LAN QR → production host).
+ * Never assign javascript:/data:/blob:/file: — those run in this origin and
+ * can read racer-nostr-session-v1 (local nsec) via `//?pad=XXXXXX` comment tricks.
+ */
+export function parsePad(text: string, pageOrigin: string = location.origin): string | null {
   if (!text) return null;
   try {
     const url = new URL(text);
     const pad = url.searchParams.get("pad") || "";
     if (/^[A-Z0-9]{6}$/i.test(pad)) {
-      if (url.origin !== location.origin) {
-        location.href = url.href;
+      if (url.origin !== pageOrigin) {
+        if (url.protocol === "http:" || url.protocol === "https:") {
+          location.href = url.href;
+        }
         return null;
       }
       return pad.toUpperCase();
