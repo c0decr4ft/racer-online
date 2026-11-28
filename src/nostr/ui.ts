@@ -13,6 +13,7 @@ import {
   loginWithExtension,
   logout,
   onSessionChange,
+  restoreSession,
   startConnectLogin,
   type NostrSession,
 } from "./session";
@@ -56,6 +57,8 @@ function showStatus(text: string, isError = false) {
 
 let connectCancel: (() => void) | null = null;
 let connectResume: (() => void) | null = null;
+/** Blocks re-entrant CREATE while profile publish is in flight (up to ~4s). */
+let createInFlight = false;
 
 function onAmberVisible() {
   if (document.visibilityState !== "visible") return;
@@ -144,15 +147,24 @@ export function openNostrModal(reason?: string) {
   showView(getSession() ? "in" : "out");
   void refreshIdentityViews();
   modal.classList.remove("hidden");
+  // Stale signed-out tabs never re-read storage after another tab CREATE'd.
+  // Adopt that local/NIP-07 session so CREATE cannot overwrite its nsec.
+  if (!getSession() && !createInFlight) {
+    void restoreSession().then((session) => {
+      if (!session || createInFlight || getSession()?.pubkey !== session.pubkey) return;
+      showView("in");
+      void refreshIdentityViews();
+    });
+  }
 }
 
 /**
  * Resolve with the active Nostr session — opens the login modal when signed
  * out; resolves null if the user cancels.
  */
-export function ensureNostrLogin(reason: string): Promise<NostrSession | null> {
-  const session = getSession();
-  if (session) return Promise.resolve(session);
+export async function ensureNostrLogin(reason: string): Promise<NostrSession | null> {
+  const existing = getSession() ?? (await restoreSession());
+  if (existing) return existing;
   // Never auto-reconnect bunkers here — that opens auth/permission windows.
   // Remote signers reconnect only from the Sign In modal buttons.
   return new Promise((resolve) => {
@@ -299,9 +311,6 @@ async function handleCopyConnectUri() {
   }
 }
 
-/** Blocks re-entrant CREATE while profile publish is in flight (up to ~4s). */
-let createInFlight = false;
-
 function setCreateControlsEnabled(on: boolean) {
   const go = el<HTMLButtonElement>("nostr-create-go");
   const back = el<HTMLButtonElement>("nostr-create-back");
@@ -337,7 +346,23 @@ async function handleCreateGo() {
   setCreateControlsEnabled(false);
   try {
     setStatus("Generating your keys…");
-    const { session, nsec } = createAccount();
+    let created: { session: NostrSession; nsec: string };
+    try {
+      created = createAccount();
+    } catch (err) {
+      // Another tab already saved a local nsec — adopt it instead of burning it.
+      const message = err instanceof Error ? err.message : String(err);
+      const restored = getSession() ?? (await restoreSession());
+      if (restored?.method === "local") {
+        setStatus("");
+        showView("in");
+        void refreshIdentityViews();
+        return;
+      }
+      setStatus(message, true);
+      return;
+    }
+    const { session, nsec } = created;
     setStatus("Publishing your profile…");
     try {
       await publishProfileName(session.signer, name);
