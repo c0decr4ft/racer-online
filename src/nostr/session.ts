@@ -86,6 +86,35 @@ function clearPersisted() {
   }
 }
 
+/**
+ * True when localStorage holds a local nsec this tab does not own in memory.
+ * Stale signed-out tabs must not CREATE ACCOUNT over that blob — that burned
+ * the only copy of another tab's key (same setup as foreign login persist).
+ */
+function foreignLocalNsecInStorage(): boolean {
+  const saved = readPersisted();
+  if (!saved || saved.method !== "local" || typeof saved.nsec !== "string") return false;
+  if (current?.method === "local") {
+    try {
+      const decoded = nip19.decode(saved.nsec);
+      if (decoded.type === "nsec" && getPublicKey(decoded.data) === current.pubkey) {
+        return false;
+      }
+    } catch {
+      /* treat undecodable storage as foreign */
+    }
+  }
+  return true;
+}
+
+function assertCanReplaceLocalNsec(): void {
+  if (foreignLocalNsecInStorage()) {
+    throw new Error(
+      "A local account is already saved in this browser. Refresh or open that tab — creating a new one would erase that key",
+    );
+  }
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
     promise,
@@ -109,6 +138,9 @@ export async function loginWithExtension(): Promise<NostrSession> {
  * backup — it is also persisted (this browser only) so login survives reloads.
  */
 export function createAccount(): { session: NostrSession; nsec: string } {
+  // Refuse when another tab already persisted a local nsec this tab does not
+  // own. Logout clears storage first, so intentional re-create still works.
+  assertCanReplaceLocalNsec();
   const secretKey = generateSecretKey();
   const signer = new PrivateKeySigner(secretKey);
   const pubkey = getPublicKey(secretKey);
